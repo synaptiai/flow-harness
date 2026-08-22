@@ -128,6 +128,11 @@ import {
   sameBudgetExhaustions,
   totalModelTokens,
 } from "./budget.js";
+import {
+  MODEL_SESSION_PROTOCOL,
+  type ModelRequestMismatchCategory,
+  type ModelSessionSummary,
+} from "./model-session.js";
 
 export interface CommandEvidence {
   readonly kind: "command";
@@ -340,6 +345,7 @@ export interface NodeStartedEvent extends RunEventBase {
     readonly operationDigest: string;
   };
   readonly child?: ChildRunLink;
+  readonly modelSession?: ModelSessionSummary;
 }
 
 export interface NodeAttemptInterruptedEvent extends RunEventBase {
@@ -349,6 +355,7 @@ export interface NodeAttemptInterruptedEvent extends RunEventBase {
   readonly reason: "process_interrupted";
   readonly disposition: "fresh_retry";
   readonly resourceAccounting: "incomplete";
+  readonly modelSession?: ModelSessionSummary;
 }
 
 export interface ControlBranchGuard {
@@ -1076,6 +1083,7 @@ export interface NodeSucceededEvent extends RunEventBase {
   readonly nodeId: string;
   readonly attempt: number;
   readonly evidence: NodeEvidence;
+  readonly modelSession?: ModelSessionSummary;
 }
 
 export interface NodeFailedEvent extends RunEventBase {
@@ -1084,6 +1092,7 @@ export interface NodeFailedEvent extends RunEventBase {
   readonly attempt: number;
   readonly error: NodeFailure;
   readonly evidence: NodeEvidence | null;
+  readonly modelSession?: ModelSessionSummary;
 }
 
 export interface RunSucceededEvent extends RunEventBase {
@@ -1234,6 +1243,7 @@ export interface NodeRunState {
   readonly workflowApproval: WorkflowApprovalRunState | null;
   readonly agentCommandApprovals: readonly AgentCommandApprovalRunState[];
   readonly childRun: ChildRunLink | null;
+  readonly modelSession: ModelSessionSummary | null;
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
   readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
@@ -1373,6 +1383,7 @@ export interface InterruptedNodeAttemptState {
   readonly effects: readonly NodeEffectRunState[];
   readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
   readonly commands: readonly NodeAgentCommandRunState[];
+  readonly modelSession: ModelSessionSummary | null;
 }
 
 export interface NodeAgentCommandRunState {
@@ -1473,6 +1484,58 @@ const identifierSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const modelRequestMismatchCategorySchema = z.enum([
+  "provider",
+  "model",
+  "api_adapter",
+  "thinking",
+  "runtime_version",
+  "system_instructions",
+  "tool_catalog",
+  "authority",
+  "portable_history",
+  "runtime_surface",
+  "attempt",
+  "turn",
+  "request",
+] satisfies readonly ModelRequestMismatchCategory[]);
+const modelSessionSummarySchema = z
+  .object({
+    version: z.literal(1),
+    protocol: z.literal(MODEL_SESSION_PROTOCOL),
+    sessionId: z.string().regex(/^ms_[a-f0-9]{64}$/),
+    head: sha256Schema,
+    eventCount: z.number().int().positive().safe(),
+    committedBytes: z.number().int().positive().safe(),
+    lastAttempt: z.number().int().nonnegative().safe(),
+    activeAttempt: z.number().int().positive().safe().nullable(),
+    primaryEventCount: z.number().int().nonnegative().safe(),
+    requestCount: z.number().int().nonnegative().safe(),
+    interruptionCount: z.number().int().nonnegative().safe(),
+    resumeSurfaceCount: z.number().int().nonnegative().safe(),
+    latestResumeSourceHead: sha256Schema.nullable(),
+    latestRequest: z
+      .object({
+        systemSha256: sha256Schema,
+        systemBytes: z.number().int().nonnegative().safe(),
+        toolCatalogSha256: sha256Schema,
+        toolCatalogBytes: z.number().int().nonnegative().safe(),
+        toolCount: z.number().int().nonnegative().safe(),
+        authoritySha256: sha256Schema,
+        portableHistorySha256: sha256Schema,
+        portableHistoryBytes: z.number().int().nonnegative().safe(),
+        portableHistoryEventCount: z.number().int().nonnegative().safe(),
+        runtimeSurfaceSha256: sha256Schema,
+        runtimeSurfaceBytes: z.number().int().nonnegative().safe(),
+        attempt: z.number().int().positive().safe(),
+        turn: z.number().int().positive().safe(),
+        request: z.number().int().positive().safe(),
+      })
+      .strict()
+      .nullable(),
+    mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(13),
+  })
+  .strict();
 
 const effectIdSchema = z
   .string()
@@ -2747,6 +2810,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       commandProtocol: z.literal(AGENT_COMMAND_PROTOCOL).optional(),
       approval: approvalReferenceSchema.optional(),
       child: childRunLinkSchema.optional(),
+      modelSession: modelSessionSummarySchema.optional(),
     })
     .strict(),
   z
@@ -2758,6 +2822,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       reason: z.literal("process_interrupted"),
       disposition: z.literal("fresh_retry"),
       resourceAccounting: z.literal("incomplete"),
+      modelSession: modelSessionSummarySchema.optional(),
     })
     .strict(),
   z
@@ -3199,6 +3264,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       nodeId: identifierSchema,
       attempt: z.number().int().positive(),
       evidence: nodeEvidenceSchema,
+      modelSession: modelSessionSummarySchema.optional(),
     })
     .strict(),
   z
@@ -3209,6 +3275,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       error: nodeFailureSchema,
       evidence: nodeEvidenceSchema.nullable(),
+      modelSession: modelSessionSummarySchema.optional(),
     })
     .strict(),
   z
@@ -4449,6 +4516,12 @@ export function appendRunEvent(
         startedAt: event.at,
         approval,
         childRun,
+        modelSession: validateModelSessionStart(
+          current.modelSession,
+          event.modelSession,
+          event,
+          eventIndex,
+        ),
         effectProtocol: event.effectProtocol ?? null,
         effects: Object.freeze([]),
         commandProtocol: event.commandProtocol ?? null,
@@ -4472,6 +4545,12 @@ export function appendRunEvent(
         effects: current.effects,
         commandProtocol: current.commandProtocol,
         commands: current.commands,
+        modelSession: validateModelSessionClosure(
+          current.modelSession,
+          event.modelSession,
+          event,
+          eventIndex,
+        ),
       });
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -4482,6 +4561,7 @@ export function appendRunEvent(
         error: null,
         approval: null,
         workflowApproval: null,
+        modelSession: interruptedAttempt.modelSession,
         effectProtocol: null,
         effects: Object.freeze([]),
         commandProtocol: null,
@@ -5795,6 +5875,12 @@ export function appendRunEvent(
         status: "succeeded",
         finishedAt: event.at,
         evidence: deepFreeze(structuredClone(event.evidence)),
+        modelSession: validateModelSessionClosure(
+          current.modelSession,
+          event.modelSession,
+          event,
+          eventIndex,
+        ),
       });
       goal = applyCriterionDecision(
         goal,
@@ -5866,6 +5952,12 @@ export function appendRunEvent(
         finishedAt: event.at,
         evidence: event.evidence === null ? null : deepFreeze(structuredClone(event.evidence)),
         error: deepFreeze(structuredClone(event.error)),
+        modelSession: validateModelSessionClosure(
+          current.modelSession,
+          event.modelSession,
+          event,
+          eventIndex,
+        ),
       });
       goal = applyCriterionDecision(
         goal,
@@ -9331,6 +9423,7 @@ function pendingNodeState(): NodeRunState {
     workflowApproval: null,
     agentCommandApprovals: Object.freeze([]),
     childRun: null,
+    modelSession: null,
     effectProtocol: null,
     effects: Object.freeze([]),
     commandProtocol: null,
@@ -9340,6 +9433,95 @@ function pendingNodeState(): NodeRunState {
     omission: null,
     optimization: null,
   });
+}
+
+function validateModelSessionStart(
+  previous: ModelSessionSummary | null,
+  candidate: ModelSessionSummary | undefined,
+  event: Pick<NodeStartedEvent, "nodeId" | "attempt">,
+  eventIndex: number,
+): ModelSessionSummary | null {
+  if (candidate === undefined) {
+    if (previous !== null) {
+      throw new RunReplayError(
+        eventIndex,
+        `node "${event.nodeId}" cannot drop its model session on attempt ${event.attempt}`,
+      );
+    }
+    return null;
+  }
+  if (candidate.activeAttempt !== event.attempt || candidate.lastAttempt !== event.attempt) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${event.nodeId}" model session does not show active attempt ${event.attempt}`,
+    );
+  }
+  validateModelSessionSummaryContinuity(previous, candidate, event.nodeId, eventIndex);
+  return deepFreeze(structuredClone(candidate));
+}
+
+function validateModelSessionClosure(
+  current: ModelSessionSummary | null,
+  candidate: ModelSessionSummary | undefined,
+  event: Pick<
+    NodeAttemptInterruptedEvent | NodeSucceededEvent | NodeFailedEvent,
+    "nodeId" | "attempt"
+  >,
+  eventIndex: number,
+): ModelSessionSummary | null {
+  if (current === null) {
+    if (candidate !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        `node "${event.nodeId}" cannot add a model session only at attempt closure`,
+      );
+    }
+    return null;
+  }
+  if (candidate === undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${event.nodeId}" model session summary is missing at attempt closure`,
+    );
+  }
+  if (current.activeAttempt !== event.attempt || candidate.activeAttempt !== null) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${event.nodeId}" model session does not close attempt ${event.attempt}`,
+    );
+  }
+  if (candidate.lastAttempt !== event.attempt) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${event.nodeId}" model session closes the wrong attempt`,
+    );
+  }
+  validateModelSessionSummaryContinuity(current, candidate, event.nodeId, eventIndex);
+  return deepFreeze(structuredClone(candidate));
+}
+
+function validateModelSessionSummaryContinuity(
+  previous: ModelSessionSummary | null,
+  candidate: ModelSessionSummary,
+  nodeId: string,
+  eventIndex: number,
+): void {
+  if (candidate.mismatchCategories.length > 0) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${nodeId}" model session identity mismatch: ${candidate.mismatchCategories.join(",")}`,
+    );
+  }
+  if (previous === null) return;
+  if (candidate.sessionId !== previous.sessionId || candidate.protocol !== previous.protocol) {
+    throw new RunReplayError(eventIndex, `node "${nodeId}" model session identity changed`);
+  }
+  if (
+    candidate.eventCount <= previous.eventCount ||
+    candidate.committedBytes <= previous.committedBytes
+  ) {
+    throw new RunReplayError(eventIndex, `node "${nodeId}" model session did not advance`);
+  }
 }
 
 function validateInterruptedAttemptRecovery(

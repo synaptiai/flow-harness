@@ -292,6 +292,39 @@ export interface ModelSessionState extends ModelSessionIdentity {
   readonly primaryEvents: readonly ModelSessionPrimaryEvent[];
 }
 
+export interface ModelSessionSummary {
+  readonly version: 1;
+  readonly protocol: typeof MODEL_SESSION_PROTOCOL;
+  readonly sessionId: string;
+  readonly head: string;
+  readonly eventCount: number;
+  readonly committedBytes: number;
+  readonly lastAttempt: number;
+  readonly activeAttempt: number | null;
+  readonly primaryEventCount: number;
+  readonly requestCount: number;
+  readonly interruptionCount: number;
+  readonly resumeSurfaceCount: number;
+  readonly latestResumeSourceHead: string | null;
+  readonly latestRequest: {
+    readonly systemSha256: string;
+    readonly systemBytes: number;
+    readonly toolCatalogSha256: string;
+    readonly toolCatalogBytes: number;
+    readonly toolCount: number;
+    readonly authoritySha256: string;
+    readonly portableHistorySha256: string;
+    readonly portableHistoryBytes: number;
+    readonly portableHistoryEventCount: number;
+    readonly runtimeSurfaceSha256: string;
+    readonly runtimeSurfaceBytes: number;
+    readonly attempt: number;
+    readonly turn: number;
+    readonly request: number;
+  } | null;
+  readonly mismatchCategories: readonly ModelRequestMismatchCategory[];
+}
+
 export interface ModelSessionResumeCapsule {
   readonly renderVersion: 1;
   readonly sourceHead: string;
@@ -728,6 +761,59 @@ export function calculateModelSessionDigest(value: unknown): string {
   return sha256(canonicalJson(value));
 }
 
+export function canonicalModelSessionJson(value: unknown): string {
+  return canonicalJson(value);
+}
+
+export function modelSessionSummary(state: ModelSessionState): ModelSessionSummary {
+  const latestRequest = [...state.events]
+    .reverse()
+    .find(
+      (event): event is ModelSessionRequestPreparedEvent => event.type === "model_request_prepared",
+    );
+  const latestResume = [...state.events]
+    .reverse()
+    .find(
+      (event): event is ModelSessionResumeSurfaceEvent => event.type === "resume_surface_prepared",
+    );
+  return deepFreeze({
+    version: state.version,
+    protocol: state.protocol,
+    sessionId: state.sessionId,
+    head: state.head,
+    eventCount: state.eventCount,
+    committedBytes: state.committedBytes,
+    lastAttempt: state.lastAttempt,
+    activeAttempt: state.activeAttempt,
+    primaryEventCount: state.primaryEvents.length,
+    requestCount: state.events.filter((event) => event.type === "model_request_prepared").length,
+    interruptionCount: state.events.filter((event) => event.type === "attempt_interrupted").length,
+    resumeSurfaceCount: state.events.filter((event) => event.type === "resume_surface_prepared")
+      .length,
+    latestResumeSourceHead: latestResume?.sourceHead ?? null,
+    latestRequest:
+      latestRequest === undefined
+        ? null
+        : {
+            systemSha256: latestRequest.identity.system.sha256,
+            systemBytes: latestRequest.identity.system.bytes,
+            toolCatalogSha256: latestRequest.identity.toolCatalog.sha256,
+            toolCatalogBytes: latestRequest.identity.toolCatalog.bytes,
+            toolCount: latestRequest.identity.toolCatalog.count,
+            authoritySha256: latestRequest.identity.authority.sha256,
+            portableHistorySha256: latestRequest.identity.portableHistory.sha256,
+            portableHistoryBytes: latestRequest.identity.portableHistory.bytes,
+            portableHistoryEventCount: latestRequest.identity.portableHistory.eventCount,
+            runtimeSurfaceSha256: latestRequest.identity.runtimeSurface.sha256,
+            runtimeSurfaceBytes: latestRequest.identity.runtimeSurface.bytes,
+            attempt: latestRequest.attempt,
+            turn: latestRequest.turn,
+            request: latestRequest.request,
+          },
+    mismatchCategories: Object.freeze([]),
+  });
+}
+
 export function calculatePortableHistoryIdentity(state: ModelSessionState): {
   readonly sha256: string;
   readonly eventCount: number;
@@ -819,6 +905,14 @@ function applyTransition(
       ) {
         throw new ModelSessionReplayError("model request identity attribution does not match");
       }
+      if (
+        !samePortableHistory(
+          event.identity.portableHistory,
+          calculatePortableHistoryIdentity(state),
+        )
+      ) {
+        throw new ModelSessionReplayError("model request identity mismatch: portable_history");
+      }
       return {
         activeRequest: deepFreeze({
           attempt: event.attempt,
@@ -904,6 +998,15 @@ function applyTransition(
       return { activeAttempt: null };
     }
     case "attempt_interrupted": {
+      if (state.activeAttempt === null) {
+        const previous = state.events.at(-1);
+        if (previous?.type !== "attempt_settled" || previous.attempt !== event.attempt) {
+          throw new ModelSessionReplayError(
+            "model session interruption requires an active or just-settled attempt",
+          );
+        }
+        return {};
+      }
       requireActiveAttempt(state, event.attempt);
       return { activeAttempt: null, activeRequest: null };
     }

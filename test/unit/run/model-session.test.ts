@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  calculatePortableHistoryIdentity,
   compareModelRequestIdentity,
   createModelSession,
   createModelSessionEvent,
@@ -57,7 +58,7 @@ describe("model session record", () => {
       attempt: 1,
       turn: 1,
       request: 1,
-      identity: requestIdentity(),
+      identity: requestIdentity(state),
     });
     state = append(state, {
       type: "model_message_committed",
@@ -155,7 +156,7 @@ describe("model session record", () => {
       attempt: 1,
       turn: 1,
       request: 1,
-      identity: requestIdentity(),
+      identity: requestIdentity(state),
     });
 
     expect(() =>
@@ -188,6 +189,34 @@ describe("model session record", () => {
     ).toThrow(/head/i);
   });
 
+  it("records workflow interruption after a private attempt settled but before node settlement", () => {
+    let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+    state = append(state, { type: "attempt_started", attempt: 1 });
+    state = append(state, {
+      type: "user_message_committed",
+      attempt: 1,
+      origin: "primary_prompt",
+      text: "Inspect.",
+    });
+    state = append(state, { type: "attempt_settled", attempt: 1, outcome: "succeeded" });
+
+    state = append(state, {
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+
+    expect(state.activeAttempt).toBeNull();
+    expect(state.events.at(-1)).toMatchObject({ type: "attempt_interrupted", attempt: 1 });
+    expect(() =>
+      append(state, {
+        type: "attempt_interrupted",
+        attempt: 1,
+        reason: "process_interrupted",
+      }),
+    ).toThrow(/interruption/i);
+  });
+
   it("renders a deterministic fresh-turn capsule without recursively embedding derived surfaces", () => {
     let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
     state = append(state, { type: "attempt_started", attempt: 1 });
@@ -202,7 +231,7 @@ describe("model session record", () => {
       attempt: 1,
       turn: 1,
       request: 1,
-      identity: requestIdentity(),
+      identity: requestIdentity(state),
     });
     state = append(state, {
       type: "model_message_committed",
@@ -261,6 +290,38 @@ describe("model session record", () => {
     expect(JSON.stringify(changes)).not.toContain("private");
   });
 
+  it("rejects a request identity that does not bind the committed portable history", () => {
+    let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+    state = append(state, { type: "attempt_started", attempt: 1 });
+    state = append(state, {
+      type: "user_message_committed",
+      attempt: 1,
+      origin: "primary_prompt",
+      text: "Inspect.",
+    });
+
+    expect(() =>
+      createModelSessionEvent(
+        state,
+        {
+          type: "model_request_prepared",
+          attempt: 1,
+          turn: 1,
+          request: 1,
+          identity: {
+            ...requestIdentity(state),
+            portableHistory: {
+              sha256: "f".repeat(64),
+              eventCount: state.primaryEvents.length,
+              bytes: 1,
+            },
+          },
+        },
+        "2026-08-22T00:00:01.000Z",
+      ),
+    ).toThrow(/portable_history/i);
+  });
+
   it("admits the exact model-aware byte boundary and rejects one byte more", () => {
     const capacity = requestCapacity({ contextWindowTokens: 272_000 });
 
@@ -296,7 +357,7 @@ function append(
   return reduceModelSessionEvents([...state.events, event]);
 }
 
-function requestIdentity(): ModelRequestIdentity {
+function requestIdentity(state?: ModelSessionState): ModelRequestIdentity {
   return {
     version: 1,
     provider: "anthropic",
@@ -307,7 +368,10 @@ function requestIdentity(): ModelRequestIdentity {
     system: { sha256: "1".repeat(64), bytes: 100 },
     toolCatalog: { sha256: "2".repeat(64), bytes: 200, count: 2 },
     authority: { sha256: "3".repeat(64) },
-    portableHistory: { sha256: "4".repeat(64), eventCount: 1, bytes: 80 },
+    portableHistory:
+      state === undefined
+        ? { sha256: "4".repeat(64), eventCount: 1, bytes: 80 }
+        : calculatePortableHistoryIdentity(state),
     runtimeSurface: { sha256: "5".repeat(64), bytes: 380 },
     attempt: 1,
     turn: 1,

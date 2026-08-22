@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
 
+import type { ModelSessionStore } from "../../application/ports.js";
 import {
   appendModelSessionEvent,
   createModelSession,
@@ -78,7 +79,7 @@ const ownerRecordSchema = z
   })
   .strict();
 
-export class JsonlModelSessionStore {
+export class JsonlModelSessionStore implements ModelSessionStore {
   readonly maxEventBytes: number;
   readonly maxRecordBytes: number;
   readonly maxEvents: number;
@@ -445,8 +446,10 @@ export class JsonlModelSessionStore {
   }
 
   async #prepareSessionParent(identity: ModelSessionIdentity): Promise<void> {
+    await ensureStorageRoot(this.rootDirectory);
     const runDirectory = join(this.rootDirectory, identity.runId);
-    await assertSafeDirectory(runDirectory, "run directory");
+    await ensurePrivateDirectory(runDirectory, "run directory", false);
+    await syncDirectory(this.rootDirectory);
     const modelSessionsDirectory = join(runDirectory, "model-sessions");
     try {
       await mkdir(modelSessionsDirectory, { mode: 0o700 });
@@ -651,6 +654,66 @@ export class JsonlModelSessionStore {
     }
     return candidate;
   }
+}
+
+async function ensureStorageRoot(path: string): Promise<void> {
+  try {
+    await mkdir(path, { mode: 0o700, recursive: true });
+  } catch (error) {
+    if (!(isNodeError(error) && error.code === "EEXIST")) {
+      throw new ModelSessionStoreError(
+        "io",
+        `failed to create model session storage root "${path}"`,
+        { cause: error },
+      );
+    }
+  }
+  let metadata: Stats;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    throw new ModelSessionStoreError(
+      "io",
+      `failed to inspect model session storage root "${path}"`,
+      { cause: error },
+    );
+  }
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new ModelSessionStoreError(
+      "unsafe_path",
+      `model session storage root "${path}" is not a real directory`,
+    );
+  }
+  const getuid = process.getuid;
+  if (getuid !== undefined && metadata.uid !== getuid()) {
+    throw new ModelSessionStoreError(
+      "unsafe_path",
+      `model session storage root "${path}" is not owned by the current user`,
+    );
+  }
+  if ((metadata.mode & 0o022) !== 0) {
+    throw new ModelSessionStoreError(
+      "unsafe_path",
+      `model session storage root "${path}" must not be group- or world-writable`,
+    );
+  }
+}
+
+async function ensurePrivateDirectory(
+  path: string,
+  label: string,
+  recursive: boolean,
+): Promise<void> {
+  try {
+    await mkdir(path, { mode: 0o700, recursive });
+  } catch (error) {
+    if (!(isNodeError(error) && error.code === "EEXIST")) {
+      throw new ModelSessionStoreError("io", `failed to create ${label} "${path}"`, {
+        cause: error,
+      });
+    }
+  }
+  await assertSafeDirectory(path, label);
 }
 
 async function assertSafeDirectory(path: string, label: string): Promise<void> {

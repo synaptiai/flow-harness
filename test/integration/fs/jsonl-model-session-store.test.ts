@@ -13,10 +13,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import type {
-  ModelRequestIdentity,
-  ModelSessionEventInput,
-  ModelSessionIdentity,
+import {
+  calculatePortableHistoryIdentity,
+  type ModelRequestIdentity,
+  type ModelSessionEventInput,
+  type ModelSessionIdentity,
+  type ModelSessionState,
 } from "../../../src/domain/run/model-session.js";
 import { JsonlModelSessionStore } from "../../../src/infrastructure/fs/jsonl-model-session-store.js";
 
@@ -36,6 +38,29 @@ afterEach(async () => {
 });
 
 describe("JsonlModelSessionStore", () => {
+  it("creates a missing private storage root and run directory", async () => {
+    const parent = await createTemporaryDirectory();
+    const root = join(parent, "nested", "runs");
+    const store = new JsonlModelSessionStore(root);
+
+    await store.create(identity, at(0));
+
+    expect((await lstat(root)).mode & 0o777).toBe(0o700);
+    expect((await lstat(join(root, identity.runId))).mode & 0o777).toBe(0o700);
+    await expect(store.read(identity)).resolves.toMatchObject({ eventCount: 1 });
+  });
+
+  it("uses an existing non-writable shared runs root", async () => {
+    const root = await createTemporaryDirectory();
+    await chmod(root, 0o755);
+    const store = new JsonlModelSessionStore(root);
+
+    await store.create(identity, at(0));
+
+    expect((await lstat(root)).mode & 0o777).toBe(0o755);
+    expect((await lstat(join(root, identity.runId))).mode & 0o777).toBe(0o700);
+  });
+
   it("durably creates and appends a private session record", async () => {
     const root = await createTemporaryDirectory();
     await mkdir(join(root, identity.runId), { mode: 0o700 });
@@ -197,6 +222,7 @@ describe("JsonlModelSessionStore", () => {
     const store = await createStore();
     await store.append(identity, { type: "attempt_started", attempt: 1 }, at(1));
     await store.append(identity, primaryPrompt(), at(2));
+    const state = await store.read(identity);
     await store.append(
       identity,
       {
@@ -204,7 +230,7 @@ describe("JsonlModelSessionStore", () => {
         attempt: 1,
         turn: 1,
         request: 1,
-        identity: requestIdentity(),
+        identity: requestIdentity(state),
       },
       at(3),
     );
@@ -242,7 +268,7 @@ function primaryPrompt(): Extract<
   };
 }
 
-function requestIdentity(): ModelRequestIdentity {
+function requestIdentity(state: ModelSessionState): ModelRequestIdentity {
   return {
     version: 1,
     provider: "anthropic",
@@ -253,7 +279,7 @@ function requestIdentity(): ModelRequestIdentity {
     system: { sha256: "1".repeat(64), bytes: 100 },
     toolCatalog: { sha256: "2".repeat(64), bytes: 200, count: 2 },
     authority: { sha256: "3".repeat(64) },
-    portableHistory: { sha256: "4".repeat(64), eventCount: 1, bytes: 80 },
+    portableHistory: calculatePortableHistoryIdentity(state),
     runtimeSurface: { sha256: "5".repeat(64), bytes: 380 },
     attempt: 1,
     turn: 1,

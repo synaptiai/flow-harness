@@ -12,6 +12,7 @@ import {
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import type {
   AgentExecutor,
+  ModelSessionJournal,
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
@@ -38,6 +39,14 @@ import type {
   AgentEvidence,
   NodeFailure,
 } from "../../domain/run/events.js";
+import {
+  calculateModelSessionDigest,
+  calculatePortableHistoryIdentity,
+  canonicalModelSessionJson,
+  type ModelSessionUsage,
+  renderModelSessionResumeCapsule,
+  requestCapacity,
+} from "../../domain/run/model-session.js";
 import type { ModelWorkProfileContext } from "../../domain/run/work-profile.js";
 import {
   MAX_SEMANTIC_QUERY_RECEIPTS,
@@ -76,6 +85,8 @@ export interface PiAgentRunRequest {
   };
   readonly semanticSession?: SemanticToolSession;
   readonly artifactStore?: ArtifactStore;
+  readonly authorityDigest?: string;
+  readonly modelSession?: ModelSessionJournal;
   readonly signal?: AbortSignal;
 }
 
@@ -250,6 +261,7 @@ export class PiAgentExecutor implements AgentExecutor {
       nodeId: node.id,
       attempt: context.attempt,
     } as const;
+    const protectedPaths = context.protectedPaths ?? [];
     const policyBroker = new PolicyBroker(
       attribution,
       policyActionsForTools(node.agent.tools, toolPackages.length > 0),
@@ -392,10 +404,22 @@ export class PiAgentExecutor implements AgentExecutor {
           ...(context.agentExactModelSettings === true ? { exactModelSettings: true } : {}),
           ...(systemPrompt === undefined ? {} : { systemPrompt }),
           policyBroker,
-          protectedPaths: context.protectedPaths,
+          protectedPaths,
           effectRecorder,
           commandRecorder,
           ...(context.artifactStore === undefined ? {} : { artifactStore: context.artifactStore }),
+          authorityDigest: calculateModelSessionDigest({
+            version: 1,
+            attribution: policyBroker.attribution,
+            actions: policyActionsForTools(node.agent.tools, toolPackages.length > 0),
+            protectedPaths: [...protectedPaths].sort(),
+            capabilitySnapshot: context.capabilitySnapshot?.digest ?? null,
+            toolPackages: toolPackages.map((item) => item.digest),
+            commandApproval: context.agentCommandApprovalGate !== undefined,
+            semanticCode: semanticSession !== undefined,
+            retainedArtifacts: context.artifactStore !== undefined,
+          }),
+          ...(context.modelSession === undefined ? {} : { modelSession: context.modelSession }),
           ...(semanticSession === undefined ? {} : { semanticSession }),
           ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
             ? {}
@@ -837,6 +861,41 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
                 : Math.min(selectedModel.maxTokens, request.maxOutputTokens),
           };
 
+    let prompt = request.prompt;
+    if (request.modelSession !== undefined) {
+      let state = await request.modelSession.read();
+      if (state.activeAttempt === null) {
+        throw new Error("model session has no active attempt");
+      }
+      if (state.activeAttempt !== request.policyBroker.attribution.attempt) {
+        throw new Error("model session attempt does not match policy attribution");
+      }
+      const activeAttempt = state.activeAttempt;
+      if (!state.primaryPromptCommitted) {
+        if (activeAttempt !== 1) {
+          throw new Error("recovered model session has no committed primary prompt");
+        }
+        state = await request.modelSession.append({
+          type: "user_message_committed",
+          attempt: 1,
+          origin: "primary_prompt",
+          text: request.prompt,
+        });
+      }
+      if (activeAttempt > 1) {
+        const capsule = renderModelSessionResumeCapsule(state);
+        await request.modelSession.append({
+          type: "resume_surface_prepared",
+          attempt: activeAttempt,
+          renderVersion: capsule.renderVersion,
+          sourceHead: capsule.sourceHead,
+          digest: capsule.digest,
+          bytes: capsule.bytes,
+        });
+        prompt = capsule.text;
+      }
+    }
+
     const capabilitySession =
       request.capabilities === undefined
         ? undefined
@@ -890,6 +949,11 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       );
     }
 
+    const detachModelSession =
+      request.modelSession === undefined
+        ? () => undefined
+        : attachModelSessionRecorder(session, request, request.modelSession);
+
     if (isAborted(request.signal)) {
       await session.abort().catch(() => undefined);
       session.dispose();
@@ -919,7 +983,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     try {
       let promptError: unknown;
       try {
-        await session.prompt(request.prompt, { expandPromptTemplates: false });
+        await session.prompt(prompt, { expandPromptTemplates: false });
       } catch (error) {
         if (!output.truncated) {
           promptError = error;
@@ -969,9 +1033,195 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       request.signal?.removeEventListener("abort", abortHandler);
       await abortPromise;
       unsubscribe();
+      detachModelSession();
       session.dispose();
     }
   }
+}
+
+const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.84.0";
+
+function attachModelSessionRecorder(
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+  request: PiAgentRunRequest,
+  journal: ModelSessionJournal,
+): () => void {
+  const authorityDigest = request.authorityDigest;
+  if (authorityDigest === undefined) {
+    throw new Error("model session recording requires an authority digest");
+  }
+  const originalStreamFunction = session.agent.streamFunction;
+  let activeRequest:
+    | { readonly attempt: number; readonly turn: number; readonly request: number }
+    | undefined;
+  session.agent.streamFunction = async (model, context, options) => {
+    const state = await journal.read();
+    const prepared = state.events.filter((event) => event.type === "model_request_prepared");
+    const requestSequence = (prepared.at(-1)?.request ?? 0) + 1;
+    const turn = prepared.filter((event) => event.attempt === state.activeAttempt).length + 1;
+    const attempt = state.activeAttempt;
+    if (attempt === null) {
+      throw new Error("model session request requires an active attempt");
+    }
+    const systemPrompt = context.systemPrompt ?? "";
+    const tools = (context.tools ?? []).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      ...(tool.constrainedSampling === undefined
+        ? {}
+        : { constrainedSampling: tool.constrainedSampling }),
+    }));
+    const systemBytes = Buffer.byteLength(systemPrompt, "utf8");
+    const toolCatalogJson = canonicalModelSessionJson(tools);
+    const toolCatalogBytes = Buffer.byteLength(toolCatalogJson, "utf8");
+    const runtimeSurface = {
+      model: {
+        provider: model.provider,
+        id: model.id,
+        api: model.api,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      },
+      systemPrompt,
+      messages: context.messages,
+      tools,
+    };
+    const runtimeSurfaceJson = canonicalModelSessionJson(runtimeSurface);
+    const runtimeSurfaceBytes = Buffer.byteLength(runtimeSurfaceJson, "utf8");
+    requestCapacity({
+      contextWindowTokens: model.contextWindow,
+      requestBytes: runtimeSurfaceBytes,
+    });
+    const identity = {
+      version: 1 as const,
+      provider: model.provider,
+      model: model.id,
+      apiAdapter: model.api,
+      thinking: request.thinking,
+      runtimeVersion: PI_MODEL_SESSION_RUNTIME_VERSION,
+      system: {
+        sha256: createHash("sha256").update(systemPrompt, "utf8").digest("hex"),
+        bytes: systemBytes,
+      },
+      toolCatalog: {
+        sha256: calculateModelSessionDigest(tools),
+        bytes: toolCatalogBytes,
+        count: tools.length,
+      },
+      authority: { sha256: authorityDigest },
+      portableHistory: calculatePortableHistoryIdentity(state),
+      runtimeSurface: {
+        sha256: calculateModelSessionDigest(runtimeSurface),
+        bytes: runtimeSurfaceBytes,
+      },
+      attempt,
+      turn,
+      request: requestSequence,
+    };
+    await journal.append({
+      type: "model_request_prepared",
+      attempt,
+      turn,
+      request: requestSequence,
+      identity,
+    });
+    activeRequest = { attempt, turn, request: requestSequence };
+    return await originalStreamFunction(model, context, options);
+  };
+
+  return session.agent.subscribe(async (event) => {
+    const attribution = activeRequest;
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      if (
+        attribution === undefined ||
+        event.message.stopReason === "aborted" ||
+        event.message.stopReason === "pending" ||
+        event.message.stopReason === "error"
+      ) {
+        return;
+      }
+      const text = event.message.content
+        .filter(
+          (item): item is Extract<typeof item, { readonly type: "text" }> => item.type === "text",
+        )
+        .map((item) => item.text)
+        .join("");
+      await journal.append({
+        type: "model_message_committed",
+        ...attribution,
+        text,
+        stopReason: event.message.stopReason,
+        usage: projectModelSessionUsage(event.message.usage),
+      });
+      for (const item of event.message.content) {
+        if (item.type !== "toolCall") continue;
+        await journal.append({
+          type: "tool_call_committed",
+          ...attribution,
+          toolCallId: item.id,
+          toolName: item.name,
+          argumentsJson: canonicalModelSessionJson(item.arguments),
+        });
+      }
+      return;
+    }
+    if (event.type === "message_end" && event.message.role === "toolResult") {
+      if (attribution === undefined) return;
+      const text = event.message.content
+        .filter(
+          (item): item is Extract<typeof item, { readonly type: "text" }> => item.type === "text",
+        )
+        .map((item) => item.text)
+        .join("");
+      await journal.append({
+        type: "tool_result_committed",
+        ...attribution,
+        toolCallId: event.message.toolCallId,
+        toolName: event.message.toolName,
+        text,
+        isError: event.message.isError,
+      });
+      return;
+    }
+    if (event.type === "turn_end") {
+      if (attribution === undefined || event.message.role !== "assistant") return;
+      const outcome =
+        event.message.stopReason === "length"
+          ? "output_limited"
+          : event.message.stopReason === "error" ||
+              event.message.stopReason === "aborted" ||
+              event.message.stopReason === "pending"
+            ? "failed"
+            : "completed";
+      await journal.append({
+        type: "model_request_settled",
+        ...attribution,
+        outcome,
+      });
+      activeRequest = undefined;
+    }
+  });
+}
+
+function projectModelSessionUsage(input: {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly cost: { readonly total: number };
+}): ModelSessionUsage {
+  return {
+    inputTokens: safeUsageInteger(input.input),
+    outputTokens: safeUsageInteger(input.output),
+    cacheReadTokens: safeUsageInteger(input.cacheRead),
+    cacheWriteTokens: safeUsageInteger(input.cacheWrite),
+    costUsdMicros: safeUsageInteger(Math.round(input.cost.total * 1_000_000)),
+  };
+}
+
+function safeUsageInteger(value: number): number {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 class PiAgentAbortError extends Error {

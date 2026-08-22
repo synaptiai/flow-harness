@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { ArtifactStore } from "../application/artifact-store.js";
 import type {
   AgentCommandApprovalDecisionChannel,
+  ModelSessionStore,
   NodeEffectReconciler,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -19,6 +20,7 @@ import {
 import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
 import type { FlowSandboxProfile } from "../domain/config/resolver.js";
 import { type RunState, reduceRunEvents } from "../domain/run/events.js";
+import { JsonlModelSessionStore } from "../infrastructure/fs/jsonl-model-session-store.js";
 import { LocalAgentCommandApprovalChannel } from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import { LocalArtifactStore } from "../infrastructure/fs/local-artifact-store.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
@@ -44,6 +46,7 @@ export interface ExecuteWorkerJobOptions {
   readonly createExecutor?: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createRunStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createModelSessionStore?: (rootDirectory: string) => ModelSessionStore;
   readonly createArtifactStore?: (projectRoot: string) => ArtifactStore;
   readonly createAgentCommandApprovalChannel?: (
     rootDirectory: string,
@@ -244,6 +247,10 @@ export async function executeWorkerJob(
         ...(projectRoot === undefined ? {} : { projectRoot }),
         protectedPaths,
         store: runStore,
+        modelSessionStore: (
+          options.createModelSessionStore ??
+          ((rootDirectory: string) => new JsonlModelSessionStore(rootDirectory))
+        )(options.store.runsDirectory),
         ...(artifactStore === undefined ? {} : { artifactStore }),
         executor,
         effectReconciler: options.effectReconciler,

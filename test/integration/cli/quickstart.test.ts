@@ -275,7 +275,7 @@ describe("flow quickstart", () => {
       },
     );
 
-    expect(exitCode, capture.stderr.join("\n")).toBe(0);
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
     const inspect = createCapture();
     expect(
       await main(["inspect", "quickstart-coding-effects"], inspect.io, {
@@ -810,7 +810,7 @@ async function deterministicCodingRuntime(): Promise<ModelRuntime> {
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 4_096,
+        contextWindow: 65_536,
         maxTokens: 256,
       },
     ],

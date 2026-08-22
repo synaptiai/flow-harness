@@ -74,6 +74,12 @@ import {
   type VerifierPackageRequirement,
   type WorkflowPackageRequirement,
 } from "../domain/run/events.js";
+import {
+  type ModelSessionEventInput,
+  type ModelSessionIdentity,
+  type ModelSessionState,
+  modelSessionSummary,
+} from "../domain/run/model-session.js";
 import { createModelWorkProfileContext } from "../domain/run/work-profile.js";
 import {
   projectCompiledControlGraph,
@@ -108,6 +114,8 @@ import type {
   CandidatePromotionSettlement,
   CandidateWorkspaceManager,
   IsolatedWorkspace,
+  ModelSessionJournal,
+  ModelSessionStore,
   NodeAgentCommandApprovalGate,
   NodeAgentCommandJournal,
   NodeEffectJournal,
@@ -136,6 +144,7 @@ export interface RunWorkflowOptions {
   readonly agentCommandApprovalDecisions?: AgentCommandApprovalDecisionSource;
   readonly artifactStore?: ArtifactStore;
   readonly workProfile?: WorkProfile;
+  readonly modelSessionStore?: ModelSessionStore;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -419,6 +428,7 @@ async function continueWorkflow(
       readonly effectJournal?: NodeEffectJournal;
       readonly agentCommandJournal?: NodeAgentCommandJournal;
       readonly agentCommandApprovalGate?: NodeAgentCommandApprovalGate;
+      readonly modelSessionJournal?: ModelSessionJournal;
       readonly verifierSources?: readonly VerifierSourceInput[];
       readonly verifierPackage?: VerifierPackageUseEvidence;
       readonly preflightOutcome?: NodeExecutionOutcome;
@@ -494,6 +504,18 @@ async function continueWorkflow(
           : undefined;
       const executionNode = boundNodeTimeout(verifierResolution?.node ?? node, state);
       const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
+      const modelSessionJournal =
+        isModelBackedNode(executionNode) &&
+        (attempt === 1 || state.nodes[node.id]?.modelSession !== null)
+          ? await prepareModelSessionAttempt(
+              options.modelSessionStore,
+              { runId, workflowId: workflow.id, nodeId: node.id },
+              executionNode,
+              attempt,
+              now,
+              options.signal,
+            )
+          : undefined;
       const verifierSources = verifierExecutionSources(executionNode, state);
       const preflightOutcome =
         executionNode.type === "child"
@@ -571,16 +593,28 @@ async function continueWorkflow(
         };
       }
 
-      await record({
-        ...base(nextSequence(), startTime),
-        type: "node_started",
-        nodeId: node.id,
-        attempt,
-        ...(node.type === "child" ? { child: createChildRunLink(runId, node, attempt) } : {}),
-        ...(approval === undefined ? {} : { approval }),
-        ...(supportsDurableEffects(node) ? { effectProtocol: DURABLE_EFFECT_PROTOCOL } : {}),
-        ...(supportsAgentCommands(node) ? { commandProtocol: AGENT_COMMAND_PROTOCOL } : {}),
-      });
+      try {
+        await record({
+          ...base(nextSequence(), startTime),
+          type: "node_started",
+          nodeId: node.id,
+          attempt,
+          ...(node.type === "child" ? { child: createChildRunLink(runId, node, attempt) } : {}),
+          ...(approval === undefined ? {} : { approval }),
+          ...(supportsDurableEffects(node) ? { effectProtocol: DURABLE_EFFECT_PROTOCOL } : {}),
+          ...(supportsAgentCommands(node) ? { commandProtocol: AGENT_COMMAND_PROTOCOL } : {}),
+          ...(modelSessionJournal === undefined
+            ? {}
+            : { modelSession: modelSessionSummary(modelSessionJournal.state) }),
+        });
+      } catch (error) {
+        if (modelSessionJournal !== undefined && options.modelSessionStore !== undefined) {
+          await options.modelSessionStore
+            .release(modelSessionIdentity(modelSessionJournal.state))
+            .catch(() => undefined);
+        }
+        throw error;
+      }
       const effectJournal = supportsDurableEffects(node)
         ? createEffectJournal(node.id, attempt)
         : undefined;
@@ -597,6 +631,7 @@ async function continueWorkflow(
         ...(effectJournal === undefined ? {} : { effectJournal }),
         ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
         ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
+        ...(modelSessionJournal === undefined ? {} : { modelSessionJournal }),
         ...(verifierSources === undefined ? {} : { verifierSources }),
         ...(verifierResolution?.package === undefined
           ? {}
@@ -623,6 +658,7 @@ async function continueWorkflow(
           effectJournal,
           agentCommandJournal,
           agentCommandApprovalGate,
+          modelSessionJournal,
           verifierSources,
           verifierPackage,
           preflightOutcome,
@@ -640,9 +676,7 @@ async function continueWorkflow(
             executionNode.type === "agent"
               ? goalWorkspaceForAgent(options.capabilitySnapshot)
               : undefined;
-          const modelBacked =
-            executionNode.type === "agent" ||
-            (executionNode.type === "verifier" && executionNode.verifier.kind === "model");
+          const modelBacked = isModelBackedNode(executionNode);
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -671,6 +705,9 @@ async function continueWorkflow(
                     ...(effectJournal === undefined ? {} : { effectJournal }),
                     ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
                     ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
+                    ...(modelSessionJournal === undefined
+                      ? {}
+                      : { modelSession: modelSessionJournal }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
@@ -709,6 +746,15 @@ async function continueWorkflow(
         (!abortedBeforeExecution && !abortAfterSuccessfulExecution)
           ? retrySafeOutcome
           : normalizeWorkflowAbortEffectStatus(admission.node.id, retrySafeOutcome);
+      const modelSession =
+        admission.modelSessionJournal === undefined
+          ? undefined
+          : await settleModelSessionAttempt(
+              options.modelSessionStore,
+              admission.modelSessionJournal,
+              admission.attempt,
+              authoritativeOutcome,
+            );
 
       if (authoritativeOutcome.status === "failed") {
         await record({
@@ -718,6 +764,7 @@ async function continueWorkflow(
           attempt: admission.attempt,
           error: authoritativeOutcome.error,
           evidence: authoritativeOutcome.evidence,
+          ...(modelSession === undefined ? {} : { modelSession }),
         });
       } else {
         await record({
@@ -726,6 +773,7 @@ async function continueWorkflow(
           nodeId: admission.node.id,
           attempt: admission.attempt,
           evidence: authoritativeOutcome.evidence,
+          ...(modelSession === undefined ? {} : { modelSession }),
         });
       }
     }
@@ -1822,6 +1870,114 @@ async function reconcileOpenEffects(
   return state;
 }
 
+function isModelBackedNode(node: CompiledNode): boolean {
+  return node.type === "agent" || (node.type === "verifier" && node.verifier.kind === "model");
+}
+
+async function prepareModelSessionAttempt(
+  store: ModelSessionStore | undefined,
+  identity: ModelSessionIdentity,
+  node: CompiledNode,
+  attempt: number,
+  now: () => Date,
+  signal?: AbortSignal,
+): Promise<ModelSessionJournal | undefined> {
+  if (store === undefined) return undefined;
+  let state =
+    attempt === 1
+      ? await store.create(identity, now().toISOString(), signal)
+      : await store.claim(identity, signal);
+  const journal = createModelSessionJournal(store, identity, state, now, signal);
+  try {
+    state = await journal.append({ type: "attempt_started", attempt });
+    if (node.type === "agent" && !state.primaryPromptCommitted) {
+      await journal.append({
+        type: "user_message_committed",
+        attempt,
+        origin: "primary_prompt",
+        text: node.agent.prompt,
+      });
+    }
+    return journal;
+  } catch (error) {
+    await store.release(identity).catch(() => undefined);
+    throw error;
+  }
+}
+
+function createModelSessionJournal(
+  store: ModelSessionStore,
+  identity: ModelSessionIdentity,
+  initialState: ModelSessionState,
+  now: () => Date,
+  signal?: AbortSignal,
+): ModelSessionJournal {
+  let state = initialState;
+  return {
+    get state() {
+      return state;
+    },
+    async read() {
+      state = await store.read(identity);
+      return state;
+    },
+    async append(input: ModelSessionEventInput) {
+      state = await store.append(identity, input, now().toISOString(), signal);
+      return state;
+    },
+  };
+}
+
+async function settleModelSessionAttempt(
+  store: ModelSessionStore | undefined,
+  journal: ModelSessionJournal,
+  attempt: number,
+  outcome: NodeExecutionOutcome,
+): Promise<ReturnType<typeof modelSessionSummary>> {
+  if (store === undefined) {
+    throw new Error("model session journal requires its originating store");
+  }
+  const identity = modelSessionIdentity(journal.state);
+  try {
+    if (journal.state.activeRequest !== null) {
+      const active = journal.state.activeRequest;
+      await journal.append({
+        type: "model_request_settled",
+        attempt: active.attempt,
+        turn: active.turn,
+        request: active.request,
+        outcome:
+          outcome.status === "failed" &&
+          (outcome.error.code.includes("output") || outcome.error.code.includes("limit"))
+            ? "output_limited"
+            : "failed",
+      });
+    }
+    const state = await journal.append({
+      type: "attempt_settled",
+      attempt,
+      outcome: modelSessionAttemptOutcome(outcome),
+    });
+    return modelSessionSummary(state);
+  } finally {
+    await store.release(identity);
+  }
+}
+
+function modelSessionAttemptOutcome(
+  outcome: NodeExecutionOutcome,
+): "succeeded" | "failed" | "aborted" | "timed_out" {
+  if (outcome.status === "succeeded") return "succeeded";
+  const code = outcome.error.code.toLowerCase();
+  if (code.includes("timeout") || code.includes("timed_out")) return "timed_out";
+  if (code.includes("abort") || code.includes("cancel")) return "aborted";
+  return "failed";
+}
+
+function modelSessionIdentity(state: ModelSessionState): ModelSessionIdentity {
+  return { runId: state.runId, workflowId: state.workflowId, nodeId: state.nodeId };
+}
+
 async function disposeProofSafeInterruptedAttempt(
   workflow: CompiledWorkflow,
   options: ResumeWorkflowOptions,
@@ -1833,6 +1989,59 @@ async function disposeProofSafeInterruptedAttempt(
       continue;
     }
 
+    const compiledNode = workflow.nodes.find((candidate) => candidate.id === nodeId);
+    if (compiledNode === undefined) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" has no compiled node "${nodeId}"`,
+      );
+    }
+    let modelSession: ReturnType<typeof modelSessionSummary> | undefined;
+    if (node.modelSession !== null && isModelBackedNode(compiledNode)) {
+      if (options.modelSessionStore === undefined) {
+        throw new RunRecoveryError(
+          "recovery_retry_ineligible",
+          `run "${options.runId}" cannot recover model session for node "${nodeId}" attempt ${node.attempt}: model session store is unavailable`,
+        );
+      }
+      const identity = { runId: options.runId, workflowId: workflow.id, nodeId };
+      let sessionClaimed = false;
+      let sessionFailure: unknown;
+      try {
+        let session = await options.modelSessionStore.claim(identity, options.signal);
+        sessionClaimed = true;
+        const lastEvent = session.events.at(-1);
+        if (!(lastEvent?.type === "attempt_interrupted" && lastEvent.attempt === node.attempt)) {
+          session = await options.modelSessionStore.append(
+            identity,
+            {
+              type: "attempt_interrupted",
+              attempt: node.attempt,
+              reason: "process_interrupted",
+            },
+            now().toISOString(),
+            options.signal,
+          );
+        }
+        modelSession = modelSessionSummary(session);
+      } catch (error) {
+        sessionFailure = error;
+      }
+      if (sessionClaimed) {
+        try {
+          await options.modelSessionStore.release(identity);
+        } catch (error) {
+          sessionFailure ??= error;
+        }
+      }
+      if (sessionFailure !== undefined) {
+        throw new RunRecoveryError(
+          "recovery_retry_ineligible",
+          `run "${options.runId}" cannot recover model session for node "${nodeId}" attempt ${node.attempt}: ${boundedFailureMessage(sessionFailure instanceof Error ? sessionFailure.message : String(sessionFailure))}`,
+        );
+      }
+    }
+
     const event: RunEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
       type: "node_attempt_interrupted",
@@ -1841,6 +2050,7 @@ async function disposeProofSafeInterruptedAttempt(
       reason: "process_interrupted",
       disposition: "fresh_retry",
       resourceAccounting: "incomplete",
+      ...(modelSession === undefined ? {} : { modelSession }),
     };
     let nextState: RunState;
     try {
@@ -3763,6 +3973,9 @@ async function executeChildNode(
       ? {}
       : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
     ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
+    ...(options.modelSessionStore === undefined
+      ? {}
+      : { modelSessionStore: options.modelSessionStore }),
     [supplementalMemoryChildPath]: [...(options[supplementalMemoryChildPath] ?? []), node.id],
   });
   return await settleChildState(node, childState, options.workspaceIsolator);
