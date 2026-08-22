@@ -4,8 +4,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { CAPABILITY_PACKAGE_FAMILY_REFERENCES } from "../../../src/domain/capability/capability-bundles.js";
+import { EVALUATION_ADAPTER_REFERENCES } from "../../../src/domain/evaluation/plan.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
+import { AGENT_TOOL_NAMES } from "../../../src/domain/workflow/types.js";
 import { createWorkspaceAgentTools } from "../../../src/infrastructure/pi/workspace-agent-tools.js";
+import { PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR } from "../../../src/infrastructure/runtime/production-node-executor.js";
 import { createProductionPublicCapabilityCatalog } from "../../../src/infrastructure/runtime/production-public-capability-reference.js";
 
 const temporaryDirectories: string[] = [];
@@ -45,6 +49,15 @@ describe("production workspace-agent tool reference", () => {
     expect(catalog.executionSeams).toEqual([
       expect.objectContaining({ id: "model-provider", openness: "open", implementation: "pi" }),
     ]);
+  });
+
+  it("draws closed identifiers and the open provider seam from production registries", () => {
+    const catalog = createProductionPublicCapabilityCatalog();
+
+    expect(catalog.tools.map((tool) => tool.selector).sort()).toEqual([...AGENT_TOOL_NAMES].sort());
+    expect(catalog.capabilityFamilies).toEqual(CAPABILITY_PACKAGE_FAMILY_REFERENCES);
+    expect(catalog.evaluationAdapters).toEqual(EVALUATION_ADAPTER_REFERENCES);
+    expect(catalog.executionSeams).toEqual([PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR.reference]);
   });
 
   it("matches the final production-composed built-in tool surface", async () => {

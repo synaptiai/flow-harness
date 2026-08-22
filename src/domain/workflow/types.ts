@@ -19,7 +19,15 @@ export const MAX_CHILD_WORKFLOW_SOURCE_BYTES = 1_048_576;
 export const MAX_CHILD_WORKFLOW_DEPTH = 4;
 export const MAX_RUN_TREE_NODES = 1_024;
 
-export type AgentToolName = "read" | "ls" | "edit" | "exec" | "semantic" | "artifact";
+export const AGENT_TOOL_NAMES = Object.freeze([
+  "read",
+  "ls",
+  "edit",
+  "exec",
+  "semantic",
+  "artifact",
+] as const);
+export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
 export type WorkProfile = (typeof WORK_PROFILES)[number];
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type EvidenceSourceField =
