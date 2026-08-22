@@ -117,6 +117,13 @@ describe("child workflow execution", () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();
     const source = memoryParentWorkflow();
+    const nestedMemory = "PRIVATE_CHILD_MEMORY_CHECK_THE_NESTED_FIXTURE";
+    const nestedContext = "Use the child fixture only after its checksum is verified.";
+    const nestedTarget = {
+      workflowId: "memory-parent-workflow",
+      childPath: ["delegate"],
+      agentNodeId: "inspect",
+    };
     const state = createEffectiveHarnessState({
       scopeDigest: "a".repeat(64),
       workflowSource: source,
@@ -124,12 +131,27 @@ describe("child workflow execution", () => {
       supplementalMemory: [
         {
           id: "nested-fixture",
-          target: {
-            workflowId: "memory-parent-workflow",
-            childPath: ["delegate"],
-            agentNodeId: "inspect",
-          },
-          content: "PRIVATE_CHILD_MEMORY_CHECK_THE_NESTED_FIXTURE",
+          target: nestedTarget,
+          content: nestedMemory,
+        },
+        { id: "nested-context", target: nestedTarget, content: nestedContext },
+      ],
+      supplementalMemoryRelationships: [
+        {
+          id: "nested-support",
+          target: nestedTarget,
+          predicate: "supports",
+          from: { entryId: "nested-fixture", entrySha256: sha256(nestedMemory) },
+          to: { entryId: "nested-context", entrySha256: sha256(nestedContext) },
+          evidence: [
+            {
+              runId: "private-child-proof-run",
+              nodeId: "inspect",
+              attempt: 1,
+              sequence: 2,
+              eventDigest: "d".repeat(64),
+            },
+          ],
         },
       ],
     });
@@ -180,6 +202,8 @@ describe("child workflow execution", () => {
     expect(observed.get("root-check")).toBeUndefined();
     expect(observed.get("inspect")).toContain("PRIVATE_CHILD_MEMORY_CHECK_THE_NESTED_FIXTURE");
     expect(observed.get("inspect")).toContain('<entry id="nested-fixture"');
+    expect(observed.get("inspect")).toContain('predicate="supports"');
+    expect(observed.get("inspect")).not.toContain("private-child-proof-run");
   });
 
   it("runs a package-selected child through the ordinary isolated child lifecycle", async () => {

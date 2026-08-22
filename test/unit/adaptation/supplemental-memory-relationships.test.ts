@@ -6,6 +6,7 @@ import {
   MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_DEGREE,
   MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_EVIDENCE,
   MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_EVIDENCE_TOTAL,
+  MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_PROMPT_BYTES,
   parseSupplementalMemoryRelationshipState,
   renderSupplementalMemoryRelationshipBlock,
   type SupplementalMemoryRelationshipError,
@@ -79,6 +80,12 @@ describe("supplemental-memory relationship state", () => {
     expect(rendered).toContain('predicate="supports"');
     expect(rendered).not.toContain("proof-run");
     expect(rendered).not.toContain("PRIVATE");
+    expect(Buffer.byteLength(rendered ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_PROMPT_BYTES,
+    );
+    expect(renderSupplementalMemoryRelationshipBlock(state, entries[2]?.target ?? target)).toBe(
+      undefined,
+    );
   });
 
   it("rejects self-links, duplicate claims, stale endpoints, and cross-target endpoints", () => {
@@ -365,6 +372,48 @@ describe("supplemental-memory relationship state", () => {
         entries,
       ),
     ).toThrowError(
+      expect.objectContaining<Partial<SupplementalMemoryRelationshipError>>({
+        code: "limit_exceeded",
+      }),
+    );
+  });
+
+  it("rejects relationship metadata whose target prompt exceeds the byte budget", () => {
+    const workflow = workflowWithAgents(["implement"]);
+    const target = {
+      workflowId: workflow.id,
+      childPath: [] as string[],
+      agentNodeId: "implement",
+    };
+    const entries = createSupplementalMemoryEntries(
+      Array.from({ length: 16 }, (_, index) => ({
+        id: `fact-${index.toString().padStart(2, "0")}-${"e".repeat(80)}`,
+        target,
+        content: `Fact ${index}.`,
+      })),
+      workflow,
+    );
+    const relationships = Array.from({ length: 16 }, (_, index) =>
+      [1, 2].map((distance, offset) => {
+        const from = entries[index];
+        const to = entries[(index + distance) % entries.length];
+        if (from === undefined || to === undefined) throw new Error("fixture");
+        return {
+          ...relationship(
+            `edge-${(index * 2 + offset).toString().padStart(2, "0")}-${"r".repeat(80)}`,
+            "supports",
+            from.id,
+            from.sha256,
+            to.id,
+            to.sha256,
+          ),
+          target,
+        };
+      }),
+    ).flat();
+
+    expect(relationships).toHaveLength(MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIPS);
+    expect(() => createSupplementalMemoryRelationshipState(relationships, entries)).toThrowError(
       expect.objectContaining<Partial<SupplementalMemoryRelationshipError>>({
         code: "limit_exceeded",
       }),

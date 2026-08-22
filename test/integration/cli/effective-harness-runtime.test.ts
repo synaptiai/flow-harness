@@ -760,6 +760,61 @@ describe("effective harness runtime CLI", () => {
       supplementalMemoryGenerationEvidenceProvenance,
       supplementalMemoryRelationshipEvidenceRunId,
     ]);
+
+    const rollbackPreviewOutput = captureIo();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          artifact.workflowId,
+          "--to",
+          `state:${artifact.baselineState.stateDigest}`,
+          "--actor",
+          "operator:test",
+          "--dry-run",
+        ],
+        rollbackPreviewOutput.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+    ).toBe(0);
+    const rollbackPreview = JSON.parse(rollbackPreviewOutput.stdout.join("\n"));
+    const rollbackOutput = captureIo();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          artifact.workflowId,
+          "--to",
+          `state:${artifact.baselineState.stateDigest}`,
+          "--actor",
+          "operator:test",
+          "--expected-digest",
+          rollbackPreview.proposal.proposalDigest,
+        ],
+        rollbackOutput.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(rollbackOutput.stdout.join("\n"))).toMatchObject({
+      status: "rolled_back",
+      head: { stateDigest: artifact.baselineState.stateDigest },
+    });
+    const rolledBackInspection = captureIo();
+    expect(
+      await main(["activation", "inspect", artifact.workflowId], rolledBackInspection.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+    ).toBe(0);
+    expect(
+      JSON.parse(rolledBackInspection.stdout.join("\n")).effectiveHarness.active
+        .supplementalMemoryRelationships,
+    ).toBeUndefined();
+    for (const output of [rollbackPreviewOutput, rollbackOutput, rolledBackInspection]) {
+      expectContentFree(output, [privateMemory, supplementalMemoryRelationshipEvidenceRunId]);
+    }
   });
 
   it("resumes from durable effective authority after the live store is removed", async () => {

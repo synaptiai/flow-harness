@@ -5,6 +5,8 @@ import {
   createEffectiveHarnessState,
   effectiveHarnessWorkflowSource,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
+import { supplementalMemoryContent } from "../../../src/domain/adaptation/supplemental-memory.js";
+import { MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES } from "../../../src/domain/adaptation/supplemental-memory-relationships.js";
 import {
   assertSupplementalMemoryCandidateSurface,
   MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_BYTES,
@@ -586,6 +588,37 @@ describe("supplemental-memory candidates", () => {
     );
   });
 
+  it("accepts exactly eight relationship changes and rejects nine", () => {
+    const baseline = baselineState();
+    const removals = Array.from(
+      { length: MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES },
+      (_, index) => ({
+        id: `removed-${index}`,
+        beforeDigest: index.toString(16).padStart(64, "0"),
+      }),
+    );
+    const exact = JSON.stringify({
+      ...addDocument(baseline),
+      relationships: { remove: removals, add: [] },
+    });
+
+    expect(parseSupplementalMemoryCandidateText(exact).relationships?.remove).toHaveLength(
+      MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES,
+    );
+    const overflow = JSON.stringify({
+      ...addDocument(baseline),
+      relationships: {
+        remove: [...removals, { id: "removed-overflow", beforeDigest: "f".repeat(64) }],
+        add: [],
+      },
+    });
+    expect(() => parseSupplementalMemoryCandidateText(overflow)).toThrowError(
+      expect.objectContaining<Partial<SupplementalMemoryCandidateError>>({
+        code: "invalid_schema",
+      }),
+    );
+  });
+
   it("removes one exact entry and restores the memory-free state identity", () => {
     const memoryFree = baselineState();
     const baseline = stateWithMemory(memoryContent);
@@ -834,6 +867,99 @@ describe("supplemental-memory candidates", () => {
       }),
     );
   });
+
+  it("rejects a redigested relationship change that is not incident to the candidate entry", () => {
+    const baseline = stateWithRelatedMemory();
+    const prior = baseline.supplementalMemory?.find((entry) => entry.id === "reviewed-fixture");
+    const other = baseline.supplementalMemory?.find((entry) => entry.id === "other-fact");
+    const third = baseline.supplementalMemory?.find((entry) => entry.id === "third-fact");
+    const existing = baseline.supplementalMemoryRelationships?.relationships[0];
+    if (
+      prior === undefined ||
+      other === undefined ||
+      third === undefined ||
+      existing === undefined
+    ) {
+      throw new Error("relationship surface fixture is incomplete");
+    }
+    const replacement = "Use the replacement relationship fixture.";
+    const locator = { runId: "proof-run", nodeId: "implement", attempt: 2 };
+    const reference = { ...locator, sequence: 9, eventDigest: "9".repeat(64) };
+    const sourceText = JSON.stringify({
+      ...addDocument(baseline),
+      change: { kind: "replace", beforeSha256: prior.sha256, value: replacement },
+      relationships: {
+        remove: [{ id: existing.id, beforeDigest: existing.digest }],
+        add: [
+          {
+            id: existing.id,
+            predicate: "supports",
+            from: { entryId: prior.id, entrySha256: sha256(replacement) },
+            to: { entryId: other.id, entrySha256: other.sha256 },
+            evidence: [locator],
+          },
+        ],
+      },
+    });
+    const projected = projectSupplementalMemoryCandidate({
+      manifestProvenance: "relationship-surface.candidate.json",
+      sourceSha256: sha256(sourceText),
+      source: parseSupplementalMemoryCandidateText(sourceText),
+      baseline,
+      relationshipEvidence: [reference],
+    });
+    const projectedRelationships =
+      projected.state.supplementalMemoryRelationships?.relationships ?? [];
+    const mutated = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: effectiveHarnessWorkflowSource(projected.state),
+      packages: projected.state.packages,
+      supplementalMemory:
+        projected.state.supplementalMemory?.map((entry) => ({
+          id: entry.id,
+          target: entry.target,
+          content: supplementalMemoryContent(entry),
+        })) ?? [],
+      supplementalMemoryRelationships: [
+        ...projectedRelationships.map(({ digest: _digest, ...relationship }) => relationship),
+        {
+          id: "unrelated-link",
+          target: other.target,
+          predicate: "supports",
+          from: { entryId: other.id, entrySha256: other.sha256 },
+          to: { entryId: third.id, entrySha256: third.sha256 },
+          evidence: [reference],
+        },
+      ],
+    });
+    const identityValue = {
+      ...structuredClone(projected.identity),
+      projectedStateDigest: mutated.stateDigest,
+      relationships: {
+        ...projected.identity.relationships,
+        projectedAssessmentDigest:
+          mutated.supplementalMemoryRelationships?.assessment.digest ?? null,
+        added:
+          mutated.supplementalMemoryRelationships?.relationships.map(({ id, digest }) => ({
+            id,
+            digest,
+          })) ?? [],
+      },
+    };
+    const { candidateDigest: _candidateDigest, ...withoutDigest } = identityValue;
+    const redigested = parseSupplementalMemoryCandidateIdentity({
+      ...identityValue,
+      candidateDigest: sha256(canonicalize(withoutDigest)),
+    });
+
+    expect(() =>
+      assertSupplementalMemoryCandidateSurface(redigested, baseline, mutated),
+    ).toThrowError(
+      expect.objectContaining<Partial<SupplementalMemoryCandidateError>>({
+        code: "invalid_projection",
+      }),
+    );
+  });
 });
 
 function addDocument(baseline: ReturnType<typeof baselineState>, value = memoryContent) {
@@ -884,6 +1010,7 @@ function stateWithRelatedMemory() {
     supplementalMemory: [
       { id: "reviewed-fixture", target, content: memoryContent },
       { id: "other-fact", target, content: otherContent },
+      { id: "third-fact", target, content: "Retain this third reviewed fact." },
     ],
     supplementalMemoryRelationships: [
       {

@@ -947,6 +947,16 @@ function assertSupplementalMemoryRelationshipSurface(
   }
   const before = beforeState?.relationships ?? [];
   const after = afterState?.relationships ?? [];
+  const beforeEntry = findEntry(baseline.supplementalMemory ?? [], target, identity.scope.entryId);
+  const afterEntry = findEntry(projected.supplementalMemory ?? [], target, identity.scope.entryId);
+  const beforeEndpoint =
+    beforeEntry === undefined
+      ? undefined
+      : { entryId: beforeEntry.id, entrySha256: beforeEntry.sha256 };
+  const afterEndpoint =
+    afterEntry === undefined
+      ? undefined
+      : { entryId: afterEntry.id, entrySha256: afterEntry.sha256 };
   const removed = before.filter(
     (relationship) => !after.some((item) => item.digest === relationship.digest),
   );
@@ -962,7 +972,23 @@ function assertSupplementalMemoryRelationshipSurface(
   if (
     !isDeepStrictEqual(identity.relationships.removed, expectedRemoved) ||
     !isDeepStrictEqual(identity.relationships.added, expectedAdded) ||
-    [...removed, ...added].some((relationship) => !sameTarget(relationship.target, target))
+    [...removed, ...added].some((relationship) => !sameTarget(relationship.target, target)) ||
+    removed.some(
+      (relationship) =>
+        beforeEndpoint === undefined ||
+        (!sameEndpoint(relationship.from, beforeEndpoint) &&
+          !sameEndpoint(relationship.to, beforeEndpoint)),
+    ) ||
+    added.some(
+      (relationship) =>
+        afterEndpoint === undefined ||
+        (!sameEndpoint(relationship.from, afterEndpoint) &&
+          !sameEndpoint(relationship.to, afterEndpoint)) ||
+        (relationship.predicate === "supersedes" &&
+          (beforeEndpoint === undefined ||
+            !sameEndpoint(relationship.from, afterEndpoint) ||
+            !sameEndpoint(relationship.to, beforeEndpoint))),
+    )
   ) {
     throw new SupplementalMemoryCandidateError(
       "invalid_projection",
