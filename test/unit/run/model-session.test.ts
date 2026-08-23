@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  createPhaseRoutingDecision,
+  createPhaseRoutingProfile,
+} from "../../../src/domain/adaptation/phase-routing-candidate.js";
+import {
   calculatePortableHistoryIdentity,
   compareModelRequestIdentity,
   createModelSession,
@@ -290,6 +294,53 @@ describe("model session record", () => {
 
     expect(changes).toEqual(["provider", "model", "system_instructions", "tool_catalog"]);
     expect(JSON.stringify(changes)).not.toContain("private");
+  });
+
+  it("binds an exact phase-routing decision into request identity drift checks", () => {
+    const expected = requestIdentity();
+    const actual: ModelRequestIdentity = {
+      ...expected,
+      routing: createPhaseRoutingDecision({
+        profile: phaseRoutingProfile(),
+        target: { workflowId: "workflow-1", childPath: [], nodeId: "analyze" },
+        route: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" },
+      }),
+    };
+
+    expect(compareModelRequestIdentity(expected, actual)).toEqual(["routing"]);
+  });
+
+  it("rejects non-canonical phase-routing evidence in a request record", () => {
+    let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+    state = append(state, { type: "attempt_started", attempt: 1 });
+    state = append(state, {
+      type: "user_message_committed",
+      attempt: 1,
+      origin: "primary_prompt",
+      text: "Inspect.",
+    });
+    const routing = createPhaseRoutingDecision({
+      profile: phaseRoutingProfile(),
+      target: { workflowId: "workflow-1", childPath: [], nodeId: "analyze" },
+      route: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" },
+    });
+
+    expect(() =>
+      createModelSessionEvent(
+        state,
+        {
+          type: "model_request_prepared",
+          attempt: 1,
+          turn: 1,
+          request: 1,
+          identity: {
+            ...requestIdentity(state),
+            routing: { ...routing, decisionDigest: "f".repeat(64) },
+          },
+        },
+        "2026-08-22T00:00:01.000Z",
+      ),
+    ).toThrow(/closed session event schema/i);
   });
 
   it("rejects a request identity that does not bind the committed portable history", () => {
@@ -618,6 +669,19 @@ function requestIdentity(state?: ModelSessionState): ModelRequestIdentity {
     turn: 1,
     request: 1,
   };
+}
+
+function phaseRoutingProfile() {
+  const assignment = {
+    phase: "executor" as const,
+    target: { workflowId: "workflow-1", childPath: [] as string[], nodeId: "analyze" },
+    route: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" as const },
+  };
+  return createPhaseRoutingProfile({
+    selectionRule: "exact-target-v1" as const,
+    fallback: "deny" as const,
+    assignments: [assignment],
+  });
 }
 
 function sessionWithTwoSettledRequests(firstToolResultIsError = false): ModelSessionState {

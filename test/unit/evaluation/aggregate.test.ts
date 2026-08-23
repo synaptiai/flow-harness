@@ -602,6 +602,129 @@ describe("evaluation aggregation", () => {
       aggregateEvaluation(input, chain(schedule.map((item) => qualificationTrial(item)))),
     ).toThrow(/contradicts.*admitted ACP identity/i);
   });
+
+  it("qualifies complete phase routing when quality is non-inferior and efficiency clears both thresholds", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["task-a"],
+      ["baseline", "candidate"],
+      [11, 22],
+    );
+    const records = chain(
+      schedule.map((item) =>
+        phaseRoutingTrial(item, {
+          costUsdMicros: item.profileId === "baseline" ? 100 : 80,
+          latencyMs: item.profileId === "baseline" ? 1_000 : 700,
+        }),
+      ),
+    );
+
+    const report = aggregateEvaluation(phaseRoutingReportInput(schedule), records);
+
+    expect(report.qualification).toMatchObject({
+      purpose: "phase-routing-v1",
+      verdict: "qualified",
+      requiredPairs: 2,
+      scheduledPairs: 2,
+      completePairs: 2,
+      comparablePairs: 2,
+      quality: {
+        baselineVerifiedSuccessRate: 1,
+        candidateVerifiedSuccessRate: 1,
+        allowedRegression: 0,
+        nonInferior: true,
+      },
+      efficiency: {
+        cost: { baselineTotal: 200, candidateTotal: 160, reductionRate: 0.2, passes: true },
+        latency: {
+          baselineTotal: 2_000,
+          candidateTotal: 1_400,
+          reductionRate: 0.3,
+          passes: true,
+        },
+      },
+      safety: { falseCompletionRate: 0, policyViolations: 0, passes: true },
+      limitations: [],
+    });
+
+    expect(() =>
+      aggregateEvaluation(
+        {
+          ...phaseRoutingReportInput(schedule),
+          comparison: {
+            ...phaseRoutingReportInput(schedule).comparison,
+            minimumCostReductionRate: 0,
+          },
+        },
+        records,
+      ),
+    ).toThrow(/valid cost and latency thresholds/i);
+  });
+
+  it.each([
+    {
+      name: "incomplete per-call cost",
+      mutate: { incompleteCost: true },
+      verdict: "insufficient_evidence",
+      limitation: /cost/i,
+    },
+    {
+      name: "environment mismatch",
+      mutate: { environmentMismatch: true },
+      verdict: "insufficient_evidence",
+      limitation: /environment/i,
+    },
+    {
+      name: "quality regression",
+      mutate: { rejectedCandidate: true },
+      verdict: "not_qualified",
+      limitation: /quality/i,
+    },
+    {
+      name: "insufficient cost improvement",
+      mutate: { candidateCostUsdMicros: 95 },
+      verdict: "not_qualified",
+      limitation: /cost/i,
+    },
+  ])(
+    "reports phase-routing $name without inventing evidence",
+    ({ mutate, verdict, limitation }) => {
+      const schedule = createEvaluationSchedule(
+        planDigest,
+        ["task-a"],
+        ["baseline", "candidate"],
+        [11, 22],
+      );
+      const records = chain(
+        schedule.map((item, index) =>
+          phaseRoutingTrial(
+            item,
+            {
+              costUsdMicros:
+                item.profileId === "baseline"
+                  ? 100
+                  : "candidateCostUsdMicros" in mutate
+                    ? mutate.candidateCostUsdMicros
+                    : 80,
+              latencyMs: item.profileId === "baseline" ? 1_000 : 700,
+              ...(mutate.incompleteCost === true && index === 0 ? { incompleteCost: true } : {}),
+              ...(mutate.rejectedCandidate === true && item.profileId === "candidate"
+                ? { rejected: true }
+                : {}),
+            },
+            mutate.environmentMismatch === true && index === 1 ? { architecture: "arm64" } : {},
+          ),
+        ),
+      );
+
+      const report = aggregateEvaluation(phaseRoutingReportInput(schedule), records);
+
+      expect(report.qualification?.verdict).toBe(verdict);
+      expect(report.qualification?.limitations).toEqual(
+        expect.arrayContaining([expect.stringMatching(limitation)]),
+      );
+    },
+  );
 });
 
 function trial(
@@ -721,6 +844,58 @@ function qualificationTrial(
   });
 }
 
+function phaseRoutingTrial(
+  schedule: ReturnType<typeof createEvaluationSchedule>[number] | undefined,
+  options: {
+    readonly costUsdMicros: number;
+    readonly latencyMs: number;
+    readonly incompleteCost?: boolean;
+    readonly rejected?: boolean;
+  },
+  environment: Partial<EvaluationTrialRecord["environment"]> = {},
+): EvaluationTrialRecord {
+  if (schedule === undefined) throw new Error("test schedule is incomplete");
+  const baseline = schedule.profileId === "baseline";
+  const accepted = options.rejected !== true;
+  return createEvaluationTrialRecord({
+    schedule,
+    planDigest,
+    previousDigest: null,
+    startedAt: "2026-08-09T00:00:00.000Z",
+    completedAt: "2026-08-09T00:00:01.000Z",
+    environment: {
+      platform: "linux",
+      architecture: "x64",
+      nodeVersion: "27.0.0",
+      flowVersion: "0.1.0-alpha.1",
+      workspaceBackend: "reflink-copy-v1",
+      workspaceSnapshotDigest: "b".repeat(64),
+      ...environment,
+    },
+    harness: { outcome: "completed", runId: `run-${schedule.trialId.slice(6, 18)}`, reason: null },
+    verification: {
+      outcome: accepted ? "accepted" : "rejected",
+      verifierDigest: "c".repeat(64),
+      assertions: [{ kind: "exists", path: "RESULT.md", outcome: accepted }],
+    },
+    metrics: {
+      ...unavailableEvaluationMetrics(),
+      costUsdMicros: options.incompleteCost === true ? null : options.costUsdMicros,
+      wallTimeMs: options.latencyMs,
+      policyViolations: 0,
+    },
+    phaseRouting: {
+      version: 1,
+      profileDigest: (baseline ? "1" : "2").repeat(64),
+      requestCount: 1,
+      settledRequestCount: 1,
+      decisionDigests: [(baseline ? "3" : "4").repeat(64)],
+      costUsdMicros: options.incompleteCost === true ? null : options.costUsdMicros,
+      latencyMs: options.latencyMs,
+    },
+  });
+}
+
 function chain(records: readonly EvaluationTrialRecord[]): readonly EvaluationTrialRecord[] {
   let previousDigest: string | null = null;
   return records.map((record) => {
@@ -743,6 +918,7 @@ function chain(records: readonly EvaluationTrialRecord[]): readonly EvaluationTr
       verification: record.verification,
       metrics: record.metrics,
       ...(record.qualification === undefined ? {} : { qualification: record.qualification }),
+      ...(record.phaseRouting === undefined ? {} : { phaseRouting: record.phaseRouting }),
     });
     previousDigest = chained.recordDigest;
     return chained;
@@ -791,6 +967,22 @@ function qualificationReportInput(schedule: ReturnType<typeof createEvaluationSc
     profileAcpAgents: {
       baseline: { name: "baseline-agent", digest: "1".repeat(64) },
       candidate: { name: "candidate-agent", digest: "2".repeat(64) },
+    },
+  };
+}
+
+function phaseRoutingReportInput(schedule: ReturnType<typeof createEvaluationSchedule>) {
+  return {
+    ...reportInput(schedule),
+    purpose: "phase-routing-v1" as const,
+    profilePhaseRoutingDigests: {
+      baseline: "1".repeat(64),
+      candidate: "2".repeat(64),
+    },
+    comparison: {
+      ...reportInput(schedule).comparison,
+      minimumCostReductionRate: 0.1,
+      minimumLatencyReductionRate: 0.1,
     },
   };
 }

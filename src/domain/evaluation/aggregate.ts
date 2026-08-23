@@ -10,7 +10,7 @@ const BOOTSTRAP_SAMPLES = 2_000;
 
 export interface EvaluationReportInput {
   readonly planDigest: string;
-  readonly purpose?: "acp-interoperability-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | undefined;
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly profileIds: readonly [string, string];
   readonly profileAdapters: Readonly<Record<string, EvaluationProfileIdentity["adapter"]>>;
@@ -19,6 +19,7 @@ export interface EvaluationReportInput {
   readonly profileAcpAgents?: Readonly<
     Record<string, { readonly name: string; readonly digest: string }>
   >;
+  readonly profilePhaseRoutingDigests?: Readonly<Record<string, string>> | undefined;
   readonly tasks: readonly {
     readonly id: string;
     readonly partition: "tuning" | "regression" | "holdout";
@@ -34,6 +35,8 @@ export interface EvaluationReportInput {
     readonly maxFalseCompletionRate: number;
     readonly maxPolicyViolations: number;
     readonly maxVerifiedSuccessRegression: number;
+    readonly minimumCostReductionRate?: number | undefined;
+    readonly minimumLatencyReductionRate?: number | undefined;
   };
 }
 
@@ -97,7 +100,42 @@ export interface EvaluationReport {
       readonly verifiedSuccessRegression: boolean | null;
     };
   };
-  readonly qualification?: EvaluationAcpQualificationReport;
+  readonly qualification?:
+    | EvaluationAcpQualificationReport
+    | EvaluationPhaseRoutingQualificationReport;
+}
+
+export interface EvaluationPhaseRoutingQualificationReport {
+  readonly purpose: "phase-routing-v1";
+  readonly verdict: "qualified" | "not_qualified" | "insufficient_evidence";
+  readonly requiredPairs: number;
+  readonly scheduledPairs: number;
+  readonly completePairs: number;
+  readonly comparablePairs: number;
+  readonly quality: {
+    readonly baselineVerifiedSuccessRate: number | null;
+    readonly candidateVerifiedSuccessRate: number | null;
+    readonly allowedRegression: number;
+    readonly nonInferior: boolean | null;
+  };
+  readonly efficiency: {
+    readonly cost: EvaluationPhaseRoutingEfficiencyReport;
+    readonly latency: EvaluationPhaseRoutingEfficiencyReport;
+  };
+  readonly safety: {
+    readonly falseCompletionRate: number | null;
+    readonly policyViolations: number | null;
+    readonly passes: boolean | null;
+  };
+  readonly limitations: readonly string[];
+}
+
+export interface EvaluationPhaseRoutingEfficiencyReport {
+  readonly baselineTotal: number | null;
+  readonly candidateTotal: number | null;
+  readonly reductionRate: number | null;
+  readonly minimumReductionRate: number;
+  readonly passes: boolean | null;
 }
 
 export interface EvaluationAcpQualificationReport {
@@ -178,7 +216,9 @@ export function aggregateEvaluation(
     comparison: comparisonReport(input, records, candidate),
     ...(input.purpose === "acp-interoperability-v1"
       ? { qualification: acpQualificationReport(input, records) }
-      : {}),
+      : input.purpose === "phase-routing-v1"
+        ? { qualification: phaseRoutingQualificationReport(input, records) }
+        : {}),
   });
 }
 
@@ -266,6 +306,27 @@ function validateQualificationRecordIdentity(
   record: EvaluationTrialRecord,
   index: number,
 ): void {
+  if (input.purpose === "phase-routing-v1") {
+    if (record.qualification !== undefined) {
+      throw new EvaluationAggregationError(
+        `evaluation trial record ${index + 1} contains ACP evidence for phase routing`,
+      );
+    }
+    const observation = record.phaseRouting;
+    if (observation === undefined) return;
+    const expectedDigest = input.profilePhaseRoutingDigests?.[record.profileId];
+    if (expectedDigest === undefined || observation.profileDigest !== expectedDigest) {
+      throw new EvaluationAggregationError(
+        `evaluation trial record ${index + 1} contradicts its admitted phase-routing profile`,
+      );
+    }
+    return;
+  }
+  if (record.phaseRouting !== undefined) {
+    throw new EvaluationAggregationError(
+      `evaluation trial record ${index + 1} contains undeclared phase-routing evidence`,
+    );
+  }
   if (input.purpose !== "acp-interoperability-v1") {
     if (record.qualification !== undefined) {
       throw new EvaluationAggregationError(
@@ -292,6 +353,231 @@ function validateQualificationRecordIdentity(
       `evaluation trial record ${index + 1} contradicts its admitted ACP identity`,
     );
   }
+}
+
+function phaseRoutingQualificationReport(
+  input: EvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+): EvaluationPhaseRoutingQualificationReport {
+  const minimumCostReductionRate = input.comparison.minimumCostReductionRate;
+  const minimumLatencyReductionRate = input.comparison.minimumLatencyReductionRate;
+  if (
+    minimumCostReductionRate === undefined ||
+    minimumLatencyReductionRate === undefined ||
+    minimumCostReductionRate <= 0 ||
+    minimumCostReductionRate > 1 ||
+    minimumLatencyReductionRate <= 0 ||
+    minimumLatencyReductionRate > 1
+  ) {
+    throw new EvaluationAggregationError(
+      "phase-routing qualification requires valid cost and latency thresholds",
+    );
+  }
+  for (const profileId of input.profileIds) {
+    if (!/^[a-f0-9]{64}$/.test(input.profilePhaseRoutingDigests?.[profileId] ?? "")) {
+      throw new EvaluationAggregationError(
+        "phase-routing qualification requires exact profile digests",
+      );
+    }
+  }
+  const pairs = pairedSchedule(input);
+  const byTrialId = new Map(records.map((record) => [record.trialId, record]));
+  const complete = completePairRecords(pairs, byTrialId);
+  const comparable = complete.filter(({ baseline, candidate }) =>
+    sameEnvironment(baseline.environment, candidate.environment),
+  );
+  const pairedRecords = comparable.flatMap(({ baseline, candidate }) => [baseline, candidate]);
+  const baselineRecords = comparable.map((pair) => pair.baseline);
+  const candidateRecords = comparable.map((pair) => pair.candidate);
+  const accountingComplete = pairedRecords.every(
+    (record) =>
+      record.phaseRouting !== undefined &&
+      record.phaseRouting.requestCount === record.phaseRouting.settledRequestCount &&
+      record.phaseRouting.costUsdMicros !== null &&
+      record.phaseRouting.latencyMs !== null,
+  );
+  const qualityAvailable = comparable.length > 0;
+  const baselineVerifiedSuccessRate = qualityAvailable ? successRate(baselineRecords) : null;
+  const candidateVerifiedSuccessRate = qualityAvailable ? successRate(candidateRecords) : null;
+  const nonInferior =
+    baselineVerifiedSuccessRate === null || candidateVerifiedSuccessRate === null
+      ? null
+      : baselineVerifiedSuccessRate - candidateVerifiedSuccessRate <=
+        input.comparison.maxVerifiedSuccessRegression;
+  const cost = phaseEfficiency(
+    baselineRecords.map((record) => record.phaseRouting?.costUsdMicros ?? null),
+    candidateRecords.map((record) => record.phaseRouting?.costUsdMicros ?? null),
+    minimumCostReductionRate,
+  );
+  const latency = phaseEfficiency(
+    baselineRecords.map((record) => record.phaseRouting?.latencyMs ?? null),
+    candidateRecords.map((record) => record.phaseRouting?.latencyMs ?? null),
+    minimumLatencyReductionRate,
+  );
+  const policyValues = candidateRecords.map((record) => record.metrics.policyViolations);
+  const falseCompletionRate =
+    candidateRecords.length === 0
+      ? null
+      : candidateRecords.filter((record) => record.classification === "false_completion").length /
+        candidateRecords.length;
+  const policyViolations = policyValues.some((value) => value === null)
+    ? null
+    : safeMetricTotal(
+        policyValues.map((value) => value ?? 0),
+        "policy violation",
+      );
+  const safetyPasses =
+    falseCompletionRate === null || policyViolations === null
+      ? null
+      : falseCompletionRate <= input.comparison.maxFalseCompletionRate &&
+        policyViolations <= input.comparison.maxPolicyViolations;
+  const verifierErrors = pairedRecords.filter(
+    (record) => record.classification === "verifier_error",
+  ).length;
+  const zeroQualityEvidence =
+    baselineVerifiedSuccessRate === 0 && candidateVerifiedSuccessRate === 0;
+  const completeEvidence =
+    pairs.length >= input.comparison.minimumPairedTrials &&
+    complete.length === pairs.length &&
+    comparable.length === pairs.length &&
+    accountingComplete &&
+    verifierErrors === 0 &&
+    !zeroQualityEvidence &&
+    nonInferior !== null &&
+    cost.passes !== null &&
+    latency.passes !== null &&
+    safetyPasses !== null;
+  const failedGate =
+    nonInferior === false ||
+    cost.passes === false ||
+    latency.passes === false ||
+    safetyPasses === false;
+  const verdict = !completeEvidence
+    ? "insufficient_evidence"
+    : failedGate
+      ? "not_qualified"
+      : "qualified";
+  return Object.freeze({
+    purpose: "phase-routing-v1",
+    verdict,
+    requiredPairs: input.comparison.minimumPairedTrials,
+    scheduledPairs: pairs.length,
+    completePairs: complete.length,
+    comparablePairs: comparable.length,
+    quality: Object.freeze({
+      baselineVerifiedSuccessRate,
+      candidateVerifiedSuccessRate,
+      allowedRegression: input.comparison.maxVerifiedSuccessRegression,
+      nonInferior,
+    }),
+    efficiency: Object.freeze({ cost, latency }),
+    safety: Object.freeze({
+      falseCompletionRate,
+      policyViolations,
+      passes: safetyPasses,
+    }),
+    limitations: Object.freeze(
+      phaseRoutingLimitations({
+        input,
+        records,
+        pairs: pairs.length,
+        complete: complete.length,
+        comparable: comparable.length,
+        accountingComplete,
+        verifierErrors,
+        zeroQualityEvidence,
+        nonInferior,
+        cost,
+        latency,
+        safetyPasses,
+      }),
+    ),
+  });
+}
+
+function phaseEfficiency(
+  baseline: readonly (number | null)[],
+  candidate: readonly (number | null)[],
+  minimumReductionRate: number,
+): EvaluationPhaseRoutingEfficiencyReport {
+  const available =
+    baseline.length > 0 &&
+    baseline.length === candidate.length &&
+    baseline.every((value) => value !== null) &&
+    candidate.every((value) => value !== null);
+  if (!available) {
+    return Object.freeze({
+      baselineTotal: null,
+      candidateTotal: null,
+      reductionRate: null,
+      minimumReductionRate,
+      passes: null,
+    });
+  }
+  const baselineTotal = safeMetricTotal(baseline as readonly number[], "baseline efficiency");
+  const candidateTotal = safeMetricTotal(candidate as readonly number[], "candidate efficiency");
+  const reductionRate =
+    baselineTotal === 0
+      ? candidateTotal === 0
+        ? 0
+        : -1
+      : (baselineTotal - candidateTotal) / baselineTotal;
+  return Object.freeze({
+    baselineTotal,
+    candidateTotal,
+    reductionRate,
+    minimumReductionRate,
+    passes: reductionRate >= minimumReductionRate,
+  });
+}
+
+function phaseRoutingLimitations(input: {
+  readonly input: EvaluationReportInput;
+  readonly records: readonly EvaluationTrialRecord[];
+  readonly pairs: number;
+  readonly complete: number;
+  readonly comparable: number;
+  readonly accountingComplete: boolean;
+  readonly verifierErrors: number;
+  readonly zeroQualityEvidence: boolean;
+  readonly nonInferior: boolean | null;
+  readonly cost: EvaluationPhaseRoutingEfficiencyReport;
+  readonly latency: EvaluationPhaseRoutingEfficiencyReport;
+  readonly safetyPasses: boolean | null;
+}): string[] {
+  const limitations: string[] = [];
+  const missing = input.input.schedule.length - input.records.length;
+  if (missing > 0) limitations.push(`${missing} scheduled phase-routing trial(s) are missing.`);
+  if (input.complete < input.pairs) {
+    limitations.push(`${input.pairs - input.complete} scheduled pair(s) are incomplete.`);
+  }
+  if (input.comparable < input.complete) {
+    limitations.push(
+      `${input.complete - input.comparable} complete pair(s) have different environments.`,
+    );
+  }
+  if (!input.accountingComplete) {
+    limitations.push("Per-call route, cost, or latency accounting is incomplete.");
+  }
+  if (input.verifierErrors > 0) {
+    limitations.push(`${input.verifierErrors} trial(s) have verifier errors.`);
+  }
+  if (input.zeroQualityEvidence) {
+    limitations.push("Neither profile produced verified quality evidence.");
+  }
+  if (input.nonInferior === false) {
+    limitations.push("Candidate quality exceeds the allowed regression threshold.");
+  }
+  if (input.cost.passes === false) {
+    limitations.push("Candidate cost does not meet the declared reduction threshold.");
+  }
+  if (input.latency.passes === false) {
+    limitations.push("Candidate latency does not meet the declared reduction threshold.");
+  }
+  if (input.safetyPasses === false) {
+    limitations.push("Candidate safety evidence exceeds a declared threshold.");
+  }
+  return limitations;
 }
 
 function profileReport(

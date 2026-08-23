@@ -530,6 +530,19 @@ shared non-route controls. Runtime tests observe the selected route in attached 
 detached worker without live candidate sources. CLI tests cover offline inspection, export,
 activation, public-output privacy, and state-digest rollback.
 
+Phase-routing tests bind complete ordered `before` and `after` profiles to one root workflow and
+its embedded children. They cover the four closed phase labels, exact target coverage, unchanged
+route roles, packaged-child refusal, and denied fallback. They also cover deterministic projections,
+stable no-follow source admission, and direct-activation refusal.
+
+Runtime tests require one matching route decision before each provider request. They preserve that
+evidence through root, child, replay, and recovery paths.
+Evaluation tests require filesystem-verified holdouts, quality non-inferiority, complete cost and
+latency observations, explicit efficiency thresholds, and safety limits. Activation tests accept
+only the exact composed artifact with a complete `qualified` phase-routing report. They reject
+ordinary superiority, missing evidence, profile drift, opaque ACP routing, and provider-generated
+summary routing.
+
 Child-specialist tests bind one embedded child node and one child agent. They also bind the complete
 parent and child workflow identities and the immutable package-closure digest. The tests cover exact
 instructions and skill-selection bounds, no-op and multi-axis rejection, and undeclared skills.

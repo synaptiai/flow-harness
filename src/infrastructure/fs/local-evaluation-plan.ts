@@ -6,13 +6,19 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import type { ChildSpecialistCandidateIdentity } from "../../domain/adaptation/child-specialist-candidate.js";
-import type { EffectiveHarnessCandidateSurface } from "../../domain/adaptation/effective-harness-candidate.js";
+import {
+  type EffectiveHarnessCandidateArtifact,
+  type EffectiveHarnessCandidateSurface,
+  projectPhaseRoutingEvaluationState,
+} from "../../domain/adaptation/effective-harness-candidate.js";
 import {
   compileEffectiveHarnessState,
+  createEffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
   effectiveHarnessWorkflowSource,
 } from "../../domain/adaptation/effective-harness-state.js";
 import type { ModelRoutingCandidateIdentity } from "../../domain/adaptation/model-routing-candidate.js";
+import type { PhaseRoutingCandidateIdentity } from "../../domain/adaptation/phase-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import type { SupplementalMemoryCandidateIdentity } from "../../domain/adaptation/supplemental-memory-candidate.js";
 import type {
@@ -21,6 +27,7 @@ import type {
 } from "../../domain/capability/agent-skills.js";
 import {
   calculateCapabilitySnapshotDigest,
+  createEffectiveHarnessCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
 import { bindWorkflowCapabilities } from "../../domain/capability/workflow-capabilities.js";
@@ -124,6 +131,7 @@ export interface AdmittedFlowEvaluationProfile {
     | AgentSkillCandidateIdentity
     | AgentSkillPackageCandidateIdentity
     | ModelRoutingCandidateIdentity
+    | PhaseRoutingCandidateIdentity
     | ChildSpecialistCandidateIdentity
     | SupplementalMemoryCandidateIdentity
   ) & {
@@ -160,7 +168,7 @@ export type AdmittedEvaluationProfile =
 export interface AdmittedEvaluationPlan {
   readonly apiVersion: EvaluationPlanSource["apiVersion"];
   readonly id: string;
-  readonly purpose?: "acp-interoperability-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
   readonly planDigest: string;
   readonly sourcePath: string;
   readonly suite: {
@@ -185,6 +193,7 @@ export function projectEvaluationCandidateIdentity(
     | AgentSkillCandidateIdentity
     | AgentSkillPackageCandidateIdentity
     | ModelRoutingCandidateIdentity
+    | PhaseRoutingCandidateIdentity
     | ChildSpecialistCandidateIdentity
     | SupplementalMemoryCandidateIdentity;
 } {
@@ -381,7 +390,11 @@ export async function admitLocalEvaluationPlan(
         dependencies?.signal?.throwIfAborted();
         const artifact = admitted.artifact;
         const state =
-          profile.selection === "baseline" ? artifact.baselineState : artifact.candidateState;
+          artifact.surface === "phase-routing"
+            ? projectPhaseRoutingEvaluationState(artifact, profile.selection)
+            : profile.selection === "baseline"
+              ? artifact.baselineState
+              : artifact.candidateState;
         const workflowSource = effectiveHarnessWorkflowSource(state);
         const compiled = compileEffectiveHarnessState(state);
         assertEvaluationWorkflowControls(profile.id, compiled, source.controls);
@@ -408,9 +421,11 @@ export async function admitLocalEvaluationPlan(
                 }),
               }
             : {}),
-          ...(state.packages.length === 0
-            ? {}
-            : { capabilitySnapshot: capabilitySnapshotForState(state) }),
+          ...(artifact.surface === "phase-routing"
+            ? { capabilitySnapshot: phaseRoutingCapabilitySnapshot(artifact, state) }
+            : state.packages.length === 0
+              ? {}
+              : { capabilitySnapshot: capabilitySnapshotForState(state) }),
           effectiveHarness: Object.freeze({
             selection: profile.selection,
             artifactDigest: artifact.artifactDigest,
@@ -462,6 +477,12 @@ export async function admitLocalEvaluationPlan(
         throw new EvaluationAdmissionError(
           "invalid_workflow",
           `profile "${profile.id}" supplemental-memory candidate requires the effectiveCandidate field`,
+        );
+      }
+      if (admittedCandidate.kind === "phase-routing-candidate") {
+        throw new EvaluationAdmissionError(
+          "invalid_workflow",
+          `profile "${profile.id}" phase-routing candidate requires the effectiveCandidate field`,
         );
       }
       if (admittedCandidate.kind === "agent-skill-candidate") {
@@ -988,6 +1009,7 @@ function bindCandidateComparison(
       );
     }
     assertEffectiveModelRoutes(baseline, candidate, controls);
+    assertEffectivePhaseRoutingProfiles(baseline, candidate, controls);
     return [...profiles];
   }
   const candidateProfiles = profiles.filter(
@@ -1111,6 +1133,64 @@ function assertEffectiveModelRoutes(
   }
 }
 
+function assertEffectivePhaseRoutingProfiles(
+  baseline: AdmittedFlowEvaluationProfile,
+  candidate: AdmittedFlowEvaluationProfile,
+  controls: EvaluationPlanSource["controls"],
+): void {
+  const profiles = controls.phaseRoutingProfiles;
+  const surface = candidate.effectiveHarness?.surface;
+  if (surface !== "phase-routing") {
+    if (profiles !== undefined) {
+      throw new EvaluationAdmissionError(
+        "invalid_workflow",
+        "phase-routing controls require a phase-routing effective candidate",
+      );
+    }
+    return;
+  }
+  const identity = candidate.candidate;
+  if (
+    baseline.effectiveHarness?.surface !== "phase-routing" ||
+    identity === undefined ||
+    !("kind" in identity) ||
+    identity.kind !== "phase-routing-candidate" ||
+    profiles === undefined ||
+    profiles[0].profileId !== baseline.id ||
+    profiles[1].profileId !== candidate.id ||
+    profiles[0].profileDigest !== identity.profiles.before.profileDigest ||
+    profiles[1].profileDigest !== identity.profiles.after.profileDigest ||
+    baseline.effectiveHarnessState?.phaseRoutingProfile?.profileDigest !==
+      identity.profiles.before.profileDigest ||
+    candidate.effectiveHarnessState?.phaseRoutingProfile?.profileDigest !==
+      identity.profiles.after.profileDigest ||
+    baseline.capabilitySnapshot?.effectiveHarness?.phaseRoutingProfile?.profileDigest !==
+      identity.profiles.before.profileDigest ||
+    candidate.capabilitySnapshot?.effectiveHarness?.phaseRoutingProfile?.profileDigest !==
+      identity.profiles.after.profileDigest
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "phase-routing controls must bind the exact effective candidate profile identities",
+    );
+  }
+}
+
+function phaseRoutingCapabilitySnapshot(
+  artifact: EffectiveHarnessCandidateArtifact,
+  state: EffectiveHarnessState,
+): CapabilitySnapshot {
+  const head = createEffectiveHarnessHeadIdentity({
+    scopeDigest: state.scopeDigest,
+    workflowId: state.workflowId,
+    generation: artifact.baselineHead.generation + 1,
+    activationDigest: artifact.artifactDigest,
+    transitionDigest: artifact.candidate.candidateDigest,
+    stateDigest: state.stateDigest,
+  });
+  return createEffectiveHarnessCapabilitySnapshot(state, head);
+}
+
 function capabilitySnapshotForState(state: EffectiveHarnessState): CapabilitySnapshot {
   return validateCapabilitySnapshot({
     version: 1,
@@ -1137,6 +1217,7 @@ export function assertEvaluationWorkflowControls(
       `profile "${profileId}" requires at least one model-bearing node controlled by the evaluation plan`,
     );
   }
+  if (controls.phaseRoutingProfiles !== undefined) return;
   const configuredRoute = controls.modelRoutes?.find((item) => item.profileId === profileId);
   if (controls.modelRoutes !== undefined && configuredRoute === undefined) {
     throw new EvaluationAdmissionError(

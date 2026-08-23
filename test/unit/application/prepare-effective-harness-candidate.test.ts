@@ -44,6 +44,7 @@ import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
 import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
+import { phaseRoutingCandidateFixture } from "../../fixtures/phase-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const scopeDigest = "a".repeat(64);
@@ -289,6 +290,37 @@ describe("effective harness candidate projection", () => {
         model: { provider: "openai", id: "gpt-5.4", thinking: "high" },
       },
     });
+  });
+
+  it("stores an admitted phase profile with its projected effective workflow", () => {
+    const skill = agentSkillActivationInput("baseline");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: skill.workflowSource,
+      packages: [skill.skill],
+    });
+    const routing = phaseRoutingCandidateFixture(skill.workflowSource, "review");
+
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "phase-routing",
+        projection: routing,
+        baselineWorkflowSource: skill.workflowSource,
+      },
+    });
+
+    expect(projected.delta).toEqual({
+      surface: "phase-routing",
+      candidateKind: "phase-routing-candidate",
+      candidateDigest: routing.identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+      afterStateDigest: projected.state.stateDigest,
+    });
+    expect(baseline.phaseRoutingProfile).toBeUndefined();
+    expect(projected.state.phaseRoutingProfile).toEqual(routing.identity.profiles.after);
+    expect(projected.state.packages).toEqual(baseline.packages);
+    expect(effectiveHarnessWorkflowSource(projected.state)).toContain('"provider":"openai"');
   });
 
   it("retains a skill through prompt projection and the prompt through skill projection", () => {

@@ -11,6 +11,10 @@ import type {
 import { AgentCommandApprovalDeniedError } from "../../../../src/application/run-workflow.js";
 import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
 import {
+  createPhaseRoutingDecision,
+  createPhaseRoutingProfile,
+} from "../../../../src/domain/adaptation/phase-routing-candidate.js";
+import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../../src/domain/agent-command.js";
@@ -1062,6 +1066,35 @@ describe("PiAgentExecutor", () => {
 });
 
 describe("EmbeddedPiAgentRunner", () => {
+  it("rejects a phase-route mismatch before initializing the model runtime", async () => {
+    let runtimeInitializations = 0;
+    const runner = new EmbeddedPiAgentRunner(async () => {
+      runtimeInitializations += 1;
+      return { getModel: () => ({}) } as never;
+    });
+    const profile = createPhaseRoutingProfile({
+      selectionRule: "exact-target-v1",
+      fallback: "deny",
+      assignments: [
+        {
+          phase: "executor",
+          target: { workflowId: "agent-workflow", childPath: [], nodeId: "analyze" },
+          route: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" },
+        },
+      ],
+    });
+    const phaseRouting = createPhaseRoutingDecision({
+      profile,
+      target: { workflowId: "agent-workflow", childPath: [], nodeId: "analyze" },
+      route: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" },
+    });
+
+    await expect(
+      runner.run({ ...agentRequest(), model: "claude-opus-4-1", phaseRouting }),
+    ).rejects.toThrow(/phase-routing decision does not match/i);
+    expect(runtimeInitializations).toBe(0);
+  });
+
   it("counts turns, tool calls, and tool errors from one settled session", async () => {
     const messages: Array<Record<string, unknown>> = [];
     let listener: ((event: Record<string, unknown>) => void) | undefined;

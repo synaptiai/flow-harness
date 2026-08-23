@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { renderSupplementalMemoryRelationshipBlock } from "../domain/adaptation/supplemental-memory-relationships.js";
 import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
+import {
+  createPhaseRoutingDecision,
+  type PhaseRoutingDecision,
+} from "../domain/adaptation/phase-routing-candidate.js";
 import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
   agentCommandApprovalRequestId,
@@ -154,12 +158,12 @@ export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" 
   readonly effectReconciler?: NodeEffectReconciler;
 }
 
-const supplementalMemoryChildPath = Symbol("supplemental-memory-child-path");
+const effectiveHarnessChildPath = Symbol("effective-harness-child-path");
 type InternalRunWorkflowOptions = RunWorkflowOptions & {
-  readonly [supplementalMemoryChildPath]?: readonly string[];
+  readonly [effectiveHarnessChildPath]?: readonly string[];
 };
 type InternalResumeWorkflowOptions = ResumeWorkflowOptions & {
-  readonly [supplementalMemoryChildPath]?: readonly string[];
+  readonly [effectiveHarnessChildPath]?: readonly string[];
 };
 
 export async function runWorkflow(
@@ -178,6 +182,7 @@ async function runWorkflowInternal(
     allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
   });
   assertWorkflowSatisfiesPolicyPackages(workflow, capabilitySnapshot);
+  assertPhaseRoutingRuntimeSupported(capabilitySnapshot);
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
@@ -256,6 +261,7 @@ async function resumeWorkflowWithRelocation(
       allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
     });
     assertWorkflowSatisfiesPolicyPackages(workflow, preflightSnapshot);
+    assertPhaseRoutingRuntimeSupported(preflightSnapshot);
   }
 
   const events = await options.store.claim(options.runId);
@@ -274,6 +280,7 @@ async function resumeWorkflowWithRelocation(
         },
       );
       assertWorkflowSatisfiesPolicyPackages(workflow, persistedCapabilitySnapshot);
+      assertPhaseRoutingRuntimeSupported(persistedCapabilitySnapshot);
     } catch (error) {
       throw new RunRecoveryError(
         "workflow_mismatch",
@@ -669,7 +676,7 @@ async function continueWorkflow(
             executionNode.type === "agent"
               ? supplementalMemoryForAgent(
                   options.capabilitySnapshot,
-                  options[supplementalMemoryChildPath] ?? [],
+                  options[effectiveHarnessChildPath] ?? [],
                   executionNode.id,
                 )
               : undefined;
@@ -678,6 +685,13 @@ async function continueWorkflow(
               ? goalWorkspaceForAgent(options.capabilitySnapshot)
               : undefined;
           const modelBacked = isModelBackedNode(executionNode);
+          const phaseRouting = modelBacked
+            ? phaseRoutingForNode(
+                options.capabilitySnapshot,
+                options[effectiveHarnessChildPath] ?? [],
+                executionNode,
+              )
+            : undefined;
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -714,6 +728,7 @@ async function continueWorkflow(
                     ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
                     ...(modelBacked ? { modelWorkProfile } : {}),
+                    ...(phaseRouting === undefined ? {} : { phaseRouting }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,
@@ -4030,7 +4045,7 @@ async function executeChildNode(
     ...(options.modelSessionStore === undefined
       ? {}
       : { modelSessionStore: options.modelSessionStore }),
-    [supplementalMemoryChildPath]: [...(options[supplementalMemoryChildPath] ?? []), node.id],
+    [effectiveHarnessChildPath]: [...(options[effectiveHarnessChildPath] ?? []), node.id],
   });
   return await settleChildState(node, childState, options.workspaceIsolator);
 }
@@ -4116,7 +4131,7 @@ async function recoverChildNode(
         ...(options.agentCommandApprovalDecisions === undefined
           ? {}
           : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
-        [supplementalMemoryChildPath]: [...(options[supplementalMemoryChildPath] ?? []), node.id],
+        [effectiveHarnessChildPath]: [...(options[effectiveHarnessChildPath] ?? []), node.id],
       },
       workspace.relocatedFromCwd === undefined
         ? undefined
@@ -4147,6 +4162,45 @@ function supplementalMemoryForAgent(
           target,
         );
   return [memory, relationships].filter((item) => item !== undefined).join("\n") || undefined;
+}
+
+function phaseRoutingForNode(
+  snapshot: CapabilitySnapshot | undefined,
+  childPath: readonly string[],
+  node: CompiledNode,
+): PhaseRoutingDecision | undefined {
+  const effectiveHarness = snapshot?.effectiveHarness;
+  const profile = effectiveHarness?.phaseRoutingProfile;
+  if (profile === undefined) return undefined;
+  if (effectiveHarness === undefined) {
+    throw new Error("phase-routing profile has no effective harness runtime");
+  }
+  const route = modelRouteForNode(node);
+  if (route === undefined) {
+    throw new Error(`phase-routing target node "${node.id}" is not model-backed`);
+  }
+  return createPhaseRoutingDecision({
+    profile,
+    target: { workflowId: effectiveHarness.workflowId, childPath, nodeId: node.id },
+    route,
+  });
+}
+
+function modelRouteForNode(node: CompiledNode) {
+  if (node.type === "agent") return node.agent.model;
+  if (node.type === "verifier" && node.verifier.kind === "model") return node.verifier.model;
+  return undefined;
+}
+
+function assertPhaseRoutingRuntimeSupported(snapshot: CapabilitySnapshot | undefined): void {
+  if (
+    snapshot?.effectiveHarness?.phaseRoutingProfile !== undefined &&
+    snapshot.acpAgent !== undefined
+  ) {
+    throw new Error(
+      "phase-routing profiles cannot select an ACP runtime because its provider calls are opaque",
+    );
+  }
 }
 
 function goalWorkspaceForAgent(snapshot: CapabilitySnapshot | undefined): string | undefined {

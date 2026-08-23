@@ -31,6 +31,7 @@ const candidateSchema = z
       "agent-skill-candidate",
       "agent-skill-package-candidate",
       "model-routing-candidate",
+      "phase-routing-candidate",
       "child-specialist-candidate",
       "supplemental-memory-candidate",
     ]),
@@ -75,6 +76,7 @@ const effectiveHarnessActivationTransitionSchema = effectiveHarnessTransitionCom
     "agent-skill-resource",
     "agent-skill-package",
     "model-routing",
+    "phase-routing",
     "child-specialist",
     "supplemental-memory",
   ]),
@@ -100,6 +102,7 @@ export type EffectiveHarnessSurface =
   | "agent-skill-resource"
   | "agent-skill-package"
   | "model-routing"
+  | "phase-routing"
   | "child-specialist"
   | "supplemental-memory";
 
@@ -108,6 +111,7 @@ export type EffectiveHarnessCandidateKind =
   | "agent-skill-candidate"
   | "agent-skill-package-candidate"
   | "model-routing-candidate"
+  | "phase-routing-candidate"
   | "child-specialist-candidate"
   | "supplemental-memory-candidate";
 
@@ -363,6 +367,7 @@ function surfaceMatchesCandidate(
     (surface === "agent-skill-resource" && kind === "agent-skill-candidate") ||
     (surface === "agent-skill-package" && kind === "agent-skill-package-candidate") ||
     (surface === "model-routing" && kind === "model-routing-candidate") ||
+    (surface === "phase-routing" && kind === "phase-routing-candidate") ||
     (surface === "child-specialist" && kind === "child-specialist-candidate") ||
     (surface === "supplemental-memory" && kind === "supplemental-memory-candidate")
   );

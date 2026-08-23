@@ -14,6 +14,7 @@ import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs
 import { childSpecialistCandidateFixture } from "../../../fixtures/child-specialist-candidate.js";
 import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
 import { modelRoutingCandidateSourceFixture } from "../../../fixtures/model-routing-candidate.js";
+import { phaseRoutingCandidateFixture } from "../../../fixtures/phase-routing-candidate.js";
 import { promptCandidateWorkflowText } from "../../../fixtures/prompt-candidate-generation.js";
 
 const temporaryDirectories: string[] = [];
@@ -126,6 +127,76 @@ describe("local adaptation candidate dispatch", () => {
         afterDiscriminatorRead: () => writeFile(path, Buffer.concat([content, Buffer.from(" ")])),
       }),
     ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
+  it("dispatches one exact phase-routing candidate", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "phase.candidate.yaml");
+    const baselinePath = join(directory, "baseline.workflow.yaml");
+    const baselineText = JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "Workflow",
+      metadata: { id: "phase-dispatch-workflow" },
+      nodes: [
+        {
+          id: "implement",
+          type: "agent",
+          agent: {
+            prompt: "Implement the task.",
+            model: { provider: "test", id: "deterministic", thinking: "medium" },
+            tools: [],
+          },
+        },
+        {
+          id: "publish",
+          type: "result",
+          dependsOn: ["implement"],
+          result: {
+            source: { nodeId: "implement", field: "agent.text" },
+            schema: { type: "string", maxLength: 1_024 },
+          },
+        },
+      ],
+    });
+    const projected = phaseRoutingCandidateFixture(baselineText);
+    const source = {
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "PhaseRoutingCandidate",
+      metadata: { id: projected.identity.id, version: projected.identity.candidateVersion },
+      scope: projected.identity.scope,
+      baseline: {
+        workflow: {
+          path: "baseline.workflow.yaml",
+          sourceSha256: projected.identity.baseline.workflow.sourceSha256,
+          workflowDigest: projected.identity.baseline.workflow.workflowDigest,
+        },
+      },
+      profiles: {
+        before: {
+          selectionRule: projected.identity.profiles.before.selectionRule,
+          fallback: projected.identity.profiles.before.fallback,
+          assignments: projected.identity.profiles.before.assignments,
+        },
+        after: {
+          selectionRule: projected.identity.profiles.after.selectionRule,
+          fallback: projected.identity.profiles.after.fallback,
+          assignments: projected.identity.profiles.after.assignments,
+        },
+      },
+    };
+    await writeFile(path, JSON.stringify(source));
+    await writeFile(baselinePath, baselineText);
+
+    await expect(admitLocalAdaptationCandidate(path)).resolves.toMatchObject({
+      kind: "phase-routing-candidate",
+      candidate: {
+        identity: {
+          kind: "phase-routing-candidate",
+          profiles: projected.identity.profiles,
+        },
+      },
+    });
   });
 
   it("dispatches one exact effective harness artifact and rejects replacement", async () => {

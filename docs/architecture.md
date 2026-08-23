@@ -98,6 +98,12 @@ agents to one agent-to-result workflow, shared controls, private canonical resul
 a complete paired schedule. The report separates proven conformance failure from missing evidence
 and makes no claim for an untested agent pair.
 
+Gate 10 also adds exact phase-aware model routing. One immutable candidate assigns reviewed roles
+and routes to every model-bearing root or embedded-child node. Flow records the decision with each
+durable provider request. It qualifies the exact profile pair on held-out quality, cost, latency,
+and safety evidence. Only a complete qualified artifact can activate. Learned routing and silent
+fallback remain outside runtime authority.
+
 Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
 retain the embedded Pi path.
 
@@ -139,6 +145,7 @@ flowchart TB
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         qualification["ACP qualification<br/>Two exact agents · one verified result contract"]
+        phaseRouting["Phase routing qualification<br/>Exact roles · held-out quality and efficiency"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
@@ -183,6 +190,7 @@ flowchart TB
     cli -->|"Runs now"| engine
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Qualifies two exact local agents"| qualification
+    cli -->|"Qualifies one exact route pair"| phaseRouting
     cli -->|"Compares three context modes"| compaction
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
@@ -206,6 +214,7 @@ flowchart TB
     proposals -->|"Returns an inert candidate for review"| adaptation
     adaptation -->|"Runs paired trials"| engine
     qualification -->|"Runs a complete paired schedule"| engine
+    phaseRouting -->|"Runs paired held-out profiles"| engine
     compaction -->|"Runs held-out trials"| engine
     adaptation -->|"Stages one atomic entry and relationship change"| memory
     memory -->|"Supplies exact target context"| engine
@@ -214,6 +223,7 @@ flowchart TB
     goalLedger -->|"Replays the current immutable revision"| goals
     adaptation -->|"Stores evaluation and activation evidence"| stores
     qualification -->|"Stores identity-bound verdict evidence"| stores
+    phaseRouting -->|"Stores request-bound qualification evidence"| stores
     compaction -->|"Stores a dedicated report"| stores
     ledgers -->|"Supplies exact evidence references"| memory
     memory -->|"Persists entries, claims, and assessments"| stores
@@ -269,7 +279,9 @@ Read the diagram from top to bottom:
    relationship, authorize a transition, or write runtime memory. Local ACP selection freezes one
    runtime identity, checks accounting support, and routes only prompt-only attempts through the
    isolated process boundary. ACP qualification alternates two distinct frozen identities through
-   the same workflow and keeps the expected typed result outside their input.
+   the same workflow and keeps the expected typed result outside their input. Phase-routing
+   qualification compares two complete immutable profiles and admits only request-bound evidence
+   from exact targets.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state. A selected ACP attempt gets a fresh process, private
@@ -301,6 +313,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
 | ACP interoperability qualification | `src/domain/evaluation/plan.ts`, `src/domain/evaluation/agent-result-verifier.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, `src/application/evaluation-adapter.ts`, `src/application/run-evaluation.ts`, `src/infrastructure/fs/local-evaluation-plan.ts`, and `src/infrastructure/fs/local-evaluation-store.ts` | Admits two distinct exact ACP executors for one closed workflow, verifies each canonical typed result privately, persists identity-bound observations, and derives complete paired qualification verdicts offline. |
+| Phase-aware model routing | `src/domain/adaptation/phase-routing-candidate.ts`, `src/infrastructure/fs/local-phase-routing-candidate.ts`, `src/application/run-workflow.ts`, `src/domain/run/model-session.ts`, `src/application/evaluation-adapter.ts`, `src/domain/evaluation/aggregate.ts`, and `src/application/prepare-effective-harness-activation.ts` | Admits and composes complete exact route profiles, resolves root and child targets before provider I/O, records durable request decisions, derives held-out qualification, and activates only the exact qualified artifact. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
@@ -368,6 +381,7 @@ Architecture is derived from these flows.
 | Compare one supplemental-memory entry | An operator supplies one add, replace, or remove candidate for one existing agent | Two ordered profiles use exact complete harness states; only one bounded reviewed reference entry differs |
 | Compare context compaction | An operator supplies one dedicated held-out plan | Six balanced mode orders compare complete history, verified references, and one optional bounded summary without activation authority |
 | Qualify two ACP agents | An operator supplies two exact manifests and one qualification plan | A complete paired report proves qualification, proves nonconformance, or names the evidence that remains insufficient; it doesn't infer broader ACP compatibility |
+| Qualify phase-aware routing | An operator supplies one exact route pair and held-out plan | A complete paired report qualifies the exact artifact, rejects a failed threshold, or names missing route, quality, cost, latency, environment, or safety evidence. |
 | Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows

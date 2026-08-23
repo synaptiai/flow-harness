@@ -6,6 +6,7 @@ import type { AgentSkillCandidateIdentity } from "../adaptation/agent-skill-cand
 import type { AgentSkillPackageCandidateIdentity } from "../adaptation/agent-skill-package-candidate.js";
 import type { ChildSpecialistCandidateIdentity } from "../adaptation/child-specialist-candidate.js";
 import type { ModelRoutingCandidateIdentity } from "../adaptation/model-routing-candidate.js";
+import type { PhaseRoutingCandidateIdentity } from "../adaptation/phase-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
 import type { SupplementalMemoryCandidateIdentity } from "../adaptation/supplemental-memory-candidate.js";
 import type { ExternalHarnessIdentity } from "./external-harness.js";
@@ -83,6 +84,9 @@ const modelRouteControlSchema = z
     nodeId: identifierSchema,
     route: evaluationModelSchema,
   })
+  .strict();
+const phaseRoutingProfileControlSchema = z
+  .object({ profileId: identifierSchema, profileDigest: sha256Schema })
   .strict();
 const canonicalRelativePathSchema = z
   .string()
@@ -197,7 +201,7 @@ const evaluationPlanSourceSchema = z
   .object({
     apiVersion: z.literal(EVALUATION_PLAN_API_VERSION),
     kind: z.literal("EvaluationPlan"),
-    purpose: z.literal("acp-interoperability-v1").optional(),
+    purpose: z.enum(["acp-interoperability-v1", "phase-routing-v1"]).optional(),
     metadata: z.object({ id: identifierSchema }).strict(),
     suite: z
       .object({
@@ -212,6 +216,10 @@ const evaluationPlanSourceSchema = z
         model: evaluationModelSchema,
         modelRoutes: z
           .tuple([modelRouteControlSchema, modelRouteControlSchema])
+          .readonly()
+          .optional(),
+        phaseRoutingProfiles: z
+          .tuple([phaseRoutingProfileControlSchema, phaseRoutingProfileControlSchema])
           .readonly()
           .optional(),
         budget: budgetSchema,
@@ -236,6 +244,8 @@ const evaluationPlanSourceSchema = z
         maxFalseCompletionRate: rateSchema,
         maxPolicyViolations: nonNegativeSafeIntegerSchema,
         maxVerifiedSuccessRegression: rateSchema,
+        minimumCostReductionRate: rateSchema.optional(),
+        minimumLatencyReductionRate: rateSchema.optional(),
       })
       .strict(),
   })
@@ -307,6 +317,92 @@ const evaluationPlanSourceSchema = z
           message: "agent-result-v1 verification requires the acp-interoperability-v1 purpose",
         });
       }
+    }
+    if (plan.purpose === "phase-routing-v1") {
+      const phaseProfiles = plan.controls.phaseRoutingProfiles;
+      const baselineProfile = plan.profiles.find(
+        (profile) => profile.id === plan.comparison.baselineProfileId,
+      );
+      const candidateProfile = plan.profiles.find(
+        (profile) => profile.id === plan.comparison.candidateProfileId,
+      );
+      if (plan.controls.modelRoutes !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "phase-routing qualification uses exact phase profiles, not root model routes",
+        });
+      }
+      if (
+        phaseProfiles === undefined ||
+        phaseProfiles[0].profileId !== plan.comparison.baselineProfileId ||
+        phaseProfiles[1].profileId !== plan.comparison.candidateProfileId ||
+        phaseProfiles[0].profileDigest === phaseProfiles[1].profileDigest
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "phaseRoutingProfiles"],
+          message:
+            "phase-routing profiles must be distinct and ordered by the comparison baseline and candidate profiles",
+        });
+      }
+      if (
+        baselineProfile?.adapter !== "flow-workflow-v1" ||
+        candidateProfile?.adapter !== "flow-workflow-v1" ||
+        !("effectiveCandidate" in baselineProfile) ||
+        !("effectiveCandidate" in candidateProfile) ||
+        baselineProfile.selection !== "baseline" ||
+        candidateProfile.selection !== "candidate" ||
+        baselineProfile.effectiveCandidate !== candidateProfile.effectiveCandidate
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message: "phase-routing qualification requires one exact effective profile pair",
+        });
+      }
+      if (
+        plan.comparison.minimumCostReductionRate === undefined ||
+        plan.comparison.minimumLatencyReductionRate === undefined ||
+        plan.comparison.minimumCostReductionRate <= 0 ||
+        plan.comparison.minimumLatencyReductionRate <= 0
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["comparison"],
+          message:
+            "phase-routing qualification requires positive cost and latency reduction thresholds",
+        });
+      }
+      if (
+        plan.suite.tasks.some(
+          (task) => task.partition !== "holdout" || task.verifier.kind !== "filesystem-v1",
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["suite", "tasks"],
+          message: "phase-routing qualification requires filesystem-verified holdout tasks only",
+        });
+      }
+      if (plan.comparison.minimumEffect !== 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["comparison", "minimumEffect"],
+          message:
+            "phase-routing qualification uses explicit efficiency thresholds and requires minimumEffect to be zero",
+        });
+      }
+    } else if (
+      plan.controls.phaseRoutingProfiles !== undefined ||
+      plan.comparison.minimumCostReductionRate !== undefined ||
+      plan.comparison.minimumLatencyReductionRate !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["controls", "phaseRoutingProfiles"],
+        message: "phase-routing controls and thresholds require the phase-routing-v1 purpose",
+      });
     }
     const profileIds = new Set(plan.profiles.map((item) => item.id));
     if (!profileIds.has(plan.comparison.baselineProfileId)) {
@@ -415,7 +511,7 @@ export interface EvaluationPlanIdentity {
   readonly version: 1;
   readonly apiVersion: typeof EVALUATION_PLAN_API_VERSION;
   readonly id: string;
-  readonly purpose?: "acp-interoperability-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
   readonly suite: {
     readonly id: string;
     readonly version: string;
@@ -480,6 +576,7 @@ export type EvaluationProfileIdentity =
           | AgentSkillCandidateIdentity
           | AgentSkillPackageCandidateIdentity
           | ModelRoutingCandidateIdentity
+          | PhaseRoutingCandidateIdentity
           | ChildSpecialistCandidateIdentity
           | SupplementalMemoryCandidateIdentity;
       };
@@ -497,6 +594,7 @@ export type EvaluationProfileIdentity =
           | "agent-skill-resource"
           | "agent-skill-package"
           | "model-routing"
+          | "phase-routing"
           | "child-specialist"
           | "supplemental-memory";
         readonly candidateDigest: string;

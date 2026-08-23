@@ -4,6 +4,7 @@ import { projectEffectiveHarnessCandidate } from "../../src/application/prepare-
 import {
   createEffectiveHarnessCandidateArtifact,
   type EffectiveHarnessCandidateArtifact,
+  projectPhaseRoutingEvaluationState,
 } from "../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   createEffectiveHarnessHeadIdentity,
@@ -31,6 +32,8 @@ import type {
 import { agentSkillPackageActivationFixture } from "./agent-skill-package-activation.js";
 import { childSpecialistCandidateFixture } from "./child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "./model-routing-candidate.js";
+import { phaseRoutingCandidateFixture } from "./phase-routing-candidate.js";
+import type { ModelRoute } from "../../src/domain/adaptation/model-routing-candidate.js";
 import {
   promptCandidateTuningEvidence,
   promptCandidateWorkflowText,
@@ -114,6 +117,66 @@ export function modelRoutingEffectiveHarnessCandidateArtifactFixture(): Effectiv
     baseline,
     candidate: {
       kind: "model-routing",
+      projection: route,
+      baselineWorkflowSource: baselineSource,
+    },
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 3,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    }),
+    baselineState: baseline,
+    candidateState: projected.state,
+    candidate: route.identity,
+  });
+}
+
+export function phaseRoutingEffectiveHarnessCandidateArtifactFixture(
+  afterRoute?: ModelRoute,
+): EffectiveHarnessCandidateArtifact {
+  const baselineSource = JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "Workflow",
+    metadata: { id: "phase-runtime-workflow" },
+    nodes: [
+      {
+        id: "implement",
+        type: "agent",
+        agent: {
+          prompt: "Implement the task.",
+          model: { provider: "test", id: "deterministic", thinking: "medium" },
+          tools: [],
+          skills: [],
+          toolPackages: [],
+          timeoutMs: 300_000,
+        },
+      },
+      {
+        id: "publish",
+        type: "result",
+        dependsOn: ["implement"],
+        result: {
+          source: { nodeId: "implement", field: "agent.text" },
+          schema: { type: "string", maxLength: 1_024 },
+        },
+      },
+    ],
+  });
+  const baseline = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: baselineSource,
+    packages: [],
+  });
+  const route = phaseRoutingCandidateFixture(baselineSource, "implement", afterRoute);
+  const projected = projectEffectiveHarnessCandidate({
+    baseline,
+    candidate: {
+      kind: "phase-routing",
       projection: route,
       baselineWorkflowSource: baselineSource,
     },
@@ -456,11 +519,197 @@ export function superiorEffectiveHarnessEvaluation(
   return Object.freeze({ header, records: Object.freeze(records), activeAttempt: null });
 }
 
+export function qualifiedPhaseRoutingEffectiveHarnessEvaluation(
+  artifact: EffectiveHarnessCandidateArtifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture(),
+  candidateMeetsEfficiency = true,
+): StoredEvaluation {
+  if (
+    artifact.surface !== "phase-routing" ||
+    !("kind" in artifact.candidate) ||
+    artifact.candidate.kind !== "phase-routing-candidate"
+  ) {
+    throw new Error("phase-routing evaluation fixture requires a phase-routing artifact");
+  }
+  const phaseIdentity = artifact.candidate;
+  const baselineState = projectPhaseRoutingEvaluationState(artifact, "baseline");
+  const candidateState = projectPhaseRoutingEvaluationState(artifact, "candidate");
+  const controls: EvaluationPlanIdentity["controls"] = {
+    model: { provider: "test", id: "deterministic", thinking: "medium" },
+    phaseRoutingProfiles: [
+      {
+        profileId: "baseline",
+        profileDigest: phaseIdentity.profiles.before.profileDigest,
+      },
+      {
+        profileId: "candidate",
+        profileDigest: phaseIdentity.profiles.after.profileDigest,
+      },
+    ],
+    budget: {
+      maxNodeStarts: 8,
+      maxModelTokens: 10_000,
+      maxCostUsdMicros: 1_000_000,
+      maxExecutionMs: 300_000,
+      maxArtifactBytes: 1_048_576,
+    },
+    network: "deny",
+    retry: { providerRetries: 0, harnessRetries: 0 },
+  };
+  const task = {
+    id: "holdout-task",
+    partition: "holdout" as const,
+    fixture: {
+      provenance: "fixture",
+      digest: "d".repeat(64),
+      entryCount: 1,
+      logicalBytes: 1,
+      instructionPath: "TASK.md",
+      instructionSha256: "e".repeat(64),
+    },
+    verifier: { kind: "filesystem-v1" as const, digest: "f".repeat(64), assertionCount: 1 },
+  };
+  const profiles: EvaluationPlanIdentity["profiles"] = [
+    {
+      id: "baseline",
+      adapter: "flow-workflow-v1",
+      workflow: {
+        sourceKind: "effective-harness-baseline",
+        provenance: "candidate.effective-harness.json",
+        sourceSha256: baselineState.workflow.sha256,
+        workflowDigest: baselineState.workflow.workflowDigest,
+      },
+      effectiveHarness: effectiveBinding(artifact, "baseline", baselineState),
+    },
+    {
+      id: "candidate",
+      adapter: "flow-workflow-v1",
+      workflow: {
+        sourceKind: "effective-harness-candidate-projection",
+        provenance: "candidate.effective-harness.json",
+        sourceSha256: candidateState.workflow.sha256,
+        workflowDigest: candidateState.workflow.workflowDigest,
+      },
+      candidate: {
+        provenance: "candidate.effective-harness.json",
+        identity: phaseIdentity,
+      },
+      effectiveHarness: effectiveBinding(artifact, "candidate", candidateState),
+    },
+  ];
+  const comparison = {
+    baselineProfileId: "baseline",
+    candidateProfileId: "candidate",
+    minimumPairedTrials: 2,
+    confidenceLevel: 0.95 as const,
+    minimumEffect: 0,
+    maxFalseCompletionRate: 0,
+    maxPolicyViolations: 0,
+    maxVerifiedSuccessRegression: 0,
+    minimumCostReductionRate: 0.1,
+    minimumLatencyReductionRate: 0.1,
+  };
+  const identity: EvaluationPlanIdentity = {
+    version: 1,
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    id: "phase-routing-evaluation",
+    purpose: "phase-routing-v1",
+    suite: { id: "phase-routing-suite", version: "1.0.0", tasks: [task] },
+    profiles,
+    controls,
+    seeds: [1, 2],
+    order: "paired-alternating-v1",
+    comparison,
+  };
+  const planDigest = calculateEvaluationPlanDigest(identity);
+  const schedule = createEvaluationSchedule(
+    planDigest,
+    [task.id],
+    ["baseline", "candidate"],
+    identity.seeds,
+  );
+  const header: PublicEvaluationHeader = {
+    version: 1,
+    evaluationId: "phase-routing-evaluation",
+    createdAt: "2026-08-17T00:00:00.000Z",
+    planDigest,
+    apiVersion: identity.apiVersion,
+    planId: identity.id,
+    purpose: identity.purpose,
+    suite: { id: identity.suite.id, version: identity.suite.version, tasks: [task] },
+    profiles: [...profiles],
+    controls,
+    seeds: [...identity.seeds],
+    order: identity.order,
+    comparison,
+    schedule: [...schedule],
+  };
+  let previousDigest: string | null = null;
+  const records = schedule.map((item) => {
+    const candidate = item.profileId === "candidate";
+    const costUsdMicros = candidate ? (candidateMeetsEfficiency ? 80 : 95) : 100;
+    const latencyMs = candidate ? (candidateMeetsEfficiency ? 700 : 950) : 1_000;
+    const profileDigest = candidate
+      ? phaseIdentity.profiles.after.profileDigest
+      : phaseIdentity.profiles.before.profileDigest;
+    const record = createEvaluationTrialRecord({
+      schedule: item,
+      planDigest,
+      previousDigest,
+      startedAt: "2026-08-17T00:00:00.000Z",
+      completedAt: "2026-08-17T00:00:01.000Z",
+      environment: {
+        platform: "linux",
+        architecture: "x64",
+        nodeVersion: "v26.7.0",
+        flowVersion: "0.1.0-test",
+        workspaceBackend: "reflink-copy-v1",
+        workspaceSnapshotDigest: "1".repeat(64),
+      },
+      harness: { outcome: "completed", runId: `run-${item.position}`, reason: null },
+      verification: {
+        outcome: "accepted",
+        verifierDigest: task.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      },
+      metrics: {
+        costUsdMicros,
+        inputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1,
+        turns: 1,
+        toolCalls: 0,
+        toolErrors: 0,
+        wallTimeMs: latencyMs,
+        activeTimeMs: latencyMs,
+        interventions: 0,
+        policyViolations: 0,
+        recoveryAttempts: 0,
+        recoveryOutcome: "not_attempted",
+      },
+      phaseRouting: {
+        version: 1,
+        profileDigest,
+        requestCount: 1,
+        settledRequestCount: 1,
+        decisionDigests: [(candidate ? "3" : "2").repeat(64)],
+        costUsdMicros,
+        latencyMs,
+      },
+    });
+    previousDigest = record.recordDigest;
+    return record;
+  });
+  return Object.freeze({ header, records: Object.freeze(records), activeAttempt: null });
+}
+
 function effectiveBinding(
   artifact: EffectiveHarnessCandidateArtifact,
   selection: "baseline" | "candidate",
+  projectedState?: EffectiveHarnessCandidateArtifact["baselineState"],
 ) {
-  const state = selection === "baseline" ? artifact.baselineState : artifact.candidateState;
+  const state =
+    projectedState ?? (selection === "baseline" ? artifact.baselineState : artifact.candidateState);
   return {
     selection,
     artifactDigest: artifact.artifactDigest,

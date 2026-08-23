@@ -12,6 +12,7 @@ import {
   createEffectiveHarnessCandidateArtifact,
   EffectiveHarnessCandidateError,
   parseEffectiveHarnessCandidateArtifact,
+  projectPhaseRoutingEvaluationState,
 } from "../../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   calculateEffectiveHarnessStateDigest,
@@ -39,6 +40,7 @@ import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
 import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
+import { phaseRoutingCandidateFixture } from "../../fixtures/phase-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const scopeDigest = "a".repeat(64);
@@ -388,6 +390,67 @@ describe("effective harness candidate artifacts", () => {
         },
       },
     });
+  });
+
+  it("stores and reparses one exact phase-routing surface", () => {
+    const source = promptActivationInput({ selection: "baseline" }).source;
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: source,
+      packages: [],
+    });
+    const routing = phaseRoutingCandidateFixture(source);
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "phase-routing",
+        projection: routing,
+        baselineWorkflowSource: source,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest,
+        workflowId: baseline.workflowId,
+        generation: 2,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baseline.stateDigest,
+      }),
+      baselineState: baseline,
+      candidateState: projected.state,
+      candidate: routing.identity,
+    });
+
+    expect(parseEffectiveHarnessCandidateArtifact(structuredClone(artifact))).toEqual(artifact);
+    expect(artifact).toMatchObject({
+      surface: "phase-routing",
+      candidate: {
+        kind: "phase-routing-candidate",
+        profiles: {
+          before: { fallback: "deny", selectionRule: "exact-target-v1" },
+          after: { fallback: "deny", selectionRule: "exact-target-v1" },
+        },
+      },
+      candidateState: {
+        phaseRoutingProfile: {
+          profileDigest: routing.identity.profiles.after.profileDigest,
+        },
+      },
+    });
+    const evaluationBaseline = projectPhaseRoutingEvaluationState(artifact, "baseline");
+    const evaluationCandidate = projectPhaseRoutingEvaluationState(artifact, "candidate");
+    expect(evaluationBaseline).toMatchObject({
+      scopeDigest: artifact.baselineState.scopeDigest,
+      workflow: artifact.baselineState.workflow,
+      packages: artifact.baselineState.packages,
+      phaseRoutingProfile: {
+        profileDigest: routing.identity.profiles.before.profileDigest,
+      },
+    });
+    expect(evaluationBaseline.stateDigest).not.toBe(artifact.baselineState.stateDigest);
+    expect(projectPhaseRoutingEvaluationState(artifact, "baseline")).toEqual(evaluationBaseline);
+    expect(evaluationCandidate).toEqual(artifact.candidateState);
   });
 
   it("rejects fully redigested model-routing state outside the declared route", () => {

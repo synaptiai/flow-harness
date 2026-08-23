@@ -28,6 +28,11 @@ import {
   parseModelRoutingCandidateIdentity,
 } from "../domain/adaptation/model-routing-candidate.js";
 import {
+  applyPhaseRoutingProfile,
+  type ProjectedPhaseRoutingCandidate,
+  parsePhaseRoutingCandidateIdentity,
+} from "../domain/adaptation/phase-routing-candidate.js";
+import {
   type ProjectedPromptCandidate,
   parsePromptCandidateIdentity,
 } from "../domain/adaptation/prompt-candidate.js";
@@ -36,6 +41,7 @@ import {
   type ProjectedSupplementalMemoryCandidate,
   parseSupplementalMemoryCandidateIdentity,
 } from "../domain/adaptation/supplemental-memory-candidate.js";
+import { supplementalMemoryContent } from "../domain/adaptation/supplemental-memory.js";
 import {
   type AdaptiveActivationSnapshot,
   type CapabilityPackageSnapshot,
@@ -147,6 +153,11 @@ export type EffectiveHarnessCandidateProjection =
       readonly baselineWorkflowSource: string;
     }
   | {
+      readonly kind: "phase-routing";
+      readonly projection: ProjectedPhaseRoutingCandidate;
+      readonly baselineWorkflowSource: string;
+    }
+  | {
       readonly kind: "child-specialist";
       readonly projection: ProjectedChildSpecialistCandidate;
       readonly baselineWorkflowSource: string;
@@ -167,6 +178,7 @@ export interface EffectiveHarnessSurfaceDelta {
     | "agent-skill-resource"
     | "agent-skill-package"
     | "model-routing"
+    | "phase-routing"
     | "child-specialist"
     | "supplemental-memory";
   readonly candidateKind:
@@ -174,6 +186,7 @@ export interface EffectiveHarnessSurfaceDelta {
     | "agent-skill-candidate"
     | "agent-skill-package-candidate"
     | "model-routing-candidate"
+    | "phase-routing-candidate"
     | "child-specialist-candidate"
     | "supplemental-memory-candidate";
   readonly candidateDigest: string;
@@ -211,6 +224,12 @@ export function projectEffectiveHarnessCandidate(
       );
     case "model-routing":
       return projectModelRoutingSurface(
+        baseline,
+        input.candidate.projection,
+        input.candidate.baselineWorkflowSource,
+      );
+    case "phase-routing":
+      return projectPhaseRoutingSurface(
         baseline,
         input.candidate.projection,
         input.candidate.baselineWorkflowSource,
@@ -357,6 +376,7 @@ function projectPromptSurface(
       workflowSource: source,
       ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages: baseline.packages,
+      ...preservedStateContext(baseline),
     });
     return freezeProjection({
       state,
@@ -430,6 +450,7 @@ function projectAgentSkillResourceSurface(
       workflowSource: source,
       ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages,
+      ...preservedStateContext(baseline),
     });
     return freezeProjection({
       state,
@@ -513,6 +534,7 @@ function projectAgentSkillPackageSurface(
       workflowSource: source,
       ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages: [...baseline.packages, skill],
+      ...preservedStateContext(baseline),
     });
     return freezeProjection({
       state,
@@ -581,6 +603,7 @@ function projectModelRoutingSurface(
       workflowSource: source,
       ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages: baseline.packages,
+      ...preservedStateContext(baseline),
     });
     return freezeProjection({
       state,
@@ -594,6 +617,74 @@ function projectModelRoutingSurface(
     throw new EffectiveHarnessCandidateAdmissionError(
       "surface_mismatch",
       "model-routing candidate changes authority outside its declared surface",
+    );
+  }
+}
+
+function projectPhaseRoutingSurface(
+  baseline: EffectiveHarnessState,
+  rawProjection: ProjectedPhaseRoutingCandidate,
+  baselineWorkflowSource: string,
+): ProjectedEffectiveHarnessCandidate {
+  try {
+    const identity = parsePhaseRoutingCandidateIdentity(rawProjection.identity);
+    const ordinaryBaseline = compileWorkflowText(
+      baselineWorkflowSource,
+      "ordinary phase-routing candidate baseline",
+    );
+    const baselineProjection = rawProjection.workflows.baseline;
+    const candidateProjection = rawProjection.workflows.candidate;
+    if (
+      identity.scope.workflowId !== baseline.workflowId ||
+      ordinaryBaseline.id !== identity.scope.workflowId ||
+      identity.baseline.workflow.sourceSha256 !== sha256(baselineWorkflowSource) ||
+      identity.baseline.workflow.workflowDigest !== calculateWorkflowDigest(ordinaryBaseline) ||
+      identity.projected.baselineWorkflow.sourceSha256 !== sha256(baselineProjection.source) ||
+      identity.projected.baselineWorkflow.workflowDigest !==
+        calculateWorkflowDigest(baselineProjection.compiled) ||
+      identity.projected.candidateWorkflow.sourceSha256 !== sha256(candidateProjection.source) ||
+      identity.projected.candidateWorkflow.workflowDigest !==
+        calculateWorkflowDigest(candidateProjection.compiled) ||
+      baselineProjection.source !== baselineWorkflowSource
+    ) {
+      throw new Error("phase-routing candidate workflow identity mismatch");
+    }
+    if (
+      baseline.phaseRoutingProfile !== undefined &&
+      baseline.phaseRoutingProfile.profileDigest !== identity.profiles.before.profileDigest
+    ) {
+      throw new Error("phase-routing candidate does not match the selected baseline profile");
+    }
+    const currentSource = effectiveHarnessWorkflowSource(baseline);
+    const current = compileEffectiveHarnessState(baseline);
+    const applied = applyPhaseRoutingProfile({
+      workflowId: baseline.workflowId,
+      source: parseWorkflowSourceText(currentSource, "effective harness phase-routing baseline"),
+      compiled: current,
+      before: identity.profiles.before,
+      after: identity.profiles.after,
+      sourceName: "effective harness phase-routing candidate",
+    });
+    const state = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: applied.source,
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
+      packages: baseline.packages,
+      ...preservedStateContext(baseline),
+      phaseRoutingProfile: identity.profiles.after,
+    });
+    return freezeProjection({
+      state,
+      surface: "phase-routing",
+      candidateKind: "phase-routing-candidate",
+      candidateDigest: identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+    });
+  } catch (error) {
+    if (error instanceof EffectiveHarnessCandidateAdmissionError) throw error;
+    throw new EffectiveHarnessCandidateAdmissionError(
+      "surface_mismatch",
+      "phase-routing candidate changes authority outside its declared surface",
     );
   }
 }
@@ -646,6 +737,7 @@ function projectChildSpecialistSurface(
       scopeDigest: baseline.scopeDigest,
       workflowSource: source,
       packages: baseline.packages,
+      ...preservedStateContext(baseline),
     });
     return freezeProjection({
       state,
@@ -661,6 +753,31 @@ function projectChildSpecialistSurface(
       "child-specialist candidate changes authority outside its declared surface",
     );
   }
+}
+
+function preservedStateContext(baseline: EffectiveHarnessState) {
+  return {
+    ...(baseline.supplementalMemory === undefined
+      ? {}
+      : {
+          supplementalMemory: baseline.supplementalMemory.map((entry) => ({
+            id: entry.id,
+            target: entry.target,
+            content: supplementalMemoryContent(entry),
+          })),
+        }),
+    ...(baseline.supplementalMemoryRelationships === undefined
+      ? {}
+      : {
+          supplementalMemoryRelationships:
+            baseline.supplementalMemoryRelationships.relationships.map(
+              ({ digest: _digest, ...relationship }) => relationship,
+            ),
+        }),
+    ...(baseline.phaseRoutingProfile === undefined
+      ? {}
+      : { phaseRoutingProfile: baseline.phaseRoutingProfile }),
+  };
 }
 
 function rebaseChildSpecialistChange(

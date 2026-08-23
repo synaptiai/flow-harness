@@ -57,6 +57,7 @@ import {
 } from "../../../fixtures/effective-harness-evaluation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 import { modelRoutingCandidateFixture } from "../../../fixtures/model-routing-candidate.js";
+import { phaseRoutingCandidateFixture } from "../../../fixtures/phase-routing-candidate.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -412,6 +413,122 @@ controls:`,
       code: "corrupt",
       message: expect.not.stringContaining("private-forged-workflow"),
     });
+  });
+
+  it("admits one immutable phase-routing pair with exact runtime snapshots", async () => {
+    const project = await evaluationProject();
+    const baselineSource = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
+    const baselineState = createEffectiveHarnessState({
+      scopeDigest: "a".repeat(64),
+      workflowSource: baselineSource,
+      packages: [],
+    });
+    const routing = phaseRoutingCandidateFixture(baselineSource);
+    const projected = projectEffectiveHarnessCandidate({
+      baseline: baselineState,
+      candidate: {
+        kind: "phase-routing",
+        projection: routing,
+        baselineWorkflowSource: baselineSource,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest: baselineState.scopeDigest,
+        workflowId: baselineState.workflowId,
+        generation: 7,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baselineState.stateDigest,
+      }),
+      baselineState,
+      candidateState: projected.state,
+      candidate: routing.identity,
+    });
+    await writeFile(
+      join(project, "phase.effective-harness.json"),
+      encodeEffectiveHarnessCandidateArtifact(artifact),
+    );
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan
+        .replace(
+          "metadata: { id: harness-comparison }",
+          "metadata: { id: harness-comparison }\npurpose: phase-routing-v1",
+        )
+        .replace(
+          /profiles:[\s\S]*?controls:/,
+          `profiles:
+  - { id: baseline, adapter: flow-workflow-v1, effectiveCandidate: phase.effective-harness.json, selection: baseline }
+  - { id: candidate, adapter: flow-workflow-v1, effectiveCandidate: phase.effective-harness.json, selection: candidate }
+controls:`,
+        )
+        .replace(
+          "  budget:",
+          `  phaseRoutingProfiles:
+    - { profileId: baseline, profileDigest: ${routing.identity.profiles.before.profileDigest} }
+    - { profileId: candidate, profileDigest: ${routing.identity.profiles.after.profileDigest} }
+  budget:`,
+        )
+        .replace(
+          "  maxVerifiedSuccessRegression: 0",
+          `  maxVerifiedSuccessRegression: 0
+  minimumCostReductionRate: 0.1
+  minimumLatencyReductionRate: 0.1`,
+        ),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+
+    expect(admitted).toMatchObject({
+      purpose: "phase-routing-v1",
+      controls: {
+        phaseRoutingProfiles: [
+          { profileId: "baseline", profileDigest: routing.identity.profiles.before.profileDigest },
+          { profileId: "candidate", profileDigest: routing.identity.profiles.after.profileDigest },
+        ],
+      },
+      profiles: [
+        {
+          id: "baseline",
+          effectiveHarness: { selection: "baseline", surface: "phase-routing" },
+          effectiveHarnessState: {
+            phaseRoutingProfile: {
+              profileDigest: routing.identity.profiles.before.profileDigest,
+            },
+          },
+          capabilitySnapshot: {
+            effectiveHarness: {
+              phaseRoutingProfile: {
+                profileDigest: routing.identity.profiles.before.profileDigest,
+              },
+            },
+          },
+        },
+        {
+          id: "candidate",
+          effectiveHarness: { selection: "candidate", surface: "phase-routing" },
+          effectiveHarnessState: {
+            phaseRoutingProfile: {
+              profileDigest: routing.identity.profiles.after.profileDigest,
+            },
+          },
+          capabilitySnapshot: {
+            effectiveHarness: {
+              phaseRoutingProfile: {
+                profileDigest: routing.identity.profiles.after.profileDigest,
+              },
+            },
+          },
+        },
+      ],
+    });
+    const header = createPublicEvaluationHeader(admitted, "phase-routing-evaluation");
+    expect(JSON.stringify(header)).not.toContain("contentBase64");
+    const store = new LocalEvaluationStore(join(project, "evaluations"));
+    await store.create(header);
+    await expect(store.read("phase-routing-evaluation")).resolves.toMatchObject({ header });
   });
 
   it("binds one child-specialist artifact to an offline durable profile pair", async () => {

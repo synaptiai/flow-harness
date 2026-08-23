@@ -3515,6 +3515,7 @@ async function evaluationCommand(
                     projectRoot,
                   ),
                   createStore: () => dependencies.createStore(runStoreDirectory),
+                  modelSessionStore: dependencies.createModelSessionStore(runStoreDirectory),
                   workspaceIsolator,
                   artifactStore: dependencies.createArtifactStore(projectRoot),
                   ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -4560,6 +4561,11 @@ async function candidateCommand(
         "model-routing candidate activation requires a composed effective harness candidate",
       );
     }
+    if (admitted.kind === "phase-routing-candidate") {
+      throw new CliUsageError(
+        "phase-routing candidate activation requires a composed effective harness candidate",
+      );
+    }
     if (admitted.kind === "child-specialist-candidate") {
       throw new CliUsageError(
         "child-specialist candidate activation requires a composed effective harness candidate",
@@ -4988,6 +4994,12 @@ function effectiveHarnessProjection(
     case "model-routing-candidate":
       return {
         kind: "model-routing",
+        projection: admitted.candidate,
+        baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+      };
+    case "phase-routing-candidate":
+      return {
+        kind: "phase-routing",
         projection: admitted.candidate,
         baselineWorkflowSource: admitted.candidate.baseline.sourceText,
       };

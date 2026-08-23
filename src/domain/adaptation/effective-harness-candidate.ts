@@ -23,6 +23,7 @@ import {
 } from "./child-specialist-candidate.js";
 import {
   compileEffectiveHarnessState,
+  createEffectiveHarnessState,
   type EffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
   effectiveHarnessWorkflowSource,
@@ -33,6 +34,11 @@ import {
   type ModelRoutingCandidateIdentity,
   parseModelRoutingCandidateIdentity,
 } from "./model-routing-candidate.js";
+import {
+  applyPhaseRoutingProfile,
+  type PhaseRoutingCandidateIdentity,
+  parsePhaseRoutingCandidateIdentity,
+} from "./phase-routing-candidate.js";
 import { type PromptCandidateIdentity, parsePromptCandidateIdentity } from "./prompt-candidate.js";
 import {
   assertSupplementalMemoryCandidateSurface,
@@ -61,6 +67,7 @@ const artifactSchema = z
       "agent-skill-resource",
       "agent-skill-package",
       "model-routing",
+      "phase-routing",
       "child-specialist",
       "supplemental-memory",
     ]),
@@ -77,6 +84,7 @@ export type EffectiveHarnessCandidateIdentity =
   | AgentSkillCandidateIdentity
   | AgentSkillPackageCandidateIdentity
   | ModelRoutingCandidateIdentity
+  | PhaseRoutingCandidateIdentity
   | ChildSpecialistCandidateIdentity
   | SupplementalMemoryCandidateIdentity;
 
@@ -85,6 +93,7 @@ export type EffectiveHarnessCandidateSurface =
   | "agent-skill-resource"
   | "agent-skill-package"
   | "model-routing"
+  | "phase-routing"
   | "child-specialist"
   | "supplemental-memory";
 
@@ -99,6 +108,53 @@ export interface EffectiveHarnessCandidateArtifact {
   readonly baselineState: EffectiveHarnessState;
   readonly candidateState: EffectiveHarnessState;
   readonly artifactDigest: string;
+}
+
+export function projectPhaseRoutingEvaluationState(
+  artifactInput: EffectiveHarnessCandidateArtifact,
+  selection: "baseline" | "candidate",
+): EffectiveHarnessState {
+  const artifact = parseEffectiveHarnessCandidateArtifact(artifactInput);
+  if (
+    artifact.surface !== "phase-routing" ||
+    !("kind" in artifact.candidate) ||
+    artifact.candidate.kind !== "phase-routing-candidate"
+  ) {
+    throw new Error("phase-routing evaluation requires a phase-routing effective candidate");
+  }
+  if (selection === "candidate") return artifact.candidateState;
+  if (
+    artifact.baselineState.phaseRoutingProfile?.profileDigest ===
+    artifact.candidate.profiles.before.profileDigest
+  ) {
+    return artifact.baselineState;
+  }
+  return createEffectiveHarnessState({
+    scopeDigest: artifact.baselineState.scopeDigest,
+    workflowSource: effectiveHarnessWorkflowSource(artifact.baselineState),
+    ...(artifact.baselineState.rootPackage === undefined
+      ? {}
+      : { rootPackage: artifact.baselineState.rootPackage }),
+    packages: artifact.baselineState.packages,
+    ...(artifact.baselineState.supplementalMemory === undefined
+      ? {}
+      : {
+          supplementalMemory: artifact.baselineState.supplementalMemory.map((entry) => ({
+            id: entry.id,
+            target: entry.target,
+            content: Buffer.from(entry.contentBase64, "base64").toString("utf8"),
+          })),
+        }),
+    ...(artifact.baselineState.supplementalMemoryRelationships === undefined
+      ? {}
+      : {
+          supplementalMemoryRelationships:
+            artifact.baselineState.supplementalMemoryRelationships.relationships.map(
+              ({ digest: _digest, ...relationship }) => relationship,
+            ),
+        }),
+    phaseRoutingProfile: artifact.candidate.profiles.before,
+  });
 }
 
 export interface CreateEffectiveHarnessCandidateArtifactInput {
@@ -263,6 +319,13 @@ function parseHead(input: unknown, scopeDigest: string): EffectiveHarnessHeadIde
 }
 
 function parseCandidate(input: unknown): EffectiveHarnessCandidateIdentity {
+  if (isObjectWithKind(input, "phase-routing-candidate")) {
+    try {
+      return parsePhaseRoutingCandidateIdentity(input);
+    } catch {
+      throw invalidCandidateIdentity();
+    }
+  }
   if (isObjectWithKind(input, "model-routing-candidate")) {
     try {
       return parseModelRoutingCandidateIdentity(input);
@@ -319,6 +382,12 @@ function assertSurfaceChange(
   projected: EffectiveHarnessState,
 ): void {
   try {
+    if (
+      surface !== "phase-routing" &&
+      baseline.phaseRoutingProfile?.profileDigest !== projected.phaseRoutingProfile?.profileDigest
+    ) {
+      throw new Error("unrelated phase-routing profile changed");
+    }
     if (surface === "prompt" && isPromptCandidate(candidate)) {
       assertPromptChange(candidate, baseline, projected);
       return;
@@ -333,6 +402,10 @@ function assertSurfaceChange(
     }
     if (surface === "model-routing" && isModelRoutingCandidate(candidate)) {
       assertModelRoutingChange(candidate, baseline, projected);
+      return;
+    }
+    if (surface === "phase-routing" && isPhaseRoutingCandidate(candidate)) {
+      assertPhaseRoutingChange(candidate, baseline, projected);
       return;
     }
     if (surface === "child-specialist" && isChildSpecialistCandidate(candidate)) {
@@ -353,6 +426,41 @@ function assertSurfaceChange(
     "surface_mismatch",
     "effective harness candidate surface is inconsistent",
   );
+}
+
+function assertPhaseRoutingChange(
+  candidate: PhaseRoutingCandidateIdentity,
+  baseline: EffectiveHarnessState,
+  projected: EffectiveHarnessState,
+): void {
+  if (
+    !isDeepStrictEqual(normalizeJson(baseline.packages), normalizeJson(projected.packages)) ||
+    baseline.phaseRoutingProfile?.profileDigest !==
+      (baseline.phaseRoutingProfile === undefined
+        ? undefined
+        : candidate.profiles.before.profileDigest) ||
+    projected.phaseRoutingProfile?.profileDigest !== candidate.profiles.after.profileDigest
+  ) {
+    throw new Error("phase-routing state identity mismatch");
+  }
+  const before = compileStateWorkflow(baseline);
+  const applied = applyPhaseRoutingProfile({
+    workflowId: baseline.workflowId,
+    source: parseWorkflowSourceText(
+      effectiveHarnessWorkflowSource(baseline),
+      "effective harness phase-routing artifact baseline",
+    ),
+    compiled: before,
+    before: candidate.profiles.before,
+    after: candidate.profiles.after,
+    sourceName: "effective harness phase-routing artifact candidate",
+  });
+  if (
+    applied.workflowDigest !== projected.workflow.workflowDigest ||
+    sha256(applied.source) !== projected.workflow.sha256
+  ) {
+    throw new Error("phase-routing workflow projection mismatch");
+  }
 }
 
 function assertPromptChange(
@@ -590,11 +698,13 @@ function candidateSurface(
       ? "agent-skill-package"
       : isModelRoutingCandidate(candidate)
         ? "model-routing"
-        : isChildSpecialistCandidate(candidate)
-          ? "child-specialist"
-          : isSupplementalMemoryCandidate(candidate)
-            ? "supplemental-memory"
-            : "prompt";
+        : isPhaseRoutingCandidate(candidate)
+          ? "phase-routing"
+          : isChildSpecialistCandidate(candidate)
+            ? "child-specialist"
+            : isSupplementalMemoryCandidate(candidate)
+              ? "supplemental-memory"
+              : "prompt";
 }
 
 function candidateWorkflowId(candidate: EffectiveHarnessCandidateIdentity): string {
@@ -630,6 +740,12 @@ function isModelRoutingCandidate(
   candidate: EffectiveHarnessCandidateIdentity,
 ): candidate is ModelRoutingCandidateIdentity {
   return "kind" in candidate && candidate.kind === "model-routing-candidate";
+}
+
+function isPhaseRoutingCandidate(
+  candidate: EffectiveHarnessCandidateIdentity,
+): candidate is PhaseRoutingCandidateIdentity {
+  return "kind" in candidate && candidate.kind === "phase-routing-candidate";
 }
 
 function isChildSpecialistCandidate(
