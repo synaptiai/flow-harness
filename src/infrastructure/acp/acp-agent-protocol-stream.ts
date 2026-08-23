@@ -12,6 +12,7 @@ export type AcpAgentAuthorityViolationCategory =
   | "terminal"
   | "elicitation"
   | "mcp"
+  | "tool"
   | "extension"
   | "undeclared_client_method";
 
