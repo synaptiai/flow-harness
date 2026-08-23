@@ -431,10 +431,7 @@ export async function readTrustedPackageClosure(
       }
       throw new Error(`${label} contains a missing dependency`, { cause: error });
     }
-    if (
-      options.rejectLinkedPackageRoots === true &&
-      canonicalPackageRoot !== packageRootPath
-    ) {
+    if (options.rejectLinkedPackageRoots === true && canonicalPackageRoot !== packageRootPath) {
       throw new Error(`${label} contains a linked package root`);
     }
     if (packages.has(canonicalPackageRoot)) {
