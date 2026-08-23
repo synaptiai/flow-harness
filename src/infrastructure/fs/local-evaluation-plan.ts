@@ -479,6 +479,12 @@ export async function admitLocalEvaluationPlan(
           `profile "${profile.id}" supplemental-memory candidate requires the effectiveCandidate field`,
         );
       }
+      if (admittedCandidate.kind === "phase-routing-candidate") {
+        throw new EvaluationAdmissionError(
+          "invalid_workflow",
+          `profile "${profile.id}" phase-routing candidate requires the effectiveCandidate field`,
+        );
+      }
       if (admittedCandidate.kind === "agent-skill-candidate") {
         const skillCandidate = admittedCandidate.candidate;
         assertEvaluationWorkflowControls(

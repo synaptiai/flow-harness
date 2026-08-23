@@ -11,6 +11,7 @@ import { MAX_CHILD_SPECIALIST_CANDIDATE_BYTES } from "../../domain/adaptation/ch
 import { MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES } from "../../domain/adaptation/effective-harness-candidate.js";
 import type { EffectiveHarnessState } from "../../domain/adaptation/effective-harness-state.js";
 import { MAX_MODEL_ROUTING_CANDIDATE_BYTES } from "../../domain/adaptation/model-routing-candidate.js";
+import { MAX_PHASE_ROUTING_CANDIDATE_BYTES } from "../../domain/adaptation/phase-routing-candidate.js";
 import { MAX_PROMPT_CANDIDATE_BYTES } from "../../domain/adaptation/prompt-candidate.js";
 import {
   MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_BYTES,
@@ -39,6 +40,10 @@ import {
   admitLocalModelRoutingCandidate,
 } from "./local-model-routing-candidate.js";
 import {
+  type AdmittedLocalPhaseRoutingCandidate,
+  admitLocalPhaseRoutingCandidate,
+} from "./local-phase-routing-candidate.js";
+import {
   type AdmittedLocalPromptCandidate,
   admitLocalPromptCandidate,
 } from "./local-prompt-candidate.js";
@@ -52,6 +57,7 @@ const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_CHILD_SPECIALIST_CANDIDATE_BYTES,
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
   MAX_MODEL_ROUTING_CANDIDATE_BYTES,
+  MAX_PHASE_ROUTING_CANDIDATE_BYTES,
   MAX_PROMPT_CANDIDATE_BYTES,
   MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_BYTES,
 );
@@ -81,6 +87,10 @@ export type AdmittedLocalAdaptationCandidate =
   | {
       readonly kind: "model-routing-candidate";
       readonly candidate: AdmittedLocalModelRoutingCandidate;
+    }
+  | {
+      readonly kind: "phase-routing-candidate";
+      readonly candidate: AdmittedLocalPhaseRoutingCandidate;
     }
   | {
       readonly kind: "supplemental-memory-candidate";
@@ -217,6 +227,14 @@ export async function admitLocalAdaptationCandidate(
     options.signal?.throwIfAborted();
     return Object.freeze({ kind: "model-routing-candidate", candidate });
   }
+  if (kind === "PhaseRoutingCandidate") {
+    const candidate = await admitLocalPhaseRoutingCandidate(absolutePath, {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+    });
+    options.signal?.throwIfAborted();
+    return Object.freeze({ kind: "phase-routing-candidate", candidate });
+  }
   if (kind === "SupplementalMemoryCandidate") {
     if (options.resolveSupplementalMemoryBaseline === undefined) {
       throw new Error("supplemental-memory candidate requires an admitted effective baseline");
@@ -283,6 +301,7 @@ function parseCandidateKind(
   | "AgentSkillCandidate"
   | "ChildSpecialistCandidate"
   | "ModelRoutingCandidate"
+  | "PhaseRoutingCandidate"
   | "SupplementalMemoryCandidate"
   | "effective-harness-candidate" {
   const document = parseDocument(source, {
@@ -302,6 +321,7 @@ function parseCandidateKind(
       value.kind === "AgentSkillCandidate" ||
       value.kind === "ChildSpecialistCandidate" ||
       value.kind === "ModelRoutingCandidate" ||
+      value.kind === "PhaseRoutingCandidate" ||
       value.kind === "SupplementalMemoryCandidate" ||
       value.kind === "effective-harness-candidate")
   ) {
