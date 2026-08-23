@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import type { EvaluationTrialScheduleItem } from "./plan.js";
+import { modelUsageObservationSchema } from "../run/budget.js";
 
 export const EVALUATION_NUMERIC_METRICS = Object.freeze([
   "costUsdMicros",
@@ -66,6 +67,11 @@ const identifierSchema = z
   .max(64);
 const trialIdSchema = z.string().regex(/^trial-[a-f0-9]{48}$/);
 const boundedTextSchema = z.string().max(4_096);
+const acpAgentNameSchema = z
+  .string()
+  .min(1)
+  .max(96)
+  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
 const optionalMetricSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
 const contextCompactionMetricsSchema = z
   .object({
@@ -182,7 +188,7 @@ function nonNegativeMetricSchema() {
   return z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 }
 
-const assertionEvidenceSchema = z
+const filesystemAssertionEvidenceSchema = z
   .object({
     kind: z.enum(["exists", "absent", "sha256"]),
     path: z.string().min(1).max(1_024),
@@ -191,6 +197,37 @@ const assertionEvidenceSchema = z
     reason: boundedTextSchema.optional(),
   })
   .strict();
+
+const agentResultAssertionEvidenceSchema = z
+  .object({
+    kind: z.literal("agent-result"),
+    outcome: z.boolean(),
+    observedSha256: sha256Schema.optional(),
+    observedBytes: z.number().int().positive().max(262_144).optional(),
+    reason: boundedTextSchema.optional(),
+  })
+  .strict()
+  .superRefine((evidence, context) => {
+    const hasObservation =
+      evidence.observedSha256 !== undefined && evidence.observedBytes !== undefined;
+    if (evidence.outcome && !hasObservation) {
+      context.addIssue({
+        code: "custom",
+        message: "accepted agent-result evidence requires its observed digest and byte count",
+      });
+    }
+    if ((evidence.observedSha256 === undefined) !== (evidence.observedBytes === undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "agent-result digest and byte count must be observed together",
+      });
+    }
+  });
+
+const assertionEvidenceSchema = z.union([
+  filesystemAssertionEvidenceSchema,
+  agentResultAssertionEvidenceSchema,
+]);
 
 const processRuntimeEvidenceSchema = z
   .object({
@@ -360,6 +397,92 @@ const verificationOutcomeSchema = z
     }
   });
 
+const acpQualificationObservationSchema = z
+  .object({
+    version: z.literal(1),
+    workflowDigest: sha256Schema,
+    capabilitySnapshotDigest: sha256Schema,
+    agent: z
+      .object({
+        name: acpAgentNameSchema,
+        digest: sha256Schema,
+      })
+      .strict(),
+    result: z
+      .object({
+        sha256: sha256Schema,
+        bytes: z.number().int().positive().max(262_144),
+      })
+      .strict(),
+    durationMs: nonNegativeMetricSchema(),
+    activity: z
+      .object({
+        turns: nonNegativeMetricSchema(),
+        toolCalls: nonNegativeMetricSchema(),
+        toolErrors: nonNegativeMetricSchema(),
+      })
+      .strict()
+      .refine((activity) => activity.toolErrors <= activity.toolCalls, {
+        message: "ACP qualification tool errors cannot exceed tool calls",
+      }),
+    policyViolations: nonNegativeMetricSchema(),
+    terminationStatus: z.enum(["confirmed", "unconfirmed"]),
+    processContainment: z.enum(["linux-pid-namespace", "process-group"]),
+    sandbox: z
+      .object({
+        backend: z.string().min(1).max(128),
+        backendVersion: z.string().min(1).max(128),
+        profile: z.string().min(1).max(128),
+        policyDigest: sha256Schema,
+      })
+      .strict(),
+    usage: modelUsageObservationSchema,
+    usageProvenance: z
+      .object({
+        modelTokens: z.enum(["prompt-response", "declared-unavailable", "not-observed"]),
+        costUsd: z.enum(["session-usage-update", "declared-unavailable", "not-observed"]),
+      })
+      .strict(),
+    authorityViolation: z
+      .enum([
+        "permission",
+        "filesystem",
+        "terminal",
+        "elicitation",
+        "mcp",
+        "tool",
+        "extension",
+        "undeclared_client_method",
+      ])
+      .optional(),
+  })
+  .strict()
+  .superRefine((observation, context) => {
+    const tokenComplete = observation.usage.modelTokens.status === "complete";
+    const costComplete = observation.usage.costUsd.status === "complete";
+    if (tokenComplete !== (observation.usageProvenance.modelTokens === "prompt-response")) {
+      context.addIssue({
+        code: "custom",
+        path: ["usageProvenance", "modelTokens"],
+        message: "ACP qualification token provenance contradicts its usage observation",
+      });
+    }
+    if (costComplete !== (observation.usageProvenance.costUsd === "session-usage-update")) {
+      context.addIssue({
+        code: "custom",
+        path: ["usageProvenance", "costUsd"],
+        message: "ACP qualification cost provenance contradicts its usage observation",
+      });
+    }
+    if (observation.sandbox.profile !== "acp-prompt-only-v1") {
+      context.addIssue({
+        code: "custom",
+        path: ["sandbox", "profile"],
+        message: "ACP qualification requires the prompt-only sandbox profile",
+      });
+    }
+  });
+
 const trialRecordSchema = z
   .object({
     version: z.literal(1),
@@ -392,6 +515,7 @@ const trialRecordSchema = z
       "verifier_error",
     ]),
     metrics: metricsSchema,
+    qualification: acpQualificationObservationSchema.optional(),
     previousDigest: sha256Schema.nullable(),
     recordDigest: sha256Schema,
   })
@@ -401,6 +525,7 @@ export type EvaluationTrialRecord = z.infer<typeof trialRecordSchema>;
 export type EvaluationHarnessOutcome = EvaluationTrialRecord["harness"];
 export type EvaluationVerificationOutcome = EvaluationTrialRecord["verification"];
 export type EvaluationEnvironment = EvaluationTrialRecord["environment"];
+export type AcpQualificationObservation = z.infer<typeof acpQualificationObservationSchema>;
 
 export interface CreateEvaluationTrialRecordInput {
   readonly schedule: EvaluationTrialScheduleItem;
@@ -412,6 +537,7 @@ export interface CreateEvaluationTrialRecordInput {
   readonly harness: EvaluationHarnessOutcome;
   readonly verification: EvaluationVerificationOutcome;
   readonly metrics: EvaluationMetrics;
+  readonly qualification?: AcpQualificationObservation;
 }
 
 export class EvaluationRecordError extends Error {
@@ -449,6 +575,10 @@ export function parseEvaluationVerificationOutcome(input: unknown): EvaluationVe
   return parseEvidence(verificationOutcomeSchema, input, "verification outcome");
 }
 
+export function parseAcpQualificationObservation(input: unknown): AcpQualificationObservation {
+  return parseEvidence(acpQualificationObservationSchema, input, "ACP qualification observation");
+}
+
 export function createEvaluationTrialRecord(
   input: CreateEvaluationTrialRecordInput,
 ): EvaluationTrialRecord {
@@ -470,6 +600,7 @@ export function createEvaluationTrialRecord(
     verification: input.verification,
     classification,
     metrics: input.metrics,
+    ...(input.qualification === undefined ? {} : { qualification: input.qualification }),
     previousDigest: input.previousDigest,
   };
   const record = {

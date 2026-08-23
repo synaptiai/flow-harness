@@ -78,6 +78,11 @@ export const MAX_EVALUATION_TRIAL_ATTEMPT_BYTES = 4 * 1024;
 export const MAX_EVALUATION_LEDGER_BYTES =
   MAX_EVALUATION_TRIALS * MAX_EVALUATION_TRIAL_RECORD_BYTES;
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const acpAgentNameSchema = z
+  .string()
+  .min(1)
+  .max(96)
+  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
 const MAX_EVALUATION_ATTEMPT_TEMPORARIES = 16;
 const attemptTemporaryNamePattern =
   /^\.active-attempt\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/;
@@ -150,13 +155,22 @@ const taskSchema = z
         instructionSha256: sha256Schema,
       })
       .strict(),
-    verifier: z
-      .object({
-        kind: z.literal("filesystem-v1"),
-        digest: sha256Schema,
-        assertionCount: positiveSafeIntegerSchema.max(16),
-      })
-      .strict(),
+    verifier: z.discriminatedUnion("kind", [
+      z
+        .object({
+          kind: z.literal("filesystem-v1"),
+          digest: sha256Schema,
+          assertionCount: positiveSafeIntegerSchema.max(16),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("agent-result-v1"),
+          digest: sha256Schema,
+          assertionCount: z.literal(1),
+        })
+        .strict(),
+    ]),
   })
   .strict();
 
@@ -251,7 +265,8 @@ const flowProfileSchema = z
       })
       .strict(),
     capabilitySnapshotDigest: sha256Schema.optional(),
-    capabilityPackageDigests: z.array(sha256Schema).min(1).max(128).readonly().optional(),
+    capabilityPackageDigests: z.array(sha256Schema).max(128).readonly().optional(),
+    acpAgent: z.object({ name: acpAgentNameSchema, digest: sha256Schema }).strict().optional(),
     candidate: candidateIdentitySchema.optional(),
     effectiveHarness: z
       .object({
@@ -364,6 +379,7 @@ const publicHeaderSchema = z
     planDigest: sha256Schema,
     apiVersion: z.literal(EVALUATION_PLAN_API_VERSION),
     planId: identifierSchema,
+    purpose: z.literal("acp-interoperability-v1").optional(),
     suite: z
       .object({
         id: identifierSchema,
@@ -447,6 +463,9 @@ const publicHeaderSchema = z
     const effectiveProfiles = flowProfiles.filter(
       (profile) => profile.effectiveHarness !== undefined,
     );
+    const agentResultTasks = header.suite.tasks.filter(
+      (task) => task.verifier.kind === "agent-result-v1",
+    );
     for (const [index, profile] of flowProfiles.entries()) {
       if (
         (profile.capabilitySnapshotDigest === undefined) !==
@@ -471,7 +490,60 @@ const publicHeaderSchema = z
         });
       }
     }
-    if (effectiveProfiles.length > 0) {
+    if (header.purpose === "acp-interoperability-v1") {
+      const workflowDigests = new Set(
+        flowProfiles.map((profile) => profile.workflow.workflowDigest),
+      );
+      const workflowSources = new Set(
+        flowProfiles.map(
+          (profile) => `${profile.workflow.provenance}\0${profile.workflow.sourceSha256}`,
+        ),
+      );
+      const capabilityDigests = new Set(
+        flowProfiles.flatMap((profile) =>
+          profile.capabilitySnapshotDigest === undefined ? [] : [profile.capabilitySnapshotDigest],
+        ),
+      );
+      const agentDigests = new Set(
+        flowProfiles.flatMap((profile) =>
+          profile.acpAgent === undefined ? [] : [profile.acpAgent.digest],
+        ),
+      );
+      if (
+        flowProfiles.length !== 2 ||
+        capabilityProfiles.length !== 2 ||
+        agentResultTasks.length !== header.suite.tasks.length ||
+        workflowDigests.size !== 1 ||
+        workflowSources.size !== 1 ||
+        capabilityDigests.size !== 2 ||
+        agentDigests.size !== 2 ||
+        header.controls.modelRoutes !== undefined ||
+        flowProfiles.some(
+          (profile) =>
+            profile.acpAgent === undefined ||
+            profile.workflow.sourceKind !== undefined ||
+            profile.candidate !== undefined ||
+            profile.effectiveHarness !== undefined ||
+            profile.capabilityPackageDigests?.length !== 0,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message:
+            "ACP qualification requires one workflow, two distinct capability snapshots, and agent-result verification",
+        });
+      }
+    } else if (
+      agentResultTasks.length > 0 ||
+      flowProfiles.some((profile) => profile.acpAgent !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["suite", "tasks"],
+        message: "agent-result verification requires the ACP interoperability purpose",
+      });
+    } else if (effectiveProfiles.length > 0) {
       const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
       const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
       const baselineBinding = flowBaseline?.effectiveHarness;
@@ -772,6 +844,7 @@ export function createPublicEvaluationHeader(
     planDigest: admitted.planDigest,
     apiVersion: admitted.apiVersion,
     planId: admitted.id,
+    ...(admitted.purpose === undefined ? {} : { purpose: admitted.purpose }),
     suite: {
       id: admitted.suite.id,
       version: admitted.suite.version,
@@ -789,7 +862,8 @@ export function createPublicEvaluationHeader(
         verifier: {
           kind: task.verifier.kind,
           digest: task.verifier.digest,
-          assertionCount: task.verifier.assertions.length,
+          assertionCount:
+            task.verifier.kind === "filesystem-v1" ? task.verifier.assertions.length : 1,
         },
       })),
     },
@@ -821,6 +895,14 @@ export function createPublicEvaluationHeader(
               capabilityPackageDigests: profile.capabilitySnapshot.packages.map(
                 (item) => item.digest,
               ),
+              ...(profile.capabilitySnapshot.acpAgent === undefined
+                ? {}
+                : {
+                    acpAgent: {
+                      name: profile.capabilitySnapshot.acpAgent.name,
+                      digest: profile.capabilitySnapshot.acpAgent.digest,
+                    },
+                  }),
             }),
         ...(profile.candidate === undefined
           ? {}
@@ -844,10 +926,38 @@ export function evaluationReportInput(header: PublicEvaluationHeader): Evaluatio
   const profileIds = header.profiles.map((profile) => profile.id) as [string, string];
   return Object.freeze({
     planDigest: header.planDigest,
+    ...(header.purpose === undefined ? {} : { purpose: header.purpose }),
     schedule: header.schedule,
     profileIds: Object.freeze(profileIds),
     profileAdapters: Object.freeze(
       Object.fromEntries(header.profiles.map((profile) => [profile.id, profile.adapter])),
+    ),
+    profileWorkflowDigests: Object.freeze(
+      Object.fromEntries(
+        header.profiles.flatMap((profile) =>
+          profile.adapter === "flow-workflow-v1"
+            ? [[profile.id, profile.workflow.workflowDigest] as const]
+            : [],
+        ),
+      ),
+    ),
+    profileCapabilitySnapshotDigests: Object.freeze(
+      Object.fromEntries(
+        header.profiles.flatMap((profile) =>
+          profile.adapter === "flow-workflow-v1" && profile.capabilitySnapshotDigest !== undefined
+            ? [[profile.id, profile.capabilitySnapshotDigest] as const]
+            : [],
+        ),
+      ),
+    ),
+    profileAcpAgents: Object.freeze(
+      Object.fromEntries(
+        header.profiles.flatMap((profile) =>
+          profile.adapter === "flow-workflow-v1" && profile.acpAgent !== undefined
+            ? [[profile.id, profile.acpAgent] as const]
+            : [],
+        ),
+      ),
     ),
     tasks: Object.freeze(
       header.suite.tasks.map((task) =>
@@ -1758,6 +1868,7 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
     version: 1,
     apiVersion: header.apiVersion,
     id: header.planId,
+    ...(header.purpose === undefined ? {} : { purpose: header.purpose }),
     suite: header.suite,
     profiles: header.profiles.map((profile) => {
       if (profile.adapter === "pi-native-v1") {
@@ -1786,6 +1897,7 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
         ...(profile.capabilityPackageDigests === undefined
           ? {}
           : { capabilityPackageDigests: profile.capabilityPackageDigests }),
+        ...(profile.acpAgent === undefined ? {} : { acpAgent: profile.acpAgent }),
         ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
         ...(profile.effectiveHarness === undefined
           ? {}

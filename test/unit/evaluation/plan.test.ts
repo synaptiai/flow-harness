@@ -47,6 +47,83 @@ describe("evaluation plan", () => {
     });
   });
 
+  it("parses one closed ACP interoperability qualification plan", () => {
+    const plan = parseEvaluationPlanText(validAcpQualificationPlan(), "qualification.yaml");
+
+    expect(plan).toMatchObject({
+      purpose: "acp-interoperability-v1",
+      suite: {
+        tasks: [
+          {
+            id: "answer-contract",
+            verifier: {
+              kind: "agent-result-v1",
+              sha256: "c".repeat(64),
+              bytes: 18,
+            },
+          },
+        ],
+      },
+      profiles: [
+        {
+          id: "codex-agent",
+          adapter: "flow-workflow-v1",
+          workflow: "qualification.workflow.yaml",
+          acpAgent: "agents/codex.acp-agent.json",
+        },
+        {
+          id: "opencode-agent",
+          adapter: "flow-workflow-v1",
+          workflow: "qualification.workflow.yaml",
+          acpAgent: "agents/opencode.acp-agent.json",
+        },
+      ],
+    });
+  });
+
+  it("rejects ACP qualification sources that weaken the paired contract", () => {
+    expect(() =>
+      parseEvaluationPlanText(
+        validAcpQualificationPlan().replace(
+          "workflow: qualification.workflow.yaml\n    acpAgent: agents/opencode.acp-agent.json",
+          "workflow: other.workflow.yaml\n    acpAgent: agents/opencode.acp-agent.json",
+        ),
+      ),
+    ).toThrow(/qualification|same workflow/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validAcpQualificationPlan().replace("    acpAgent: agents/opencode.acp-agent.json\n", ""),
+      ),
+    ).toThrow(/qualification|ACP agent/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validAcpQualificationPlan().replace("    kind: agent-result-v1", "    kind: filesystem-v1"),
+      ),
+    ).toThrow(/qualification|agent-result-v1|schema/i);
+  });
+
+  it("rejects ACP-only profile and verifier fields from comparison plans", () => {
+    expect(() =>
+      parseEvaluationPlanText(
+        validPlan().replace(
+          "    workflow: baseline.workflow.yaml",
+          "    workflow: baseline.workflow.yaml\n    acpAgent: agents/codex.acp-agent.json",
+        ),
+      ),
+    ).toThrow(/purpose|ACP agent|schema/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validPlan().replace(
+          /verifier:\n {8}kind: filesystem-v1[\s\S]*? {12}value: [a-f0-9]{64}/,
+          `verifier:
+        kind: agent-result-v1
+        sha256: ${"c".repeat(64)}
+        bytes: 18`,
+        ),
+      ),
+    ).toThrow(/purpose|agent-result-v1|schema/i);
+  });
+
   it("parses one ordered explicit route for each paired effective profile", () => {
     const source = validPlan()
       .replace(
@@ -342,6 +419,62 @@ order: paired-alternating-v1
 comparison:
   baselineProfileId: baseline
   candidateProfileId: candidate
+  minimumPairedTrials: 2
+  confidenceLevel: 0.95
+  minimumEffect: 0
+  maxFalseCompletionRate: 0
+  maxPolicyViolations: 0
+  maxVerifiedSuccessRegression: 0
+`;
+}
+
+function validAcpQualificationPlan(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: EvaluationPlan
+purpose: acp-interoperability-v1
+metadata:
+  id: acp-interoperability
+suite:
+  id: acp-qualification-suite
+  version: 1.0.0
+  tasks:
+    - id: answer-contract
+      partition: holdout
+      fixture: fixtures/answer-contract
+      instruction: TASK.md
+      verifier:
+        kind: agent-result-v1
+        sha256: ${"c".repeat(64)}
+        bytes: 18
+profiles:
+  - id: codex-agent
+    adapter: flow-workflow-v1
+    workflow: qualification.workflow.yaml
+    acpAgent: agents/codex.acp-agent.json
+  - id: opencode-agent
+    adapter: flow-workflow-v1
+    workflow: qualification.workflow.yaml
+    acpAgent: agents/opencode.acp-agent.json
+controls:
+  model:
+    provider: openai
+    id: gpt-5.4
+    thinking: high
+  budget:
+    maxNodeStarts: 2
+    maxModelTokens: 2000
+    maxCostUsdMicros: 1000000
+    maxExecutionMs: 120000
+    maxArtifactBytes: 65536
+  network: deny
+  retry:
+    providerRetries: 0
+    harnessRetries: 0
+seeds: [11, 22]
+order: paired-alternating-v1
+comparison:
+  baselineProfileId: codex-agent
+  candidateProfileId: opencode-agent
   minimumPairedTrials: 2
   confidenceLevel: 0.95
   minimumEffect: 0

@@ -2,11 +2,15 @@ import { join } from "node:path";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { EvaluationOciLease } from "../domain/evaluation/attempt.js";
 import type {
+  AcpQualificationObservation,
   ContextCompactionEvaluationMetrics,
   EvaluationHarnessOutcome,
   EvaluationMetrics,
 } from "../domain/evaluation/records.js";
-import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
+import {
+  parseAcpQualificationObservation,
+  unavailableEvaluationMetrics,
+} from "../domain/evaluation/records.js";
 import {
   type AgentModelTokenBreakdown,
   type ModelUsageObservation,
@@ -63,6 +67,7 @@ export interface HarnessEvaluationRequest {
 export interface HarnessEvaluationResult {
   readonly harness: EvaluationHarnessOutcome;
   readonly metrics: EvaluationMetrics;
+  readonly qualification?: AcpQualificationObservation;
 }
 
 export class HarnessUnsafeStateError extends Error {
@@ -188,17 +193,79 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
               requireModelSessionStore(this.dependencies.modelSessionStore),
               artifactReopens,
             );
+      const qualification = acpQualificationObservation(this.profile, state);
       return Object.freeze({
         harness: harnessOutcome(state),
         metrics:
           contextCompaction === undefined
             ? metrics
             : metricsWithContextCompaction(metrics, contextCompaction),
+        ...(qualification === undefined ? {} : { qualification }),
       });
     } catch (error) {
       return crashedResult(boundedReason(error), elapsed(started, clock()));
     }
   }
+}
+
+function acpQualificationObservation(
+  profile: FlowWorkflowEvaluationProfile,
+  state: RunState,
+): AcpQualificationObservation | undefined {
+  const snapshot = profile.capabilitySnapshot?.acpAgent;
+  if (snapshot === undefined || state.status !== "succeeded") return undefined;
+  const resultNodes = profile.workflow.compiled.nodes.filter((node) => node.type === "result");
+  if (resultNodes.length !== 1) {
+    throw new Error("ACP qualification requires exactly one workflow result node");
+  }
+  const resultNode = resultNodes[0];
+  if (resultNode === undefined || resultNode.result.source.field !== "agent.text") {
+    throw new Error("ACP qualification result must source one agent text field");
+  }
+  const sourceNode = profile.workflow.compiled.nodes.find(
+    (node) => node.id === resultNode.result.source.nodeId,
+  );
+  const resultState = state.nodes[resultNode.id];
+  const sourceEvidence = state.nodes[resultNode.result.source.nodeId]?.evidence;
+  if (
+    sourceNode?.type !== "agent" ||
+    resultState?.control?.kind !== "result" ||
+    resultState.control.sourceNodeId !== sourceNode.id ||
+    sourceEvidence?.kind !== "agent" ||
+    sourceEvidence.acp === undefined ||
+    sourceEvidence.usageObservation === undefined ||
+    sourceEvidence.activity === undefined
+  ) {
+    throw new Error("ACP qualification run is missing authenticated result evidence");
+  }
+  const evidence = sourceEvidence;
+  const acp = evidence.acp;
+  if (acp === undefined) {
+    throw new Error("ACP qualification run is missing authenticated executor evidence");
+  }
+  if (acp.agentName !== snapshot.name || acp.agentDigest !== snapshot.digest) {
+    throw new Error("ACP qualification runtime identity does not match its admitted executor");
+  }
+  return parseAcpQualificationObservation({
+    version: 1,
+    workflowDigest: profile.workflow.workflowDigest,
+    capabilitySnapshotDigest: profile.capabilitySnapshot?.digest,
+    agent: { name: snapshot.name, digest: snapshot.digest },
+    result: {
+      sha256: resultState.control.valueHash,
+      bytes: Buffer.byteLength(resultState.control.canonicalValue, "utf8"),
+    },
+    durationMs: evidence.durationMs,
+    activity: evidence.activity,
+    policyViolations: evidence.policyDecisions.filter((decision) => decision.outcome === "denied")
+      .length,
+    terminationStatus: acp.terminationStatus,
+    processContainment: acp.processContainment,
+    sandbox: acp.sandbox,
+    usage: evidence.usageObservation,
+    usageProvenance: acp.usageProvenance,
+    ...(acp.authorityViolation === undefined ? {} : { authorityViolation: acp.authorityViolation }),
+  });
 }
 
 function compactionExecutor(

@@ -86,7 +86,7 @@ For publication authority and recovery, read
 | CLI integration | Init, config inspection, validate, run, work-profile selection/conflict/public output, typed-result publication/inspection, attached/detached artifact-budget exhaustion and inspection, attached and detached child ledgers/workspaces, detached accepted/queued/rejected submission, events, terminal presentation, active/queued cancel, supervisor status/shutdown, wait, approve/deny, exhaust, committed-boundary resume, proof-safe fresh resume, persist, and inspect through production composition | Temporary run ledgers, private local sockets, and local processes |
 | Compiled-process integration | Direct-entry signal handling, Linux x64 pseudo-terminal startup and restoration, local browser presentation delivery, process-group termination, edit crashes before rename, after rename, after directory sync, on settlement rejection, and after settlement persistence, cross-process run claiming, live agent-command denial from a separate CLI process, detached client exit with exact work-profile replay, bounded concurrent admission, queued cancellation without execution, policy mismatch/rebinding, supervisor restart/adoption, and real sandbox boundaries | Built CLI, temporary run ledgers, pseudo-terminals, local process groups, native sandbox primitives, Unix sockets, and loopback networking |
 | Browser presentation | Fragment removal, tab-scoped capability retention for reload, terminal capability removal, capability authentication, fixed-resource policy, complete-document streaming and reload, keyboard steering, storage denial, text-only DOM insertion, attributed package notes, responsive layout, focus visibility, and console/network closure | Pinned Playwright Chromium, explicit loopback listener, and 1280×720, 768×1024, and 375×812 viewports |
-| ACP executor contract | Exact runtime admission and revalidation, model and reasoning selection, strict inverse protocol order, zero client authority, fixed violation categories, fresh session binding, output and timeout bounds, complete process-tree settlement, recovery capsules, usage provenance, detached snapshots, verifier projection, and unchanged Pi fallback | Temporary runtimes, local processes, deterministic ACP peers, injected SRT seam, and private run ledgers |
+| ACP executor and qualification contract | Exact runtime admission and revalidation, model and reasoning selection, strict inverse protocol order, zero client authority, fixed violation categories, fresh session binding, output and timeout bounds, complete process-tree settlement, recovery capsules, usage provenance, detached snapshots, verifier projection, unchanged Pi fallback, paired distinct-agent admission, canonical result verification, complete accounting, and qualification verdicts | Temporary runtimes, local processes, deterministic ACP peers, injected SRT seam, private run ledgers, and evaluation stores |
 | Hosted ACP containment | Project, home, Flow-state, protected-path, and source-credential denial; one-domain network policy; private-state writes; selected masked credential delivery; cancellation; and resistant-descendant termination | Real SRT and Linux PID namespaces on hosted Linux x64; skipped on other hosts |
 | Pi adapter contract | Exact model/tool request translation, fixed bounded work-profile rendering, explicit zero turn/provider retries, versioned workspace and immutable `skill://` reads, selected package/read receipts, edit receipts, argv-only command authorization/journaling and shared sandbox delegation, bounded approval-denial propagation, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, production tool-error conversion back into the next model turn, and streaming | Deterministic in-process provider; no network or credentials |
@@ -401,6 +401,26 @@ The deterministic CLI integration uses the production Pi session and Flow tools.
 provider supplies the model stream. Default CI can therefore prove the policy and effect path
 without network access or provider cost.
 
+## Live ACP qualification policy
+
+The production-agent ACP qualification test is opt-in and excluded from `npm test`. Set
+`FLOW_LIVE_ACP_QUALIFICATION_PLAN` to one absolute, privately maintained qualification plan to run
+it. The plan owns both exact agent manifests, the shared model control, and complete token and cost
+accounting declarations.
+
+```sh
+FLOW_LIVE_ACP_QUALIFICATION_PLAN=/absolute/path/acp-qualification.evaluation.yaml \
+  npm run test:live -- test/live/acp-qualification.live.test.ts
+```
+
+The test invokes the public validation and execution paths. It accepts only a `qualified` report
+with two distinct agent digests and no limitations. An unset variable produces an explicit skip
+and no compatibility claim. A configured but unavailable credential, runtime, model, accounting
+event, or provider call fails without fallback. Default and hosted pull-request tests use
+deterministic peers and no provider credentials.
+
+Read [Qualify two local ACP agents](guides/qualify-acp-agents.md) before you enable the live test.
+
 ## Product evaluation
 
 Flow now has a provider-neutral evaluation layer for reproducible paired harness comparisons. The
@@ -416,6 +436,14 @@ actionable error reasons; comparison tests include holdout partitioning, environ
 incomplete safety evidence, and constraint/verdict gates.
 Adapter telemetry tests also execute a child-only profile and require unprojected child activity,
 policy, intervention, and recovery measurements to remain unavailable.
+
+ACP qualification tests add purpose-specific plan admission, two distinct capability snapshots,
+and one exact agent-to-result workflow path. They also cover canonical typed-result verification,
+authenticated executor observations, hash-chained persistence, and offline reconstruction. Report
+tests cover complete paired denominators, accounting availability, conformance-failure precedence,
+and all three qualification verdicts. Session tests treat standard command-discovery updates as
+inert metadata. Tool and permission authority remains fail-closed. The opt-in live test is the only
+production-agent compatibility claim path.
 
 Context compaction tests cover structured reference projection, artifact identity and availability,
 all-or-nothing fallback, and projection before capacity and request identity. Session reducer tests

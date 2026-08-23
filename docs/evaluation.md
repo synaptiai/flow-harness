@@ -62,6 +62,16 @@ identities. A run never builds, pulls, or updates the image.
 The default store is `.flow/evaluations/<evaluation-id>/`. `--evaluations-dir <path>` selects an
 explicit store for run, inspect, and export. `eval export` refuses to overwrite an existing file.
 
+## ACP interoperability qualification
+
+An evaluation with `purpose: acp-interoperability-v1` qualifies two distinct exact local ACP
+executors against one shared prompt-only workflow. It uses private canonical result verification
+and produces `report.qualification` with `qualified`, `not_qualified`, or
+`insufficient_evidence`. It doesn't authorize activation or tuning-evidence export.
+
+Read [Qualify two local ACP agents](guides/qualify-acp-agents.md) for agent selection, manifests,
+the restricted workflow and plan shapes, live execution, verdict interpretation, and recovery.
+
 ## Context compaction evaluation
 
 The dedicated three-mode evaluator compares complete portable history, verified artifact
@@ -111,6 +121,11 @@ The plan cannot select an executable path, package version, driver path, or prot
 Flow resolves these values from its trusted external harness registries.
 For the generated roster and isolation types, read
 [Tools and capabilities](reference/tools-and-capabilities.md#evaluation-adapters).
+
+The ACP qualification purpose is the narrow exception for an executor selection. Each of its two
+`flow-workflow-v1` profiles selects one project-local `AcpAgent` manifest. Admission binds the
+manifest's exact runtime closure in the capability snapshot. Both profiles must select the same
+workflow source and distinct executor identities.
 
 Paths are portable relative paths below the plan directory. Fixtures may contain only bounded
 regular files and directories: symbolic links, special files, `.flow`, path escapes, oversized

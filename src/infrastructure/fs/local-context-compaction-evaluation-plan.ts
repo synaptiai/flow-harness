@@ -26,11 +26,18 @@ import {
   stableReadEvaluationFile,
 } from "./local-evaluation-plan.js";
 
-export interface AdmittedContextCompactionEvaluationTask extends AdmittedEvaluationTask {
+export type AdmittedContextCompactionEvaluationTask = Omit<
+  AdmittedEvaluationTask,
+  "partition" | "verifier"
+> & {
   readonly partition: "holdout";
+  readonly verifier: Extract<
+    AdmittedEvaluationTask["verifier"],
+    { readonly kind: "filesystem-v1" }
+  >;
   readonly protectedConstraints: readonly string[];
   readonly constraintAssertionIndexes: readonly number[];
-}
+};
 
 export interface AdmittedContextCompactionEvaluationPlan {
   readonly apiVersion: ContextCompactionEvaluationPlanSource["apiVersion"];

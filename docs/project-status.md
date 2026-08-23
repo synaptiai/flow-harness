@@ -33,6 +33,7 @@ on it.
 | Detached supervisor and workers | Implemented | Implemented | Same-host and same-user only. |
 | Terminal, browser, and ACP presentation | Implemented | Implemented | Local operator surfaces only. |
 | Prompt-only local ACP executor | Linux x64 runtime proof | Limited | Current source supports operator selection, attached and detached execution, fresh recovery, and provider-neutral evidence. Hosted process-containment proof covers Linux x64; macOS has source and contract coverage. |
+| Paired ACP interoperability qualification | Linux x64 runtime proof | Limited | Current source supports two distinct exact local agents, one shared prompt-only workflow, private result verification, complete accounting gates, offline reports, and an opt-in production-agent proof path. No agent pair is claimed compatible without its own `qualified` report. |
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
 | Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
@@ -101,9 +102,13 @@ the [Security policy](../SECURITY.md).
 - One fresh contained process and session for each attempt.
 - Exact model configuration, prompt-only authority, provider-neutral evidence, truthful usage, and
   proof-gated fresh recovery.
+- Paired qualification for two distinct exact ACP agents with one shared workflow, private typed
+  result verification, and complete accounting. Reports distinguish qualified, not-qualified, and
+  insufficient-evidence outcomes.
 
 Read [Recovery and interruption safety](recovery.md), [Local ACP v1 bridge](acp.md), and
-[Run and control workflows](guides/run-and-control.md).
+[Run and control workflows](guides/run-and-control.md). Read
+[Qualify two local ACP agents](guides/qualify-acp-agents.md) for paired production-agent proof.
 
 ### Portable capabilities
 
@@ -153,7 +158,7 @@ Read [Manage supplemental-memory relationships](guides/supplemental-memory-relat
 
 - Executable or remote UI extensions.
 - Model-owned network tools.
-- Cross-agent ACP interoperability evaluation and any broader brokered authority profile.
+- A broader Flow-brokered ACP authority profile beyond prompt-only qualification.
 - Remote or multi-host supervisor control.
 - VM-grade isolation for the host-side agent runtime.
 - A stable executable format and migration promise.

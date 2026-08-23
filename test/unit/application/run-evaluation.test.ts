@@ -11,7 +11,10 @@ import {
   type RunEvaluationTrialsInput,
   runEvaluationTrials as runEvaluationTrialsApplication,
 } from "../../../src/application/run-evaluation.js";
-import { createEvaluationSchedule } from "../../../src/domain/evaluation/plan.js";
+import {
+  calculateEvaluationVerifierDigest,
+  createEvaluationSchedule,
+} from "../../../src/domain/evaluation/plan.js";
 import {
   type EvaluationTrialRecord,
   unavailableEvaluationMetrics,
@@ -213,6 +216,60 @@ describe("evaluation trial runner", () => {
     expect(resumedIsolator.cleanup.mock.calls).toEqual([
       [`workspace-${plan.schedule[0]?.trialId}`],
       [`workspace-${plan.schedule[1]?.trialId}`],
+    ]);
+  });
+
+  it("verifies and persists authenticated ACP results without invoking the workspace verifier", async () => {
+    const root = await temporaryDirectory();
+    const plan = qualificationExecutionPlan(root);
+    const verifyWorkspace = vi.fn();
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: (profileId) => ({
+        kind: "flow-workflow-v1",
+        run: async () => ({
+          harness: { outcome: "completed", runId: `durable-${profileId}`, reason: null },
+          metrics: unavailableEvaluationMetrics(),
+          qualification: qualificationObservation(profileId),
+        }),
+      }),
+      verifyWorkspace,
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(verifyWorkspace).not.toHaveBeenCalled();
+    expect(records).toHaveLength(2);
+    expect(records).toEqual([
+      expect.objectContaining({
+        profileId: "baseline",
+        classification: "verified_success",
+        verification: expect.objectContaining({ outcome: "accepted" }),
+        qualification: expect.objectContaining({
+          agent: { name: "baseline-agent", digest: "1".repeat(64) },
+        }),
+      }),
+      expect.objectContaining({
+        profileId: "candidate",
+        classification: "verified_success",
+        verification: expect.objectContaining({ outcome: "accepted" }),
+        qualification: expect.objectContaining({
+          agent: { name: "candidate-agent", digest: "2".repeat(64) },
+        }),
+      }),
+    ]);
+    expect(records[0]?.verification.assertions).toEqual([
+      {
+        kind: "agent-result",
+        outcome: true,
+        observedSha256: "9".repeat(64),
+        observedBytes: 10,
+      },
     ]);
   });
 
@@ -1210,6 +1267,64 @@ function shaExecutionPlan(root: string) {
         }),
       }),
     ]),
+  });
+}
+
+function qualificationExecutionPlan(root: string) {
+  const plan = executionPlan(root);
+  const task = plan.tasks[0];
+  if (task === undefined) throw new Error("missing evaluation task");
+  const verifier = Object.freeze({
+    kind: "agent-result-v1" as const,
+    sha256: "9".repeat(64),
+    bytes: 10,
+  });
+  return Object.freeze({
+    ...plan,
+    purpose: "acp-interoperability-v1" as const,
+    tasks: Object.freeze([
+      Object.freeze({
+        id: task.id,
+        fixture: task.fixture,
+        verifier: Object.freeze({
+          ...verifier,
+          digest: calculateEvaluationVerifierDigest(verifier.kind, verifier),
+        }),
+      }),
+    ]),
+  });
+}
+
+function qualificationObservation(profileId: string) {
+  const baseline = profileId === "baseline";
+  return Object.freeze({
+    version: 1 as const,
+    workflowDigest: "8".repeat(64),
+    capabilitySnapshotDigest: (baseline ? "3" : "4").repeat(64),
+    agent: Object.freeze({
+      name: baseline ? "baseline-agent" : "candidate-agent",
+      digest: (baseline ? "1" : "2").repeat(64),
+    }),
+    result: Object.freeze({ sha256: "9".repeat(64), bytes: 10 }),
+    durationMs: 25,
+    activity: Object.freeze({ turns: 1, toolCalls: 0, toolErrors: 0 }),
+    policyViolations: 0,
+    terminationStatus: "confirmed" as const,
+    processContainment: "process-group" as const,
+    sandbox: Object.freeze({
+      backend: "anthropic-sandbox-runtime",
+      backendVersion: "0.0.70",
+      profile: "acp-prompt-only-v1",
+      policyDigest: "7".repeat(64),
+    }),
+    usage: Object.freeze({
+      modelTokens: Object.freeze({ status: "complete" as const, totalTokens: 11 }),
+      costUsd: Object.freeze({ status: "complete" as const, costUsdMicros: 19 }),
+    }),
+    usageProvenance: Object.freeze({
+      modelTokens: "prompt-response" as const,
+      costUsd: "session-usage-update" as const,
+    }),
   });
 }
 

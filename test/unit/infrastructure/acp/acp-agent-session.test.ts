@@ -129,6 +129,40 @@ describe("ACP agent session", () => {
     connection.close();
   });
 
+  it("ignores bounded command-discovery metadata without granting command authority", async () => {
+    const transport = linkedStreams();
+    const connection = configurationAgent(transport.agent, {
+      prompt: async (params, client) => {
+        await client.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              {
+                name: "PRIVATE_COMMAND_NAME",
+                description: "PRIVATE_COMMAND_DESCRIPTION",
+              },
+            ],
+          },
+        });
+        await client.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "command metadata ignored" },
+          },
+        });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const result = await runAcpAgentSession(transport.client, baseRequest());
+
+    expect(result).toMatchObject({ text: "command metadata ignored", updateCount: 2 });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_COMMAND");
+    connection.close();
+  });
+
   it("retains an asynchronous notification failure after the prompt response settles", async () => {
     const transport = linkedStreams();
     const connection = configurationAgent(transport.agent, {

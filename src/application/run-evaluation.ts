@@ -2,20 +2,24 @@ import {
   type EvaluationTrialAttempt,
   parseEvaluationTrialAttempt,
 } from "../domain/evaluation/attempt.js";
+import { verifyEvaluationAgentResult } from "../domain/evaluation/agent-result-verifier.js";
 import type { VerifyEvaluationWorkspaceRequest } from "../domain/evaluation/filesystem-verifier.js";
 import type {
+  EvaluationAgentResultVerifierSource,
   EvaluationFilesystemAssertion,
   EvaluationPlanSource,
   EvaluationProfileSource,
   EvaluationTrialScheduleItem,
 } from "../domain/evaluation/plan.js";
 import {
+  type AcpQualificationObservation,
   createEvaluationTrialRecord,
   type EvaluationEnvironment,
   type EvaluationHarnessOutcome,
   type EvaluationMetrics,
   type EvaluationTrialRecord,
   type EvaluationVerificationOutcome,
+  parseAcpQualificationObservation,
   parseEvaluationHarnessOutcome,
   parseEvaluationMetrics,
   parseEvaluationTrialRecord,
@@ -32,6 +36,7 @@ import type { WorkspaceIsolator } from "./ports.js";
 
 export interface EvaluationExecutionPlan {
   readonly planDigest: string;
+  readonly purpose?: "acp-interoperability-v1";
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly controls: EvaluationPlanSource["controls"];
   readonly tasks: readonly {
@@ -44,11 +49,13 @@ export interface EvaluationExecutionPlan {
       readonly instructionPath: string;
       readonly instructionSha256: string;
     };
-    readonly verifier: {
-      readonly kind: "filesystem-v1";
-      readonly digest: string;
-      readonly assertions: readonly EvaluationFilesystemAssertion[];
-    };
+    readonly verifier:
+      | {
+          readonly kind: "filesystem-v1";
+          readonly digest: string;
+          readonly assertions: readonly EvaluationFilesystemAssertion[];
+        }
+      | (EvaluationAgentResultVerifierSource & { readonly digest: string });
   }[];
   readonly profiles: readonly {
     readonly id: string;
@@ -158,6 +165,7 @@ export async function runEvaluationTrials(
     };
     let metrics: EvaluationMetrics = unavailableEvaluationMetrics();
     let verification: EvaluationVerificationOutcome = notRun(task.verifier.digest);
+    let qualification: AcpQualificationObservation | undefined;
     let attempt: EvaluationTrialAttempt | undefined;
 
     try {
@@ -257,6 +265,12 @@ export async function runEvaluationTrials(
         try {
           harness = parseEvaluationHarnessOutcome(result.harness);
           metrics = parseEvaluationMetrics(result.metrics);
+          if (result.qualification !== undefined) {
+            if (task.verifier.kind !== "agent-result-v1") {
+              throw new Error("adapter returned ACP qualification evidence for an ordinary trial");
+            }
+            qualification = parseAcpQualificationObservation(result.qualification);
+          }
         } catch (error) {
           harness = {
             outcome: "malformed_output",
@@ -264,27 +278,32 @@ export async function runEvaluationTrials(
             reason: `adapter returned invalid evidence: ${boundedReason(error)}`,
           };
           metrics = unavailableEvaluationMetrics();
+          qualification = undefined;
         }
       }
       if (harness.outcome === "completed") {
-        try {
-          verification = reconcileVerificationEvidence(
-            await input.verifyWorkspace({
-              workspace,
-              expectedIdentity: Object.freeze({
-                workspaceId: workspace.workspaceId,
-                backend: workspace.backend,
-                snapshotDigest: workspace.snapshotDigest,
+        if (task.verifier.kind === "agent-result-v1") {
+          verification = verifyEvaluationAgentResult(qualification, task.verifier);
+        } else {
+          try {
+            verification = reconcileVerificationEvidence(
+              await input.verifyWorkspace({
+                workspace,
+                expectedIdentity: Object.freeze({
+                  workspaceId: workspace.workspaceId,
+                  backend: workspace.backend,
+                  snapshotDigest: workspace.snapshotDigest,
+                }),
+                verifier: task.verifier,
               }),
-              verifier: task.verifier,
-            }),
-            task.verifier,
-          );
-        } catch (error) {
-          verification = verifierError(
-            task.verifier.digest,
-            `verifier returned invalid evidence: ${boundedReason(error)}`,
-          );
+              task.verifier,
+            );
+          } catch (error) {
+            verification = verifierError(
+              task.verifier.digest,
+              `verifier returned invalid evidence: ${boundedReason(error)}`,
+            );
+          }
         }
       }
     } catch (error) {
@@ -296,6 +315,7 @@ export async function runEvaluationTrials(
       }
       harness = { outcome: "crashed", runId: null, reason: boundedReason(error) };
       metrics = unavailableEvaluationMetrics();
+      qualification = undefined;
     }
 
     if (isSignalAborted(input.signal)) {
@@ -307,6 +327,7 @@ export async function runEvaluationTrials(
       };
       metrics = unavailableEvaluationMetrics();
       verification = notRun(task.verifier.digest);
+      qualification = undefined;
     }
 
     const completedAt = now().toISOString();
@@ -326,6 +347,7 @@ export async function runEvaluationTrials(
         harness,
         verification,
         metrics,
+        ...(qualification === undefined ? {} : { qualification }),
       });
     } catch (error) {
       record = createEvaluationTrialRecord({
@@ -579,7 +601,10 @@ function verifierError(verifierDigest: string, reason: string): EvaluationVerifi
 
 function reconcileVerificationEvidence(
   raw: unknown,
-  expected: EvaluationExecutionPlan["tasks"][number]["verifier"],
+  expected: Extract<
+    EvaluationExecutionPlan["tasks"][number]["verifier"],
+    { readonly kind: "filesystem-v1" }
+  >,
 ): EvaluationVerificationOutcome {
   const verification = parseEvaluationVerificationOutcome(raw);
   if (verification.verifierDigest !== expected.digest) {

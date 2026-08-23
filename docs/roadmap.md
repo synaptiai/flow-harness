@@ -445,7 +445,7 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 
 ### Slice 10.1: Run a local ACP executor
 
-**Slices 10.1a and 10.1b are implemented. Cross-agent evaluation remains planned.**
+**Slices 10.1a, 10.1b, and 10.1c are implemented.**
 
 #### Implemented identity and admission
 
@@ -494,16 +494,32 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 - Prove Linux x64 filesystem, network, credential, and descendant containment in hosted runtime
   tests.
 
-#### Remaining interoperability work
+#### Implemented cross-agent qualification
 
-- Evaluate at least two independent ACP agents against the same workflow, controls, and private
-  verification before claiming cross-agent interoperability.
-- Decide whether a broader Flow-brokered authority profile is justified by those results. The
-  prompt-only profile remains the production default and does not treat ACP permission requests as
-  an authorization boundary.
+##### Paired evidence
+
+- Admit exactly two distinct ACP agent identities against one shared agent-to-result workflow,
+  shared controls, and canonical private result verification.
+- Run the deterministic paired schedule through the ordinary evaluation store. Bind each trial to
+  its workflow, capability snapshot, executor, containment, termination, usage, and result
+  evidence.
+- Publish qualified, not-qualified, or insufficient-evidence reports with complete scheduled
+  denominators, latency, token and cost accounting, failures, and explicit limitations.
+
+##### Live proof
+
+- Provide an opt-in live test for two operator-maintained production agents. Missing configuration
+  skips without a claim. Configured credential, runtime, model, accounting, or provider failures
+  fail without fallback.
+
+No agent pair is prequalified by implementation tests. A compatibility claim requires that pair's
+own complete `qualified` report. A broader Flow-brokered authority profile remains planned. The
+prompt-only profile remains the production default and does not treat ACP permission requests as an
+authorization boundary.
 
 Read [Local ACP v1 integration](acp.md#run-a-local-acp-executor) for operator steps, containment,
-recovery, accounting, and public-output behavior.
+recovery, accounting, and public-output behavior. Read
+[Qualify two local ACP agents](guides/qualify-acp-agents.md) for the paired qualification program.
 
 ### Slice 10.2: Evaluate phase-aware model routing
 

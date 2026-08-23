@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import {
   FlowWorkflowEvaluationAdapter,
@@ -20,6 +21,7 @@ import {
   calculatePortableHistoryIdentity,
   selectContextCompactionRange,
 } from "../../../src/domain/run/model-session.js";
+import { calculateAcpAgentSessionBindingDigest } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { JsonlModelSessionStore } from "../../../src/infrastructure/fs/jsonl-model-session-store.js";
@@ -159,6 +161,69 @@ describe("Flow workflow evaluation adapter", () => {
         outputTokens: 4,
       },
     });
+  });
+
+  it("returns a bounded authenticated ACP qualification observation", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Return the exact qualification result.\n");
+    const workflow = compiledAcpQualificationWorkflow();
+    const capabilitySnapshot = acpAgentCapabilitySnapshot("a", {
+      modelTokens: "complete",
+      costUsd: "complete",
+    });
+    const request = publicRequest(root);
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+        capabilitySnapshot,
+      },
+      {
+        executor: successfulAcpExecutor(capabilitySnapshot),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        clockMs: (() => {
+          const clock = [100, 125];
+          return () => clock.shift() ?? 125;
+        })(),
+      },
+    );
+
+    const result = await adapter.run(request);
+
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      qualification: {
+        version: 1,
+        workflowDigest: calculateWorkflowDigest(workflow),
+        capabilitySnapshotDigest: capabilitySnapshot.digest,
+        agent: {
+          name: capabilitySnapshot.acpAgent?.name,
+          digest: capabilitySnapshot.acpAgent?.digest,
+        },
+        result: {
+          sha256: sha256('"complete"'),
+          bytes: Buffer.byteLength('"complete"', "utf8"),
+        },
+        durationMs: 4,
+        activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
+        policyViolations: 0,
+        terminationStatus: "confirmed",
+        processContainment: "process-group",
+        usage: {
+          modelTokens: { status: "complete", totalTokens: 11 },
+          costUsd: { status: "complete", costUsdMicros: 19 },
+        },
+        usageProvenance: {
+          modelTokens: "prompt-response",
+          costUsd: "session-usage-update",
+        },
+      },
+    });
+    expect(Object.keys(result.qualification?.result ?? {}).sort()).toEqual(["bytes", "sha256"]);
+    expect(result.qualification).not.toHaveProperty("result.canonicalValue");
+    expect(result.qualification).not.toHaveProperty("result.text");
   });
 
   it("forwards the project artifact store into an evaluation trial", async () => {
@@ -589,6 +654,32 @@ nodes:
 `);
 }
 
+function compiledAcpQualificationWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: acp-qualification }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 1000
+  maxCostUsd: 0.1
+  maxExecutionMs: 60000
+  maxArtifactBytes: 524288
+nodes:
+  - id: answer
+    type: agent
+    agent:
+      prompt: Follow TASK.md and return only the result.
+      model: { provider: openai, id: gpt-5.6-codex }
+      tools: []
+  - id: publish
+    type: result
+    dependsOn: [answer]
+    result:
+      source: { nodeId: answer, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
 function compiledSkillWorkflow() {
   return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -733,6 +824,70 @@ function successfulExecutor(
           ...(capabilitySnapshot === undefined
             ? {}
             : { capabilities: createAgentCapabilityEvidence(capabilitySnapshot, ["review"]) }),
+        },
+      };
+    },
+  };
+}
+
+function successfulAcpExecutor(capabilitySnapshot: CapabilitySnapshot): NodeExecutor {
+  const snapshot = capabilitySnapshot.acpAgent;
+  if (snapshot === undefined) throw new Error("test requires an ACP agent snapshot");
+  return {
+    execute: async (node, context) => {
+      if (node.type !== "agent") throw new Error("unexpected executable node");
+      const text = '"complete"';
+      const sessionIdHash = "e".repeat(64);
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "agent",
+          provider: "openai",
+          model: "gpt-5.6-codex",
+          text,
+          textHash: sha256(text),
+          textTruncated: false,
+          durationMs: 4,
+          usageObservation: {
+            modelTokens: { status: "complete", totalTokens: 11 },
+            costUsd: { status: "complete", costUsdMicros: 19 },
+          },
+          activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
+          policyDecisions: [],
+          effectReceipts: [],
+          acp: {
+            version: 1,
+            executor: "local-acp-process-v1",
+            agentName: snapshot.name,
+            agentDigest: snapshot.digest,
+            protocol: "acp-v1",
+            compatibilityProfile: "prompt-only-v1",
+            containmentProfile: "acp-prompt-only-v1",
+            runtimeIdentity: "revalidated",
+            credentialLease: "srt-host-scoped-sentinel",
+            sessionIdHash,
+            sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+              runId: context.runId,
+              workflowId: context.workflowId,
+              nodeId: node.id,
+              attempt: context.attempt,
+              agentDigest: snapshot.digest,
+              sessionIdHash,
+            }),
+            processContainment: "process-group",
+            terminationStatus: "confirmed",
+            sandbox: {
+              backend: "anthropic-sandbox-runtime",
+              backendVersion: "0.0.70",
+              profile: "acp-prompt-only-v1",
+              policyDigest: "c".repeat(64),
+            },
+            usageProvenance: {
+              modelTokens: "prompt-response",
+              costUsd: "session-usage-update",
+            },
+            updateCount: 2,
+          },
         },
       };
     },
