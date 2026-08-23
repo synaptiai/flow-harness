@@ -247,7 +247,12 @@ interface TrustedArtifact {
   readonly sha256: string;
 }
 
-interface TrustedPackageClosure extends TrustedArtifact {
+interface TrustedRuntimeTree extends TrustedArtifact {
+  readonly bytes: number;
+  readonly files: number;
+}
+
+export interface TrustedPackageClosure extends TrustedRuntimeTree {
   readonly moduleSearchPaths: readonly string[];
   readonly runtimeSupportPaths: readonly string[];
 }
@@ -358,6 +363,8 @@ export async function readTrustedPackageClosure(
     readonly bindResolutionGraph?: boolean;
     readonly includeMarkdown?: boolean;
     readonly includePeerDependencies?: boolean;
+    readonly maxTotalBytes?: number;
+    readonly maxTotalFiles?: number;
     readonly rejectUnselectedNestedPackages?: boolean;
     readonly resolutionRoot?: string;
   } = {},
@@ -369,6 +376,8 @@ export async function readTrustedPackageClosure(
       readonly name: string;
       readonly version: string;
       readonly sha256: string;
+      readonly bytes: number;
+      readonly files: number;
     }
   >();
   const edges: Array<{
@@ -379,6 +388,20 @@ export async function readTrustedPackageClosure(
   }> = [];
   const moduleSearchPaths = new Set<string>();
   const runtimeSupportPaths = new Set<string>();
+  let closureBytes = 0;
+  let closureFiles = 0;
+  if (
+    options.maxTotalBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxTotalBytes) || options.maxTotalBytes < 1)
+  ) {
+    throw new RangeError("package closure byte limit must be a positive safe integer");
+  }
+  if (
+    options.maxTotalFiles !== undefined &&
+    (!Number.isSafeInteger(options.maxTotalFiles) || options.maxTotalFiles < 1)
+  ) {
+    throw new RangeError("package closure file limit must be a positive safe integer");
+  }
   const closureRoot = await realpath(root);
   const resolutionRoot =
     options.resolutionRoot === undefined
@@ -424,11 +447,21 @@ export async function readTrustedPackageClosure(
       options.includeMarkdown === true,
     );
     const nodeId = packageNodeId(closureRoot, canonicalPackageRoot);
+    closureBytes += tree.bytes;
+    closureFiles += tree.files;
+    if (!Number.isSafeInteger(closureBytes) || closureBytes > (options.maxTotalBytes ?? Infinity)) {
+      throw new Error(`${label} exceeds its runtime byte limit`);
+    }
+    if (!Number.isSafeInteger(closureFiles) || closureFiles > (options.maxTotalFiles ?? Infinity)) {
+      throw new Error(`${label} exceeds its runtime file limit`);
+    }
     packages.set(canonicalPackageRoot, {
       nodeId,
       name: manifest.name,
       version: manifest.version,
       sha256: tree.sha256,
+      bytes: tree.bytes,
+      files: tree.files,
     });
     for (const dependency of Object.keys(manifest.dependencies).sort()) {
       const dependencyRoot = await resolveDependencyRoot(
@@ -506,9 +539,14 @@ export async function readTrustedPackageClosure(
   }
   const records = options.bindResolutionGraph
     ? {
-        packages: [...packages.values()].sort((left, right) =>
-          left.nodeId.localeCompare(right.nodeId),
-        ),
+        packages: [...packages.values()]
+          .map(({ nodeId, name, version, sha256: digest }) => ({
+            nodeId,
+            name,
+            version,
+            sha256: digest,
+          }))
+          .sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
         edges: edges.sort((left, right) =>
           `${left.from}:${left.kind}:${left.dependency}:${left.to}`.localeCompare(
             `${right.from}:${right.kind}:${right.dependency}:${right.to}`,
@@ -525,6 +563,8 @@ export async function readTrustedPackageClosure(
   return Object.freeze({
     path: closureRoot,
     sha256: sha256(JSON.stringify(records)),
+    bytes: closureBytes,
+    files: closureFiles,
     moduleSearchPaths: Object.freeze([...moduleSearchPaths]),
     runtimeSupportPaths: Object.freeze([...runtimeSupportPaths].sort()),
   });
@@ -790,9 +830,16 @@ export async function readTrustedRootSet(
   const records: string[] = [];
   const moduleSearchPaths = new Set<string>();
   const runtimeSupportPaths = new Set<string>();
+  let bytes = 0;
+  let files = 0;
   for (const root of roots) {
     const tree = await readTrustedPackageClosureFromUnknownRoot(root, label, observations, options);
     records.push(tree.sha256);
+    bytes += tree.bytes;
+    files += tree.files;
+    if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(files)) {
+      throw new Error(`${label} aggregate size exceeds a safe integer`);
+    }
     tree.moduleSearchPaths.forEach((path) => {
       moduleSearchPaths.add(path);
     });
@@ -804,6 +851,8 @@ export async function readTrustedRootSet(
   return Object.freeze({
     path: "",
     sha256: sha256(JSON.stringify(records)),
+    bytes,
+    files,
     moduleSearchPaths: Object.freeze([...moduleSearchPaths]),
     runtimeSupportPaths: Object.freeze([...runtimeSupportPaths].sort()),
   });
@@ -847,12 +896,13 @@ export async function readTrustedRuntimeTree(
   observations: ArtifactObservations,
   omitNodeModules = false,
   includeMarkdown = false,
-): Promise<TrustedArtifact> {
+): Promise<TrustedRuntimeTree> {
   await observations.add(root);
   const canonicalRoot = await realpath(root);
   const hash = createHash("sha256");
   let entries = 0;
   let totalBytes = 0;
+  let files = 0;
 
   async function visit(directory: string): Promise<void> {
     const before = await lstat(directory, { bigint: true });
@@ -906,6 +956,7 @@ export async function readTrustedRuntimeTree(
         observations,
         MAX_RUNTIME_TREE_BYTES,
       );
+      files += 1;
       hash.update(`${pathFromRoot}\0${(Number(stat.mode) & 0o777).toString(8)}\0${size}\0`);
       hash.update(artifact.sha256);
       hash.update("\0");
@@ -918,7 +969,12 @@ export async function readTrustedRuntimeTree(
   }
 
   await visit(canonicalRoot);
-  return Object.freeze({ path: canonicalRoot, sha256: hash.digest("hex") });
+  return Object.freeze({
+    path: canonicalRoot,
+    sha256: hash.digest("hex"),
+    bytes: totalBytes,
+    files,
+  });
 }
 
 function ignoredRuntimePath(path: string): boolean {

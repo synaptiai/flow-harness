@@ -80,6 +80,9 @@ describe("ACP agent runtime capability", () => {
       nodeVersion: "v26.7.0",
       package: {
         root: "/opt/flow/acp/codex-acp",
+        resolutionRoot: "/opt/flow/acp",
+        name: "@zed-industries/codex-acp",
+        version: "1.6.2",
         sha256: "c".repeat(64),
         bytes: 345_678,
         files: 42,
@@ -191,6 +194,26 @@ describe("ACP agent runtime capability", () => {
       mutate: (input: ReturnType<typeof validNodePackageInput>) => ({
         ...input,
         launch: { ...input.launch, nodeVersion: "v27.0.0" },
+      }),
+    },
+    {
+      label: "package name mismatch",
+      mutate: (input: ReturnType<typeof validNodePackageInput>) => ({
+        ...input,
+        launch: {
+          ...input.launch,
+          package: { ...input.launch.package, name: "private-agent" },
+        },
+      }),
+    },
+    {
+      label: "package version mismatch",
+      mutate: (input: ReturnType<typeof validNodePackageInput>) => ({
+        ...input,
+        launch: {
+          ...input.launch,
+          package: { ...input.launch.package, version: "9.9.9" },
+        },
       }),
     },
     {
@@ -395,6 +418,9 @@ function validNodePackageInput() {
       nodeVersion: "v26.7.0",
       package: {
         root: "/opt/flow/acp/codex-acp",
+        resolutionRoot: "/opt/flow/acp",
+        name: "@zed-industries/codex-acp",
+        version: "1.6.2",
         sha256: "c".repeat(64),
         bytes: 345_678,
         files: 42,
@@ -477,6 +503,9 @@ function nodePackageManifest(): Buffer {
           nodeExecutableSha256: "b".repeat(64),
           nodeVersion: "v26.7.0",
           packageRoot: "/opt/flow/acp/codex-acp",
+          packageResolutionRoot: "/opt/flow/acp",
+          packageName: "@zed-industries/codex-acp",
+          packageVersion: "1.6.2",
           packageSha256: "c".repeat(64),
           packageEntrypoint: "dist/cli.js",
           args: ["--stdio"],

@@ -33,6 +33,18 @@ const providerSchema = z
   .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
 const modelSchema = z.string().min(1).max(256).refine(isBoundedPlainText);
 const agentModelSchema = z.string().min(1).max(256).refine(isBoundedPlainText);
+const packageNameSchema = z
+  .string()
+  .min(1)
+  .max(214)
+  .regex(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/);
+const packageVersionSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(
+    /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+  );
 const providerDomainSchema = z
   .string()
   .min(1)
@@ -102,6 +114,9 @@ const nodePackageManifestLaunchSchema = z
     nodeExecutableSha256: sha256Schema,
     nodeVersion: nodeVersionSchema,
     packageRoot: executablePathSchema,
+    packageResolutionRoot: executablePathSchema,
+    packageName: packageNameSchema,
+    packageVersion: packageVersionSchema,
     packageSha256: sha256Schema,
     packageEntrypoint: portablePathSchema,
     args: argumentsSchema,
@@ -174,6 +189,9 @@ const entrypointIdentitySchema = z
 const packageClosureIdentitySchema = z
   .object({
     root: executablePathSchema,
+    resolutionRoot: executablePathSchema,
+    name: packageNameSchema,
+    version: packageVersionSchema,
     sha256: sha256Schema,
     bytes: z.number().int().positive().max(MAX_ACP_AGENT_PACKAGE_BYTES),
     files: z.number().int().positive().max(MAX_ACP_AGENT_PACKAGE_FILES),
@@ -260,6 +278,9 @@ export interface AcpAgentArtifactIdentity {
 
 export interface AcpAgentPackageClosureIdentity {
   readonly root: string;
+  readonly resolutionRoot: string;
+  readonly name: string;
+  readonly version: string;
   readonly sha256: string;
   readonly bytes: number;
   readonly files: number;
@@ -503,6 +524,9 @@ function assertLaunchMatchesManifest(
       launch.nodeExecutable.sha256 !== declared.nodeExecutableSha256 ||
       launch.nodeVersion !== declared.nodeVersion ||
       launch.package.root !== declared.packageRoot ||
+      launch.package.resolutionRoot !== declared.packageResolutionRoot ||
+      launch.package.name !== declared.packageName ||
+      launch.package.version !== declared.packageVersion ||
       launch.package.sha256 !== declared.packageSha256 ||
       launch.package.entrypoint.path !== declared.packageEntrypoint
     ) {
