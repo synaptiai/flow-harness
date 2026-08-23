@@ -1,4 +1,5 @@
 import type { CompiledGoal } from "../goal/types.js";
+import type { LeanProofRuntimeIdentity } from "../proof/lean-proof-verification.js";
 
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const WORK_PROFILES = Object.freeze(["fast", "standard", "long"] as const);
@@ -181,6 +182,16 @@ export type CompiledVerifierConfig =
         readonly id: string;
         readonly thinking: ThinkingLevel;
       };
+      readonly timeoutMs: number;
+    }
+  | {
+      readonly kind: "lean-proof";
+      readonly targetDeclaration: string;
+      readonly specification: CompiledVerifierEvidenceSource;
+      readonly statement: CompiledVerifierEvidenceSource;
+      readonly proof: CompiledVerifierEvidenceSource;
+      readonly faithfulnessApprovalNodeId: string;
+      readonly runtime: LeanProofRuntimeIdentity;
       readonly timeoutMs: number;
     }
   | {

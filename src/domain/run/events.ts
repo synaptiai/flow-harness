@@ -73,6 +73,14 @@ import {
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
 import {
+  decideLeanProofVerification,
+  isLeanProofExecutionEvidence,
+  isLeanProofRequest,
+  type LeanProofExecutionEvidence,
+  type LeanProofRequest,
+  type LeanProofRuntimeIdentity,
+} from "../proof/lean-proof-verification.js";
+import {
   evaluateOptimizationBaseline,
   evaluateOptimizationCandidate,
   type OptimizationInvariantObservation,
@@ -112,20 +120,20 @@ import {
 } from "../workflow/types.js";
 import {
   type AgentModelUsage,
-  type ModelUsageObservation,
   addRunResources,
   agentModelUsageSchema,
   budgetExhaustionReason,
   calculateRunBudgetState,
   committedDurationMs,
   emptyRunResources,
+  type ModelUsageObservation,
   modelUsageObservationFromLegacy,
   modelUsageObservationSchema,
   RUN_BUDGET_DIMENSIONS,
   type RunBudgetExhaustion,
   type RunBudgetState,
-  type RunResourceConsumption,
   type RunResourceAvailability,
+  type RunResourceConsumption,
   retainedArtifactBytes,
   runBudgetExhaustionSchema,
   runBudgetLimitsSchema,
@@ -287,7 +295,17 @@ export interface ModelVerifierEvidence extends VerifierEvidenceBase {
   readonly acp?: AcpAgentExecutionEvidence;
 }
 
-export type VerifierEvidence = CommandVerifierEvidence | ModelVerifierEvidence;
+export interface LeanProofVerifierEvidence extends VerifierEvidenceBase {
+  readonly driver: "lean-proof";
+  readonly result: "completed" | "execution_failed";
+  readonly request: LeanProofRequest | null;
+  readonly execution: LeanProofExecutionEvidence | null;
+}
+
+export type VerifierEvidence =
+  | CommandVerifierEvidence
+  | ModelVerifierEvidence
+  | LeanProofVerifierEvidence;
 
 export interface ChildRunLink {
   readonly runId: string;
@@ -2071,6 +2089,36 @@ const modelVerifierEvidenceSchema = z
     }
   });
 
+const leanProofVerifierEvidenceSchema = z
+  .object({
+    ...verifierEvidenceCommonShape,
+    driver: z.literal("lean-proof"),
+    result: z.enum(["completed", "execution_failed"]),
+    sources: z.array(verifierSourceObservationSchema).length(3),
+    request: z
+      .custom<LeanProofRequest>(isLeanProofRequest, "invalid Lean proof request")
+      .nullable(),
+    execution: z
+      .custom<LeanProofExecutionEvidence>(
+        isLeanProofExecutionEvidence,
+        "invalid Lean proof execution evidence",
+      )
+      .nullable(),
+  })
+  .strict()
+  .superRefine((evidence, context) => {
+    if (
+      (evidence.result === "completed" &&
+        (evidence.request === null || evidence.execution === null)) ||
+      (evidence.result === "execution_failed" && evidence.execution !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "proof evidence result does not match its request and execution state",
+      });
+    }
+  });
+
 const childRunLinkSchema = z
   .object({
     runId: identifierSchema,
@@ -2150,6 +2198,7 @@ const nodeEvidenceSchema = z.union([
   agentEvidenceSchema,
   commandVerifierEvidenceSchema,
   modelVerifierEvidenceSchema,
+  leanProofVerifierEvidenceSchema,
   childEvidenceSchema,
 ]);
 
@@ -2349,6 +2398,38 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
           thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
         })
         .strict(),
+      timeoutMs: z.number().int().positive().max(86_400_000),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("lean-proof"),
+      targetDeclaration: z
+        .string()
+        .min(3)
+        .max(512)
+        .regex(/^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)+$/),
+      specification: z
+        .object({ nodeId: identifierSchema, field: evidenceSourceFieldSchema })
+        .strict(),
+      statement: z.object({ nodeId: identifierSchema, field: evidenceSourceFieldSchema }).strict(),
+      proof: z.object({ nodeId: identifierSchema, field: evidenceSourceFieldSchema }).strict(),
+      faithfulnessApprovalNodeId: identifierSchema,
+      runtime: z
+        .object({
+          version: z.literal(1),
+          platform: z.literal("linux"),
+          architecture: z.literal("x64"),
+          imageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+          buildAttestationDigest: sha256Schema,
+          dependencyManifestDigest: sha256Schema,
+          leanVersion: z.string().regex(/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/),
+          mathlibRevision: sha256Schema,
+          safeVerifyRevision: sha256Schema,
+          nanodaRevision: sha256Schema,
+          profileDigest: sha256Schema,
+        })
+        .strict() satisfies z.ZodType<LeanProofRuntimeIdentity>,
       timeoutMs: z.number().int().positive().max(86_400_000),
     })
     .strict(),
@@ -7274,13 +7355,30 @@ function serializeLoopTemplateStructure(
     const verifier =
       node.verifier.kind === "command" || node.verifier.kind === "packaged-command"
         ? node.verifier
-        : {
-            ...node.verifier,
-            evidence: node.verifier.evidence.map((source) => ({
-              nodeId: templateNodeId(source.nodeId),
-              field: source.field,
-            })),
-          };
+        : node.verifier.kind === "lean-proof"
+          ? {
+              ...node.verifier,
+              specification: {
+                nodeId: templateNodeId(node.verifier.specification.nodeId),
+                field: node.verifier.specification.field,
+              },
+              statement: {
+                nodeId: templateNodeId(node.verifier.statement.nodeId),
+                field: node.verifier.statement.field,
+              },
+              proof: {
+                nodeId: templateNodeId(node.verifier.proof.nodeId),
+                field: node.verifier.proof.field,
+              },
+              faithfulnessApprovalNodeId: templateNodeId(node.verifier.faithfulnessApprovalNodeId),
+            }
+          : {
+              ...node.verifier,
+              evidence: node.verifier.evidence.map((source) => ({
+                nodeId: templateNodeId(source.nodeId),
+                field: source.field,
+              })),
+            };
     return JSON.stringify({
       ...common,
       ...(node.when === undefined
@@ -8326,6 +8424,7 @@ function artifactBytesForEvidence(evidence: Exclude<NodeEvidence, ChildEvidence>
       if (evidence.driver === "model") {
         return retainedArtifactBytes([evidence.raw]);
       }
+      if (evidence.driver === "lean-proof") return 0;
       return evidence.command === null
         ? 0
         : retainedArtifactBytes([evidence.command.stdout, evidence.command.stderr]);
@@ -8504,7 +8603,7 @@ function validateChildEvidenceProjection(
 
 type InlineVerifierRequirement = Extract<
   CompiledVerifierConfig,
-  { readonly kind: "command" | "model" }
+  { readonly kind: "command" | "model" | "lean-proof" }
 >;
 
 function resolvePersistedVerifierRequirement(
@@ -8515,7 +8614,7 @@ function resolvePersistedVerifierRequirement(
   eventIndex: number,
 ): InlineVerifierRequirement {
   const declared = requirement.verifier;
-  if (declared.kind === "command" || declared.kind === "model") {
+  if (declared.kind === "command" || declared.kind === "model" || declared.kind === "lean-proof") {
     if (
       packageRequirement !== undefined ||
       (evidence?.kind === "verifier" && evidence.package !== undefined)
@@ -8726,6 +8825,11 @@ function validateVerifierEvidenceProjection(
     return;
   }
 
+  if (evidence.driver === "lean-proof") {
+    validateLeanProofVerifierEvidence(verifier, nodes, event, evidence, eventIndex);
+    return;
+  }
+
   if (verifier.kind !== "model") {
     throw new RunReplayError(eventIndex, "model verifier evidence has no model requirement");
   }
@@ -8792,6 +8896,142 @@ function validateVerifierEvidenceProjection(
     }
   } else if (evidence.verdict !== "inconclusive") {
     throw new RunReplayError(eventIndex, "unparsed model verifier output must be inconclusive");
+  }
+}
+
+function validateLeanProofVerifierEvidence(
+  verifier: InlineVerifierRequirement,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  evidence: LeanProofVerifierEvidence,
+  eventIndex: number,
+): void {
+  if (verifier.kind !== "lean-proof") {
+    throw new RunReplayError(eventIndex, "Lean proof evidence has no proof verifier requirement");
+  }
+  const declarations = [verifier.specification, verifier.statement, verifier.proof];
+  if (evidence.sources.length !== declarations.length) {
+    throw new RunReplayError(eventIndex, "Lean proof source observations are incomplete");
+  }
+  for (const [index, declaration] of declarations.entries()) {
+    const observation = evidence.sources[index];
+    const actual = verifierSourceObservation(event.nodeId, declaration, nodes, eventIndex);
+    if (
+      observation === undefined ||
+      actual.truncated ||
+      observation.sourceNodeId !== declaration.nodeId ||
+      observation.sourceAttempt !== actual.attempt ||
+      observation.sourceField !== declaration.field ||
+      observation.sourceHash !== actual.hash
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `Lean proof source ${index + 1} does not match complete durable evidence`,
+      );
+    }
+  }
+  if (evidence.result === "execution_failed") {
+    if (
+      evidence.execution !== null ||
+      evidence.verdict !== "inconclusive" ||
+      evidence.durationMs !== 0
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "failed Lean proof execution must be an inconclusive zero-duration result",
+      );
+    }
+    validateOptionalLeanProofRequest(verifier, nodes, evidence, eventIndex);
+    return;
+  }
+  if (evidence.request === null || evidence.execution === null) {
+    throw new RunReplayError(eventIndex, "completed Lean proof evidence is incomplete");
+  }
+  validateLeanProofRequestProjection(verifier, nodes, evidence, evidence.request, eventIndex);
+  if (
+    evidence.execution.requestDigest !== evidence.request.requestDigest ||
+    JSON.stringify(evidence.execution.runtimeIdentity) !== JSON.stringify(verifier.runtime)
+  ) {
+    throw new RunReplayError(eventIndex, "Lean proof execution identity is inconsistent");
+  }
+  const expectedDuration =
+    evidence.execution.compiler.durationMs +
+    evidence.execution.safeVerify.durationMs +
+    evidence.execution.nanoda.durationMs;
+  if (evidence.durationMs !== expectedDuration) {
+    throw new RunReplayError(eventIndex, "Lean proof duration does not match checker evidence");
+  }
+  const decision = decideLeanProofVerification(evidence.request, evidence.execution);
+  if (decision.verdict !== evidence.verdict || decision.reason !== evidence.reason) {
+    throw new RunReplayError(eventIndex, "Lean proof verdict contradicts deterministic evidence");
+  }
+  if (
+    evidence.execution.cleanup === "unconfirmed" &&
+    event.type === "node_failed" &&
+    event.error.sideEffectStatus !== "uncertain"
+  ) {
+    throw new RunReplayError(eventIndex, "unconfirmed proof cleanup must preserve uncertainty");
+  }
+}
+
+function validateOptionalLeanProofRequest(
+  verifier: Extract<InlineVerifierRequirement, { readonly kind: "lean-proof" }>,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  evidence: LeanProofVerifierEvidence,
+  eventIndex: number,
+): void {
+  if (evidence.request !== null) {
+    validateLeanProofRequestProjection(verifier, nodes, evidence, evidence.request, eventIndex);
+  }
+}
+
+function validateLeanProofRequestProjection(
+  verifier: Extract<InlineVerifierRequirement, { readonly kind: "lean-proof" }>,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  evidence: LeanProofVerifierEvidence,
+  request: LeanProofRequest,
+  eventIndex: number,
+): void {
+  if (
+    request.targetDeclaration !== verifier.targetDeclaration ||
+    JSON.stringify(request.runtime) !== JSON.stringify(verifier.runtime) ||
+    request.specificationDigest !== evidence.sources[0]?.sourceHash ||
+    request.statementDigest !== evidence.sources[1]?.sourceHash ||
+    request.proofDigest !== evidence.sources[2]?.sourceHash
+  ) {
+    throw new RunReplayError(eventIndex, "Lean proof request does not match its declaration");
+  }
+  const approvalNode = nodes[verifier.faithfulnessApprovalNodeId];
+  const approval = approvalNode?.workflowApproval;
+  if (
+    approvalNode?.status !== "succeeded" ||
+    approval?.status !== "approved" ||
+    approval.actor === null ||
+    approval.decidedAt === null ||
+    request.faithfulness.approverIdentityHash !== sha256(approval.actor) ||
+    request.faithfulness.approvedAt !== approval.decidedAt ||
+    approval.request.evidence.length !== 2 ||
+    approval.request.evidence[0]?.sourceHash !== request.specificationDigest ||
+    approval.request.evidence[1]?.sourceHash !== request.statementDigest
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "Lean proof request lacks exact durable human faithfulness approval",
+    );
+  }
+  const proofSource = nodes[verifier.proof.nodeId]?.evidence;
+  if (proofSource?.kind === "agent") {
+    if (
+      request.proofModel === undefined ||
+      request.proofModel.provider !== proofSource.provider ||
+      request.proofModel.model !== proofSource.model ||
+      request.proofModel.selectionRule !== "exact-model-v1" ||
+      request.proofModel.fallback !== "deny"
+    ) {
+      throw new RunReplayError(eventIndex, "Lean proof model provenance is inconsistent");
+    }
+  } else if (request.proofModel !== undefined) {
+    throw new RunReplayError(eventIndex, "non-model proof source cannot report a proof model");
   }
 }
 
@@ -9537,7 +9777,7 @@ function validateEvidenceIntegrity(
       if (!evidence.rawTruncated && evidence.rawHash !== sha256(evidence.raw)) {
         throw new RunReplayError(eventIndex, "verifier raw output hash is invalid");
       }
-    } else if (evidence.command !== null) {
+    } else if (evidence.driver === "command" && evidence.command !== null) {
       validateEvidenceIntegrity(
         evidence.command,
         event,

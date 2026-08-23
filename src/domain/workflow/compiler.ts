@@ -101,6 +101,8 @@ export interface WorkflowDiagnostic {
     | "optimization_pointer_invalid"
     | "optimization_pointer_unresolved"
     | "optimization_schema_mismatch"
+    | "proof_faithfulness_approval_mismatch"
+    | "proof_faithfulness_approval_type"
     | "result_source_field_mismatch"
     | "result_source_requires_dependency"
     | "result_source_self"
@@ -934,13 +936,14 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
   }
 
   for (const [index, verifier] of nodes.entries()) {
-    if (
-      verifier.type !== "verifier" ||
-      (verifier.verifier.kind !== "model" && verifier.verifier.kind !== "packaged-model")
-    ) {
-      continue;
-    }
-    for (const [sourceIndex, declaration] of verifier.verifier.evidence.entries()) {
+    if (verifier.type !== "verifier") continue;
+    const declarations =
+      verifier.verifier.kind === "model" || verifier.verifier.kind === "packaged-model"
+        ? verifier.verifier.evidence
+        : verifier.verifier.kind === "lean-proof"
+          ? [verifier.verifier.specification, verifier.verifier.statement, verifier.verifier.proof]
+          : [];
+    for (const [sourceIndex, declaration] of declarations.entries()) {
       const path = `${prefix}.${index}.verifier.evidence.${sourceIndex}`;
       const source = nodeById.get(declaration.nodeId);
       if (declaration.nodeId === verifier.id) {
@@ -973,6 +976,9 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
           message: `verifier "${verifier.id}" evidence field "${declaration.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
         });
       }
+    }
+    if (verifier.verifier.kind === "lean-proof") {
+      validateProofFaithfulnessApproval(verifier, index, nodeById, prefix, diagnostics);
     }
   }
 
@@ -1250,6 +1256,47 @@ function evidenceFieldMatchesNode(
   );
 }
 
+function validateProofFaithfulnessApproval(
+  verifier: Extract<SourceNode | SourceBodyNode, { readonly type: "verifier" }>,
+  index: number,
+  nodeById: ReadonlyMap<string, SourceNode | SourceBodyNode>,
+  prefix: string,
+  diagnostics: WorkflowDiagnostic[],
+): void {
+  if (verifier.verifier.kind !== "lean-proof") return;
+  const path = `${prefix}.${index}.verifier.faithfulnessApprovalNodeId`;
+  const approval = nodeById.get(verifier.verifier.faithfulnessApprovalNodeId);
+  if (approval?.type !== "approval") {
+    diagnostics.push({
+      code: "proof_faithfulness_approval_type",
+      path,
+      message: `proof verifier "${verifier.id}" faithfulness authority must be a workflow approval node`,
+    });
+    return;
+  }
+  if (!verifier.dependsOn.includes(approval.id)) {
+    diagnostics.push({
+      code: "verifier_source_requires_dependency",
+      path,
+      message: `proof verifier "${verifier.id}" faithfulness approval "${approval.id}" must be a direct dependency`,
+    });
+  }
+  const required = [verifier.verifier.specification, verifier.verifier.statement].map(
+    (source) => `${source.nodeId}\0${source.field}`,
+  );
+  const observed = approval.approval.evidence.map((source) => `${source.nodeId}\0${source.field}`);
+  if (
+    required.length !== observed.length ||
+    required.some((source) => !observed.includes(source))
+  ) {
+    diagnostics.push({
+      code: "proof_faithfulness_approval_mismatch",
+      path,
+      message: `proof verifier "${verifier.id}" approval must bind the exact specification and statement sources`,
+    });
+  }
+}
+
 function conditionCases(
   condition: Extract<SourceNode | SourceBodyNode, { readonly type: "condition" }>,
 ): readonly string[] {
@@ -1509,6 +1556,17 @@ function freezeNode(
         prompt: source.verifier.prompt,
         evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
         model: Object.freeze({ ...source.verifier.model }),
+        timeoutMs: source.verifier.timeoutMs,
+      });
+    } else if (source.verifier.kind === "lean-proof") {
+      verifier = Object.freeze({
+        kind: "lean-proof" as const,
+        targetDeclaration: source.verifier.targetDeclaration,
+        specification: Object.freeze({ ...source.verifier.specification }),
+        statement: Object.freeze({ ...source.verifier.statement }),
+        proof: Object.freeze({ ...source.verifier.proof }),
+        faithfulnessApprovalNodeId: source.verifier.faithfulnessApprovalNodeId,
+        runtime: Object.freeze({ ...source.verifier.runtime }),
         timeoutMs: source.verifier.timeoutMs,
       });
     } else if (source.verifier.kind === "packaged-command") {
@@ -1923,6 +1981,34 @@ function freezeLoopBodyNode(
           ),
         ),
         model: Object.freeze({ ...source.verifier.model }),
+        timeoutMs: source.verifier.timeoutMs,
+      });
+    } else if (source.verifier.kind === "lean-proof") {
+      verifier = Object.freeze({
+        kind: "lean-proof" as const,
+        targetDeclaration: source.verifier.targetDeclaration,
+        specification: Object.freeze({
+          nodeId: requireMappedLoopNode(
+            idByTemplate,
+            source.verifier.specification.nodeId,
+            loop.id,
+          ),
+          field: source.verifier.specification.field,
+        }),
+        statement: Object.freeze({
+          nodeId: requireMappedLoopNode(idByTemplate, source.verifier.statement.nodeId, loop.id),
+          field: source.verifier.statement.field,
+        }),
+        proof: Object.freeze({
+          nodeId: requireMappedLoopNode(idByTemplate, source.verifier.proof.nodeId, loop.id),
+          field: source.verifier.proof.field,
+        }),
+        faithfulnessApprovalNodeId: requireMappedLoopNode(
+          idByTemplate,
+          source.verifier.faithfulnessApprovalNodeId,
+          loop.id,
+        ),
+        runtime: Object.freeze({ ...source.verifier.runtime }),
         timeoutMs: source.verifier.timeoutMs,
       });
     } else if (source.verifier.kind === "packaged-command") {

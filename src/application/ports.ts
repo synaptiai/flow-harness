@@ -1,10 +1,15 @@
-import type { AgentCommandRequest } from "../domain/agent-command.js";
 import type { PhaseRoutingDecision } from "../domain/adaptation/phase-routing-candidate.js";
+import type { AgentCommandRequest } from "../domain/agent-command.js";
 import type { AgentCommandApprovalRequest } from "../domain/approval/command-approval.js";
 import type { ArtifactProducer } from "../domain/artifact/reference.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
+import type {
+  LeanProofExecutionEvidence,
+  LeanProofModelRoute,
+  LeanProofRequest,
+} from "../domain/proof/lean-proof-verification.js";
 import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import type {
   AgentCommandApprovalReference,
@@ -179,6 +184,7 @@ export interface NodeExecutionContext {
   readonly agentCommandApprovalGate?: NodeAgentCommandApprovalGate;
   readonly agentCommandExecutor?: AgentCommandExecutor;
   readonly verifierSources?: readonly VerifierSourceInput[];
+  readonly proofFaithfulnessApproval?: LeanProofFaithfulnessApprovalContext;
   readonly verifierPackage?: VerifierPackageUseEvidence;
   readonly agentSystemPrompt?: string;
   readonly agentGoalWorkspace?: string;
@@ -202,6 +208,37 @@ export interface VerifierSourceInput {
   readonly sourceHash: string;
   readonly value: string;
   readonly truncated: boolean;
+  readonly proofModel?: LeanProofModelRoute;
+}
+
+export interface LeanProofFaithfulnessApprovalContext {
+  readonly nodeId: string;
+  readonly actor: string;
+  readonly approvedAt: string;
+  readonly requestDigest: string;
+  readonly evidence: readonly {
+    readonly sourceNodeId: string;
+    readonly sourceAttempt: number;
+    readonly sourceField: EvidenceSourceField;
+    readonly sourceHash: string;
+  }[];
+}
+
+export interface LeanProofDriverContext {
+  readonly runId: string;
+  readonly workflowId: string;
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly cwd: string;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface LeanProofDriver {
+  execute(
+    request: LeanProofRequest,
+    context: LeanProofDriverContext,
+  ): Promise<LeanProofExecutionEvidence>;
 }
 
 export interface NodeEffectJournal {

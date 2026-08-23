@@ -1,8 +1,111 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { projectPublicRunOutput } from "../../../src/cli/public-output.js";
+import { createLeanProofRequest } from "../../../src/domain/proof/lean-proof-verification.js";
 
 describe("public run output", () => {
+  it("replaces private proof content with bounded identities", () => {
+    const specification = "PRIVATE_SPECIFICATION: n + 0 = n";
+    const statement = "PRIVATE_STATEMENT: theorem add_zero";
+    const proof = "PRIVATE_PROOF: by omega";
+    const specificationDigest = sha256(specification);
+    const statementDigest = sha256(statement);
+    const request = createLeanProofRequest({
+      specification,
+      statement,
+      proof,
+      targetDeclaration: "Flow.Proof.add_zero",
+      runtime: {
+        version: 1,
+        platform: "linux",
+        architecture: "x64",
+        imageDigest: `sha256:${"a".repeat(64)}`,
+        buildAttestationDigest: "b".repeat(64),
+        dependencyManifestDigest: "c".repeat(64),
+        leanVersion: "4.33.1",
+        mathlibRevision: "d".repeat(64),
+        safeVerifyRevision: "e".repeat(64),
+        nanodaRevision: "1".repeat(64),
+        profileDigest: "2".repeat(64),
+      },
+      faithfulness: {
+        version: 1,
+        authority: "human",
+        approverIdentityHash: "3".repeat(64),
+        approvedAt: "2026-08-24T10:00:00.000Z",
+        specificationDigest,
+        statementDigest,
+      },
+    });
+    const execution = {
+      version: 1,
+      requestDigest: request.requestDigest,
+      runtimeIdentity: request.runtime,
+      compiler: {
+        status: "accepted",
+        targetDeclaration: request.targetDeclaration,
+        statementDigest,
+        environmentDigest: "4".repeat(64),
+        durationMs: 1,
+      },
+      safeVerify: {
+        status: "accepted",
+        targetDeclaration: request.targetDeclaration,
+        statementDigest,
+        environmentDigest: "4".repeat(64),
+        observedAxioms: ["propext"],
+        reasonCode: "accepted",
+        durationMs: 1,
+      },
+      nanoda: {
+        status: "accepted",
+        environmentDigest: "4".repeat(64),
+        reasonCode: "accepted",
+        durationMs: 1,
+      },
+      cleanup: "confirmed",
+    } as const;
+
+    const projected = projectPublicRunOutput({
+      type: "node_succeeded",
+      evidence: {
+        kind: "verifier",
+        driver: "lean-proof",
+        result: "completed",
+        verdict: "accepted",
+        reason: "accepted",
+        reasonHash: sha256("accepted"),
+        durationMs: 3,
+        sources: [],
+        request,
+        execution,
+      },
+    });
+    const serialized = JSON.stringify(projected);
+
+    expect(projected).toMatchObject({
+      evidence: {
+        kind: "verifier",
+        driver: "lean-proof",
+        request: {
+          requestDigest: request.requestDigest,
+          specification: { digest: request.specificationDigest, bytes: 32 },
+          statement: { digest: request.statementDigest, bytes: 35 },
+          proof: { digest: request.proofDigest, bytes: 23 },
+          targetDeclaration: {
+            digest: sha256(request.targetDeclaration),
+            bytes: 19,
+          },
+        },
+        execution: { cleanup: "confirmed" },
+      },
+    });
+    expect(serialized).not.toContain("PRIVATE_SPECIFICATION");
+    expect(serialized).not.toContain("PRIVATE_STATEMENT");
+    expect(serialized).not.toContain("PRIVATE_PROOF");
+  });
   it("removes encoded package content from nested state and event values", () => {
     const privateContent = Buffer.from("PRIVATE_AGENT_SKILL_RESOURCE\n").toString("base64");
     const durable = {
@@ -523,3 +626,7 @@ describe("public run output", () => {
     expect(goalWorkspace.privateEvidenceBytes).toBe("PRIVATE_RAW_EVIDENCE");
   });
 });
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}

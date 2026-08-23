@@ -581,7 +581,11 @@ export function resolveVerifierPackageNode(
   node: CompiledVerifierNode,
   snapshot?: CapabilitySnapshot,
 ): ResolvedVerifierPackageNode {
-  if (node.verifier.kind === "command" || node.verifier.kind === "model") {
+  if (
+    node.verifier.kind === "command" ||
+    node.verifier.kind === "model" ||
+    node.verifier.kind === "lean-proof"
+  ) {
     return Object.freeze({ node: node as ResolvedVerifierNode });
   }
   if (snapshot === undefined) {
