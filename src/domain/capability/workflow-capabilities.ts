@@ -180,6 +180,7 @@ export function bindWorkflowCapabilities(
         boundSnapshot.effectiveHarness === undefined &&
         boundSnapshot.languageServer === undefined &&
         boundSnapshot.goalWorkspace === undefined &&
+        boundSnapshot.acpAgent === undefined &&
         !boundSnapshot.packages.some((item) => item.kind === "policy-package")
       ) {
         throw new WorkflowCapabilityError(
