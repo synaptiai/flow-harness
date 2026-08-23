@@ -129,7 +129,7 @@ async function runContainmentProbe(options) {
   const protectedWriteDenied = await rejects(() =>
     writeFile(options.protectedFile, "blocked", "utf8"),
   );
-  const selectedCredentialAbsent = process.env.OPENAI_API_KEY === undefined;
+  const selectedCredentialMasked = process.env.OPENAI_API_KEY?.startsWith("fake_value_") === true;
   const ambientCredentialAbsent = process.env.FLOW_AMBIENT_PRIVATE === undefined;
   const networkDenied = await rejects(async () => {
     const response = await fetch("https://example.com", { signal: AbortSignal.timeout(3_000) });
@@ -152,16 +152,16 @@ async function runContainmentProbe(options) {
     homeWriteDenied,
     protectedReadDenied,
     protectedWriteDenied,
-    selectedCredentialAbsent,
+    selectedCredentialMasked,
     ambientCredentialAbsent,
     networkDenied,
     privateWriteSucceeded,
     resistantChildAlive,
   };
+  await writeFile(join(process.cwd(), "containment-probe.json"), JSON.stringify(result), "utf8");
   if (Object.values(result).some((value) => value !== true)) {
     throw new Error("containment probe failed");
   }
-  await writeFile(join(process.cwd(), "containment-probe.json"), JSON.stringify(result), "utf8");
 }
 
 async function rejects(operation) {

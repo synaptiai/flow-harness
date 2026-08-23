@@ -101,6 +101,22 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
       capabilitySnapshot: acpAgentCapabilitySnapshot(),
     });
 
+    expect(cleanupRequested).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(attemptDirectory, "containment-probe.json"), "utf8")),
+    ).toEqual({
+      projectReadDenied: true,
+      projectWriteDenied: true,
+      homeReadDenied: true,
+      homeWriteDenied: true,
+      protectedReadDenied: true,
+      protectedWriteDenied: true,
+      selectedCredentialMasked: true,
+      ambientCredentialAbsent: true,
+      networkDenied: true,
+      privateWriteSucceeded: true,
+      resistantChildAlive: true,
+    });
     expect(outcome).toMatchObject({
       status: "succeeded",
       evidence: {
@@ -117,22 +133,6 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
           },
         },
       },
-    });
-    expect(cleanupRequested).toBe(true);
-    expect(
-      JSON.parse(await readFile(join(attemptDirectory, "containment-probe.json"), "utf8")),
-    ).toEqual({
-      projectReadDenied: true,
-      projectWriteDenied: true,
-      homeReadDenied: true,
-      homeWriteDenied: true,
-      protectedReadDenied: true,
-      protectedWriteDenied: true,
-      selectedCredentialAbsent: true,
-      ambientCredentialAbsent: true,
-      networkDenied: true,
-      privateWriteSucceeded: true,
-      resistantChildAlive: true,
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_SELECTED_CREDENTIAL");
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_AMBIENT_CREDENTIAL");
