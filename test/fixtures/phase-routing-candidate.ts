@@ -9,8 +9,13 @@ import {
   parseWorkflowSourceText,
 } from "../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../src/domain/workflow/digest.js";
+import type { ModelRoute } from "../../src/domain/adaptation/model-routing-candidate.js";
 
-export function phaseRoutingCandidateFixture(baselineText: string, nodeId = "implement") {
+export function phaseRoutingCandidateFixture(
+  baselineText: string,
+  nodeId = "implement",
+  afterRoute: ModelRoute = { provider: "openai", id: "gpt-5.4", thinking: "high" },
+) {
   const baselineSource = parseWorkflowSourceText(baselineText, "baseline.workflow.yaml");
   const baselineCompiled = compileWorkflowText(baselineText, "baseline.workflow.yaml");
   const node = baselineSource.nodes.find((item) => item.id === nodeId);
@@ -28,7 +33,7 @@ export function phaseRoutingCandidateFixture(baselineText: string, nodeId = "imp
       {
         phase: "executor" as const,
         target,
-        route: { provider: "openai", id: "gpt-5.4", thinking: "high" as const },
+        route: afterRoute,
       },
     ],
   };

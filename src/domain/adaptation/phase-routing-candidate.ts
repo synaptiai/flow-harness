@@ -79,6 +79,43 @@ const sourceProfileSchema = z
   .strict()
   .superRefine((profile, context) => refineUniqueTargets(profile.assignments, context));
 const durableProfileSchema = sourceProfileSchema.extend({ profileDigest: sha256Schema }).strict();
+const decisionContentSchema = z
+  .object({
+    version: z.literal(1),
+    profileDigest: sha256Schema,
+    phase: z.enum(PHASE_ROUTING_PHASES),
+    target: targetSchema,
+    selectionRule: z.literal("exact-target-v1"),
+    selectionResult: z.literal("selected"),
+    route: modelRouteSchema,
+    fallback: z.literal("deny"),
+    fallbackResult: z.literal("not-used"),
+    escalationResult: z.enum(["selected", "not-selected"]),
+  })
+  .strict()
+  .superRefine((decision, context) => {
+    const expected = decision.phase === "escalation" ? "selected" : "not-selected";
+    if (decision.escalationResult !== expected) {
+      context.addIssue({
+        code: "custom",
+        path: ["escalationResult"],
+        message: `must be ${expected} for the selected phase`,
+      });
+    }
+  });
+export const phaseRoutingDecisionSchema: z.ZodType<PhaseRoutingDecision> = decisionContentSchema
+  .extend({ decisionDigest: sha256Schema })
+  .strict()
+  .superRefine((decision, context) => {
+    const { decisionDigest, ...content } = decision;
+    if (calculatePhaseRoutingDecisionDigest(content) !== decisionDigest) {
+      context.addIssue({
+        code: "custom",
+        path: ["decisionDigest"],
+        message: "phase-routing decision digest does not match",
+      });
+    }
+  });
 const scopeSchema = z
   .object({
     kind: z.literal("workflow-phase-routing"),
@@ -109,13 +146,35 @@ const sourceSchema = z
   .superRefine((source, context) => refineProfilePair(source.profiles, context));
 
 export type PhaseRoutingPhase = (typeof PHASE_ROUTING_PHASES)[number];
-export type PhaseRoutingTarget = Readonly<z.infer<typeof targetSchema>>;
-export type PhaseRoutingAssignment = Readonly<z.infer<typeof assignmentSchema>>;
+export interface PhaseRoutingTarget {
+  readonly workflowId: string;
+  readonly childPath: readonly string[];
+  readonly nodeId: string;
+}
+export interface PhaseRoutingAssignment {
+  readonly phase: PhaseRoutingPhase;
+  readonly target: PhaseRoutingTarget;
+  readonly route: ModelRoute;
+}
 export type PhaseRoutingCandidateSource = Readonly<z.infer<typeof sourceSchema>>;
 export type PhaseRoutingProfileSource = Readonly<z.infer<typeof sourceProfileSchema>>;
 
 export interface PhaseRoutingProfile extends PhaseRoutingProfileSource {
   readonly profileDigest: string;
+}
+
+export interface PhaseRoutingDecision {
+  readonly version: 1;
+  readonly profileDigest: string;
+  readonly phase: PhaseRoutingPhase;
+  readonly target: PhaseRoutingTarget;
+  readonly selectionRule: "exact-target-v1";
+  readonly selectionResult: "selected";
+  readonly route: ModelRoute;
+  readonly fallback: "deny";
+  readonly fallbackResult: "not-used";
+  readonly escalationResult: "selected" | "not-selected";
+  readonly decisionDigest: string;
 }
 
 export interface PhaseRoutingCandidateIdentity {
@@ -496,6 +555,58 @@ export function resolvePhaseRoutingAssignment(
     );
   }
   return assignment;
+}
+
+export function createPhaseRoutingDecision(input: {
+  readonly profile: PhaseRoutingProfile;
+  readonly target: PhaseRoutingTarget;
+  readonly route: ModelRoute;
+}): PhaseRoutingDecision {
+  const profile = parsePhaseRoutingProfile(input.profile);
+  const assignment = resolvePhaseRoutingAssignment(profile, input.target);
+  if (!isDeepStrictEqual(assignment.route, input.route)) {
+    throw new PhaseRoutingCandidateError(
+      "identity_mismatch",
+      "selected provider route does not match its exact-target phase assignment",
+    );
+  }
+  const content = decisionContentSchema.parse({
+    version: 1,
+    profileDigest: profile.profileDigest,
+    phase: assignment.phase,
+    target: assignment.target,
+    selectionRule: profile.selectionRule,
+    selectionResult: "selected",
+    route: assignment.route,
+    fallback: profile.fallback,
+    fallbackResult: "not-used",
+    escalationResult: assignment.phase === "escalation" ? "selected" : "not-selected",
+  });
+  return parsePhaseRoutingDecision({
+    ...content,
+    decisionDigest: calculatePhaseRoutingDecisionDigest(content),
+  });
+}
+
+export function parsePhaseRoutingDecision(input: unknown): PhaseRoutingDecision {
+  const parsed = phaseRoutingDecisionSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new PhaseRoutingCandidateError("identity_mismatch", "phase-routing decision is invalid");
+  }
+  const { decisionDigest, ...content } = parsed.data;
+  if (calculatePhaseRoutingDecisionDigest(content) !== decisionDigest) {
+    throw new PhaseRoutingCandidateError(
+      "identity_mismatch",
+      "phase-routing decision digest does not match",
+    );
+  }
+  return deepFreeze(parsed.data);
+}
+
+export function calculatePhaseRoutingDecisionDigest(
+  input: Omit<PhaseRoutingDecision, "decisionDigest">,
+): string {
+  return sha256(canonicalize({ domain: "flow-phase-routing-decision-v1", ...input }));
 }
 
 export function applyPhaseRoutingProfile(input: {

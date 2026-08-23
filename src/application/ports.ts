@@ -1,4 +1,5 @@
 import type { AgentCommandRequest } from "../domain/agent-command.js";
+import type { PhaseRoutingDecision } from "../domain/adaptation/phase-routing-candidate.js";
 import type { AgentCommandApprovalRequest } from "../domain/approval/command-approval.js";
 import type { ArtifactProducer } from "../domain/artifact/reference.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
@@ -183,6 +184,7 @@ export interface NodeExecutionContext {
   readonly agentGoalWorkspace?: string;
   readonly agentSupplementalMemory?: string;
   readonly modelWorkProfile?: ModelWorkProfileContext;
+  readonly phaseRouting?: PhaseRoutingDecision;
   readonly modelSession?: ModelSessionJournal;
   readonly contextCompaction?: ContextCompactionPolicy;
   readonly agentExactModelSettings?: boolean;

@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
+import {
+  type PhaseRoutingDecision,
+  phaseRoutingDecisionSchema,
+} from "../adaptation/phase-routing-candidate.js";
 
 export const MODEL_SESSION_PROTOCOL = "flow.model-session/v1" as const;
 export const MODEL_SESSION_VERSION = 1 as const;
@@ -57,6 +61,7 @@ export interface ModelRequestIdentity {
     readonly sha256: string;
     readonly bytes: number;
   };
+  readonly routing?: PhaseRoutingDecision;
   readonly attempt: number;
   readonly turn: number;
   readonly request: number;
@@ -73,6 +78,7 @@ export type ModelRequestMismatchCategory =
   | "authority"
   | "portable_history"
   | "runtime_surface"
+  | "routing"
   | "attempt"
   | "turn"
   | "request";
@@ -490,6 +496,7 @@ const requestIdentitySchema = z
     runtimeSurface: z
       .object({ sha256: sha256Schema, bytes: nonNegativeSafeIntegerSchema })
       .strict(),
+    routing: phaseRoutingDecisionSchema.optional(),
     attempt: positiveSafeIntegerSchema,
     turn: positiveSafeIntegerSchema,
     request: positiveSafeIntegerSchema,
@@ -922,6 +929,7 @@ export function compareModelRequestIdentity(
   if (!sameDigestAndBytes(left.runtimeSurface, right.runtimeSurface)) {
     changes.push("runtime_surface");
   }
+  if (left.routing?.decisionDigest !== right.routing?.decisionDigest) changes.push("routing");
   if (left.attempt !== right.attempt) changes.push("attempt");
   if (left.turn !== right.turn) changes.push("turn");
   if (left.request !== right.request) changes.push("request");

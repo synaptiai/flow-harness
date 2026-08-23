@@ -9,13 +9,14 @@ import {
   parsePhaseRoutingCandidateText,
   projectPhaseRoutingCandidate,
 } from "../../../src/domain/adaptation/phase-routing-candidate.js";
+import type { ModelRoute } from "../../../src/domain/adaptation/model-routing-candidate.js";
 import {
   compileWorkflowText,
   parseWorkflowSourceText,
 } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 
-const baselineRoute = Object.freeze({
+const baselineRoute: ModelRoute = Object.freeze({
   provider: "anthropic",
   id: "claude-sonnet-4-5",
   thinking: "medium" as const,

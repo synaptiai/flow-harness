@@ -31,6 +31,8 @@ import type {
 import { agentSkillPackageActivationFixture } from "./agent-skill-package-activation.js";
 import { childSpecialistCandidateFixture } from "./child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "./model-routing-candidate.js";
+import { phaseRoutingCandidateFixture } from "./phase-routing-candidate.js";
+import type { ModelRoute } from "../../src/domain/adaptation/model-routing-candidate.js";
 import {
   promptCandidateTuningEvidence,
   promptCandidateWorkflowText,
@@ -114,6 +116,66 @@ export function modelRoutingEffectiveHarnessCandidateArtifactFixture(): Effectiv
     baseline,
     candidate: {
       kind: "model-routing",
+      projection: route,
+      baselineWorkflowSource: baselineSource,
+    },
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 3,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    }),
+    baselineState: baseline,
+    candidateState: projected.state,
+    candidate: route.identity,
+  });
+}
+
+export function phaseRoutingEffectiveHarnessCandidateArtifactFixture(
+  afterRoute?: ModelRoute,
+): EffectiveHarnessCandidateArtifact {
+  const baselineSource = JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "Workflow",
+    metadata: { id: "phase-runtime-workflow" },
+    nodes: [
+      {
+        id: "implement",
+        type: "agent",
+        agent: {
+          prompt: "Implement the task.",
+          model: { provider: "test", id: "deterministic", thinking: "medium" },
+          tools: [],
+          skills: [],
+          toolPackages: [],
+          timeoutMs: 300_000,
+        },
+      },
+      {
+        id: "publish",
+        type: "result",
+        dependsOn: ["implement"],
+        result: {
+          source: { nodeId: "implement", field: "agent.text" },
+          schema: { type: "string", maxLength: 1_024 },
+        },
+      },
+    ],
+  });
+  const baseline = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: baselineSource,
+    packages: [],
+  });
+  const route = phaseRoutingCandidateFixture(baselineSource, "implement", afterRoute);
+  const projected = projectEffectiveHarnessCandidate({
+    baseline,
+    candidate: {
+      kind: "phase-routing",
       projection: route,
       baselineWorkflowSource: baselineSource,
     },

@@ -42,6 +42,7 @@ import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation
 import {
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
+  phaseRoutingEffectiveHarnessCandidateArtifactFixture,
   supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
   supplementalMemoryRelationshipEffectiveHarnessCandidateArtifactFixture,
   supplementalMemoryRelationshipEvidenceRunId,
@@ -94,6 +95,70 @@ describe("run workflow capability snapshots", () => {
     expect(state.capabilitySnapshot).toBeNull();
     expect(state.capabilityRequirements).toEqual({});
     expect(context).not.toHaveProperty("capabilitySnapshot");
+  });
+
+  it("resolves the active exact-target phase route before model-backed execution", async () => {
+    const artifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture();
+    const snapshot = effectiveHarnessCapabilitySnapshot(artifact);
+    const workflow = compileWorkflowText(
+      effectiveHarnessWorkflowSource(artifact.candidateState),
+      "activation:phase-runtime-workflow",
+    );
+    let context: NodeExecutionContext | undefined;
+
+    await runWorkflow(workflow, {
+      ...options(
+        new MemoryStore(),
+        executorFrom((_node, received) => {
+          context = received;
+          return agentSuccess();
+        }),
+      ),
+      runId: "phase-route-runtime",
+      capabilitySnapshot: snapshot,
+    });
+
+    expect(context?.phaseRouting).toMatchObject({
+      version: 1,
+      profileDigest: artifact.candidateState.phaseRoutingProfile?.profileDigest,
+      phase: "executor",
+      target: { workflowId: "phase-runtime-workflow", childPath: [], nodeId: "implement" },
+      selectionRule: "exact-target-v1",
+      selectionResult: "selected",
+      route: { provider: "openai", id: "gpt-5.4", thinking: "high" },
+      fallback: "deny",
+      fallbackResult: "not-used",
+      escalationResult: "not-selected",
+      decisionDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it("refuses phase routing with an opaque ACP provider loop before starting the run", async () => {
+    const artifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture({
+      provider: "openai",
+      id: "gpt-5.6-codex",
+      thinking: "medium",
+    });
+    const effective = effectiveHarnessCapabilitySnapshot(artifact);
+    const snapshot = combineCapabilitySnapshots([effective, acpAgentCapabilitySnapshot()]);
+    if (snapshot === undefined) throw new Error("combined phase-routing ACP fixture is missing");
+    const workflow = compileWorkflowText(
+      effectiveHarnessWorkflowSource(artifact.candidateState),
+      "activation:phase-runtime-workflow",
+    );
+    const store = new MemoryStore();
+
+    await expect(
+      runWorkflow(workflow, {
+        ...options(
+          store,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "phase-route-acp-refusal",
+        capabilitySnapshot: snapshot,
+      }),
+    ).rejects.toThrow(/phase-routing.*ACP runtime.*opaque/i);
+    expect(store.events).toEqual([]);
   });
 
   it("persists and passes the exact ACP runtime to attached agent execution", async () => {

@@ -17,6 +17,10 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ArtifactStore } from "../../application/artifact-store.js";
+import {
+  type PhaseRoutingDecision,
+  parsePhaseRoutingDecision,
+} from "../../domain/adaptation/phase-routing-candidate.js";
 import type {
   AgentExecutor,
   ModelSessionJournal,
@@ -108,6 +112,7 @@ export interface PiAgentRunRequest {
   readonly contextCompactionMode?: ContextCompactionMode;
   readonly contextSummary?: PiContextSummaryOptions;
   readonly authorityDigest?: string;
+  readonly phaseRouting?: PhaseRoutingDecision;
   readonly modelSession?: ModelSessionJournal;
   readonly signal?: AbortSignal;
 }
@@ -446,6 +451,7 @@ export class PiAgentExecutor implements AgentExecutor {
             semanticCode: semanticSession !== undefined,
             retainedArtifacts: context.artifactStore !== undefined,
           }),
+          ...(context.phaseRouting === undefined ? {} : { phaseRouting: context.phaseRouting }),
           ...(context.modelSession === undefined ? {} : { modelSession: context.modelSession }),
           ...(context.contextCompaction === undefined
             ? {}
@@ -869,6 +875,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
 
   async run(request: PiAgentRunRequest): Promise<PiAgentRunResult> {
     throwIfAborted(request.signal);
+    assertPhaseRoutingRequest(request);
 
     const modelRuntime = await this.createModelRuntime(request.signal);
     throwIfAborted(request.signal);
@@ -1105,6 +1112,13 @@ function attachModelSessionRecorder(
   let acceptedSummary: AcceptedContextSummary | undefined;
   let compactionUsage = emptyModelSessionUsage();
   session.agent.streamFunction = async (model, context, options) => {
+    if (
+      request.phaseRouting !== undefined &&
+      (request.phaseRouting.route.provider !== model.provider ||
+        request.phaseRouting.route.id !== model.id)
+    ) {
+      throw new Error("phase-routing decision does not match the provider request surface");
+    }
     const state = await journal.read();
     const prepared = state.events.filter((event) => event.type === "model_request_prepared");
     const requestSequence = (prepared.at(-1)?.request ?? 0) + 1;
@@ -1189,6 +1203,7 @@ function attachModelSessionRecorder(
         sha256: calculateModelSessionDigest(runtimeSurface),
         bytes: runtimeSurfaceBytes,
       },
+      ...(request.phaseRouting === undefined ? {} : { routing: request.phaseRouting }),
       attempt,
       turn,
       request: requestSequence,
@@ -1280,6 +1295,18 @@ function attachModelSessionRecorder(
     detach,
     compactionUsage: () => compactionUsage,
   };
+}
+
+function assertPhaseRoutingRequest(request: PiAgentRunRequest): void {
+  if (request.phaseRouting === undefined) return;
+  const decision = parsePhaseRoutingDecision(request.phaseRouting);
+  if (
+    decision.route.provider !== request.provider ||
+    decision.route.id !== request.model ||
+    decision.route.thinking !== request.thinking
+  ) {
+    throw new Error("phase-routing decision does not match the requested provider route");
+  }
 }
 
 type PiStreamFunction = Awaited<
