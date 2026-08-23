@@ -169,6 +169,39 @@ export interface SandboxEvidence {
   readonly policyDigest: string;
 }
 
+export type AcpAgentAuthorityViolation =
+  | "permission"
+  | "filesystem"
+  | "terminal"
+  | "elicitation"
+  | "mcp"
+  | "tool"
+  | "extension"
+  | "undeclared_client_method";
+
+export interface AcpAgentExecutionEvidence {
+  readonly version: 1;
+  readonly executor: "local-acp-process-v1";
+  readonly agentName: string;
+  readonly agentDigest: string;
+  readonly protocol: "acp-v1";
+  readonly compatibilityProfile: "prompt-only-v1";
+  readonly containmentProfile: "acp-prompt-only-v1";
+  readonly runtimeIdentity: "revalidated";
+  readonly credentialLease: "srt-host-scoped-sentinel";
+  readonly sessionIdHash: string;
+  readonly sessionBindingDigest: string;
+  readonly processContainment: "linux-pid-namespace" | "process-group";
+  readonly terminationStatus: "confirmed" | "unconfirmed";
+  readonly sandbox: SandboxEvidence;
+  readonly usageProvenance: {
+    readonly modelTokens: "prompt-response" | "declared-unavailable";
+    readonly costUsd: "session-usage-update" | "declared-unavailable";
+  };
+  readonly updateCount: number;
+  readonly authorityViolation?: AcpAgentAuthorityViolation;
+}
+
 export interface AgentEvidence {
   readonly kind: "agent";
   readonly provider: string;
@@ -184,6 +217,30 @@ export interface AgentEvidence {
   readonly effectReceipts: readonly AgentEffectReceipt[];
   readonly semanticReceipts?: readonly SemanticQueryReceipt[];
   readonly capabilities?: AgentCapabilityEvidence;
+  readonly acp?: AcpAgentExecutionEvidence;
+}
+
+export function calculateAcpAgentSessionBindingDigest(input: {
+  readonly runId: string;
+  readonly workflowId: string;
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly agentDigest: string;
+  readonly sessionIdHash: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        runId: input.runId,
+        workflowId: input.workflowId,
+        nodeId: input.nodeId,
+        attempt: input.attempt,
+        agentDigest: input.agentDigest,
+        sessionIdHash: input.sessionIdHash,
+      }),
+    )
+    .digest("hex");
 }
 
 export interface AgentActivity {
@@ -1718,6 +1775,47 @@ const sandboxEvidenceSchema = z
   })
   .strict();
 
+const acpAgentAuthorityViolationSchema = z.enum([
+  "permission",
+  "filesystem",
+  "terminal",
+  "elicitation",
+  "mcp",
+  "tool",
+  "extension",
+  "undeclared_client_method",
+]);
+
+const acpAgentExecutionEvidenceSchema = z
+  .object({
+    version: z.literal(1),
+    executor: z.literal("local-acp-process-v1"),
+    agentName: sandboxIdentifierSchema,
+    agentDigest: sha256Schema,
+    protocol: z.literal("acp-v1"),
+    compatibilityProfile: z.literal("prompt-only-v1"),
+    containmentProfile: z.literal("acp-prompt-only-v1"),
+    runtimeIdentity: z.literal("revalidated"),
+    credentialLease: z.literal("srt-host-scoped-sentinel"),
+    sessionIdHash: sha256Schema,
+    sessionBindingDigest: sha256Schema,
+    processContainment: z.enum(["linux-pid-namespace", "process-group"]),
+    terminationStatus: z.enum(["confirmed", "unconfirmed"]),
+    sandbox: sandboxEvidenceSchema,
+    usageProvenance: z
+      .object({
+        modelTokens: z.enum(["prompt-response", "declared-unavailable"]),
+        costUsd: z.enum(["session-usage-update", "declared-unavailable"]),
+      })
+      .strict(),
+    updateCount: z.number().int().nonnegative().max(4_096),
+    authorityViolation: acpAgentAuthorityViolationSchema.optional(),
+  })
+  .strict()
+  .refine((evidence) => evidence.sandbox.profile === evidence.containmentProfile, {
+    message: "ACP agent sandbox profile must match its containment profile",
+  });
+
 const eventBaseShape = {
   version: z.literal(1),
   sequence: z.number().int().positive(),
@@ -1848,10 +1946,42 @@ const agentEvidenceSchema = z
       .max(MAX_SEMANTIC_QUERY_RECEIPTS)
       .optional(),
     capabilities: agentCapabilityEvidenceSchema.optional(),
+    acp: acpAgentExecutionEvidenceSchema.optional(),
   })
   .strict()
-  .refine((evidence) => evidence.usage === undefined || evidence.usageObservation === undefined, {
-    message: "agent evidence cannot contain legacy and observed usage together",
+  .superRefine((evidence, context) => {
+    if (evidence.usage !== undefined && evidence.usageObservation !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "agent evidence cannot contain legacy and observed usage together",
+      });
+    }
+    if (evidence.acp === undefined) return;
+    if (
+      evidence.usage !== undefined ||
+      evidence.usageObservation === undefined ||
+      evidence.policyDecisions.length !== 0 ||
+      evidence.effectReceipts.length !== 0 ||
+      evidence.semanticReceipts !== undefined ||
+      evidence.capabilities !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "ACP agent evidence must use only prompt-only observed evidence",
+      });
+      return;
+    }
+    const tokenComplete = evidence.usageObservation.modelTokens.status === "complete";
+    const costComplete = evidence.usageObservation.costUsd.status === "complete";
+    if (
+      tokenComplete !== (evidence.acp.usageProvenance.modelTokens === "prompt-response") ||
+      costComplete !== (evidence.acp.usageProvenance.costUsd === "session-usage-update")
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "ACP agent usage provenance does not match observed completeness",
+      });
+    }
   });
 
 const verifierSourceObservationSchema = z
@@ -8200,6 +8330,17 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       "successful agent evidence must not contain an uncertain effect receipt",
     );
   }
+  if (
+    evidence.kind === "agent" &&
+    evidence.acp !== undefined &&
+    (evidence.acp.terminationStatus !== "confirmed" ||
+      evidence.acp.authorityViolation !== undefined)
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "successful ACP agent evidence requires confirmed termination and no authority violation",
+    );
+  }
 }
 
 function validateChildEvidenceProjection(
@@ -9367,6 +9508,19 @@ function validateEvidenceIntegrity(
     throw new RunReplayError(eventIndex, "agent evidence text hash is invalid");
   }
   if (evidence.kind === "agent") {
+    if (evidence.acp !== undefined) {
+      const expectedBinding = calculateAcpAgentSessionBindingDigest({
+        runId: event.runId,
+        workflowId: event.workflowId,
+        nodeId: event.nodeId,
+        attempt: event.attempt,
+        agentDigest: evidence.acp.agentDigest,
+        sessionIdHash: evidence.acp.sessionIdHash,
+      });
+      if (evidence.acp.sessionBindingDigest !== expectedBinding) {
+        throw new RunReplayError(eventIndex, "ACP agent session binding digest is invalid");
+      }
+    }
     for (const [index, receipt] of (evidence.semanticReceipts ?? []).entries()) {
       const expectedSequence = index + 1;
       if (receipt.sequence !== expectedSequence) {
