@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MAX_ACP_AGENT_EXECUTABLE_BYTES } from "../../../../src/domain/capability/acp-agent.js";
 import {
   admitLocalAcpAgentRuntime,
+  assertLocalAcpAgentRuntimeCurrent,
   LocalAcpAgentAdmissionError,
 } from "../../../../src/infrastructure/fs/local-acp-agent.js";
 import {
@@ -116,6 +117,23 @@ describe("local ACP agent admission", () => {
     await expect(admitted.assertCurrent()).rejects.toThrow(
       /^local ACP agent identity changed after admission$/,
     );
+  });
+
+  it("reconstructs currentness from a durable snapshot for detached execution", async () => {
+    const fixture = await binaryFixture();
+    const admitted = await admitLocalAcpAgentRuntime({
+      manifestPath: fixture.manifestPath,
+      provenance: "opencode.json",
+    });
+
+    await expect(
+      assertLocalAcpAgentRuntimeCurrent(fixture.root, admitted.snapshot),
+    ).resolves.toBeUndefined();
+
+    await writeFile(fixture.manifestPath, "{}\n", "utf8");
+    await expect(
+      assertLocalAcpAgentRuntimeCurrent(fixture.root, admitted.snapshot),
+    ).rejects.toThrow(/^local ACP agent identity changed after admission$/);
   });
 
   it("admits an exact Node executable and transitive package closure", async () => {

@@ -13,6 +13,7 @@ import {
   MAX_ACP_AGENT_PACKAGE_BYTES,
   MAX_ACP_AGENT_PACKAGE_FILES,
   parseAcpAgentManifest,
+  validateAcpAgentRuntimeSnapshot,
 } from "../../domain/capability/acp-agent.js";
 import {
   ArtifactObservations,
@@ -92,6 +93,27 @@ export async function admitLocalAcpAgentRuntime(
       throw error;
     }
     throw new LocalAcpAgentAdmissionError();
+  }
+}
+
+export async function assertLocalAcpAgentRuntimeCurrent(
+  projectRoot: string,
+  durableSnapshot: AcpAgentRuntimeSnapshot,
+): Promise<void> {
+  try {
+    const snapshot = validateAcpAgentRuntimeSnapshot(durableSnapshot);
+    const current = await admitLocalAcpAgentRuntime({
+      manifestPath: join(projectRoot, snapshot.manifest.provenance),
+      provenance: snapshot.manifest.provenance,
+    });
+    if (
+      current.snapshot.digest !== snapshot.digest ||
+      JSON.stringify(current.snapshot) !== JSON.stringify(snapshot)
+    ) {
+      throw new Error("identity drift");
+    }
+  } catch {
+    throw new LocalAcpAgentIdentityChangedError();
   }
 }
 
