@@ -28,6 +28,66 @@ export const agentModelUsageSchema = z
   })
   .strict();
 
+const agentModelTokenBreakdownSchema = z
+  .object({
+    inputTokens: nonNegativeSafeIntegerSchema,
+    outputTokens: nonNegativeSafeIntegerSchema,
+    cacheReadTokens: nonNegativeSafeIntegerSchema,
+    cacheWriteTokens: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+
+const completeModelTokenObservationSchema = z
+  .object({
+    status: z.literal("complete"),
+    totalTokens: nonNegativeSafeIntegerSchema,
+    breakdown: agentModelTokenBreakdownSchema.optional(),
+  })
+  .strict()
+  .superRefine((observation, context) => {
+    if (observation.breakdown === undefined) {
+      return;
+    }
+    try {
+      if (
+        checkedAdd(
+          checkedAdd(
+            observation.breakdown.inputTokens,
+            observation.breakdown.outputTokens,
+            "modelTokens",
+          ),
+          checkedAdd(
+            observation.breakdown.cacheReadTokens,
+            observation.breakdown.cacheWriteTokens,
+            "modelTokens",
+          ),
+          "modelTokens",
+        ) !== observation.totalTokens
+      ) {
+        context.addIssue({ code: "custom", message: "token breakdown must equal total tokens" });
+      }
+    } catch {
+      context.addIssue({ code: "custom", message: "token breakdown exceeds a safe integer" });
+    }
+  });
+
+const unavailableObservationSchema = z.object({ status: z.literal("unavailable") }).strict();
+
+export const modelUsageObservationSchema = z
+  .object({
+    modelTokens: z.union([completeModelTokenObservationSchema, unavailableObservationSchema]),
+    costUsd: z.union([
+      z
+        .object({
+          status: z.literal("complete"),
+          costUsdMicros: nonNegativeSafeIntegerSchema,
+        })
+        .strict(),
+      unavailableObservationSchema,
+    ]),
+  })
+  .strict();
+
 export const RUN_BUDGET_DIMENSIONS = Object.freeze([
   "nodeStarts",
   "modelTokens",
@@ -44,6 +104,31 @@ export interface AgentModelUsage {
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
   readonly costUsdMicros: number;
+}
+
+export interface AgentModelTokenBreakdown {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+}
+
+export interface ModelUsageObservation {
+  readonly modelTokens:
+    | {
+        readonly status: "complete";
+        readonly totalTokens: number;
+        readonly breakdown?: AgentModelTokenBreakdown | undefined;
+      }
+    | { readonly status: "unavailable" };
+  readonly costUsd:
+    | { readonly status: "complete"; readonly costUsdMicros: number }
+    | { readonly status: "unavailable" };
+}
+
+export interface RunResourceAvailability {
+  readonly modelTokens: "complete" | "unavailable";
+  readonly modelCostUsdMicros: "complete" | "unavailable";
 }
 
 export interface RunResourceConsumption {
@@ -115,6 +200,25 @@ export function totalModelTokens(usage: AgentModelUsage): number {
     checkedAdd(usage.cacheReadTokens, usage.cacheWriteTokens, "modelTokens"),
     "modelTokens",
   );
+}
+
+export function modelUsageObservationFromLegacy(usage: AgentModelUsage): ModelUsageObservation {
+  return Object.freeze({
+    modelTokens: Object.freeze({
+      status: "complete" as const,
+      totalTokens: totalModelTokens(usage),
+      breakdown: Object.freeze({
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheWriteTokens: usage.cacheWriteTokens,
+      }),
+    }),
+    costUsd: Object.freeze({
+      status: "complete" as const,
+      costUsdMicros: usage.costUsdMicros,
+    }),
+  });
 }
 
 export function committedDurationMs(durationMs: number): number {
