@@ -597,9 +597,9 @@
     {
       "id": "model-provider",
       "title": "Model provider",
-      "summary": "Provider and model identifiers resolve through the embedded Pi adapter at runtime.",
+      "summary": "Provider and model identifiers resolve through embedded Pi or an exactly admitted prompt-only ACP agent at runtime.",
       "openness": "open",
-      "implementation": "pi"
+      "implementation": "pi-acp"
     }
   ],
   "evaluationAdapters": [

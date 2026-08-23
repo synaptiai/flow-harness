@@ -1,14 +1,16 @@
-# Local ACP v1 bridge
+# Local ACP v1 integration
 
-Flow implements one local Agent Client Protocol version 1 bridge. ACP is an interoperability
-transport for editor clients. Flow still owns workflow admission, policy, packages, sandboxes,
-approvals, cancellation, durable state, replay, and public projection.
+Flow implements Agent Client Protocol (ACP) version 1 in two directions:
 
-This bridge presents Flow as an ACP agent to an editor. A separate
-[executor-admission foundation](#local-executor-admission-foundation) prepares Flow to use another
-ACP agent for bounded work. The current source doesn't expose or launch that executor yet.
+- The [editor bridge](#start-the-editor-bridge) presents Flow as an ACP agent to a compatible local
+  editor.
+- The [local executor](#run-a-local-acp-executor) lets Flow use one exact ACP agent for bounded
+  prompt-only workflow nodes.
 
-## Start the bridge
+ACP is an interoperability transport. Flow still owns workflow admission, policy, packages,
+sandboxes, cancellation, durable state, replay, and public evidence.
+
+## Start the editor bridge
 
 Build Flow and start the bridge from the selected project:
 
@@ -90,43 +92,140 @@ candidate, package, registry, credential, or network sources.
 An empty session can be listed and loaded before `/flow-run`. It has no run events to replay. After
 submission, the descriptor, supervisor command, and run ledger form the complete identity chain.
 
-## Local executor admission foundation
+## Run a local ACP executor
 
-Current source builds can validate one internal `AcpAgent` manifest for a future local executor.
-There is no public executor-selection option and no production ACP subprocess launch in this
-slice.
+Current source builds can launch one operator-selected local ACP v1 agent for all eligible agent
+nodes in one attached or detached run. If you omit the selection, Flow uses its embedded Pi
+executor with the same behavior as before.
 
-The strict manifest declares:
+### Prepare the workflow
 
-- ACP v1 and the `prompt-only-v1` compatibility profile.
-- One exact executable or one exact Node package closure and Node runtime.
-- Fixed model mappings and provider domains.
-- Credential environment-variable names, but never credential values.
-- Independent support for complete model-token and reported-cost evidence.
+Every agent node in an ACP-selected run must use the prompt-only contract:
 
-Admission uses bounded, no-follow local reads. It doesn't search PATH, a package registry, a package
-manager, or a home directory. It doesn't contact a network service or start a subprocess. Flow
-checks the exact hashes, byte counts, file identities, package closure, and entry point. It also
-binds the manifest's declared Node version before it returns an immutable runtime snapshot.
+- Declare no tools, Agent Skills, tool packages, or command approval.
+- Select a provider and model that the manifest maps exactly.
+- Select a reasoning setting that the manifest maps exactly.
 
-The executor identity belongs to the run capability snapshot, not workflow YAML. Changing it
-changes the capability digest without changing the workflow digest. The same digest crosses
-attached runs, detached supervisor records, workers, child runs, and recovery. A missing or changed
-identity fails recovery before executor invocation.
+Flow rejects the node before process launch if any requirement is missing. The ACP agent cannot
+silently select another model or reasoning setting.
 
-Token and cost availability are independent. A complete observation contributes its measured
-value. An unavailable observation remains unavailable in durable state, public presentation, and
-evaluation metrics. Flow doesn't display or score it as zero. A workflow that sets
-`maxModelTokens` or `maxCostUsd` fails before its first event when the selected runtime can't
-report that dimension completely.
+### Prepare the manifest
+
+Store the manifest below the project root in `.flow/acp-agents/`. The manifest binds ACP v1 and one
+exact executable or Node package closure. It also binds model mappings, provider domains, one
+credential name per provider, accounting support, and the `acp-prompt-only-v1` profile.
+
+The following shortened binary example shows the required shape. Replace every example value with
+the exact local value, and keep model mappings and provider authorities sorted by provider and
+model.
+
+```json
+{
+  "apiVersion": "flow.synapti.ai/v1alpha1",
+  "kind": "AcpAgent",
+  "metadata": { "name": "example-agent" },
+  "spec": {
+    "protocol": "acp-v1",
+    "compatibilityProfile": "prompt-only-v1",
+    "launch": {
+      "kind": "binary",
+      "executable": "/absolute/path/to/example-agent",
+      "executableSha256": "<64-lowercase-hex-characters>",
+      "args": ["--stdio"]
+    },
+    "modelMappings": [
+      { "provider": "openai", "model": "gpt-5.6-codex", "agentModel": "gpt-5.6-codex" }
+    ],
+    "providerAuthorities": [
+      { "provider": "openai", "domain": "api.openai.com", "credentialEnv": "OPENAI_API_KEY" }
+    ],
+    "containmentProfile": "acp-prompt-only-v1",
+    "usage": { "modelTokens": "complete", "costUsd": "unavailable" },
+    "configuration": {
+      "assignments": [
+        { "configId": "model", "source": "model" },
+        {
+          "configId": "thinking",
+          "source": "thinking",
+          "mappings": [{ "thinking": "high", "value": "high" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+Admission uses bounded, no-follow local reads. It doesn't search `PATH`, a package registry, a
+package manager, or a home directory. It doesn't contact a network service or start a subprocess.
+Flow checks hashes, byte counts, file identities, the package closure, the entry point, and the
+declared Node version. It then stores the immutable identity in the run capability snapshot. The
+selection changes the capability digest, not the workflow digest.
+
+### Validate and run
+
+Validate the workflow and manifest together:
+
+```sh
+flow validate path/to/workflow.yaml \
+  --acp-agent .flow/acp-agents/example-agent.json
+```
+
+Start an attached run:
+
+```sh
+flow run path/to/workflow.yaml \
+  --acp-agent .flow/acp-agents/example-agent.json
+```
+
+Add `--detach` to submit the same immutable selection to a detached worker. Recovery reopens the
+durable capability snapshot and revalidates the exact local runtime before it starts a fresh
+attempt. A missing or changed executable, package, runtime, manifest identity, or model mapping
+fails closed.
+
+### Understand the execution boundary
+
+Each node attempt gets a new private directory, operating-system process, and ACP session. Flow
+binds the session to the run, workflow, node, attempt, and admitted agent digest. The client
+advertises no filesystem, terminal, elicitation, MCP, or extension capability. It supplies no MCP
+servers or additional directories.
+
+The SRT sandbox gives the process these authorities only:
+
+- Read the admitted executable and runtime support files.
+- Read and write its private disposable attempt state.
+- Connect to the declared provider domain.
+- Receive the one selected credential through SRT credential masking.
+
+The process cannot read the project, home directory, Flow state, protected paths, or source
+credential. It cannot write outside its private state. Flow denies and records tool activity,
+permission requests, and undeclared client methods by fixed authority category, then terminates the
+attempt.
+
+Flow bounds protocol frames, JSON structure, active requests, standard output, standard error,
+result size, duration, and cleanup. Cancellation, timeout, malformed output, unexpected EOF,
+process failure, and output contamination fail the attempt. Flow waits for the complete process
+tree to exit. Unconfirmed descendant termination is attempt-fatal. A failure after the prompt
+starts is nonretryable and records uncertain side-effect status because the remote provider might
+have observed work.
+
+### Inspect evidence and accounting
+
+Successful agent evidence includes the declared provider, model, result hash, duration, and exact
+agent digest. It also includes hashed session identity, a run-bound session digest, sandbox
+provenance, confirmed termination, update count, and usage provenance. Model-verifier evidence
+preserves the same ACP provenance.
+
+Token and reported-cost availability are independent. A complete observation contributes its
+measured value. An unavailable observation remains unavailable in durable state, public
+presentation, and evaluation metrics. Flow doesn't convert it to zero. A workflow that sets
+`maxModelTokens` or `maxCostUsd` fails before its first event when accounting is incomplete.
 
 Public output includes safe cryptographic identity and compatibility fields. It excludes launch
-paths, arguments, file-system identities, manifest contents, configuration, provider authority,
-and credential environment-variable names.
+paths, arguments, filesystem identities, manifest contents, configuration values, provider
+authority details, credential names, and credential values.
 
-Read [Architecture](architecture.md#acp-executor-admission-foundation) for ownership and dependency
-direction. Read [Slice 10.1](roadmap.md#slice-101-run-a-local-acp-executor) for the remaining process,
-containment, protocol, and interoperability work.
+Read [Architecture](architecture.md#local-acp-executor) for ownership and dependency direction.
+Read [Recovery and interruption safety](recovery.md) for the fresh-attempt recovery contract.
 
 ## Transport limits and cleanup
 

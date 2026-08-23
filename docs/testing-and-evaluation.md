@@ -86,6 +86,8 @@ For publication authority and recovery, read
 | CLI integration | Init, config inspection, validate, run, work-profile selection/conflict/public output, typed-result publication/inspection, attached/detached artifact-budget exhaustion and inspection, attached and detached child ledgers/workspaces, detached accepted/queued/rejected submission, events, terminal presentation, active/queued cancel, supervisor status/shutdown, wait, approve/deny, exhaust, committed-boundary resume, proof-safe fresh resume, persist, and inspect through production composition | Temporary run ledgers, private local sockets, and local processes |
 | Compiled-process integration | Direct-entry signal handling, Linux x64 pseudo-terminal startup and restoration, local browser presentation delivery, process-group termination, edit crashes before rename, after rename, after directory sync, on settlement rejection, and after settlement persistence, cross-process run claiming, live agent-command denial from a separate CLI process, detached client exit with exact work-profile replay, bounded concurrent admission, queued cancellation without execution, policy mismatch/rebinding, supervisor restart/adoption, and real sandbox boundaries | Built CLI, temporary run ledgers, pseudo-terminals, local process groups, native sandbox primitives, Unix sockets, and loopback networking |
 | Browser presentation | Fragment removal, tab-scoped capability retention for reload, terminal capability removal, capability authentication, fixed-resource policy, complete-document streaming and reload, keyboard steering, storage denial, text-only DOM insertion, attributed package notes, responsive layout, focus visibility, and console/network closure | Pinned Playwright Chromium, explicit loopback listener, and 1280×720, 768×1024, and 375×812 viewports |
+| ACP executor contract | Exact runtime admission and revalidation, model and reasoning selection, strict inverse protocol order, zero client authority, fixed violation categories, fresh session binding, output and timeout bounds, complete process-tree settlement, recovery capsules, usage provenance, detached snapshots, verifier projection, and unchanged Pi fallback | Temporary runtimes, local processes, deterministic ACP peers, injected SRT seam, and private run ledgers |
+| Hosted ACP containment | Project, home, Flow-state, protected-path, and source-credential denial; one-domain network policy; private-state writes; selected masked credential delivery; cancellation; and resistant-descendant termination | Real SRT and Linux PID namespaces on hosted Linux x64; skipped on other hosts |
 | Pi adapter contract | Exact model/tool request translation, fixed bounded work-profile rendering, explicit zero turn/provider retries, versioned workspace and immutable `skill://` reads, selected package/read receipts, edit receipts, argv-only command authorization/journaling and shared sandbox delegation, bounded approval-denial propagation, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, production tool-error conversion back into the next model turn, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
@@ -102,6 +104,14 @@ Bubblewrap earlier in `PATH`, substituted outer launchers, shell operators, and 
 option values; preserves unconfirmed termination when sandbox cleanup fails too; and proves that an
 unconfirmed settlement aborts the model attempt, rejects later durable command preparation, and
 cannot replay as terminal success.
+
+The ACP executor matrix proves exact identity, CLI selection, routing, and fresh session identity.
+It also proves configuration, authority denial, bounds, settlement, recovery, evidence, and exact
+Pi fallback. The hosted Linux x64 test uses production SRT and PID-namespace containment.
+
+The process cannot read project, home, protected, Flow, or source-credential state. It can write
+only private attempt state. It receives only the masked selected credential. It cannot leave a
+resistant descendant running.
 
 The portable model-session matrix covers the closed event schema, hash chain, and transition order.
 It covers event and record bounds, owner-only JSONL storage, torn-tail recovery, and path safety.

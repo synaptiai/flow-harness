@@ -88,13 +88,13 @@ operator-selected language server. It runs one bounded LSP 3.18 request in a sho
 It then verifies source currentness and records a private canonical receipt. Goal text and semantic
 results remain context rather than workflow authority.
 
-Gate 10 currently provides the admission foundation for a local ACP v1 executor. Flow can freeze
-one exact local binary or Node package closure in the run capability snapshot. It propagates that
-identity through attached and detached execution. Recovery rejects identity drift. Admission
-accepts only budgets that the selected runtime can measure completely.
+Gate 10 now provides a prompt-only local ACP v1 executor. An operator can select one exact local
+binary or Node package closure for validation, attached execution, or detached execution. Flow
+freezes that identity in the run capability snapshot. It routes eligible work through one fresh
+contained process and session for each attempt. Recovery rejects identity drift.
 
-The current slice doesn't expose an executor-selection command or start the admitted ACP process.
-Those runtime steps remain in [Slice 10.1](roadmap.md#slice-101-run-a-local-acp-executor).
+Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
+retain the embedded Pi path.
 
 ## Architecture at a glance
 
@@ -130,7 +130,7 @@ flowchart TB
         workContext["Model work context<br/>Durable profile · remaining budget view"]
         descriptors["Shared public capability descriptors<br/>Tools · limits · package families · adapters"]
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
-        executorIdentity["ACP executor admission<br/>Exact local identity · accounting support · no launch"]
+        executorIdentity["Local ACP executor selection<br/>Exact identity · accounting contract"]
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
@@ -140,7 +140,8 @@ flowchart TB
 
     subgraph execution["3. Execution plane — performs bounded work"]
         direction LR
-        agents["Agent adapters<br/>Pi · OMP · Prime"]
+        agents["Agent router and adapters<br/>Pi · local ACP · OMP · Prime"]
+        acpProcess["Isolated local ACP agent<br/>Fresh process · fresh session · prompt-only"]
         semantic["Semantic query service<br/>Short-lived LSP · read-only projection"]
         commands["Command sandboxes<br/>SRT · Docker"]
     end
@@ -193,6 +194,7 @@ flowchart TB
     capability -->|"Supplies an immutable snapshot"| engine
     capability -->|"Freezes one local executor identity"| executorIdentity
     executorIdentity -->|"Binds compatible accounting to the run"| engine
+    executorIdentity -->|"Supplies an exact revalidated launch"| acpProcess
     proposals -->|"Uses one zero-tool model turn"| agents
     proposals -->|"Returns an inert candidate for review"| adaptation
     adaptation -->|"Runs paired trials"| engine
@@ -212,6 +214,10 @@ flowchart TB
     rules -->|"Authorizes bounded agent work"| agents
     rules -->|"Authorizes bounded commands"| commands
     agents -->|"Makes bounded model requests"| models
+    agents -->|"Routes ACP work"| acpProcess
+    commands -->|"Contains it"| acpProcess
+    acpProcess -->|"Calls one provider"| models
+    acpProcess -->|"Returns evidence"| agents
     agents -->|"Appends completed portable events"| sessions
     sessions -->|"Supplies measured context history"| compaction
     sessions -->|"Supplies one fresh untrusted-data turn"| agents
@@ -251,13 +257,15 @@ Read the diagram from top to bottom:
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
    context and evidence-backed relationships, and decides which action is legal. Proposal generation
    can ask a model for one bounded memory value. The model cannot select its target, declare a
-   relationship, authorize a transition, or write runtime memory. ACP executor admission freezes
-   one local runtime identity and checks accounting support, but it doesn't launch that runtime in
-   the current slice.
+   relationship, authorize a transition, or write runtime memory. Local ACP selection freezes one
+   runtime identity, checks accounting support, and routes only prompt-only attempts through the
+   isolated process boundary.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
-   command adapters do not own workflow state. The semantic service starts one exact language
-   server for one request against a read-only, network-denied project projection.
+   command adapters do not own workflow state. A selected ACP attempt gets a fresh process, private
+   directory, session binding, provider-domain network route, and credential lease. The semantic
+   service starts one exact language server for one request against a read-only, network-denied
+   project projection.
 
 4. Durable project state records events, evidence, private model context, goal revisions,
    ownership, installed capabilities, evaluations, and isolated workspace identity. Flow replays
@@ -281,7 +289,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
-| ACP executor admission | `src/domain/capability/acp-agent.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/domain/capability/agent-skills.ts`, and `src/domain/capability/workflow-capabilities.ts` | Validates one exact local ACP v1 runtime, freezes it in the run capability snapshot, rejects recovery drift, and blocks budgets for unsupported accounting dimensions. It doesn't start a process in the current slice. |
+| Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
@@ -508,32 +516,58 @@ UUID identifies cancellation settlement. Non-interactive use fails before config
 supervisor startup, storage access, or terminal takeover. JSON `inspect`, `events`, `approve`,
 `deny`, and `cancel` remain the automation and recovery interfaces.
 
-### ACP executor admission foundation
+### Local ACP executor
 
-The local editor bridge and the ACP executor boundary have opposite roles. The bridge presents Flow
-as an ACP agent to an editor. The executor boundary will let Flow use a separate ACP agent for one
-admitted agent attempt.
+The local editor bridge and local executor have opposite roles. The bridge presents Flow as an ACP
+agent to an editor. The executor makes Flow an ACP client for one admitted agent attempt. They share
+strict transport utilities, but neither role grants authority to the other.
 
-The current executor slice stops at admission. A strict `AcpAgent` manifest declares ACP v1 and one
-prompt-only compatibility profile. It also declares one exact binary or Node package launch, fixed
-model mappings, and provider-domain authority. The manifest names a credential environment
-variable but never contains its value. It declares token and cost reporting support independently.
+A strict `AcpAgent` manifest declares ACP v1, `prompt-only-v1`, and one exact launch. It also binds
+model mappings, provider authority, configuration assignments, and accounting support. It names a
+credential environment variable but never contains its value. The local loader uses bounded,
+no-follow reads.
 
-The local loader performs bounded, no-follow reads. It doesn't search PATH, a registry, a package
-manager, or a home directory. It doesn't use the network or start a subprocess. The loader binds
-hashes, sizes, stable file identities, and the exact Node executable and version for a package
-closure.
+The loader binds hashes, sizes, stable file identities, and the exact Node runtime. It doesn't
+search `PATH`, a registry, a package manager, or a home directory.
 
-Flow stores the validated identity only in the immutable run capability snapshot. It doesn't add an
-executor selector to workflow YAML or change the workflow digest. Attached runs, detached workers,
-child runs, public projections, and recovery all use the same capability digest. Recovery rejects a
-missing or changed identity before executor invocation. Token and cost observations remain
-independently complete or unavailable, and a budget that needs an unavailable dimension fails
-before the first durable run event.
+The command line stores the validated identity only in the immutable run capability snapshot. It
+doesn't add an executor selector to workflow YAML or change the workflow digest. Attached runs,
+detached workers, child runs, public projections, and recovery use the same capability digest. The
+production router chooses ACP only when that snapshot contains a selected agent. Otherwise, it
+returns the embedded Pi executor outcome unchanged.
 
-No production route starts the admitted ACP binary or package yet. Slice 10.1 must still add process
-containment, protocol-session execution, Flow-brokered operations, settlement, and interoperability
-evaluation.
+The ACP executor revalidates runtime identity immediately before launch. It rejects nodes that
+declare tools, Agent Skills, tool packages, or command approval. It also rejects missing exact
+model, provider, or reasoning mappings. Each accepted attempt creates a private directory and one
+new local process. The inverse ACP stream advertises no client filesystem, terminal, elicitation,
+MCP, or extension capability. It accepts only the strict initialize, session configuration,
+session creation, prompt, update, and response sequence needed by the prompt-only profile.
+
+SRT supplies one attempt-scoped sandbox policy. The process can read only its admitted runtime. It
+can write only private disposable state and connect only to the declared provider domain. SRT
+leases the selected credential through its host-scoped masking sentinel. The process cannot read
+the project, home directory, Flow state, protected paths, or source credential.
+
+Flow records a tool call, permission request, or undeclared client request by fixed category. The
+violation terminates the attempt.
+
+The executor bounds prompt and result bytes, ACP frames, JSON structure, output streams, active
+requests, timeout, and cleanup. It terminates the complete process tree and requires confirmed
+settlement. A disconnect or failure after the prompt starts is nonretryable and carries uncertain
+side-effect status because the provider might have observed work. Successful evidence binds the
+agent digest, hashed ACP session identity, run, workflow, node, attempt, sandbox policy, process
+containment, confirmed termination, usage provenance, and update count. Model-verifier evidence
+preserves the same ACP projection.
+
+Recovery never resumes an opaque ACP or provider session. An eligible later Flow attempt starts a
+fresh process and session and receives the bounded durable model-session recovery capsule. Runtime
+identity drift, unconfirmed termination, uncertain cleanup, or an open verifier attempt refuses
+recovery. Token and cost observations remain independently complete or unavailable. A budget that
+needs an unavailable dimension fails before the first durable run event.
+
+Cross-agent interoperability evaluation remains separate Gate 10 work. The implemented contract
+proves one standards-shaped production boundary without claiming that arbitrary ACP agents conform
+to Flow's stricter prompt-only profile.
 
 ### Pi runtime
 
@@ -1576,7 +1610,8 @@ contradiction status. The combined context precedes the selected Agent Skill cat
 state that these are explicit reference claims and don't grant authority.
 
 The notices don't authorize inferred relationships. Evidence locators never enter either block.
-Untargeted agents receive no block. Every attempt still starts a fresh in-memory Pi session.
+Untargeted agents receive no block. Every attempt starts fresh model context. The default Pi path
+uses a new in-memory session. A selected ACP path uses a new local process and ACP session.
 
 Attached execution protects the canonical project `.flow` directory. A detached job stores the same
 protected path in its immutable record. The worker gives the saved path to each node executor.

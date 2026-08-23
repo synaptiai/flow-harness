@@ -3,8 +3,9 @@
 Flow can resume an interrupted run when its durable ledger proves that execution stopped between
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
 attempt applied no effects. Recovery remains conservative: ambiguous work is reported to the
-operator and is never repeated automatically. Agent attempts that select `exec`, command attempts, and model verifier attempts never opt into
-fresh recovery; an open verifier start is refused as uncertain.
+operator and is never repeated automatically. Agent attempts that select `exec` never opt into
+fresh recovery. Command attempts and model verifier attempts also remain ineligible. An open
+verifier start is refused as uncertain.
 
 ## Preview release interruption
 
@@ -42,6 +43,22 @@ run records to repair the mismatch. Restore the admitted project and policy, or 
 with the ordinary `inspect` and `events` commands. A session-publication uncertainty requires the
 same read-only reconciliation: list sessions and inspect the matching run before retrying. The
 bridge has no remote, shared-user, or network recovery mode.
+
+## Local ACP executor attempts
+
+An ACP executor selection is part of the durable run capability snapshot. Resume the run with the
+original workflow and run ID. Don't add `--acp-agent`. Flow reopens the stored manifest provenance.
+It revalidates the exact runtime, model mapping, and accounting contract before process launch.
+
+An eligible fresh recovery attempt starts a new process, private directory, and ACP session. Flow
+renders the committed provider-neutral model-session record as a bounded recovery capsule in the
+new prompt. The previous provider or ACP session is never resumed. The new session binding includes
+the incremented attempt number and the same admitted agent digest.
+
+Flow doesn't retry an ACP attempt automatically. A failure after the prompt starts is nonretryable
+and has uncertain side-effect status because the provider might have observed work. Unconfirmed
+descendant termination, cleanup uncertainty, and an open model-verifier attempt also block fresh
+recovery. Inspect the durable failure and resolve the run explicitly.
 
 ## Recover a goal workspace
 

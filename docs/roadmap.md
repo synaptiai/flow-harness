@@ -445,41 +445,65 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 
 ### Slice 10.1: Run a local ACP executor
 
-**Executor-admission foundation implemented in current source. Process execution remains planned.**
+**Slices 10.1a and 10.1b are implemented. Cross-agent evaluation remains planned.**
 
-Implemented foundation:
+#### Implemented identity and admission
 
 - Validate one strict ACP v1 manifest and bind one exact local binary or Node package closure.
-- Store executor selection only in the run capability snapshot, independent of workflow YAML and
-  its digest.
+- Accept one public operator selection for validation, attached runs, and detached runs. Store the
+  selection only in the run capability snapshot, independent of workflow YAML and its digest.
 - Propagate the exact identity through all run paths and public output. Reject identity drift before
-  executor invocation.
+  executor invocation or recovery.
 - Preserve token and reported-cost missingness. Reject an unenforceable budget before its first run
   event.
 
-Remaining runtime work:
+#### Implemented process and authority boundary
 
-Process and authority:
+- Route a selected prompt-only agent or model verifier through an ACP v1 implementation behind the
+  existing `AgentExecutor` port. Preserve the exact embedded Pi outcome when no ACP agent is
+  selected.
+- Start one fresh admitted process, private directory, and ACP session for every attempt. Bind the
+  session to the run, workflow, node, attempt, and agent digest.
+- Select the declared provider, model, and reasoning configuration exactly. Reject unavailable,
+  refused, fallback, or changed configuration.
 
-- Implement an ACP v1 provider behind the existing `AgentExecutor` port.
-- Add a public operator selection that admits the exact manifest before run submission.
-- Start the admitted process under fixed containment and bind its ACP session to the Flow run,
-  node, and attempt.
-- Route each allowed client request through Flow policy, approval, containment, and settlement
-  without forwarding ambient client authority.
+#### Implemented authority containment
 
-Ambient client authority includes editor filesystem, terminal, credentials, extensions,
-elicitation, and Model Context Protocol (MCP).
+- Advertise no ambient client authority. Reject workflows that request tools, skills, tool
+  packages, or command approval.
+- Use SRT to deny project, home, and protected-path access. Permit private writes, one provider
+  domain, and one masked credential lease.
+- Deny tool calls, permission requests, and undeclared methods. Record a fixed category and
+  terminate the attempt.
 
-Evidence and interoperability:
+#### Implemented settlement and evidence boundary
 
-- Translate settled ACP results and usage into provider-neutral evidence. Record disconnects and
-  incomplete effects as failure or uncertainty.
-- Evaluate at least two independent ACP agents against the same workflow and controls before
-  claiming interoperability.
+- Bound protocol state, output, timeout, cancellation, EOF, and cleanup. Require complete
+  process-tree termination and record uncertainty for failures after prompt delivery.
+- Translate settled output and usage into provider-neutral evidence. Include executor, session,
+  sandbox, termination, and accounting provenance.
+- Carry the same provenance into model-verifier evidence and replay validation.
 
-Read [Local ACP v1 bridge](acp.md#local-executor-admission-foundation) for the implemented identity,
-recovery, accounting, and public-output boundary.
+#### Implemented fresh recovery
+
+- Start a fresh process and session for eligible explicit recovery. Supply the bounded durable
+  recovery capsule instead of resuming opaque provider or ACP state.
+
+#### Implemented hosted proof
+
+- Prove Linux x64 filesystem, network, credential, and descendant containment in hosted runtime
+  tests.
+
+#### Remaining interoperability work
+
+- Evaluate at least two independent ACP agents against the same workflow, controls, and private
+  verification before claiming cross-agent interoperability.
+- Decide whether a broader Flow-brokered authority profile is justified by those results. The
+  prompt-only profile remains the production default and does not treat ACP permission requests as
+  an authorization boundary.
+
+Read [Local ACP v1 integration](acp.md#run-a-local-acp-executor) for operator steps, containment,
+recovery, accounting, and public-output behavior.
 
 ### Slice 10.2: Evaluate phase-aware model routing
 
