@@ -349,6 +349,7 @@ async function writeBinaryManifest(
         ],
         containmentProfile: "acp-prompt-only-v1",
         usage: { modelTokens: "complete", costUsd: "unavailable" },
+        configuration: testConfiguration(),
       },
     }),
     "utf8",
@@ -438,6 +439,7 @@ async function writeNodePackageManifest(
         ],
         containmentProfile: "acp-prompt-only-v1",
         usage: { modelTokens: "unavailable", costUsd: "unavailable" },
+        configuration: testConfiguration(),
       },
     }),
     "utf8",
@@ -454,4 +456,21 @@ async function fileSha256(path: string): Promise<string> {
   return createHash("sha256")
     .update(await readFile(path))
     .digest("hex");
+}
+
+function testConfiguration() {
+  return {
+    assignments: [
+      { configId: "model", source: "model" },
+      {
+        configId: "thinking",
+        source: "thinking",
+        mappings: [
+          { thinking: "off", value: "off" },
+          { thinking: "medium", value: "medium" },
+          { thinking: "high", value: "high" },
+        ],
+      },
+    ],
+  };
 }

@@ -114,6 +114,85 @@ describe("ACP agent runtime capability", () => {
     expect(calculateAcpAgentRuntimeSnapshotDigest(first)).toBe(first.digest);
   });
 
+  it("binds ordered exact model, reasoning, and literal configuration assignments", () => {
+    const snapshot = createAcpAgentRuntimeSnapshot(validBinaryInput());
+
+    expect(snapshot.configuration).toEqual({
+      assignments: [
+        { configId: "mode", source: "literal", value: "ask" },
+        { configId: "model", source: "model" },
+        {
+          configId: "thinking",
+          source: "thinking",
+          mappings: [
+            { thinking: "off", value: "off" },
+            { thinking: "medium", value: "medium" },
+            { thinking: "high", value: "high" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("requires one explicit model assignment before one explicit reasoning assignment", () => {
+    for (const configuration of [
+      null,
+      { assignments: [{ configId: "thinking", source: "thinking", mappings: THINKING_MAPPINGS }] },
+      { assignments: [{ configId: "model", source: "model" }] },
+      {
+        assignments: [
+          { configId: "thinking", source: "thinking", mappings: THINKING_MAPPINGS },
+          { configId: "model", source: "model" },
+        ],
+      },
+    ]) {
+      expect(() =>
+        createAcpAgentRuntimeSnapshot({
+          ...validBinaryInput(),
+          manifest: binaryManifest({ configuration }),
+        }),
+      ).toThrow(/^ACP agent runtime snapshot is invalid$/);
+    }
+  });
+
+  it("rejects ambiguous or open-ended configuration assignments", () => {
+    for (const configuration of [
+      { private: true },
+      {
+        assignments: [
+          { configId: "model", source: "model" },
+          { configId: "model", source: "thinking", mappings: THINKING_MAPPINGS },
+        ],
+      },
+      {
+        assignments: [
+          { configId: "model", source: "model" },
+          {
+            configId: "thinking",
+            source: "thinking",
+            mappings: [
+              { thinking: "off", value: "same" },
+              { thinking: "medium", value: "same" },
+            ],
+          },
+        ],
+      },
+      {
+        assignments: [
+          { configId: "model", source: "model", category: "model" },
+          { configId: "thinking", source: "thinking", mappings: THINKING_MAPPINGS },
+        ],
+      },
+    ]) {
+      expect(() =>
+        createAcpAgentRuntimeSnapshot({
+          ...validBinaryInput(),
+          manifest: binaryManifest({ configuration }),
+        }),
+      ).toThrow(/^ACP agent runtime snapshot is invalid$/);
+    }
+  });
+
   it("binds one ACP runtime into the existing capability digest", () => {
     const acpAgent = createAcpAgentRuntimeSnapshot(validBinaryInput());
     const capability = validateCapabilitySnapshot({
@@ -533,7 +612,7 @@ function binaryManifest(
       readonly model: string;
       readonly agentModel: string;
     }[];
-    padding?: string;
+    configuration?: unknown;
   } = {},
 ): Buffer {
   return Buffer.from(
@@ -562,9 +641,9 @@ function binaryManifest(
         ],
         containmentProfile: overrides.containmentProfile ?? "acp-prompt-only-v1",
         usage: { modelTokens: "complete", costUsd: "unavailable" },
-        ...(overrides.padding === undefined
+        ...(overrides.configuration === null
           ? {}
-          : { configuration: { padding: overrides.padding } }),
+          : { configuration: overrides.configuration ?? validConfiguration() }),
       },
     }),
   );
@@ -604,16 +683,33 @@ function nodePackageManifest(): Buffer {
         ],
         containmentProfile: "acp-prompt-only-v1",
         usage: { modelTokens: "unavailable", costUsd: "unavailable" },
+        configuration: validConfiguration(),
       },
     }),
   );
 }
 
 function manifestAtBytes(targetBytes: number): Buffer {
-  const empty = binaryManifest({ padding: "" });
-  const result = binaryManifest({ padding: "x".repeat(targetBytes - empty.byteLength) });
+  const manifest = binaryManifest();
+  const result = Buffer.concat([manifest, Buffer.alloc(targetBytes - manifest.byteLength, 0x20)]);
   if (result.byteLength !== targetBytes) {
     throw new Error("cannot construct exact ACP agent manifest boundary");
   }
   return result;
+}
+
+const THINKING_MAPPINGS = [
+  { thinking: "off", value: "off" },
+  { thinking: "medium", value: "medium" },
+  { thinking: "high", value: "high" },
+] as const;
+
+function validConfiguration() {
+  return {
+    assignments: [
+      { configId: "mode", source: "literal", value: "ask" },
+      { configId: "model", source: "model" },
+      { configId: "thinking", source: "thinking", mappings: THINKING_MAPPINGS },
+    ],
+  };
 }

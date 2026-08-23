@@ -49,6 +49,20 @@ export function acpAgentCapabilitySnapshot(
           ],
           containmentProfile: "acp-prompt-only-v1",
           usage,
+          configuration: {
+            assignments: [
+              { configId: "model", source: "model" },
+              {
+                configId: "thinking",
+                source: "thinking",
+                mappings: [
+                  { thinking: "off", value: "off" },
+                  { thinking: "medium", value: "medium" },
+                  { thinking: "high", value: "high" },
+                ],
+              },
+            ],
+          },
         },
       }),
     ),
