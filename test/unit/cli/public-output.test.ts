@@ -278,6 +278,107 @@ describe("public run output", () => {
     expect(value.capabilitySnapshot.languageServer.manifest.contentBase64).toBe(privateManifest);
   });
 
+  it("projects an ACP agent without private launch, credential, or manifest data", () => {
+    const privateManifest = Buffer.from("PRIVATE_ACP_AGENT_MANIFEST\n").toString("base64");
+    const value = {
+      capabilitySnapshot: {
+        acpAgent: {
+          version: 1,
+          kind: "acp-agent",
+          name: "review-agent",
+          protocol: "acp-v1",
+          compatibilityProfile: "prompt-only-v1",
+          launch: {
+            kind: "node-package",
+            nodeExecutable: {
+              path: "/PRIVATE/bin/node",
+              sha256: "a".repeat(64),
+              bytes: 1_024,
+              device: "1",
+              inode: "2",
+            },
+            nodeVersion: "v27.0.0",
+            package: {
+              root: "/PRIVATE/node_modules/review-agent",
+              resolutionRoot: "/PRIVATE/node_modules",
+              name: "review-agent",
+              version: "1.2.3",
+              sha256: "b".repeat(64),
+              bytes: 2_048,
+              files: 7,
+              device: "3",
+              inode: "4",
+              entrypoint: {
+                path: "dist/PRIVATE-entrypoint.js",
+                sha256: "c".repeat(64),
+                bytes: 512,
+                device: "5",
+                inode: "6",
+              },
+            },
+            args: ["--PRIVATE_CONFIG"],
+          },
+          modelMappings: [
+            { provider: "example", model: "public-model", agentModel: "public-agent-model" },
+          ],
+          providerAuthorities: [
+            {
+              provider: "example",
+              domain: "PRIVATE.example.com",
+              credentialEnv: "PRIVATE_API_KEY",
+            },
+          ],
+          containmentProfile: "acp-prompt-only-v1",
+          usage: { modelTokens: "complete", costUsd: "unavailable" },
+          configuration: { private: "PRIVATE_CONFIGURATION" },
+          manifest: {
+            provenance: "PRIVATE/acp-agent.json",
+            sha256: "d".repeat(64),
+            bytes: 768,
+            contentBase64: privateManifest,
+          },
+          digest: "e".repeat(64),
+        },
+      },
+    };
+
+    const projected = projectPublicRunOutput(value);
+
+    expect(projected).toEqual({
+      capabilitySnapshot: {
+        acpAgent: {
+          version: 1,
+          kind: "acp-agent",
+          name: "review-agent",
+          protocol: "acp-v1",
+          compatibilityProfile: "prompt-only-v1",
+          launch: {
+            kind: "node-package",
+            nodeExecutable: { sha256: "a".repeat(64), bytes: 1_024 },
+            nodeVersion: "v27.0.0",
+            package: {
+              name: "review-agent",
+              version: "1.2.3",
+              sha256: "b".repeat(64),
+              bytes: 2_048,
+              files: 7,
+              entrypoint: { sha256: "c".repeat(64), bytes: 512 },
+            },
+          },
+          modelMappings: [
+            { provider: "example", model: "public-model", agentModel: "public-agent-model" },
+          ],
+          containmentProfile: "acp-prompt-only-v1",
+          usage: { modelTokens: "complete", costUsd: "unavailable" },
+          manifest: { sha256: "d".repeat(64), bytes: 768 },
+          digest: "e".repeat(64),
+        },
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE");
+    expect(value.capabilitySnapshot.acpAgent.manifest.contentBase64).toBe(privateManifest);
+  });
+
   it("projects semantic receipts as safe summaries without changing same-named result data", () => {
     const privatePath = "PRIVATE/source/example.ts";
     const privateMessage = "PRIVATE semantic diagnostic";

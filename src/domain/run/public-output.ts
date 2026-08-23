@@ -121,12 +121,62 @@ function projectCapabilitySnapshot(
       if (key === "languageServer") {
         return [key, projectLanguageServer(item)];
       }
+      if (key === "acpAgent") {
+        return [key, projectAcpAgent(item)];
+      }
       if (key === "goalWorkspace") {
         return [key, projectGoalWorkspace(item)];
       }
       return [key, item];
     }),
   );
+}
+
+function projectAcpAgent(value: unknown): unknown {
+  if (!isRecord(value) || value.kind !== "acp-agent") {
+    return null;
+  }
+  const projected = pick(value, ["version", "kind", "name", "protocol", "compatibilityProfile"]);
+  projected.launch = projectAcpAgentLaunch(value.launch);
+  projected.modelMappings = Array.isArray(value.modelMappings)
+    ? value.modelMappings.map((mapping) =>
+        isRecord(mapping) ? pick(mapping, ["provider", "model", "agentModel"]) : null,
+      )
+    : null;
+  Object.assign(projected, pick(value, ["containmentProfile", "usage"]));
+  projected.manifest = isRecord(value.manifest) ? pick(value.manifest, ["sha256", "bytes"]) : null;
+  Object.assign(projected, pick(value, ["digest"]));
+  return projected;
+}
+
+function projectAcpAgentLaunch(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (value.kind === "binary") {
+    return {
+      kind: "binary",
+      executable: isRecord(value.executable) ? pick(value.executable, ["sha256", "bytes"]) : null,
+    };
+  }
+  if (value.kind !== "node-package") {
+    return null;
+  }
+  return {
+    kind: "node-package",
+    nodeExecutable: isRecord(value.nodeExecutable)
+      ? pick(value.nodeExecutable, ["sha256", "bytes"])
+      : null,
+    ...pick(value, ["nodeVersion"]),
+    package: isRecord(value.package)
+      ? {
+          ...pick(value.package, ["name", "version", "sha256", "bytes", "files"]),
+          entrypoint: isRecord(value.package.entrypoint)
+            ? pick(value.package.entrypoint, ["sha256", "bytes"])
+            : null,
+        }
+      : null,
+  };
 }
 
 function projectGoalWorkspace(value: unknown): unknown {

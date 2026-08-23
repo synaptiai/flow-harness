@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { MAX_FLOW_PRESENTATION_ROWS } from "../../../src/domain/presentation/flow-presentation.js";
 import {
   MAX_PRESENTED_APPROVALS,
   projectRunPresentation,
   RunPresentationProjectionError,
 } from "../../../src/domain/presentation/run-presentation-projector.js";
-import { MAX_FLOW_PRESENTATION_ROWS } from "../../../src/domain/presentation/flow-presentation.js";
 import { MAX_COMPILED_WORKFLOW_NODES } from "../../../src/domain/workflow/types.js";
 
 describe("run presentation projector", () => {
@@ -138,6 +138,26 @@ describe("run presentation projector", () => {
       { kind: "notice", tone: "danger", text: "Run failed at node command." },
     ]);
     expect(document.actions).toEqual([]);
+  });
+
+  it("distinguishes unavailable model resource dimensions from measured zero", () => {
+    const input = waitingRun();
+    input.resources.modelTokens = 0;
+    input.resources.modelCostUsdMicros = 0;
+    input.resourceAvailability = {
+      modelTokens: "unavailable",
+      modelCostUsdMicros: "unavailable",
+    };
+
+    const document = projectRunPresentation(input);
+
+    expect(facts(document, "resources")).toEqual([
+      { label: "Node starts", value: "2" },
+      { label: "Model tokens", value: "Unavailable" },
+      { label: "Model cost", value: "Unavailable" },
+      { label: "Execution", value: "1250 ms" },
+      { label: "Artifacts", value: "4096 bytes" },
+    ]);
   });
 
   it.each([
@@ -284,6 +304,10 @@ interface FixtureRun {
     modelCostUsdMicros: number;
     executionMs: number;
     artifactBytes: number;
+  };
+  resourceAvailability?: {
+    modelTokens: "complete" | "unavailable";
+    modelCostUsdMicros: "complete" | "unavailable";
   };
   nodes: Record<string, FixtureNode>;
   capabilitySnapshot?: unknown;
