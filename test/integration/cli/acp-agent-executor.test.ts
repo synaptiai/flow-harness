@@ -18,7 +18,10 @@ import {
   type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
-import type { RunEvent } from "../../../src/domain/run/events.js";
+import {
+  calculateAcpAgentSessionBindingDigest,
+  type RunEvent,
+} from "../../../src/domain/run/events.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -39,9 +42,9 @@ describe("ACP agent executor CLI", () => {
     const store = new MemoryStore();
     let observed: NodeExecutionContext | undefined;
     const executor: NodeExecutor = {
-      async execute(_node, context) {
+      async execute(node, context) {
         observed = context;
-        return successfulAgentOutcome();
+        return successfulAcpAgentOutcome(node.id, context);
       },
     };
     const dependencies = {
@@ -241,6 +244,62 @@ function successfulAgentOutcome(): NodeExecutionOutcome {
       durationMs: 1,
       policyDecisions: [],
       effectReceipts: [],
+    },
+  };
+}
+
+function successfulAcpAgentOutcome(
+  nodeId: string,
+  context: NodeExecutionContext,
+): NodeExecutionOutcome {
+  const snapshot = context.capabilitySnapshot?.acpAgent;
+  if (snapshot === undefined) throw new Error("ACP CLI fixture has no runtime snapshot");
+  const outcome = successfulAgentOutcome();
+  if (outcome.status !== "succeeded" || outcome.evidence?.kind !== "agent") {
+    throw new Error("ACP CLI fixture has no successful agent evidence");
+  }
+  const sessionIdHash = "b".repeat(64);
+  return {
+    ...outcome,
+    evidence: {
+      ...outcome.evidence,
+      usageObservation: {
+        modelTokens: { status: "complete", totalTokens: 8 },
+        costUsd: { status: "unavailable" },
+      },
+      acp: {
+        version: 1,
+        executor: "local-acp-process-v1",
+        agentName: snapshot.name,
+        agentDigest: snapshot.digest,
+        protocol: "acp-v1",
+        compatibilityProfile: "prompt-only-v1",
+        containmentProfile: "acp-prompt-only-v1",
+        runtimeIdentity: "revalidated",
+        credentialLease: "srt-host-scoped-sentinel",
+        sessionIdHash,
+        sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+          runId: context.runId,
+          workflowId: context.workflowId,
+          nodeId,
+          attempt: context.attempt,
+          agentDigest: snapshot.digest,
+          sessionIdHash,
+        }),
+        processContainment: "process-group",
+        terminationStatus: "confirmed",
+        sandbox: {
+          backend: "anthropic-sandbox-runtime",
+          backendVersion: "0.0.70",
+          profile: "acp-prompt-only-v1",
+          policyDigest: "c".repeat(64),
+        },
+        usageProvenance: {
+          modelTokens: "prompt-response",
+          costUsd: "declared-unavailable",
+        },
+        updateCount: 1,
+      },
     },
   };
 }

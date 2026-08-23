@@ -61,10 +61,7 @@ export class ProductionAgentExecutor implements AgentExecutor {
     readonly acpExecutor: AgentExecutor,
   ) {}
 
-  execute(
-    node: CompiledAgentNode,
-    context: NodeExecutionContext,
-  ): Promise<NodeExecutionOutcome> {
+  execute(node: CompiledAgentNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome> {
     return context.capabilitySnapshot?.acpAgent === undefined
       ? this.piExecutor.execute(node, context)
       : this.acpExecutor.execute(node, context);
@@ -81,9 +78,7 @@ export function createProductionCommandSandbox(
   return createNativeSrtSandbox();
 }
 
-export function createProductionAcpAgentSandbox(
-  commandSandbox: CommandSandbox,
-): AcpAgentSandbox {
+export function createProductionAcpAgentSandbox(commandSandbox: CommandSandbox): AcpAgentSandbox {
   return isAcpAgentSandbox(commandSandbox) ? commandSandbox : createNativeSrtSandbox();
 }
 
@@ -107,9 +102,7 @@ export function createProductionNodeExecutor(
   );
 }
 
-function isAcpAgentSandbox(
-  sandbox: CommandSandbox,
-): sandbox is CommandSandbox & AcpAgentSandbox {
+function isAcpAgentSandbox(sandbox: CommandSandbox): sandbox is CommandSandbox & AcpAgentSandbox {
   return (
     "prepareAcpAgent" in sandbox &&
     typeof (sandbox as Partial<AcpAgentSandbox>).prepareAcpAgent === "function"

@@ -51,10 +51,7 @@ const MAX_ACP_AGENT_STDERR_BYTES = 65_536;
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const DEFAULT_TERMINATION_CONFIRMATION_MS = 2_000;
 
-type AssertCurrent = (
-  projectRoot: string,
-  snapshot: AcpAgentRuntimeSnapshot,
-) => Promise<void>;
+type AssertCurrent = (projectRoot: string, snapshot: AcpAgentRuntimeSnapshot) => Promise<void>;
 
 export interface AcpAgentExecutorOptions {
   readonly sandbox: AcpAgentSandbox;
@@ -75,6 +72,9 @@ interface AdmittedExecution {
   readonly runtimeSupportPaths: readonly string[];
   readonly projectRoot: string;
   readonly maxOutputBytes: number;
+}
+
+interface PreparedExecution extends AdmittedExecution {
   readonly prompt: string;
 }
 
@@ -133,6 +133,12 @@ export class AcpAgentExecutor implements AgentExecutor {
     if (this.#platform !== "darwin" && this.#platform !== "linux") {
       return failure("acp_agent_platform_unsupported", "none", null);
     }
+    let execution: PreparedExecution;
+    try {
+      execution = Object.freeze({ ...admitted, prompt: await preparePrompt(node, context) });
+    } catch {
+      return failure("acp_agent_contract_invalid", "none", null);
+    }
 
     let attemptDirectory: string | undefined;
     let prepared: PreparedCommand | undefined;
@@ -140,14 +146,14 @@ export class AcpAgentExecutor implements AgentExecutor {
     try {
       attemptDirectory = await this.#createAttemptDirectory();
       prepared = await this.#sandbox.prepareAcpAgent({
-        executable: admitted.executable,
-        args: admitted.args,
+        executable: execution.executable,
+        args: execution.args,
         cwd: attemptDirectory,
-        projectRoot: admitted.projectRoot,
+        projectRoot: execution.projectRoot,
         protectedPaths: context.protectedPaths,
-        runtimeSupportPaths: admitted.runtimeSupportPaths,
-        providerDomain: admitted.authority.domain,
-        credentialEnvironmentVariable: admitted.authority.credentialEnv,
+        runtimeSupportPaths: execution.runtimeSupportPaths,
+        providerDomain: execution.authority.domain,
+        credentialEnvironmentVariable: execution.authority.credentialEnv,
         ...(context.signal === undefined ? {} : { signal: context.signal }),
       });
       if (
@@ -156,7 +162,7 @@ export class AcpAgentExecutor implements AgentExecutor {
       ) {
         outcome = failure("acp_agent_sandbox_unavailable", "none", null);
       } else {
-        await this.#assertCurrent(admitted.projectRoot, admitted.snapshot);
+        await this.#assertCurrent(execution.projectRoot, execution.snapshot);
         await prepared.beforeLaunch?.();
         if (isAborted(context.signal)) {
           outcome = failure("acp_agent_aborted", "none", null);
@@ -164,7 +170,7 @@ export class AcpAgentExecutor implements AgentExecutor {
           outcome = await this.#runProcess(
             node,
             context,
-            admitted,
+            execution,
             prepared,
             attemptDirectory,
             startedAt,
@@ -202,7 +208,7 @@ export class AcpAgentExecutor implements AgentExecutor {
   async #runProcess(
     node: CompiledAgentNode,
     context: NodeExecutionContext,
-    admitted: AdmittedExecution,
+    admitted: PreparedExecution,
     prepared: PreparedCommand,
     attemptDirectory: string,
     startedAt: number,
@@ -302,7 +308,16 @@ export class AcpAgentExecutor implements AgentExecutor {
     }
     const exit = await exitPromise;
     const durationMs = Math.max(0, this.#now() - startedAt);
-    const evidence = buildEvidence(node, context, admitted.snapshot, prepared, observation, durationMs, sessionResult, exit);
+    const evidence = buildEvidence(
+      node,
+      context,
+      admitted.snapshot,
+      prepared,
+      observation,
+      durationMs,
+      sessionResult,
+      exit,
+    );
 
     if (exit.terminationIncomplete) {
       return failure("acp_agent_termination_unconfirmed", "uncertain", evidence);
@@ -396,17 +411,12 @@ function admitExecution(
     ) {
       throw new Error("output contract");
     }
-    const prompt = renderPrompt(node, context);
-    if (Buffer.byteLength(prompt, "utf8") > MAX_ACP_AGENT_PROMPT_BYTES) {
-      throw new Error("prompt contract");
-    }
     const launch = resolveLaunch(snapshot);
     return Object.freeze({
       snapshot,
       authority,
       projectRoot: context.projectRoot,
       maxOutputBytes,
-      prompt,
       ...launch,
     });
   } catch {
@@ -440,7 +450,42 @@ function resolveLaunch(snapshot: AcpAgentRuntimeSnapshot): {
   });
 }
 
-function renderPrompt(node: CompiledAgentNode, context: NodeExecutionContext): string {
+async function preparePrompt(
+  node: CompiledAgentNode,
+  context: NodeExecutionContext,
+): Promise<string> {
+  let recovery: string | undefined;
+  if (context.modelSession !== undefined) {
+    const state = await context.modelSession.read();
+    if (state.activeAttempt !== context.attempt) {
+      throw new Error("model session attempt");
+    }
+    if (context.attempt > 1) {
+      if (!state.primaryPromptCommitted) throw new Error("model session prompt");
+      const capsule = renderModelSessionResumeCapsule(state);
+      await context.modelSession.append({
+        type: "resume_surface_prepared",
+        attempt: context.attempt,
+        renderVersion: capsule.renderVersion,
+        sourceHead: capsule.sourceHead,
+        digest: capsule.digest,
+        bytes: capsule.bytes,
+      });
+      recovery = capsule.text;
+    }
+  }
+  const prompt = renderPrompt(node, context, recovery);
+  if (Buffer.byteLength(prompt, "utf8") > MAX_ACP_AGENT_PROMPT_BYTES) {
+    throw new Error("prompt contract");
+  }
+  return prompt;
+}
+
+function renderPrompt(
+  node: CompiledAgentNode,
+  context: NodeExecutionContext,
+  recovery: string | undefined,
+): string {
   const sections = [
     "Flow ACP prompt-only authority capsule, version 1.",
     JSON.stringify({
@@ -465,9 +510,7 @@ function renderPrompt(node: CompiledAgentNode, context: NodeExecutionContext): s
     context.agentSystemPrompt,
     context.agentGoalWorkspace,
     context.agentSupplementalMemory,
-    context.modelSession?.state.primaryPromptCommitted === true
-      ? renderModelSessionResumeCapsule(context.modelSession.state).text
-      : undefined,
+    recovery,
     "Task:",
     node.agent.prompt,
   ];
@@ -522,8 +565,10 @@ function buildEvidence(
     processContainment: prepared.processContainment,
     terminationStatus: exit.terminationIncomplete ? "unconfirmed" : "confirmed",
     sandbox: prepared.evidence,
-    usageProvenance:
-      result?.usageProvenance ?? { modelTokens: "not-observed", costUsd: "not-observed" },
+    usageProvenance: result?.usageProvenance ?? {
+      modelTokens: "not-observed",
+      costUsd: "not-observed",
+    },
     updateCount: result?.updateCount ?? observation.updateCount,
     ...(observation.authorityViolation === undefined
       ? {}

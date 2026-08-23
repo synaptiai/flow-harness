@@ -9,10 +9,17 @@ import type {
   AcpAgentSandboxRequest,
 } from "../../../src/application/acp-agent-sandbox.js";
 import type { PreparedCommand } from "../../../src/application/command-sandbox.js";
+import type { ModelSessionJournal } from "../../../src/application/ports.js";
 import {
   calculateAcpAgentSessionBindingDigest,
   type SandboxEvidence,
 } from "../../../src/domain/run/events.js";
+import {
+  appendModelSessionEvent,
+  createModelSession,
+  createModelSessionEvent,
+  type ModelSessionEventInput,
+} from "../../../src/domain/run/model-session.js";
 import type { CompiledAgentNode } from "../../../src/domain/workflow/types.js";
 import { AcpAgentExecutor } from "../../../src/infrastructure/acp/acp-agent-executor.js";
 import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
@@ -109,6 +116,36 @@ describe("local ACP process executor", () => {
       },
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_TOOL_ID");
+  });
+
+  it("recovers durable context into a new process, directory, and ACP session", async () => {
+    const sandbox = fixtureSandbox("success");
+    const executor = new AcpAgentExecutor({
+      sandbox,
+      platform: "darwin",
+      assertCurrent: async () => undefined,
+      terminationGraceMs: 25,
+      terminationConfirmationMs: 500,
+    });
+
+    const first = await executor.execute(agentNode(), context(1));
+    const journal = recoveredModelSessionJournal();
+    const second = await executor.execute(agentNode(), { ...context(2), modelSession: journal });
+
+    expect(first.status).toBe("succeeded");
+    expect(second.status).toBe("succeeded");
+    if (
+      first.status !== "succeeded" ||
+      first.evidence.kind !== "agent" ||
+      second.status !== "succeeded" ||
+      second.evidence.kind !== "agent"
+    ) {
+      return;
+    }
+    expect(second.evidence.text).toBe("ACP recovery completed");
+    expect(second.evidence.acp?.sessionIdHash).not.toBe(first.evidence.acp?.sessionIdHash);
+    expect(sandbox.requests[0]?.cwd).not.toBe(sandbox.requests[1]?.cwd);
+    expect(journal.state.resumePreparedAttempts).toEqual([2]);
   });
 
   it("times out a stalled prompt, confirms termination, and never retries", async () => {
@@ -209,11 +246,11 @@ function agentNode(timeoutMs = 5_000): CompiledAgentNode {
   };
 }
 
-function context() {
+function context(attempt = 2) {
   return {
     runId: "run-1",
     workflowId: "workflow-1",
-    attempt: 2,
+    attempt,
     cwd: "/project/workspace",
     projectRoot: "/project",
     protectedPaths: ["/private/flow-state"],
@@ -228,6 +265,42 @@ function context() {
         executionMs: 20_000,
         artifactBytes: 50_000,
       },
+    },
+  };
+}
+
+function recoveredModelSessionJournal(): ModelSessionJournal {
+  let state = createModelSession(
+    { runId: "run-1", workflowId: "workflow-1", nodeId: "agent-1" },
+    "2026-08-23T12:00:00.000Z",
+  ).state;
+  const apply = (input: ModelSessionEventInput) => {
+    const event = createModelSessionEvent(
+      state,
+      input,
+      `2026-08-23T12:00:0${state.eventCount}.000Z`,
+    );
+    state = appendModelSessionEvent(state, event);
+  };
+  apply({ type: "attempt_started", attempt: 1 });
+  apply({
+    type: "user_message_committed",
+    attempt: 1,
+    origin: "primary_prompt",
+    text: "Complete the bounded task.",
+  });
+  apply({ type: "attempt_interrupted", attempt: 1, reason: "process_interrupted" });
+  apply({ type: "attempt_started", attempt: 2 });
+  return {
+    get state() {
+      return state;
+    },
+    async read() {
+      return state;
+    },
+    async append(input) {
+      apply(input);
+      return state;
     },
   };
 }

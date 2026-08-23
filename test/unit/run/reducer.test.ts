@@ -10,6 +10,7 @@ import {
   type RunStartedEvent,
   reduceRunEvents,
 } from "../../../src/domain/run/events.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 
 describe("reduceRunEvents", () => {
   it("reconstructs a successful run from authoritative events", () => {
@@ -106,9 +107,10 @@ describe("reduceRunEvents", () => {
   });
 
   it("validates durable ACP session binding and confirmed success termination", () => {
-    const evidence = acpAgentEvidence("completed");
+    const capabilitySnapshot = acpAgentCapabilitySnapshot();
+    const evidence = acpAgentEvidence("completed", capabilitySnapshot);
     const events: RunEvent[] = [
-      runStarted(),
+      { ...runStarted(), capabilitySnapshot },
       { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
       {
         ...base(3),
@@ -919,8 +921,8 @@ function agentEvidence(text: string) {
   };
 }
 
-function acpAgentEvidence(text: string) {
-  const agentDigest = "a".repeat(64);
+function acpAgentEvidence(text: string, capabilitySnapshot = acpAgentCapabilitySnapshot()) {
+  const agentDigest = capabilitySnapshot.acpAgent?.digest ?? "";
   const sessionIdHash = "b".repeat(64);
   return {
     ...agentEvidence(text),

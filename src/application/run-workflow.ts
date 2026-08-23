@@ -3901,6 +3901,44 @@ function validateAgentCapabilityOutcome(
   outcome: NodeExecutionOutcome,
   snapshot: CapabilitySnapshot | undefined,
 ): void {
+  const acpEvidence =
+    outcome.evidence?.kind === "agent"
+      ? outcome.evidence.acp
+      : outcome.evidence?.kind === "verifier" && outcome.evidence.driver === "model"
+        ? outcome.evidence.acp
+        : undefined;
+  const selectedAcpAgent = snapshot?.acpAgent;
+  const isModelExecution =
+    node.type === "agent" ||
+    (node.type === "verifier" &&
+      (node.verifier.kind === "model" || node.verifier.kind === "packaged-model"));
+  if (isModelExecution) {
+    if (selectedAcpAgent === undefined && acpEvidence !== undefined) {
+      throw new Error(`node "${node.id}" reported an undeclared ACP agent execution`);
+    }
+    if (
+      selectedAcpAgent !== undefined &&
+      (outcome.status === "succeeded" ||
+        outcome.evidence?.kind === "agent" ||
+        (outcome.evidence?.kind === "verifier" &&
+          outcome.evidence.driver === "model" &&
+          outcome.evidence.result !== "execution_failed")) &&
+      acpEvidence === undefined
+    ) {
+      throw new Error(`node "${node.id}" omitted its selected ACP agent evidence`);
+    }
+    if (
+      selectedAcpAgent !== undefined &&
+      acpEvidence !== undefined &&
+      (acpEvidence.agentDigest !== selectedAcpAgent.digest ||
+        acpEvidence.agentName !== selectedAcpAgent.name ||
+        acpEvidence.protocol !== selectedAcpAgent.protocol ||
+        acpEvidence.compatibilityProfile !== selectedAcpAgent.compatibilityProfile ||
+        acpEvidence.containmentProfile !== selectedAcpAgent.containmentProfile)
+    ) {
+      throw new Error(`node "${node.id}" ACP evidence does not match its selected runtime`);
+    }
+  }
   if (node.type !== "agent") {
     return;
   }

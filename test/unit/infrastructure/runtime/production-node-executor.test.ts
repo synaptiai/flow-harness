@@ -23,9 +23,9 @@ describe("production node executor composition", () => {
     const agentExecutor = (executor as NodeExecutorRouter).agentExecutor as ProductionAgentExecutor;
     expect(agentExecutor.piExecutor).toBeInstanceOf(PiAgentExecutor);
     expect(agentExecutor.acpExecutor).toBeInstanceOf(AcpAgentExecutor);
-    expect(
-      (agentExecutor.piExecutor as PiAgentExecutor).semanticSessionFactory,
-    ).toBeTypeOf("function");
+    expect((agentExecutor.piExecutor as PiAgentExecutor).semanticSessionFactory).toBeTypeOf(
+      "function",
+    );
     expect(createProductionNodeExecutor("native")).toBeDefined();
   });
 
@@ -39,7 +39,8 @@ describe("production node executor composition", () => {
   it("shares the native SRT coordinator and routes only admitted ACP snapshots", async () => {
     const nativeSandbox = createProductionCommandSandbox("native");
     expect(createProductionAcpAgentSandbox(nativeSandbox)).toBe(nativeSandbox);
-    const piExecute = vi.fn(async () => failed("pi"));
+    const piOutcome = failed("pi");
+    const piExecute = vi.fn(async () => piOutcome);
     const acpExecute = vi.fn(async () => failed("acp"));
     const executor = new ProductionAgentExecutor(
       { execute: piExecute } satisfies AgentExecutor,
@@ -55,12 +56,13 @@ describe("production node executor composition", () => {
       protectedPaths: [],
     };
 
-    await executor.execute(node, baseContext);
+    const unchangedPiOutcome = await executor.execute(node, baseContext);
     await executor.execute(node, {
       ...baseContext,
       capabilitySnapshot: acpAgentCapabilitySnapshot(),
     });
 
+    expect(unchangedPiOutcome).toBe(piOutcome);
     expect(piExecute).toHaveBeenCalledTimes(1);
     expect(acpExecute).toHaveBeenCalledTimes(1);
   });

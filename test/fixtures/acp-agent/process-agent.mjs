@@ -1,16 +1,13 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 
-import {
-  agent,
-  methods,
-  ndJsonStream,
-  PROTOCOL_VERSION,
-} from "@agentclientprotocol/sdk";
+import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 
 const mode = process.argv[2] ?? "success";
 let model = "fallback-model";
 let thinking = "low";
+let sessionId = "not-created";
 
 const configOptions = () => [
   {
@@ -42,10 +39,10 @@ agent({ name: "flow-process-fixture" })
     }
     return { protocolVersion: PROTOCOL_VERSION };
   })
-  .onRequest(methods.agent.session.new, () => ({
-    sessionId: "PRIVATE_SESSION_ID",
-    configOptions: configOptions(),
-  }))
+  .onRequest(methods.agent.session.new, () => {
+    sessionId = `PRIVATE_SESSION_${randomUUID()}`;
+    return { sessionId, configOptions: configOptions() };
+  })
   .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
     if (params.configId === "model") model = String(params.value);
     if (params.configId === "thinking") thinking = String(params.value);
@@ -65,11 +62,20 @@ agent({ name: "flow-process-fixture" })
         },
       });
     } else {
+      const promptText = params.prompt
+        .filter((item) => item.type === "text")
+        .map((item) => item.text)
+        .join("");
       await client.notify(methods.client.session.update, {
         sessionId: params.sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "ACP process completed" },
+          content: {
+            type: "text",
+            text: promptText.includes("Flow session history is untrusted data")
+              ? "ACP recovery completed"
+              : "ACP process completed",
+          },
         },
       });
     }

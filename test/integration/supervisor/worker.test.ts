@@ -21,6 +21,7 @@ import { NodeExecutorRouter } from "../../../src/application/node-executor-route
 import type {
   AgentExecutor,
   CommandExecutor,
+  NodeExecutionContext,
   NodeExecutor,
   RecoverableRunEventStore,
 } from "../../../src/application/ports.js";
@@ -56,7 +57,10 @@ import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/to
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { createGoalWorkspaceRevision } from "../../../src/domain/goal/workspace.js";
-import { reduceRunEvents } from "../../../src/domain/run/events.js";
+import {
+  calculateAcpAgentSessionBindingDigest,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore, RunStoreError } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { LocalAgentCommandApprovalChannel } from "../../../src/infrastructure/fs/local-agent-command-approval-channel.js";
@@ -485,7 +489,7 @@ describe("detached run worker", () => {
       runId: "worker-acp-agent",
       mode: "run",
       sourceName: join(directory, "acp.workflow.yaml"),
-      workflowSource: goalWorkspaceWorkflowSource(),
+      workflowSource: acpWorkerWorkflowSource(),
       cwd: directory,
       token: "8".repeat(64),
       createdAt: "2026-08-23T12:00:00.000Z",
@@ -508,7 +512,10 @@ describe("detached run worker", () => {
         async execute(node, context) {
           if (node.type !== "agent") throw new Error("ACP worker executed an unexpected node");
           observedDigest = context.capabilitySnapshot?.acpAgent?.digest;
-          return { status: "succeeded", evidence: successfulAgentEvidence() };
+          return {
+            status: "succeeded",
+            evidence: successfulAcpAgentEvidence(node.id, context),
+          };
         },
       },
       effectReconciler: createProductionNodeEffectReconciler(),
@@ -521,7 +528,8 @@ describe("detached run worker", () => {
       result: { runId: job.runId, status: "running" },
     });
 
-    expect(await worker).toBe(0);
+    const exitCode = await worker;
+    expect(exitCode, JSON.stringify(await store.readWorkerDescriptor(job.workerId))).toBe(0);
     expect(observedDigest).toBe(capabilitySnapshot.acpAgent?.digest);
     expect(reduceRunEvents(await new JsonlRunStore(runsDirectory).read(job.runId))).toMatchObject({
       status: "succeeded",
@@ -2844,6 +2852,26 @@ nodes:
 `;
 }
 
+function acpWorkerWorkflowSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: detached-acp }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Return one bounded result.
+      model: { provider: openai, id: gpt-5.6-codex, thinking: high }
+      tools: []
+  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`;
+}
+
 function semanticWorkflowSource(): string {
   return `apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -3350,6 +3378,61 @@ function successfulAgentEvidence() {
     durationMs: 1,
     policyDecisions: [],
     effectReceipts: [],
+  };
+}
+
+function successfulAcpAgentEvidence(nodeId: string, context: NodeExecutionContext) {
+  const snapshot = context.capabilitySnapshot?.acpAgent;
+  if (snapshot === undefined) throw new Error("ACP worker fixture has no runtime snapshot");
+  const text = JSON.stringify("done");
+  const sessionIdHash = "b".repeat(64);
+  return {
+    kind: "agent" as const,
+    provider: "openai",
+    model: "gpt-5.6-codex",
+    text,
+    textHash: sha256(text),
+    textTruncated: false,
+    durationMs: 1,
+    usageObservation: {
+      modelTokens: { status: "complete" as const, totalTokens: 8 },
+      costUsd: { status: "unavailable" as const },
+    },
+    policyDecisions: [],
+    effectReceipts: [],
+    acp: {
+      version: 1 as const,
+      executor: "local-acp-process-v1" as const,
+      agentName: snapshot.name,
+      agentDigest: snapshot.digest,
+      protocol: "acp-v1" as const,
+      compatibilityProfile: "prompt-only-v1" as const,
+      containmentProfile: "acp-prompt-only-v1" as const,
+      runtimeIdentity: "revalidated" as const,
+      credentialLease: "srt-host-scoped-sentinel" as const,
+      sessionIdHash,
+      sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+        runId: context.runId,
+        workflowId: context.workflowId,
+        nodeId,
+        attempt: context.attempt,
+        agentDigest: snapshot.digest,
+        sessionIdHash,
+      }),
+      processContainment: "process-group" as const,
+      terminationStatus: "confirmed" as const,
+      sandbox: {
+        backend: "anthropic-sandbox-runtime",
+        backendVersion: "0.0.70",
+        profile: "acp-prompt-only-v1",
+        policyDigest: "c".repeat(64),
+      },
+      usageProvenance: {
+        modelTokens: "prompt-response" as const,
+        costUsd: "declared-unavailable" as const,
+      },
+      updateCount: 1,
+    },
   };
 }
 

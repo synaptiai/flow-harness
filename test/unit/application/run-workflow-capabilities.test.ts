@@ -31,7 +31,11 @@ import {
 import type { PolicyPackageSnapshotInput } from "../../../src/domain/capability/policy-packages.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import { createGoalWorkspaceRevision } from "../../../src/domain/goal/workspace.js";
-import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
+import {
+  calculateAcpAgentSessionBindingDigest,
+  calculateChildRunId,
+  type RunEvent,
+} from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
@@ -100,9 +104,9 @@ describe("run workflow capability snapshots", () => {
     const state = await runWorkflow(acpWorkflow(), {
       ...options(
         store,
-        executorFrom((_node, context) => {
+        executorFrom((node, context) => {
           observedDigest = context.capabilitySnapshot?.acpAgent?.digest;
-          return agentSuccess();
+          return acpAgentSuccess(node.id, context);
         }),
       ),
       runId: "attached-acp-capability-run",
@@ -172,9 +176,9 @@ describe("run workflow capability snapshots", () => {
     const state = await runWorkflow(budgetedAcpWorkflow("maxModelTokens: 100\n  maxCostUsd: 1"), {
       ...options(
         store,
-        executorFrom(() => {
+        executorFrom((node, context) => {
           executorCalls += 1;
-          return agentSuccess();
+          return acpAgentSuccess(node.id, context);
         }),
       ),
       runId: "supported-acp-budgets",
@@ -195,7 +199,7 @@ describe("run workflow capability snapshots", () => {
       runWorkflow(acpWorkflow(), {
         ...options(
           interrupted,
-          executorFrom(() => agentSuccess()),
+          executorFrom((node, context) => acpAgentSuccess(node.id, context)),
         ),
         runId: "acp-recovery-mismatch",
         capabilitySnapshot: original,
@@ -1093,6 +1097,64 @@ function agentSuccess(snapshot?: CapabilitySnapshot): NodeExecutionOutcome {
       ...(snapshot === undefined
         ? {}
         : { capabilities: createAgentCapabilityEvidence(snapshot, ["review"]) }),
+    },
+  };
+}
+
+function acpAgentSuccess(nodeId: string, context: NodeExecutionContext): NodeExecutionOutcome {
+  const snapshot = context.capabilitySnapshot?.acpAgent;
+  if (snapshot === undefined) throw new Error("ACP fixture requires a runtime snapshot");
+  const text = JSON.stringify("done");
+  const sessionIdHash = "b".repeat(64);
+  return {
+    status: "succeeded",
+    evidence: {
+      kind: "agent",
+      provider: "openai",
+      model: "gpt-5.6-codex",
+      text,
+      textHash: createHash("sha256").update(text).digest("hex"),
+      textTruncated: false,
+      durationMs: 1,
+      usageObservation: {
+        modelTokens: { status: "complete", totalTokens: 8 },
+        costUsd: { status: "unavailable" },
+      },
+      policyDecisions: [],
+      effectReceipts: [],
+      acp: {
+        version: 1,
+        executor: "local-acp-process-v1",
+        agentName: snapshot.name,
+        agentDigest: snapshot.digest,
+        protocol: "acp-v1",
+        compatibilityProfile: "prompt-only-v1",
+        containmentProfile: "acp-prompt-only-v1",
+        runtimeIdentity: "revalidated",
+        credentialLease: "srt-host-scoped-sentinel",
+        sessionIdHash,
+        sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+          runId: context.runId,
+          workflowId: context.workflowId,
+          nodeId,
+          attempt: context.attempt,
+          agentDigest: snapshot.digest,
+          sessionIdHash,
+        }),
+        processContainment: "process-group",
+        terminationStatus: "confirmed",
+        sandbox: {
+          backend: "anthropic-sandbox-runtime",
+          backendVersion: "0.0.70",
+          profile: "acp-prompt-only-v1",
+          policyDigest: "c".repeat(64),
+        },
+        usageProvenance: {
+          modelTokens: "prompt-response",
+          costUsd: "declared-unavailable",
+        },
+        updateCount: 1,
+      },
     },
   };
 }

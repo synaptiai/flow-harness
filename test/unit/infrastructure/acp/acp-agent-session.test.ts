@@ -149,9 +149,7 @@ describe("ACP agent session", () => {
     const error = await runAcpAgentSession(transport.client, {
       ...baseRequest(),
       onAuthorityViolation: (category) => violations.push(category),
-    }).catch(
-      (caught: unknown) => caught,
-    );
+    }).catch((caught: unknown) => caught);
 
     expect(error).toMatchObject({ code: "authority_violation", authorityCategory: "tool" });
     expect(JSON.stringify(error)).not.toContain("PRIVATE_TOOL_ID");

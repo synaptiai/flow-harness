@@ -284,6 +284,7 @@ export interface ModelVerifierEvidence extends VerifierEvidenceBase {
   readonly rawTruncated: boolean;
   readonly usage?: AgentModelUsage;
   readonly usageObservation?: ModelUsageObservation;
+  readonly acp?: AcpAgentExecutionEvidence;
 }
 
 export type VerifierEvidence = CommandVerifierEvidence | ModelVerifierEvidence;
@@ -2032,6 +2033,7 @@ const modelVerifierEvidenceSchema = z
     rawTruncated: z.boolean(),
     usage: agentModelUsageSchema.optional(),
     usageObservation: modelUsageObservationSchema.optional(),
+    acp: acpAgentExecutionEvidenceSchema.optional(),
     sources: z
       .array(verifierSourceObservationSchema)
       .min(1)
@@ -2046,6 +2048,27 @@ const modelVerifierEvidenceSchema = z
   .strict()
   .refine((evidence) => evidence.usage === undefined || evidence.usageObservation === undefined, {
     message: "model verifier evidence cannot contain legacy and observed usage together",
+  })
+  .superRefine((evidence, context) => {
+    if (evidence.acp === undefined) return;
+    if (evidence.usage !== undefined || evidence.usageObservation === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "ACP model verifier evidence must use observed usage",
+      });
+      return;
+    }
+    const tokenComplete = evidence.usageObservation.modelTokens.status === "complete";
+    const costComplete = evidence.usageObservation.costUsd.status === "complete";
+    if (
+      tokenComplete !== (evidence.acp.usageProvenance.modelTokens === "prompt-response") ||
+      costComplete !== (evidence.acp.usageProvenance.costUsd === "session-usage-update")
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "ACP model verifier usage provenance does not match observed completeness",
+      });
+    }
   });
 
 const childRunLinkSchema = z
@@ -6018,6 +6041,12 @@ export function appendRunEvent(
         event.evidence,
         eventIndex,
       );
+      validateAcpAgentEvidenceProjection(
+        currentState.capabilitySnapshot,
+        event.evidence,
+        true,
+        eventIndex,
+      );
       validateSucceededEvidence(event.evidence, eventIndex);
       validateVerifierEvidenceProjection(
         currentState.controlGraph,
@@ -6094,6 +6123,12 @@ export function appendRunEvent(
           currentState.capabilitySnapshot,
           currentState.capabilityRequirements[event.nodeId],
           event.evidence,
+          eventIndex,
+        );
+        validateAcpAgentEvidenceProjection(
+          currentState.capabilitySnapshot,
+          event.evidence,
+          false,
           eventIndex,
         );
       }
@@ -8341,6 +8376,18 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       "successful ACP agent evidence requires confirmed termination and no authority violation",
     );
   }
+  if (
+    evidence.kind === "verifier" &&
+    evidence.driver === "model" &&
+    evidence.acp !== undefined &&
+    (evidence.acp.terminationStatus !== "confirmed" ||
+      evidence.acp.authorityViolation !== undefined)
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "successful ACP model verifier evidence requires confirmed termination and no authority violation",
+    );
+  }
 }
 
 function validateChildEvidenceProjection(
@@ -9646,6 +9693,19 @@ function validateEvidenceIntegrity(
       }
     }
   }
+  if (evidence.kind === "verifier" && evidence.driver === "model" && evidence.acp !== undefined) {
+    const expectedBinding = calculateAcpAgentSessionBindingDigest({
+      runId: event.runId,
+      workflowId: event.workflowId,
+      nodeId: event.nodeId,
+      attempt: event.attempt,
+      agentDigest: evidence.acp.agentDigest,
+      sessionIdHash: evidence.acp.sessionIdHash,
+    });
+    if (evidence.acp.sessionBindingDigest !== expectedBinding) {
+      throw new RunReplayError(eventIndex, "ACP model verifier session binding digest is invalid");
+    }
+  }
   if (evidence.kind === "command") {
     if (!evidence.stdoutTruncated && evidence.stdoutHash !== sha256(evidence.stdout)) {
       throw new RunReplayError(eventIndex, "command evidence stdout hash is invalid");
@@ -9909,6 +9969,45 @@ function validateAgentCapabilityEvidenceProjection(
       eventIndex,
       `agent capability evidence is not bound to durable content: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+}
+
+function validateAcpAgentEvidenceProjection(
+  snapshot: CapabilitySnapshot | null,
+  evidence: NodeEvidence,
+  succeeded: boolean,
+  eventIndex: number,
+): void {
+  const modelEvidence =
+    evidence.kind === "agent" || (evidence.kind === "verifier" && evidence.driver === "model");
+  if (!modelEvidence) return;
+  const acpEvidence = evidence.acp;
+  const selected = snapshot?.acpAgent;
+  if (selected === undefined) {
+    if (acpEvidence !== undefined) {
+      throw new RunReplayError(eventIndex, "ACP evidence has no durable run selection");
+    }
+    return;
+  }
+  const mayBePreflightVerifierFailure =
+    !succeeded &&
+    evidence.kind === "verifier" &&
+    evidence.driver === "model" &&
+    evidence.result === "execution_failed";
+  if (acpEvidence === undefined) {
+    if (!mayBePreflightVerifierFailure) {
+      throw new RunReplayError(eventIndex, "selected ACP execution omitted its durable evidence");
+    }
+    return;
+  }
+  if (
+    acpEvidence.agentDigest !== selected.digest ||
+    acpEvidence.agentName !== selected.name ||
+    acpEvidence.protocol !== selected.protocol ||
+    acpEvidence.compatibilityProfile !== selected.compatibilityProfile ||
+    acpEvidence.containmentProfile !== selected.containmentProfile
+  ) {
+    throw new RunReplayError(eventIndex, "ACP evidence does not match the durable run selection");
   }
 }
 
