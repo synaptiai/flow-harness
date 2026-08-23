@@ -186,7 +186,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 1: Stable exact identity
 
 - **Type**: Contract and data processing.
-- **Command**: `npm test -- test/unit/domain/capability/acp-agent.test.ts test/unit/infrastructure/fs/local-acp-agent.test.ts`.
+- **Command**: `npx vitest run test/unit/capability/acp-agent.test.ts test/unit/infrastructure/fs/local-acp-agent.test.ts`.
 - **Expected evidence**: Repeated admission of unchanged binary and Node-package fixtures returns
   byte-identical snapshots and digests.
 - **Does not promise**: download, installation, registry discovery, or remote attestation.
@@ -194,7 +194,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 2: Hostile artifact rejection
 
 - **Type**: Error handling and security boundary.
-- **Command**: `npm test -- test/unit/infrastructure/fs/local-acp-agent.test.ts`.
+- **Command**: `npx vitest run test/unit/infrastructure/fs/local-acp-agent.test.ts`.
 - **Expected evidence**: Missing or hostile artifacts fail before descriptor creation. Cases include
   links, special files, oversized content, closure drift, races, replacement, and digest mismatch.
 - **Does not promise**: protection from a hostile kernel or privileged host administrator.
@@ -202,7 +202,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 3: Attached, detached, and recovery identity
 
 - **Type**: Behavioral and serialization contract.
-- **Command**: `npm test -- test/integration/cli/acp-agent-admission.test.ts test/unit/supervisor/protocol.test.ts test/integration/supervisor/worker.test.ts test/unit/application/run-workflow-capabilities.test.ts`.
+- **Command**: `npx vitest run test/unit/supervisor/protocol.test.ts test/integration/supervisor/worker.test.ts test/unit/application/run-workflow-capabilities.test.ts`.
 - **Expected evidence**: The same snapshot crosses each boundary. A missing or changed digest refuses
   recovery before the test executor observes a call.
 - **Does not promise**: starting the production ACP process in this slice.
@@ -210,7 +210,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 4: Truthful usage completeness
 
 - **Type**: Schema, replay, and accounting behavior.
-- **Command**: `npm test -- test/unit/run/budget.test.ts test/unit/run/reducer.test.ts test/unit/cli/public-output.test.ts`.
+- **Command**: `npx vitest run test/unit/run/budget-reducer.test.ts test/unit/run/reducer.test.ts test/unit/cli/public-output.test.ts test/unit/application/evaluation-adapter.test.ts`.
 - **Expected evidence**: Complete Pi usage accounts identically. Partial observations retain unknown
   dimensions, and public output never labels them as zero measurements.
 - **Does not promise**: provider pricing calculation or stable ACP detailed-token support.
@@ -218,7 +218,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 5: Budget admission
 
 - **Type**: Behavioral and error handling.
-- **Command**: `npm test -- test/unit/application/run-workflow-capabilities.test.ts test/integration/cli/acp-agent-admission.test.ts`.
+- **Command**: `npx vitest run test/unit/application/run-workflow-capabilities.test.ts`.
 - **Expected evidence**: Unsupported token or cost budgets fail before executor invocation. Supported
   and unbudgeted cases retain explicit completeness state.
 - **Does not promise**: preempting a provider request at an exact token boundary.
@@ -226,7 +226,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 6: Pi and workflow compatibility
 
 - **Type**: Regression and contract.
-- **Command**: `npm test -- test/unit/workflow/digest.test.ts test/unit/infrastructure/pi/pi-agent-executor.test.ts test/unit/application/node-executor-router.test.ts`.
+- **Command**: `npx vitest run test/unit/workflow/compiler.test.ts test/unit/infrastructure/pi/pi-agent-executor.test.ts test/unit/application/node-executor-router.test.ts`.
 - **Expected evidence**: Existing fixtures keep their workflow digests and Pi usage behavior. No ACP
   snapshot routes through the current Pi path in this slice.
 - **Does not promise**: Pi-versus-ACP quality parity.
@@ -234,7 +234,7 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 7: Bounded secret-free validation
 
 - **Type**: Error handling.
-- **Command**: `npm test -- test/unit/domain/capability/acp-agent.test.ts test/unit/infrastructure/fs/local-acp-agent.test.ts test/integration/cli/acp-agent-admission.test.ts`.
+- **Command**: `npx vitest run test/unit/capability/acp-agent.test.ts test/unit/infrastructure/fs/local-acp-agent.test.ts test/unit/cli/public-output.test.ts`.
 - **Expected evidence**: Malformed inputs return bounded messages without fixture secrets, rejected
   values, or absolute paths.
 - **Does not promise**: automatic correction of invalid manifests.
