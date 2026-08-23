@@ -60,6 +60,22 @@ and has uncertain side-effect status because the provider might have observed wo
 descendant termination, cleanup uncertainty, and an open model-verifier attempt also block fresh
 recovery. Inspect the durable failure and resolve the run explicitly.
 
+## ACP qualification evaluations
+
+Re-run `flow eval run` with the same evaluation identifier and exact qualification plan after an
+interruption. Flow validates the evaluation record chain and committed schedule prefix, removes
+deterministic workspace residue, and runs only the missing suffix. It never repeats a committed
+trial or resumes an opaque ACP or provider session.
+
+An unresolved adapter start becomes one interrupted harness failure for its schedule position. The
+qualification report keeps that failure and cannot return `qualified`. Don't edit the ledger or
+reuse its identifier with changed agents, manifests, workflow, task, controls, or environment.
+Inspect the underlying run evidence. Start a new evaluation identifier only when you intentionally
+begin a new qualification attempt.
+
+Read [Qualify two local ACP agents](guides/qualify-acp-agents.md) for the complete operator
+procedure and verdict meanings.
+
 ## Recover a goal workspace
 
 The project goal workspace uses an append-only full-revision ledger at

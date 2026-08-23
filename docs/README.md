@@ -31,6 +31,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
+| [Qualify two local ACP agents](guides/qualify-acp-agents.md) | You need to verify two exact production ACP agents against one prompt-only workflow and private result contract. |
 
 ## Operate Flow
 

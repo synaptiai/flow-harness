@@ -398,7 +398,7 @@ export function superiorEffectiveHarnessEvaluation(
     planDigest,
     apiVersion: identity.apiVersion,
     planId: identity.id,
-    suite: { ...identity.suite, tasks: [...identity.suite.tasks] },
+    suite: { id: identity.suite.id, version: identity.suite.version, tasks: [task] },
     profiles: [...profiles],
     controls,
     seeds: [1, 2],

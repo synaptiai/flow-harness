@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createEvaluationSchedule } from "../../../src/domain/evaluation/plan.js";
 import {
   createEvaluationTrialRecord,
+  parseAcpQualificationObservation,
   parseEvaluationTrialRecord,
   unavailableEvaluationMetrics,
 } from "../../../src/domain/evaluation/records.js";
@@ -11,6 +12,49 @@ const planDigest = "a".repeat(64);
 const schedule = createEvaluationSchedule(planDigest, ["task"], ["baseline", "candidate"], [11]);
 
 describe("evaluation trial records", () => {
+  it("rejects ACP qualification observations with false usage or sandbox provenance", () => {
+    const observation = {
+      version: 1 as const,
+      workflowDigest: "1".repeat(64),
+      capabilitySnapshotDigest: "2".repeat(64),
+      agent: { name: "qualified-agent", digest: "3".repeat(64) },
+      result: { sha256: "4".repeat(64), bytes: 4 },
+      durationMs: 12,
+      activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
+      policyViolations: 0,
+      terminationStatus: "confirmed" as const,
+      processContainment: "linux-pid-namespace" as const,
+      sandbox: {
+        backend: "test-sandbox",
+        backendVersion: "1.0.0",
+        profile: "acp-prompt-only-v1",
+        policyDigest: "5".repeat(64),
+      },
+      usage: {
+        modelTokens: { status: "complete" as const, totalTokens: 8 },
+        costUsd: { status: "complete" as const, costUsdMicros: 12 },
+      },
+      usageProvenance: {
+        modelTokens: "prompt-response" as const,
+        costUsd: "session-usage-update" as const,
+      },
+    };
+
+    expect(parseAcpQualificationObservation(observation)).toEqual(observation);
+    expect(() =>
+      parseAcpQualificationObservation({
+        ...observation,
+        usageProvenance: { ...observation.usageProvenance, modelTokens: "not-observed" },
+      }),
+    ).toThrow(/token provenance/i);
+    expect(() =>
+      parseAcpQualificationObservation({
+        ...observation,
+        sandbox: { ...observation.sandbox, profile: "other-profile" },
+      }),
+    ).toThrow(/prompt-only sandbox/i);
+  });
+
   it("classifies every terminal harness and verifier outcome without dropping failures", () => {
     const accepted = record(
       { outcome: "completed", runId: "run-accepted", reason: null },

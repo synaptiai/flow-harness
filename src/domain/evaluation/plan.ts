@@ -98,28 +98,46 @@ const assertionSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+const filesystemVerifierSchema = z
+  .object({
+    kind: z.literal("filesystem-v1"),
+    assertions: z.array(assertionSchema).min(1).max(MAX_EVALUATION_ASSERTIONS),
+  })
+  .strict()
+  .refine(
+    (verifier) =>
+      new Set(verifier.assertions.map((item) => `${item.kind}\0${item.path}`)).size ===
+      verifier.assertions.length,
+    "verifier assertions must be unique",
+  );
+
+const agentResultVerifierSchema = z
+  .object({
+    kind: z.literal("agent-result-v1"),
+    sha256: sha256Schema,
+    bytes: positiveSafeIntegerSchema,
+  })
+  .strict();
+
 const taskSchema = z
   .object({
     id: identifierSchema,
     partition: z.enum(["tuning", "regression", "holdout"]),
     fixture: canonicalRelativePathSchema,
     instruction: canonicalRelativePathSchema,
-    verifier: z
-      .object({
-        kind: z.literal("filesystem-v1"),
-        assertions: z.array(assertionSchema).min(1).max(MAX_EVALUATION_ASSERTIONS),
-      })
-      .strict()
-      .refine(
-        (verifier) =>
-          new Set(verifier.assertions.map((item) => `${item.kind}\0${item.path}`)).size ===
-          verifier.assertions.length,
-        "verifier assertions must be unique",
-      ),
+    verifier: z.discriminatedUnion("kind", [filesystemVerifierSchema, agentResultVerifierSchema]),
   })
   .strict();
 
 const profileSchema = z.union([
+  z
+    .object({
+      id: identifierSchema,
+      adapter: z.literal(evaluationAdapterId("flow-workflow-v1")),
+      workflow: canonicalRelativePathSchema,
+      acpAgent: canonicalRelativePathSchema,
+    })
+    .strict(),
   z
     .object({
       id: identifierSchema,
@@ -179,6 +197,7 @@ const evaluationPlanSourceSchema = z
   .object({
     apiVersion: z.literal(EVALUATION_PLAN_API_VERSION),
     kind: z.literal("EvaluationPlan"),
+    purpose: z.literal("acp-interoperability-v1").optional(),
     metadata: z.object({ id: identifierSchema }).strict(),
     suite: z
       .object({
@@ -235,6 +254,60 @@ const evaluationPlanSourceSchema = z
       context,
     );
     refineUnique(plan.seeds, "seeds", ["seeds"], context);
+    const acpProfiles = plan.profiles.filter(
+      (profile) => profile.adapter === "flow-workflow-v1" && "acpAgent" in profile,
+    );
+    const agentResultTasks = plan.suite.tasks.filter(
+      (task) => task.verifier.kind === "agent-result-v1",
+    );
+    if (plan.purpose === "acp-interoperability-v1") {
+      if (acpProfiles.length !== plan.profiles.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message: "ACP qualification requires one ACP agent for every profile",
+        });
+      }
+      if (
+        acpProfiles.length === 2 &&
+        new Set(acpProfiles.map((profile) => profile.workflow)).size !== 1
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message: "ACP qualification profiles must select the same workflow source",
+        });
+      }
+      if (agentResultTasks.length !== plan.suite.tasks.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["suite", "tasks"],
+          message: "ACP qualification requires agent-result-v1 verification for every task",
+        });
+      }
+      if (plan.controls.modelRoutes !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "ACP qualification uses one shared model control without per-profile routes",
+        });
+      }
+    } else {
+      if (acpProfiles.length > 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message: "ACP agent profiles require the acp-interoperability-v1 purpose",
+        });
+      }
+      if (agentResultTasks.length > 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["suite", "tasks"],
+          message: "agent-result-v1 verification requires the acp-interoperability-v1 purpose",
+        });
+      }
+    }
     const profileIds = new Set(plan.profiles.map((item) => item.id));
     if (!profileIds.has(plan.comparison.baselineProfileId)) {
       context.addIssue({
@@ -327,12 +400,22 @@ const evaluationPlanSourceSchema = z
 export type EvaluationPlanSource = z.infer<typeof evaluationPlanSourceSchema>;
 export type EvaluationTaskSource = EvaluationPlanSource["suite"]["tasks"][number];
 export type EvaluationProfileSource = EvaluationPlanSource["profiles"][number];
-export type EvaluationFilesystemAssertion = EvaluationTaskSource["verifier"]["assertions"][number];
+export type EvaluationFilesystemVerifierSource = Extract<
+  EvaluationTaskSource["verifier"],
+  { readonly kind: "filesystem-v1" }
+>;
+export type EvaluationAgentResultVerifierSource = Extract<
+  EvaluationTaskSource["verifier"],
+  { readonly kind: "agent-result-v1" }
+>;
+export type EvaluationFilesystemAssertion =
+  EvaluationFilesystemVerifierSource["assertions"][number];
 
 export interface EvaluationPlanIdentity {
   readonly version: 1;
   readonly apiVersion: typeof EVALUATION_PLAN_API_VERSION;
   readonly id: string;
+  readonly purpose?: "acp-interoperability-v1";
   readonly suite: {
     readonly id: string;
     readonly version: string;
@@ -348,7 +431,7 @@ export interface EvaluationPlanIdentity {
         readonly instructionSha256: string;
       };
       readonly verifier: {
-        readonly kind: "filesystem-v1";
+        readonly kind: "filesystem-v1" | "agent-result-v1";
         readonly digest: string;
         readonly assertionCount: number;
       };
@@ -386,6 +469,10 @@ export type EvaluationProfileIdentity =
       };
       readonly capabilitySnapshotDigest?: string;
       readonly capabilityPackageDigests?: readonly string[];
+      readonly acpAgent?: {
+        readonly name: string;
+        readonly digest: string;
+      };
       readonly candidate?: {
         readonly provenance: string;
         readonly identity:
@@ -562,10 +649,14 @@ export function calculateEvaluationPlanDigest(identity: EvaluationPlanIdentity):
 }
 
 export function calculateEvaluationVerifierDigest(
-  kind: "filesystem-v1",
-  assertions: readonly EvaluationFilesystemAssertion[],
+  kind: "filesystem-v1" | "agent-result-v1",
+  evidence:
+    | readonly EvaluationFilesystemAssertion[]
+    | Pick<EvaluationAgentResultVerifierSource, "sha256" | "bytes">,
 ): string {
-  return createHash("sha256").update(canonicalEvaluationValue({ kind, assertions })).digest("hex");
+  const identity =
+    kind === "filesystem-v1" ? { kind, assertions: evidence } : { kind, ...evidence };
+  return createHash("sha256").update(canonicalEvaluationValue(identity)).digest("hex");
 }
 
 function isCanonicalRelativePath(value: string): boolean {

@@ -491,6 +491,117 @@ describe("evaluation aggregation", () => {
       constraints: { verifiedSuccessRegression: false },
     });
   });
+
+  it("qualifies two distinct ACP executors only from complete conforming paired evidence", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["task-a"],
+      ["baseline", "candidate"],
+      [11, 22],
+    );
+    const records = chain(schedule.map((item) => qualificationTrial(item)));
+
+    const report = aggregateEvaluation(qualificationReportInput(schedule), records);
+
+    expect(report.qualification).toMatchObject({
+      purpose: "acp-interoperability-v1",
+      verdict: "qualified",
+      requiredPairs: 2,
+      scheduledPairs: 2,
+      completePairs: 2,
+      verifiedPairs: 2,
+      workflowDigest: "8".repeat(64),
+      outputVerification: { accepted: 4, rejected: 0, errors: 0 },
+      profiles: {
+        baseline: {
+          executor: {
+            capabilitySnapshotDigest: "3".repeat(64),
+            agentName: "baseline-agent",
+            agentDigest: "1".repeat(64),
+          },
+          usage: { modelTokensComplete: 2, costUsdComplete: 2, incomplete: 0 },
+        },
+        candidate: {
+          executor: {
+            capabilitySnapshotDigest: "4".repeat(64),
+            agentName: "candidate-agent",
+            agentDigest: "2".repeat(64),
+          },
+          usage: { modelTokensComplete: 2, costUsdComplete: 2, incomplete: 0 },
+        },
+      },
+      limitations: [],
+    });
+  });
+
+  it.each([
+    {
+      name: "missing paired trial",
+      records: (schedule: ReturnType<typeof createEvaluationSchedule>) =>
+        chain(schedule.slice(0, -1).map((item) => qualificationTrial(item))),
+      verdict: "insufficient_evidence",
+      limitation: /missing/i,
+    },
+    {
+      name: "incomplete accounting",
+      records: (schedule: ReturnType<typeof createEvaluationSchedule>) =>
+        chain(
+          schedule.map((item, index) =>
+            qualificationTrial(item, index === 0 ? { incompleteUsage: true } : {}),
+          ),
+        ),
+      verdict: "insufficient_evidence",
+      limitation: /accounting/i,
+    },
+    {
+      name: "wrong result",
+      records: (schedule: ReturnType<typeof createEvaluationSchedule>) =>
+        chain(
+          schedule.map((item, index) =>
+            qualificationTrial(item, index === 0 ? { rejected: true } : {}),
+          ),
+        ),
+      verdict: "not_qualified",
+      limitation: /result/i,
+    },
+  ])(
+    "reports $name without synthesizing qualification",
+    ({ records: build, verdict, limitation }) => {
+      const schedule = createEvaluationSchedule(
+        planDigest,
+        ["task-a"],
+        ["baseline", "candidate"],
+        [11, 22],
+      );
+
+      const report = aggregateEvaluation(qualificationReportInput(schedule), build(schedule));
+
+      expect(report.qualification?.verdict).toBe(verdict);
+      expect(report.qualification?.limitations).toEqual(
+        expect.arrayContaining([expect.stringMatching(limitation)]),
+      );
+    },
+  );
+
+  it("rejects an ACP observation attributed to a different admitted executor", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["task-a"],
+      ["baseline", "candidate"],
+      [11, 22],
+    );
+    const input = {
+      ...qualificationReportInput(schedule),
+      profileAcpAgents: {
+        baseline: { name: "baseline-agent", digest: "5".repeat(64) },
+        candidate: { name: "candidate-agent", digest: "2".repeat(64) },
+      },
+    };
+
+    expect(() =>
+      aggregateEvaluation(input, chain(schedule.map((item) => qualificationTrial(item)))),
+    ).toThrow(/contradicts.*admitted ACP identity/i);
+  });
 });
 
 function trial(
@@ -540,6 +651,76 @@ function trial(
   });
 }
 
+function qualificationTrial(
+  schedule: ReturnType<typeof createEvaluationSchedule>[number] | undefined,
+  options: { readonly incompleteUsage?: boolean; readonly rejected?: boolean } = {},
+): EvaluationTrialRecord {
+  if (schedule === undefined) throw new Error("test schedule is incomplete");
+  const baseline = schedule.profileId === "baseline";
+  const rejected = options.rejected === true;
+  const observedSha256 = rejected ? "0".repeat(64) : "9".repeat(64);
+  return createEvaluationTrialRecord({
+    schedule,
+    planDigest,
+    previousDigest: null,
+    startedAt: "2026-08-09T00:00:00.000Z",
+    completedAt: "2026-08-09T00:00:01.000Z",
+    environment: {
+      platform: "linux",
+      architecture: "x64",
+      nodeVersion: "27.0.0",
+      flowVersion: "0.1.0-alpha.1",
+      workspaceBackend: "reflink-copy-v1",
+      workspaceSnapshotDigest: "b".repeat(64),
+    },
+    harness: { outcome: "completed", runId: `run-${schedule.trialId.slice(6, 18)}`, reason: null },
+    verification: {
+      outcome: rejected ? "rejected" : "accepted",
+      verifierDigest: "c".repeat(64),
+      assertions: [
+        {
+          kind: "agent-result",
+          outcome: !rejected,
+          observedSha256,
+          observedBytes: 10,
+        },
+      ],
+    },
+    metrics: unavailableEvaluationMetrics(),
+    qualification: {
+      version: 1,
+      workflowDigest: "8".repeat(64),
+      capabilitySnapshotDigest: (baseline ? "3" : "4").repeat(64),
+      agent: {
+        name: baseline ? "baseline-agent" : "candidate-agent",
+        digest: (baseline ? "1" : "2").repeat(64),
+      },
+      result: { sha256: observedSha256, bytes: 10 },
+      durationMs: 25,
+      activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
+      policyViolations: 0,
+      terminationStatus: "confirmed",
+      processContainment: "linux-pid-namespace",
+      sandbox: {
+        backend: "anthropic-sandbox-runtime",
+        backendVersion: "0.0.70",
+        profile: "acp-prompt-only-v1",
+        policyDigest: "7".repeat(64),
+      },
+      usage: {
+        modelTokens: options.incompleteUsage
+          ? { status: "unavailable" }
+          : { status: "complete", totalTokens: 11 },
+        costUsd: { status: "complete", costUsdMicros: 19 },
+      },
+      usageProvenance: {
+        modelTokens: options.incompleteUsage ? "not-observed" : "prompt-response",
+        costUsd: "session-usage-update",
+      },
+    },
+  });
+}
+
 function chain(records: readonly EvaluationTrialRecord[]): readonly EvaluationTrialRecord[] {
   let previousDigest: string | null = null;
   return records.map((record) => {
@@ -561,6 +742,7 @@ function chain(records: readonly EvaluationTrialRecord[]): readonly EvaluationTr
       harness: record.harness,
       verification: record.verification,
       metrics: record.metrics,
+      ...(record.qualification === undefined ? {} : { qualification: record.qualification }),
     });
     previousDigest = chained.recordDigest;
     return chained;
@@ -590,6 +772,25 @@ function reportInput(
       maxFalseCompletionRate: 0,
       maxPolicyViolations: 0,
       maxVerifiedSuccessRegression: 0,
+    },
+  };
+}
+
+function qualificationReportInput(schedule: ReturnType<typeof createEvaluationSchedule>) {
+  return {
+    ...reportInput(schedule),
+    purpose: "acp-interoperability-v1" as const,
+    profileWorkflowDigests: {
+      baseline: "8".repeat(64),
+      candidate: "8".repeat(64),
+    },
+    profileCapabilitySnapshotDigests: {
+      baseline: "3".repeat(64),
+      candidate: "4".repeat(64),
+    },
+    profileAcpAgents: {
+      baseline: { name: "baseline-agent", digest: "1".repeat(64) },
+      candidate: { name: "candidate-agent", digest: "2".repeat(64) },
     },
   };
 }

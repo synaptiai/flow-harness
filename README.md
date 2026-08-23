@@ -53,8 +53,8 @@ Current capability groups include:
   resumed, and child runs without gaining workflow authority.
 - Bounded read-only semantic code queries through an exact operator-selected language server.
 - Attached and detached execution with local terminal, browser, and ACP control.
-- Operator-selected prompt-only local ACP v1 execution with exact runtime identity, fresh isolated
-  processes and sessions, and provider-neutral evidence.
+- Operator-selected prompt-only local ACP v1 execution and paired exact-agent qualification with
+  fresh isolated processes, private result verification, and provider-neutral evidence.
 
 ### Capability distribution and evaluation
 
@@ -152,6 +152,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Architecture](docs/architecture.md) | System diagram, component ownership, trust boundaries, failure modes, and non-goals |
 | [Recovery and interruption safety](docs/recovery.md) | Exact restart, uncertainty, and remediation rules |
 | [Reproducible harness evaluation](docs/evaluation.md) | Comparative plans, private verification, candidates, activation, and export |
+| [Qualify two local ACP agents](docs/guides/qualify-acp-agents.md) | Paired production-agent identity, private result verification, accounting, verdicts, and recovery |
 | [Testing and evaluation](docs/testing-and-evaluation.md) | Contributor gates, test layers, runtime proofs, and live-provider policy |
 
 ## Community

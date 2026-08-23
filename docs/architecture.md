@@ -93,6 +93,11 @@ binary or Node package closure for validation, attached execution, or detached e
 freezes that identity in the run capability snapshot. It routes eligible work through one fresh
 contained process and session for each attempt. Recovery rejects identity drift.
 
+Gate 10 also provides a closed ACP interoperability qualification. It binds two distinct exact
+agents to one agent-to-result workflow, shared controls, private canonical result verification, and
+a complete paired schedule. The report separates proven conformance failure from missing evidence
+and makes no claim for an untested agent pair.
+
 Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
 retain the embedded Pi path.
 
@@ -133,6 +138,7 @@ flowchart TB
         executorIdentity["Local ACP executor selection<br/>Exact identity · accounting contract"]
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
+        qualification["ACP qualification<br/>Two exact agents · one verified result contract"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
@@ -176,6 +182,7 @@ flowchart TB
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
     cli -->|"Reviews and compares candidates"| adaptation
+    cli -->|"Qualifies two exact local agents"| qualification
     cli -->|"Compares three context modes"| compaction
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
@@ -198,6 +205,7 @@ flowchart TB
     proposals -->|"Uses one zero-tool model turn"| agents
     proposals -->|"Returns an inert candidate for review"| adaptation
     adaptation -->|"Runs paired trials"| engine
+    qualification -->|"Runs a complete paired schedule"| engine
     compaction -->|"Runs held-out trials"| engine
     adaptation -->|"Stages one atomic entry and relationship change"| memory
     memory -->|"Supplies exact target context"| engine
@@ -205,6 +213,7 @@ flowchart TB
     goals -->|"Appends full revisions with exact CAS"| goalLedger
     goalLedger -->|"Replays the current immutable revision"| goals
     adaptation -->|"Stores evaluation and activation evidence"| stores
+    qualification -->|"Stores identity-bound verdict evidence"| stores
     compaction -->|"Stores a dedicated report"| stores
     ledgers -->|"Supplies exact evidence references"| memory
     memory -->|"Persists entries, claims, and assessments"| stores
@@ -259,7 +268,8 @@ Read the diagram from top to bottom:
    can ask a model for one bounded memory value. The model cannot select its target, declare a
    relationship, authorize a transition, or write runtime memory. Local ACP selection freezes one
    runtime identity, checks accounting support, and routes only prompt-only attempts through the
-   isolated process boundary.
+   isolated process boundary. ACP qualification alternates two distinct frozen identities through
+   the same workflow and keeps the expected typed result outside their input.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state. A selected ACP attempt gets a fresh process, private
@@ -290,6 +300,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
+| ACP interoperability qualification | `src/domain/evaluation/plan.ts`, `src/domain/evaluation/agent-result-verifier.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, `src/application/evaluation-adapter.ts`, `src/application/run-evaluation.ts`, `src/infrastructure/fs/local-evaluation-plan.ts`, and `src/infrastructure/fs/local-evaluation-store.ts` | Admits two distinct exact ACP executors for one closed workflow, verifies each canonical typed result privately, persists identity-bound observations, and derives complete paired qualification verdicts offline. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
@@ -356,6 +367,7 @@ Architecture is derived from these flows.
 | Compare one child specialist | An operator supplies one candidate for one agent in an embedded child workflow | Two ordered profiles use exact complete harness states under one shared evaluation plan; only instructions or an existing skill selection differs |
 | Compare one supplemental-memory entry | An operator supplies one add, replace, or remove candidate for one existing agent | Two ordered profiles use exact complete harness states; only one bounded reviewed reference entry differs |
 | Compare context compaction | An operator supplies one dedicated held-out plan | Six balanced mode orders compare complete history, verified references, and one optional bounded summary without activation authority |
+| Qualify two ACP agents | An operator supplies two exact manifests and one qualification plan | A complete paired report proves qualification, proves nonconformance, or names the evidence that remains insufficient; it doesn't infer broader ACP compatibility |
 | Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows
@@ -565,9 +577,17 @@ identity drift, unconfirmed termination, uncertain cleanup, or an open verifier 
 recovery. Token and cost observations remain independently complete or unavailable. A budget that
 needs an unavailable dimension fails before the first durable run event.
 
-Cross-agent interoperability evaluation remains separate Gate 10 work. The implemented contract
-proves one standards-shaped production boundary without claiming that arbitrary ACP agents conform
-to Flow's stricter prompt-only profile.
+The ACP qualification purpose reuses this executor boundary without widening it. It admits two
+distinct capability snapshots against the same closed agent-to-result workflow and shared model
+controls. Every task uses a private canonical result verifier. The report requires confirmed
+termination, zero tool or authority activity, and zero policy violations. It also requires complete
+token and cost observations for every comparable scheduled pair before it returns `qualified`.
+
+A conformance failure returns `not_qualified`. Missing evidence returns `insufficient_evidence`.
+
+This result qualifies only the exact pair and admitted environment. It does not establish that
+arbitrary ACP agents conform to Flow's stricter prompt-only profile or justify broader brokered
+authority.
 
 ### Pi runtime
 
@@ -1287,6 +1307,9 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
     binds its route, instructions, tools, authority, history, runtime surface, and coordinates.
 26. A model-session event cannot authorize scheduling, effects, approvals, or criterion acceptance.
     A resume surface cannot authorize node success or workflow completion.
+27. ACP qualification cannot accept an incomplete denominator, duplicate executor identity,
+    unverified result, or incomplete token or cost observation. It also rejects authority activity,
+    policy violations, and unconfirmed process termination.
 
 ## Failure modes
 
@@ -1331,6 +1354,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Tool timeout or crash | Terminate the process tree where possible and classify side-effect uncertainty |
 | Partial external mutation | Reconcile authoritative external state; compensate only when explicitly supported |
 | Verification failure | Record failing or inconclusive evidence and never coerce success |
+| ACP qualification trial, identity, result, accounting, containment, or pair evidence is incomplete | Return `insufficient_evidence`, or `not_qualified` when committed evidence proves conformance failure; never infer compatibility from a partial denominator |
 | Concurrent workspace changes | Detect baseline drift and pause before absorbing the changes |
 | Crash during persistence | Recover to the last committed event and tolerate an incomplete trailing record |
 | Client exits after detached acceptance | The authenticated worker continues with independent standard streams and process group |
@@ -1364,6 +1388,18 @@ and comparison verdict. Neither reducer imports the other's event vocabulary.
 
 The `HarnessEvaluationAdapter` port receives one fresh workspace and one task instruction. It also
 receives public trial identity and fixed controls. It receives no verifier body or store authority.
+
+For `acp-interoperability-v1`, both profiles use `flow-workflow-v1`, the same workflow digest, and
+different ACP capability snapshots. The adapter extracts a bounded qualification observation only
+from replay-validated result evidence and the authenticated source-agent evidence. It retains the
+canonical result hash and byte count, not raw result text or ACP command-discovery payloads.
+
+The `agent-result-v1` verifier compares that canonical identity with the private admitted result
+identity. The evaluation record binds the observation into the existing hash chain. Offline
+aggregation reconciles workflow and capability identities, includes every scheduled pair in the
+denominator, and reports executor identity, latency, usage, and failures. It also reports result
+outcomes and explicit limitations. The ordinary superiority report remains present for format
+compatibility. It does not own the ACP qualification claim.
 
 The `flow-workflow-v1` adapter executes an admitted workflow through the Flow scheduler.
 `pi-native-v1` and `omp-native-v1` use the same separate process runtime. All three adapters return
@@ -1650,6 +1686,8 @@ also remains unavailable.
 
 - Flow does not retain Claude Code plugin compatibility.
 - Flow does not provide a general compatibility layer for Claude Code, OMP, and Prime Agent.
+- Flow does not apply one exact ACP pair's qualification to another version, model, or environment.
+  It also does not apply the result to another ACP feature or agent.
 - Flow does not fork or rebrand Pi, OMP, or Prime Agent.
 - Flow does not reproduce OMP's full tool surface in the initial release.
 - Flow does not make Markdown an executable orchestration language.

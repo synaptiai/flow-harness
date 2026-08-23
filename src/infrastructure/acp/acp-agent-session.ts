@@ -233,11 +233,10 @@ export async function runAcpAgentSession(
       assertConfigurationState(update.configOptions, values.assignments, assignedCount, true);
       return;
     }
-    if (
-      update.sessionUpdate === "tool_call" ||
-      update.sessionUpdate === "tool_call_update" ||
-      update.sessionUpdate === "available_commands_update"
-    ) {
+    if (update.sessionUpdate === "available_commands_update") {
+      return;
+    }
+    if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
       noteAuthorityViolation("tool");
       throw new AcpAgentSessionError("authority_violation", "tool");
     }

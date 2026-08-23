@@ -10,9 +10,15 @@ const BOOTSTRAP_SAMPLES = 2_000;
 
 export interface EvaluationReportInput {
   readonly planDigest: string;
+  readonly purpose?: "acp-interoperability-v1";
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly profileIds: readonly [string, string];
   readonly profileAdapters: Readonly<Record<string, EvaluationProfileIdentity["adapter"]>>;
+  readonly profileWorkflowDigests?: Readonly<Record<string, string>>;
+  readonly profileCapabilitySnapshotDigests?: Readonly<Record<string, string>>;
+  readonly profileAcpAgents?: Readonly<
+    Record<string, { readonly name: string; readonly digest: string }>
+  >;
   readonly tasks: readonly {
     readonly id: string;
     readonly partition: "tuning" | "regression" | "holdout";
@@ -91,6 +97,56 @@ export interface EvaluationReport {
       readonly verifiedSuccessRegression: boolean | null;
     };
   };
+  readonly qualification?: EvaluationAcpQualificationReport;
+}
+
+export interface EvaluationAcpQualificationReport {
+  readonly purpose: "acp-interoperability-v1";
+  readonly verdict: "qualified" | "not_qualified" | "insufficient_evidence";
+  readonly requiredPairs: number;
+  readonly scheduledPairs: number;
+  readonly completePairs: number;
+  readonly verifiedPairs: number;
+  readonly workflowDigest: string;
+  readonly outputVerification: {
+    readonly accepted: number;
+    readonly rejected: number;
+    readonly errors: number;
+    readonly notRun: number;
+  };
+  readonly profiles: Readonly<Record<string, EvaluationAcpQualificationProfileReport>>;
+  readonly limitations: readonly string[];
+}
+
+export interface EvaluationAcpQualificationProfileReport {
+  readonly executor: {
+    readonly capabilitySnapshotDigest: string;
+    readonly agentName: string;
+    readonly agentDigest: string;
+  };
+  readonly latencyMs: {
+    readonly available: number;
+    readonly unavailable: number;
+    readonly minimum: number | null;
+    readonly maximum: number | null;
+    readonly mean: number | null;
+  };
+  readonly usage: {
+    readonly modelTokensComplete: number;
+    readonly costUsdComplete: number;
+    readonly incomplete: number;
+    readonly modelTokensTotal: number | null;
+    readonly costUsdMicrosTotal: number | null;
+  };
+  readonly failures: {
+    readonly harness: number;
+    readonly falseCompletion: number;
+    readonly verifierError: number;
+    readonly authorityViolation: number;
+    readonly unconfirmedTermination: number;
+    readonly toolActivity: number;
+    readonly policyViolation: number;
+  };
 }
 
 export class EvaluationAggregationError extends Error {
@@ -120,6 +176,9 @@ export function aggregateEvaluation(
     committedTrials: records.length,
     profiles,
     comparison: comparisonReport(input, records, candidate),
+    ...(input.purpose === "acp-interoperability-v1"
+      ? { qualification: acpQualificationReport(input, records) }
+      : {}),
   });
 }
 
@@ -190,6 +249,7 @@ export function validateCommittedEvaluationPrefix(
         `evaluation trial record ${index + 1} has incomplete verifier evidence`,
       );
     }
+    validateQualificationRecordIdentity(input, record, index);
     if (record.previousDigest !== previousDigest) {
       throw new EvaluationAggregationError(
         `evaluation trial record ${index + 1} has an invalid previous digest`,
@@ -199,6 +259,39 @@ export function validateCommittedEvaluationPrefix(
     records.push(record);
   }
   return Object.freeze(records);
+}
+
+function validateQualificationRecordIdentity(
+  input: EvaluationReportInput,
+  record: EvaluationTrialRecord,
+  index: number,
+): void {
+  if (input.purpose !== "acp-interoperability-v1") {
+    if (record.qualification !== undefined) {
+      throw new EvaluationAggregationError(
+        `evaluation trial record ${index + 1} contains undeclared ACP qualification evidence`,
+      );
+    }
+    return;
+  }
+  const observation = record.qualification;
+  if (observation === undefined) return;
+  const expectedWorkflow = input.profileWorkflowDigests?.[record.profileId];
+  const expectedCapability = input.profileCapabilitySnapshotDigests?.[record.profileId];
+  const expectedAgent = input.profileAcpAgents?.[record.profileId];
+  if (
+    expectedWorkflow === undefined ||
+    expectedCapability === undefined ||
+    expectedAgent === undefined ||
+    observation.workflowDigest !== expectedWorkflow ||
+    observation.capabilitySnapshotDigest !== expectedCapability ||
+    observation.agent.name !== expectedAgent.name ||
+    observation.agent.digest !== expectedAgent.digest
+  ) {
+    throw new EvaluationAggregationError(
+      `evaluation trial record ${index + 1} contradicts its admitted ACP identity`,
+    );
+  }
 }
 
 function profileReport(
@@ -273,6 +366,283 @@ function summarizeRecoveryOutcome(
       failed: values.filter((value) => value === "failed").length,
     }),
   });
+}
+
+function acpQualificationReport(
+  input: EvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+): EvaluationAcpQualificationReport {
+  const identity = requireAcpQualificationIdentity(input);
+  const pairs = pairedSchedule(input, undefined);
+  const byTrialId = new Map(records.map((record) => [record.trialId, record]));
+  const completePairs = completePairRecords(pairs, byTrialId);
+  const comparablePairs = completePairs.filter(({ baseline, candidate }) =>
+    sameEnvironment(baseline.environment, candidate.environment),
+  );
+  const profiles = Object.fromEntries(
+    input.profileIds.map((profileId) => [
+      profileId,
+      acpQualificationProfileReport(
+        profileId,
+        identity.capabilitySnapshotDigests[profileId] ?? "",
+        identity.agents[profileId],
+        records.filter((record) => record.profileId === profileId),
+      ),
+    ]),
+  ) as Record<string, EvaluationAcpQualificationProfileReport>;
+  const verifiedPairs = comparablePairs.filter(
+    ({ baseline, candidate }) =>
+      isVerifiedAcpQualificationTrial(baseline) && isVerifiedAcpQualificationTrial(candidate),
+  ).length;
+  const outputVerification = Object.freeze({
+    accepted: records.filter((record) => record.verification.outcome === "accepted").length,
+    rejected: records.filter((record) => record.verification.outcome === "rejected").length,
+    errors: records.filter((record) => record.verification.outcome === "error").length,
+    notRun: records.filter((record) => record.verification.outcome === "not_run").length,
+  });
+  const limitations = qualificationLimitations(
+    input,
+    records,
+    pairs.length,
+    completePairs.length,
+    comparablePairs.length,
+  );
+  const hasConformanceFailure = records.some(hasAcpConformanceFailure);
+  const completeQualification =
+    pairs.length >= input.comparison.minimumPairedTrials &&
+    completePairs.length === pairs.length &&
+    comparablePairs.length === pairs.length &&
+    verifiedPairs === pairs.length;
+  const verdict = hasConformanceFailure
+    ? "not_qualified"
+    : completeQualification
+      ? "qualified"
+      : "insufficient_evidence";
+  return Object.freeze({
+    purpose: "acp-interoperability-v1",
+    verdict,
+    requiredPairs: input.comparison.minimumPairedTrials,
+    scheduledPairs: pairs.length,
+    completePairs: completePairs.length,
+    verifiedPairs,
+    workflowDigest: identity.workflowDigest,
+    outputVerification,
+    profiles: Object.freeze(profiles),
+    limitations: Object.freeze(limitations),
+  });
+}
+
+function requireAcpQualificationIdentity(input: EvaluationReportInput): {
+  readonly workflowDigest: string;
+  readonly capabilitySnapshotDigests: Readonly<Record<string, string>>;
+  readonly agents: Readonly<Record<string, { readonly name: string; readonly digest: string }>>;
+} {
+  const workflows = input.profileIds.map((id) => input.profileWorkflowDigests?.[id]);
+  const capabilities = input.profileIds.map((id) => input.profileCapabilitySnapshotDigests?.[id]);
+  const agents = input.profileIds.map((id) => input.profileAcpAgents?.[id]);
+  if (
+    workflows.some((value) => value === undefined || !/^[a-f0-9]{64}$/.test(value)) ||
+    capabilities.some((value) => value === undefined || !/^[a-f0-9]{64}$/.test(value)) ||
+    agents.some(
+      (value) =>
+        value === undefined ||
+        !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.name) ||
+        !/^[a-f0-9]{64}$/.test(value.digest),
+    ) ||
+    new Set(workflows).size !== 1 ||
+    new Set(capabilities).size !== input.profileIds.length ||
+    new Set(agents.map((value) => value?.digest)).size !== input.profileIds.length
+  ) {
+    throw new EvaluationAggregationError(
+      "ACP qualification report input has invalid workflow or capability identities",
+    );
+  }
+  return Object.freeze({
+    workflowDigest: workflows[0] ?? "",
+    capabilitySnapshotDigests: Object.freeze(
+      Object.fromEntries(input.profileIds.map((id, index) => [id, capabilities[index] ?? ""])),
+    ),
+    agents: Object.freeze(
+      Object.fromEntries(input.profileIds.map((id, index) => [id, agents[index]])),
+    ) as Readonly<Record<string, { readonly name: string; readonly digest: string }>>,
+  });
+}
+
+function acpQualificationProfileReport(
+  profileId: string,
+  capabilitySnapshotDigest: string,
+  expectedAgent: { readonly name: string; readonly digest: string } | undefined,
+  records: readonly EvaluationTrialRecord[],
+): EvaluationAcpQualificationProfileReport {
+  const observations = records.flatMap((record) =>
+    record.qualification === undefined ? [] : [record.qualification],
+  );
+  const names = new Set(observations.map((observation) => observation.agent.name));
+  const digests = new Set(observations.map((observation) => observation.agent.digest));
+  if (
+    expectedAgent === undefined ||
+    names.size > 1 ||
+    digests.size > 1 ||
+    [...names].some((name) => name !== expectedAgent.name) ||
+    [...digests].some((digest) => digest !== expectedAgent.digest)
+  ) {
+    throw new EvaluationAggregationError(
+      `ACP qualification profile "${profileId}" contains inconsistent executor identities`,
+    );
+  }
+  const durations = observations.map((observation) => observation.durationMs);
+  const modelTokens = observations.flatMap((observation) =>
+    observation.usage.modelTokens.status === "complete"
+      ? [observation.usage.modelTokens.totalTokens]
+      : [],
+  );
+  const costs = observations.flatMap((observation) =>
+    observation.usage.costUsd.status === "complete"
+      ? [observation.usage.costUsd.costUsdMicros]
+      : [],
+  );
+  return Object.freeze({
+    executor: Object.freeze({
+      capabilitySnapshotDigest,
+      agentName: expectedAgent.name,
+      agentDigest: expectedAgent.digest,
+    }),
+    latencyMs: Object.freeze({
+      available: durations.length,
+      unavailable: records.length - durations.length,
+      minimum: durations.length === 0 ? null : Math.min(...durations),
+      maximum: durations.length === 0 ? null : Math.max(...durations),
+      mean:
+        durations.length === 0 ? null : safeMetricTotal(durations, "duration") / durations.length,
+    }),
+    usage: Object.freeze({
+      modelTokensComplete: modelTokens.length,
+      costUsdComplete: costs.length,
+      incomplete: observations.filter(
+        (observation) =>
+          observation.usage.modelTokens.status !== "complete" ||
+          observation.usage.costUsd.status !== "complete",
+      ).length,
+      modelTokensTotal:
+        modelTokens.length === 0 ? null : safeMetricTotal(modelTokens, "model token"),
+      costUsdMicrosTotal: costs.length === 0 ? null : safeMetricTotal(costs, "cost"),
+    }),
+    failures: Object.freeze({
+      harness: records.filter((record) => record.classification === "harness_failure").length,
+      falseCompletion: records.filter((record) => record.classification === "false_completion")
+        .length,
+      verifierError: records.filter((record) => record.classification === "verifier_error").length,
+      authorityViolation: observations.filter(
+        (observation) => observation.authorityViolation !== undefined,
+      ).length,
+      unconfirmedTermination: observations.filter(
+        (observation) => observation.terminationStatus !== "confirmed",
+      ).length,
+      toolActivity: observations.filter(
+        (observation) => observation.activity.toolCalls > 0 || observation.activity.toolErrors > 0,
+      ).length,
+      policyViolation: observations.filter((observation) => observation.policyViolations > 0)
+        .length,
+    }),
+  });
+}
+
+function isVerifiedAcpQualificationTrial(record: EvaluationTrialRecord): boolean {
+  const observation = record.qualification;
+  return (
+    record.classification === "verified_success" &&
+    observation !== undefined &&
+    observation.terminationStatus === "confirmed" &&
+    observation.authorityViolation === undefined &&
+    observation.activity.toolCalls === 0 &&
+    observation.activity.toolErrors === 0 &&
+    observation.policyViolations === 0 &&
+    observation.usage.modelTokens.status === "complete" &&
+    observation.usage.costUsd.status === "complete"
+  );
+}
+
+function hasAcpConformanceFailure(record: EvaluationTrialRecord): boolean {
+  if (record.classification === "harness_failure" || record.classification === "false_completion") {
+    return true;
+  }
+  const observation = record.qualification;
+  return (
+    observation !== undefined &&
+    (observation.terminationStatus !== "confirmed" ||
+      observation.authorityViolation !== undefined ||
+      observation.activity.toolCalls > 0 ||
+      observation.activity.toolErrors > 0 ||
+      observation.policyViolations > 0)
+  );
+}
+
+function qualificationLimitations(
+  input: EvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+  scheduledPairs: number,
+  completePairs: number,
+  comparablePairs: number,
+): string[] {
+  const limitations: string[] = [];
+  const missing = input.schedule.length - records.length;
+  const verifierErrors = records.filter(
+    (record) => record.classification === "verifier_error",
+  ).length;
+  const harnessFailures = records.filter(
+    (record) => record.classification === "harness_failure",
+  ).length;
+  const rejected = records.filter((record) => record.classification === "false_completion").length;
+  const missingObservations = records.filter(
+    (record) => record.classification === "verified_success" && record.qualification === undefined,
+  ).length;
+  const incompleteAccounting = records.filter(
+    (record) =>
+      record.qualification !== undefined &&
+      (record.qualification.usage.modelTokens.status !== "complete" ||
+        record.qualification.usage.costUsd.status !== "complete"),
+  ).length;
+  if (missing > 0) limitations.push(`${missing} scheduled ACP qualification trial(s) are missing.`);
+  if (completePairs < scheduledPairs) {
+    limitations.push(`${scheduledPairs - completePairs} scheduled pair(s) are incomplete.`);
+  }
+  if (comparablePairs < completePairs) {
+    limitations.push(
+      `${completePairs - comparablePairs} complete pair(s) have different environments.`,
+    );
+  }
+  if (verifierErrors > 0) limitations.push(`${verifierErrors} trial(s) have verifier errors.`);
+  if (missingObservations > 0) {
+    limitations.push(
+      `${missingObservations} verified trial(s) lack ACP qualification observations.`,
+    );
+  }
+  if (incompleteAccounting > 0) {
+    limitations.push(`${incompleteAccounting} trial(s) have incomplete token or cost accounting.`);
+  }
+  if (harnessFailures > 0) limitations.push(`${harnessFailures} ACP harness execution(s) failed.`);
+  if (rejected > 0) limitations.push(`${rejected} ACP result verification(s) failed.`);
+  const unsafe = records.filter((record) => {
+    const observation = record.qualification;
+    return (
+      observation !== undefined &&
+      (observation.terminationStatus !== "confirmed" ||
+        observation.authorityViolation !== undefined ||
+        observation.activity.toolCalls > 0 ||
+        observation.activity.toolErrors > 0 ||
+        observation.policyViolations > 0)
+    );
+  }).length;
+  if (unsafe > 0) limitations.push(`${unsafe} trial(s) contain containment or authority failures.`);
+  return limitations;
+}
+
+function safeMetricTotal(values: readonly number[], label: string): number {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!Number.isSafeInteger(total)) {
+    throw new EvaluationAggregationError(`ACP qualification ${label} evidence overflowed`);
+  }
+  return total;
 }
 
 function comparisonReport(
@@ -362,14 +732,17 @@ function comparisonReport(
 
 function pairedSchedule(
   input: EvaluationReportInput,
-  partition: "tuning" | "regression" | "holdout" = "holdout",
+  partition: "tuning" | "regression" | "holdout" | undefined = "holdout",
 ): readonly {
   readonly baseline: EvaluationTrialScheduleItem;
   readonly candidate: EvaluationTrialScheduleItem;
 }[] {
   const groups = new Map<string, EvaluationTrialScheduleItem[]>();
   for (const item of input.schedule) {
-    if (input.tasks.find((task) => task.id === item.taskId)?.partition !== partition) {
+    if (
+      partition !== undefined &&
+      input.tasks.find((task) => task.id === item.taskId)?.partition !== partition
+    ) {
       continue;
     }
     const key = `${item.taskId}\0${item.seed}\0${item.repetition}`;

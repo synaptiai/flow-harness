@@ -98,6 +98,10 @@ Current source builds can launch one operator-selected local ACP v1 agent for al
 nodes in one attached or detached run. If you omit the selection, Flow uses its embedded Pi
 executor with the same behavior as before.
 
+To compare two exact agents through this boundary, follow
+[Qualify two local ACP agents](guides/qualify-acp-agents.md). Keep the manifest and containment
+contract in this document. Keep paired procedure and verdict interpretation in that guide.
+
 ### Prepare the workflow
 
 Every agent node in an ACP-selected run must use the prompt-only contract:
@@ -200,6 +204,11 @@ The process cannot read the project, home directory, Flow state, protected paths
 credential. It cannot write outside its private state. Flow denies and records tool activity,
 permission requests, and undeclared client methods by fixed authority category, then terminates the
 attempt.
+
+The standard `available_commands_update` notification is inert discovery metadata. Flow counts the
+bounded update but doesn't invoke a command, expose it to the workflow, or retain its command
+payload. A `tool_call`, `tool_call_update`, permission request, or undeclared client method remains
+an authority violation.
 
 Flow bounds protocol frames, JSON structure, active requests, standard output, standard error,
 result size, duration, and cleanup. Cancellation, timeout, malformed output, unexpected EOF,

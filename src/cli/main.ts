@@ -3302,6 +3302,7 @@ async function evaluationCommand(
         {
           valid: true,
           id: admitted.id,
+          ...(admitted.purpose === undefined ? {} : { purpose: admitted.purpose }),
           planDigest: admitted.planDigest,
           suite: { id: admitted.suite.id, version: admitted.suite.version },
           tasks: admitted.suite.tasks.map((task) => ({
@@ -3444,6 +3445,7 @@ async function evaluationCommand(
       await runEvaluationTrials({
         plan: {
           planDigest: admitted.planDigest,
+          ...(admitted.purpose === undefined ? {} : { purpose: admitted.purpose }),
           schedule: admitted.schedule,
           controls: admitted.controls,
           tasks: admitted.suite.tasks.map((task) => ({
@@ -5171,6 +5173,9 @@ function parseEffectiveHarnessRollbackState(value: string): string | undefined {
 }
 
 function tuningEvidence(stored: StoredEvaluation) {
+  if (stored.header.purpose === "acp-interoperability-v1") {
+    throw new CliUsageError("ACP qualification evidence cannot be exported as tuning evidence");
+  }
   const flowProfiles = stored.header.profiles.filter(
     (
       profile,

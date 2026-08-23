@@ -44,6 +44,7 @@ import { compileWorkflowText } from "../../domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../domain/workflow/digest.js";
 import type { CompiledRunBudget, CompiledWorkflow } from "../../domain/workflow/types.js";
 import { admitLocalAdaptationCandidate } from "./local-adaptation-candidate.js";
+import { admitLocalAcpAgentRuntime } from "./local-acp-agent.js";
 import { admitLocalEffectiveHarnessCandidate } from "./local-effective-harness-candidate.js";
 
 export const MAX_EVALUATION_FIXTURE_ENTRIES = 4_096;
@@ -86,11 +87,18 @@ export interface AdmittedEvaluationTask {
     readonly sourceCwd: string;
     readonly provenance: string;
   };
-  readonly verifier: {
-    readonly kind: "filesystem-v1";
-    readonly digest: string;
-    readonly assertions: readonly EvaluationFilesystemAssertion[];
-  };
+  readonly verifier:
+    | {
+        readonly kind: "filesystem-v1";
+        readonly digest: string;
+        readonly assertions: readonly EvaluationFilesystemAssertion[];
+      }
+    | {
+        readonly kind: "agent-result-v1";
+        readonly digest: string;
+        readonly sha256: string;
+        readonly bytes: number;
+      };
 }
 
 export interface AdmittedFlowEvaluationProfile {
@@ -152,6 +160,7 @@ export type AdmittedEvaluationProfile =
 export interface AdmittedEvaluationPlan {
   readonly apiVersion: EvaluationPlanSource["apiVersion"];
   readonly id: string;
+  readonly purpose?: "acp-interoperability-v1";
   readonly planDigest: string;
   readonly sourcePath: string;
   readonly suite: {
@@ -230,10 +239,13 @@ export async function admitLocalEvaluationPlan(
     source.suite.tasks.map(async (task): Promise<AdmittedEvaluationTask> => {
       const fixturePath = await resolveAdmittedEvaluationPath(planRoot, task.fixture, "directory");
       const snapshot = await observeEvaluationFixture(fixturePath, task.instruction);
-      const verifierDigest = calculateEvaluationVerifierDigest(
-        task.verifier.kind,
-        task.verifier.assertions,
-      );
+      const verifierDigest =
+        task.verifier.kind === "filesystem-v1"
+          ? calculateEvaluationVerifierDigest(task.verifier.kind, task.verifier.assertions)
+          : calculateEvaluationVerifierDigest(task.verifier.kind, {
+              sha256: task.verifier.sha256,
+              bytes: task.verifier.bytes,
+            });
       return Object.freeze({
         id: task.id,
         partition: task.partition,
@@ -242,11 +254,19 @@ export async function admitLocalEvaluationPlan(
           provenance: task.fixture,
           ...snapshot,
         }),
-        verifier: Object.freeze({
-          kind: task.verifier.kind,
-          digest: verifierDigest,
-          assertions: task.verifier.assertions,
-        }),
+        verifier:
+          task.verifier.kind === "filesystem-v1"
+            ? Object.freeze({
+                kind: task.verifier.kind,
+                digest: verifierDigest,
+                assertions: task.verifier.assertions,
+              })
+            : Object.freeze({
+                kind: task.verifier.kind,
+                digest: verifierDigest,
+                sha256: task.verifier.sha256,
+                bytes: task.verifier.bytes,
+              }),
       });
     }),
   );
@@ -318,6 +338,10 @@ export async function admitLocalEvaluationPlan(
           );
         }
         assertEvaluationWorkflowControls(profile.id, compiled, source.controls);
+        const capabilitySnapshot =
+          "acpAgent" in profile
+            ? await admitEvaluationAcpAgent(planRoot, profile.id, profile.acpAgent)
+            : undefined;
         return Object.freeze({
           id: profile.id,
           adapter: profile.adapter,
@@ -330,6 +354,7 @@ export async function admitLocalEvaluationPlan(
             workflowDigest: calculateWorkflowDigest(compiled),
             compiled,
           }),
+          ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
         });
       }
 
@@ -523,6 +548,9 @@ export async function admitLocalEvaluationPlan(
     source.comparison,
     source.controls,
   );
+  if (source.purpose === "acp-interoperability-v1") {
+    assertAcpQualificationProfiles(profiles);
+  }
   for (const profile of profiles) {
     if (profile.adapter === "flow-workflow-v1") {
       assertClosedEvaluationWorkflowCapabilities(
@@ -537,6 +565,7 @@ export async function admitLocalEvaluationPlan(
     version: 1,
     apiVersion: source.apiVersion,
     id: source.metadata.id,
+    ...(source.purpose === undefined ? {} : { purpose: source.purpose }),
     suite: {
       id: source.suite.id,
       version: source.suite.version,
@@ -554,7 +583,8 @@ export async function admitLocalEvaluationPlan(
         verifier: {
           kind: task.verifier.kind,
           digest: task.verifier.digest,
-          assertionCount: task.verifier.assertions.length,
+          assertionCount:
+            task.verifier.kind === "filesystem-v1" ? task.verifier.assertions.length : 1,
         },
       })),
     },
@@ -586,6 +616,14 @@ export async function admitLocalEvaluationPlan(
               capabilityPackageDigests: profile.capabilitySnapshot.packages.map(
                 (item) => item.digest,
               ),
+              ...(profile.capabilitySnapshot.acpAgent === undefined
+                ? {}
+                : {
+                    acpAgent: {
+                      name: profile.capabilitySnapshot.acpAgent.name,
+                      digest: profile.capabilitySnapshot.acpAgent.digest,
+                    },
+                  }),
             }),
         ...(profile.candidate === undefined
           ? {}
@@ -613,6 +651,7 @@ export async function admitLocalEvaluationPlan(
   return Object.freeze({
     apiVersion: source.apiVersion,
     id: source.metadata.id,
+    ...(source.purpose === undefined ? {} : { purpose: source.purpose }),
     planDigest,
     sourcePath: canonicalPlanPath,
     suite: Object.freeze({
@@ -627,6 +666,97 @@ export async function admitLocalEvaluationPlan(
     comparison: source.comparison,
     schedule,
   });
+}
+
+async function admitEvaluationAcpAgent(
+  planRoot: string,
+  profileId: string,
+  provenance: string,
+): Promise<CapabilitySnapshot> {
+  if (!provenance.startsWith(".flow/acp-agents/")) {
+    throw new EvaluationAdmissionError(
+      "invalid_path",
+      `profile "${profileId}" ACP agent must be under .flow/acp-agents`,
+    );
+  }
+  const manifestPath = await resolveAdmittedEvaluationPath(planRoot, provenance, "file");
+  try {
+    const admitted = await admitLocalAcpAgentRuntime({ manifestPath, provenance });
+    const acpAgent = admitted.snapshot;
+    return validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      acpAgent,
+      digest: calculateCapabilitySnapshotDigest([], [], undefined, undefined, undefined, acpAgent),
+    });
+  } catch (error) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      `profile "${profileId}" ACP agent cannot be admitted`,
+      { cause: error },
+    );
+  }
+}
+
+function assertAcpQualificationProfiles(
+  profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
+): void {
+  const admitted = profiles.flatMap((profile) =>
+    profile.adapter === "flow-workflow-v1" && profile.capabilitySnapshot?.acpAgent !== undefined
+      ? [{ profile, agent: profile.capabilitySnapshot.acpAgent }]
+      : [],
+  );
+  if (
+    admitted.length !== 2 ||
+    new Set(admitted.map(({ profile }) => profile.workflow.workflowDigest)).size !== 1 ||
+    new Set(admitted.map(({ agent }) => agent.digest)).size !== 2 ||
+    new Set(admitted.map(({ agent }) => acpExecutorArtifactDigest(agent))).size !== 2
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "ACP qualification requires the same workflow and two distinct exact ACP executors",
+    );
+  }
+  for (const { profile } of admitted) {
+    assertAcpQualificationWorkflow(profile.id, profile.workflow.compiled);
+  }
+  if (
+    admitted.some(
+      ({ agent }) => agent.usage.modelTokens !== "complete" || agent.usage.costUsd !== "complete",
+    )
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "ACP qualification requires complete model-token and cost accounting",
+    );
+  }
+}
+
+function assertAcpQualificationWorkflow(profileId: string, workflow: CompiledWorkflow): void {
+  const agents = workflow.nodes.filter((node) => node.type === "agent");
+  const results = workflow.nodes.filter((node) => node.type === "result");
+  const agent = agents[0];
+  const result = results[0];
+  if (
+    workflow.nodes.length !== 2 ||
+    agents.length !== 1 ||
+    results.length !== 1 ||
+    agent === undefined ||
+    result === undefined ||
+    result.result.source.nodeId !== agent.id ||
+    result.result.source.field !== "agent.text"
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      `profile "${profileId}" ACP qualification workflow requires one agent and one agent-text result`,
+    );
+  }
+}
+
+function acpExecutorArtifactDigest(agent: NonNullable<CapabilitySnapshot["acpAgent"]>): string {
+  return agent.launch.kind === "binary"
+    ? agent.launch.executable.sha256
+    : agent.launch.package.sha256;
 }
 
 export async function observeEvaluationFixture(
