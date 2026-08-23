@@ -54,7 +54,11 @@ describe("production workspace-agent tool reference", () => {
       "prime-agent-native-v1",
     ]);
     expect(catalog.executionSeams).toEqual([
-      expect.objectContaining({ id: "model-provider", openness: "open", implementation: "pi" }),
+      expect.objectContaining({
+        id: "model-provider",
+        openness: "open",
+        implementation: "pi-acp",
+      }),
     ]);
   });
 
