@@ -523,15 +523,22 @@ recovery, accounting, and public-output behavior. Read
 
 ### Slice 10.2: Evaluate phase-aware model routing
 
-- Declare closed planner, executor, verifier, and escalation roles without letting the model create
-  a route.
-- Record each call's provider, model, reasoning setting, selection rule, route result, cost, latency,
-  and fallback or escalation decision.
-- Start with deterministic operator rules and paired candidates.
-- Enable no silent fallback or learned router until held-out evidence accepts its quality, cost, and
-  reliability tradeoff.
-- Keep routing algorithms provider-neutral.
-- Allow a research router or model only as an evaluation target, not as Flow's durable authority.
+**Implemented.**
+
+- Closed operator-authored profiles assign planner, executor, verifier, and escalation labels to
+  exact root or embedded-child model targets.
+- Each provider request records the exact profile, target, route, selection, fallback,
+  escalation, and decision identity in its durable model session.
+- One paired evaluation requires verified holdouts, non-inferior quality, complete cost and latency,
+  explicit efficiency thresholds, and safety gates.
+- Only the exact composed artifact with a complete `qualified` report can activate. Missing
+  evidence, silent fallback, and opaque ACP routing fail closed. Provider-generated summary routing
+  also fails closed.
+
+- Learned or model-selected routing can be an evaluation target only. It remains outside production
+  authority.
+
+Read [Evaluate and activate phase-aware model routing](guides/phase-routing.md).
 
 ### Slice 10.3: Add an optional proof verification profile
 

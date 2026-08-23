@@ -72,6 +72,18 @@ and produces `report.qualification` with `qualified`, `not_qualified`, or
 Read [Qualify two local ACP agents](guides/qualify-acp-agents.md) for agent selection, manifests,
 the restricted workflow and plan shapes, live execution, verdict interpretation, and recovery.
 
+## Phase-routing qualification
+
+An evaluation with `purpose: phase-routing-v1` compares the complete `before` and `after` profiles
+from one immutable effective-harness candidate. Every task must be a filesystem-verified holdout.
+The report requires complete per-request route, cost, and latency evidence, non-inferior verified
+quality, both explicit efficiency thresholds, and the declared safety constraints.
+
+Only a complete `qualified` report can authorize activation of that exact composed artifact. The
+ordinary superiority verdict doesn't own this decision. Read
+[Evaluate and activate phase-aware model routing](guides/phase-routing.md) for candidate authoring,
+the plan, verdicts, activation, recovery, and non-goals.
+
 ## Context compaction evaluation
 
 The dedicated three-mode evaluator compares complete portable history, verified artifact
@@ -100,7 +112,8 @@ An `EvaluationPlan` contains:
 - A canonical plan id and a versioned suite.
 - One or more tasks partitioned as `tuning`, `regression`, or `holdout`.
 - Exactly two profiles in version 1.
-- One shared provider, model id, and `thinking` level.
+- One shared provider, model id, and `thinking` level, except when `phase-routing-v1` binds two
+  complete exact phase profiles.
 - One exact budget, denied workload-tool network, and zero provider and harness retries.
 - Unique non-negative seeds and `paired-alternating-v1` order.
 - Comparison thresholds and safety constraints.
@@ -735,14 +748,17 @@ flow candidate generate <baseline> <path> --output <candidate.yaml> [generation 
 For the memory-specific command and review boundary, see
 [Generate a model-suggested entry](#generate-a-model-suggested-entry).
 
-After a complete superior evaluation, preview activation and use the exact proposal digest to
-apply it. Use `flow candidate activate` for activation and `flow activation rollback` to restore an
-earlier stored revision. The command forms and persisted contracts are defined in
+After a complete accepted evaluation, preview activation and use the exact proposal digest to apply
+it. Most candidates require `superior`. Phase routing requires `qualified`. Use `flow candidate
+activate` for activation and `flow activation rollback` to restore an earlier stored revision. The
+command forms and persisted contracts are defined in
 [Adaptive activation](workflow-spec.md#adaptive-activation).
 
-Activation requires a complete evaluation with the `superior` verdict. Flow recalculates the report
-from the stored schedule and record chain. All declared safety constraints must pass. Missing,
-corrupt, or unavailable comparison evidence stops activation.
+Activation normally requires a complete evaluation with the `superior` verdict. A phase-routing
+activation instead requires a complete `phase-routing-v1` report with the `qualified` verdict.
+Flow recalculates the report from the stored schedule and record chain. All applicable quality,
+efficiency, and safety constraints must pass. Missing, corrupt, or unavailable evidence stops
+activation.
 
 The evaluation candidate must match the live candidate identity. Prompt activation binds the exact
 baseline and projected workflows. Agent Skill resource activation binds the unchanged workflow and
@@ -758,6 +774,8 @@ child candidate and state identities.
 A supplemental-memory activation requires the exact composed memory candidate, complete baseline
 and candidate states, relationship-set and assessment identities when present, and content-free
 evaluation identity.
+Phase-routing activation requires the exact composed artifact, evaluation-only `before` state,
+candidate `after` state, ordered profile digests, and purpose-specific qualification report.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

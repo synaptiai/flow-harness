@@ -1931,6 +1931,78 @@ the exact ordered `modelRoutes` pair. Execution receives only the selected profi
 Flow does not discover models or choose a route from task content. It does not route child workflows
 or change model verifiers. It does not balance traffic, retry another route, or use a fallback.
 
+### Phase-routing candidates
+
+A `PhaseRoutingCandidate` is an inert complete route-profile pair for one exact workflow. Each
+profile uses `selectionRule: exact-target-v1`, `fallback: deny`, and one ordered assignment for every
+model-bearing root or embedded-child node. An assignment contains one closed phase label, exact
+target, and model route:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: PhaseRoutingCandidate
+metadata: { id: specialize-execution, version: 1.0.0 }
+scope: { kind: workflow-phase-routing, workflowId: evaluated-profile }
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+profiles:
+  before:
+    selectionRule: exact-target-v1
+    fallback: deny
+    assignments:
+      - phase: executor
+        target: { workflowId: evaluated-profile, childPath: [], nodeId: implement }
+        route: { provider: test, id: deterministic, thinking: medium }
+  after:
+    selectionRule: exact-target-v1
+    fallback: deny
+    assignments:
+      - phase: executor
+        target: { workflowId: evaluated-profile, childPath: [], nodeId: implement }
+        route: { provider: openai, id: gpt-5.4, thinking: high }
+```
+
+The phase is one of `planner`, `executor`, `verifier`, or `escalation`. The `before` and `after`
+profiles must preserve ordered target and phase identity, and at least one route must change.
+Targets are unique and use the root workflow id. `childPath` lists embedded child node ids from the
+root. Packaged-child model targets must be declared but cannot change. Expanded generated model
+nodes are unaddressable and reject the candidate.
+
+The source is at most 65536 UTF-8 bytes. Admission performs stable no-follow reads of the candidate
+and baseline, validates the source and compiled baseline identities, and builds deterministic
+baseline and candidate workflow projections. Projection changes only declared provider, model id,
+and `thinking` tuples. The public candidate identity binds both profile digests, both workflow
+projection identities, provenance, and one candidate digest.
+
+`flow candidate validate <candidate.yaml>` is read-only. `flow candidate compose
+<candidate.yaml>` binds the profile pair to the exact effective head and stages one immutable
+artifact. Direct activation of the ordinary candidate fails.
+
+An evaluation plan for this surface uses `purpose: phase-routing-v1`. Both `flow-workflow-v1`
+profiles select the same composed artifact with ordered `baseline` and `candidate` selections.
+`controls.phaseRoutingProfiles` contains the matching ordered profile digests. All tasks must be
+filesystem-verified holdouts. `comparison.minimumEffect` must be `0`, and the plan must declare
+`minimumCostReductionRate` and `minimumLatencyReductionRate`.
+
+Before each provider request, Flow resolves the active profile by exact workflow id, child path,
+and node id. The durable model-request identity contains the phase, route, selection result,
+fallback result, escalation result, profile digest, and decision digest. A missing, ambiguous,
+stale, or mismatched decision fails before provider I/O. Flow rejects phase routing through an ACP
+executor and rejects provider-generated context summaries because those provider calls aren't
+independently routed in this version.
+
+Offline aggregation includes every scheduled held-out pair. It requires the same environment,
+complete deterministic verification, and non-inferior candidate quality. It also requires complete
+per-request cost and latency, both efficiency thresholds, and the declared safety limits. It emits
+`qualified`, `not_qualified`, or `insufficient_evidence`. Only `qualified` can activate the exact
+composed artifact. The ordinary superiority verdict doesn't grant phase-routing authority.
+
+Read [Evaluate and activate phase-aware model routing](guides/phase-routing.md) for the operator
+procedure and verdict recovery.
+
 ### Child-specialist candidates
 
 A child-specialist candidate is an inert document that changes one agent in one embedded child

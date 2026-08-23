@@ -163,15 +163,17 @@ describe("phase-routing candidates", () => {
         candidate.profiles.after.assignments.pop();
       },
       (candidate: CandidateSource) => {
-        candidate.profiles.after.assignments[1]!.target = structuredClone(
-          candidate.profiles.after.assignments[0]!.target,
-        );
+        required(candidate.profiles.after.assignments[1], "after assignment 1").target =
+          structuredClone(
+            required(candidate.profiles.after.assignments[0], "after assignment 0").target,
+          );
       },
       (candidate: CandidateSource) => {
-        candidate.profiles.after.assignments[0]!.phase = "executor";
+        required(candidate.profiles.after.assignments[0], "after assignment 0").phase = "executor";
       },
       (candidate: CandidateSource) => {
-        candidate.profiles.before.assignments[0]!.route.id = "stale-model";
+        required(candidate.profiles.before.assignments[0], "before assignment 0").route.id =
+          "stale-model";
       },
     ]) {
       const input = projectionInput();
@@ -188,7 +190,8 @@ describe("phase-routing candidates", () => {
   it("uses closed phases, exact-target selection, denied fallback, and bounded source bytes", () => {
     for (const mutate of [
       (candidate: CandidateSource) => {
-        candidate.profiles.after.assignments[0]!.phase = "researcher";
+        required(candidate.profiles.after.assignments[0], "after assignment 0").phase =
+          "researcher";
       },
       (candidate: CandidateSource) => {
         candidate.profiles.after.selectionRule = "model-selected";
@@ -197,7 +200,9 @@ describe("phase-routing candidates", () => {
         candidate.profiles.after.fallback = "next-model";
       },
       (candidate: CandidateSource) => {
-        candidate.profiles.after.assignments[0]!.target.childPath = [".."];
+        required(candidate.profiles.after.assignments[0], "after assignment 0").target.childPath = [
+          "..",
+        ];
       },
     ]) {
       const candidate = JSON.parse(candidateText()) as CandidateSource;
@@ -242,9 +247,21 @@ function candidateText(): string {
     route: structuredClone(baselineRoute),
   }));
   const after = structuredClone(before);
-  after[0]!.route = { provider: "openai", id: "gpt-5.4", thinking: "high" };
-  after[2]!.route = { provider: "openai", id: "gpt-5.4-mini", thinking: "low" };
-  after[3]!.route = { provider: "openai", id: "gpt-5.4", thinking: "xhigh" };
+  required(after[0], "after assignment 0").route = {
+    provider: "openai",
+    id: "gpt-5.4",
+    thinking: "high",
+  };
+  required(after[2], "after assignment 2").route = {
+    provider: "openai",
+    id: "gpt-5.4-mini",
+    thinking: "low",
+  };
+  required(after[3], "after assignment 3").route = {
+    provider: "openai",
+    id: "gpt-5.4",
+    thinking: "xhigh",
+  };
   return JSON.stringify({
     apiVersion: "flow.synapti.ai/v1alpha1",
     kind: "PhaseRoutingCandidate",
@@ -317,6 +334,11 @@ function modelAt(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function required<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`test fixture is missing ${label}`);
+  return value;
 }
 
 interface MutableAssignment {

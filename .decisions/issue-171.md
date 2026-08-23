@@ -8,12 +8,11 @@
 
 Flow can review, evaluate, activate, and roll back one exact model replacement for one root agent.
 Slice 10.2 adds a deterministic phase profile across planning, execution, verification, and explicit
-escalation. The model must not select a route, create a phase, or obtain fallback authority.
+escalation. The model must not select a route, create a phase, or receive fallback authority.
 
-The user approved Refined Approach B for “Slice 10.1b.” The repository and remote state show that
-Slices 10.1a, 10.1b, and 10.1c are already merged, while Refined Approach B is the pending Slice
-10.2 proposal. This implementation applies the approval to Slice 10.2 and records that interpretation
-explicitly.
+The user approved Refined Approach B for “Slice 10.1b.” Slices 10.1a, 10.1b, and 10.1c are already
+merged. The repository and remote state identify Refined Approach B as the pending Slice 10.2
+proposal. This implementation applies the approval to Slice 10.2 and records that interpretation.
 
 ## Existing evidence
 
@@ -31,8 +30,8 @@ explicitly.
   timestamps. It does not yet bind an operator selection rule, phase target, or fallback decision.
 
 - Child workflows are compiled recursively. A child can embed workflow source or resolve an exact
-  workflow package. Rewriting a packaged child would require publishing a new package closure, so
-  the first phase-routing profile can target root nodes and nested embedded workflows only.
+  workflow package. The first phase-routing profile can target only root nodes and nested embedded
+  workflows. Rewriting a packaged child would require publishing a new package closure.
 
 ## Approved architecture
 
@@ -40,7 +39,7 @@ explicitly.
 
 The operator supplies one inert candidate with exact baseline and candidate phase profiles. Each
 profile has a closed assignment for every model-bearing target that it controls. An assignment binds
-one role, one deterministic exact-target rule, one model tuple, and one address containing the root
+one role, one deterministic exact-target rule, and one model tuple. Its address contains the root
 workflow, nested child path, target workflow, and node identifier.
 
 Flow projects baseline and candidate workflows independently. The selected baseline state remains
@@ -57,7 +56,7 @@ agents because Flow cannot observe or enforce their internal provider calls.
 
 Paired evaluation uses a dedicated `phase-routing-v1` purpose. It requires the exact baseline and
 candidate profile projections and reports quality non-inferiority separately from cost and latency
-efficiency. Activation requires a complete qualified report; the generic strict-superiority verdict
+efficiency. Activation requires a complete qualified report. The generic strict-superiority verdict
 does not authorize this surface.
 
 ### Alternatives considered
@@ -89,7 +88,7 @@ does not authorize this surface.
 4. Flow compares verified success non-inferiority, false completions, policy violations, cost, and
    latency only across complete same-environment pairs.
 5. Missing quality, cost, latency, route, safety, or verifier evidence produces
-   `insufficient_evidence`; a constraint breach produces `not_qualified`.
+   `insufficient_evidence`. A constraint breach produces `not_qualified`.
 
 ### Activate, run, recover, and roll back
 
@@ -141,8 +140,9 @@ does not authorize this surface.
 - **Invalid or stale source** — Admission fails without publishing candidate authority.
 - **Missing or ambiguous target** — Composition fails before staging a candidate.
 - **Missing runtime assignment** — Execution fails before provider I/O and does not fall back.
-- **Provider failure** — The selected call fails under existing retry limits; no alternative route is
-  selected.
+- **Provider failure** — The selected call fails under existing retry limits. Flow selects no
+  alternative route.
+
 - **Incomplete accounting** — Missing cost or latency evidence makes qualification insufficient.
 - **Partial evaluation** — Missing trials or environment-mismatched pairs make qualification
   insufficient.
@@ -150,7 +150,6 @@ does not authorize this surface.
   whether activation committed.
 - **Recovery drift** — A changed workflow, profile, capability snapshot, or request identity fails
   closed.
-
 ### Interface contracts
 
 - A phase profile contains only the four closed roles `planner`, `executor`, `verifier`, and
@@ -172,12 +171,12 @@ does not authorize this surface.
 
 | Criteria | Type | Verification command | Passing evidence | Does not promise |
 | --- | --- | --- | --- | --- |
-| 1–2 | Contract and behavioral | `npx vitest run test/unit/adaptation/phase-routing-candidate.test.ts test/unit/application/prepare-effective-harness-candidate.test.ts` | Closed roles, nested embedded targets, dual projection, and immutable-field mutation tests pass | Dynamic or package-backed child routing |
-| 3–4 | Behavioral and error | `npx vitest run test/unit/run/model-session.test.ts test/unit/application/run-workflow-phase-routing.test.ts test/unit/pi/pi-agent-executor.test.ts` | Every request binds exact route evidence; missing, ambiguous, stale, ACP, and fallback paths fail before provider I/O | Provider invoice reconciliation |
-| 5 | Data and behavioral | `npx vitest run test/unit/evaluation/phase-routing-evaluation.test.ts test/unit/evaluation/aggregate.test.ts` | Non-inferiority and efficiency matrices return qualified, not-qualified, or insufficient verdicts correctly | Global model superiority |
-| 2, 5–6 | Integration | `npx vitest run test/unit/infrastructure/fs/local-evaluation-plan.test.ts test/unit/infrastructure/fs/local-evaluation-store.test.ts test/unit/application/prepare-effective-harness-activation.test.ts test/integration/cli/evaluation.test.ts test/integration/cli/effective-harness-runtime.test.ts` | Exact profile identity survives evaluation, activation, runtime, recovery, inspection, and rollback | Paid-provider availability |
-| 6 | Runtime and recovery | `npx vitest run test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/application/run-workflow-capabilities.test.ts` | Attached, detached, child, replay, and recovery preserve the selected profile | Multi-host distributed recovery |
-| 7 | Documentation | `npm run docs:capabilities:generate && npm run docs:capabilities:check && npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/integration/package/architecture-documentation.test.ts` | Generated reference, canonical guide, roadmap, status, Mermaid diagram, and repository map are current | External certification |
+| 1–2 | Contract and behavioral | `node_modules/.bin/vitest run test/unit/adaptation/phase-routing-candidate.test.ts test/unit/application/prepare-effective-harness-candidate.test.ts test/unit/infrastructure/fs/local-phase-routing-candidate.test.ts` | Closed roles, nested embedded targets, dual projection, immutable-field mutation, and stable admission tests pass | Dynamic or package-backed child routing |
+| 3–4 | Behavioral and error | `node_modules/.bin/vitest run test/unit/run/model-session.test.ts test/unit/application/run-workflow-model-session.test.ts test/integration/pi/pi-agent-executor.test.ts` | Every request binds exact route evidence; missing, ambiguous, stale, ACP, and fallback paths fail before provider I/O | Provider invoice reconciliation |
+| 5 | Data and behavioral | `node_modules/.bin/vitest run test/unit/evaluation/plan.test.ts test/unit/evaluation/records.test.ts test/unit/evaluation/aggregate.test.ts test/unit/application/evaluation-adapter.test.ts test/unit/application/run-evaluation.test.ts` | Non-inferiority and efficiency matrices return qualified, not-qualified, or insufficient verdicts correctly | Global model superiority |
+| 2, 5–6 | Integration | `node_modules/.bin/vitest run test/unit/infrastructure/fs/local-evaluation-plan.test.ts test/unit/infrastructure/fs/local-evaluation-store.test.ts test/unit/application/prepare-effective-harness-activation.test.ts test/integration/cli/evaluation.test.ts test/integration/cli/effective-harness-runtime.test.ts` | Exact profile identity survives evaluation, activation, runtime, recovery, inspection, and rollback | Paid-provider availability |
+| 6 | Runtime and recovery | `node_modules/.bin/vitest run test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/application/run-workflow-capabilities.test.ts` | Attached, detached, child, replay, and recovery preserve the selected profile | Multi-host distributed recovery |
+| 7 | Documentation | `npm run docs:capabilities:generate && npm run docs:capabilities:check && npm run docs:style && npm run docs:links && npm run docs:ste && node_modules/.bin/vitest run test/integration/package/architecture-documentation.test.ts` | Generated reference, canonical guide, roadmap, status, Mermaid diagram, and repository map are current | External certification |
 | 8 | Static and runtime | `npm run ci:local` | The local CI-equivalent pipeline, runtime checks, and package checks pass | Live paid-provider behavior |
 
 ## Implementation sequence
@@ -192,5 +191,5 @@ does not authorize this surface.
    rollback paths.
 6. Update the capability reference, canonical operator guide, documentation hub, roadmap, project
    status, testing guide, and architecture diagram and repository map.
-7. Run focused, serial, coverage, runtime, package, documentation, adversarial, and local CI gates.
 
+7. Run focused, serial, coverage, runtime, package, documentation, adversarial, and local CI gates.

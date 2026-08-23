@@ -717,6 +717,13 @@ candidate workflow differs only at the declared root agent model tuple. After ac
 and recovery use the selected durable workflow. They do not reopen the route file, baseline file,
 evaluation directory, provider catalog, or credential source.
 
+For phase routing, the composed artifact contains the complete `before` and `after` profiles and
+both deterministic workflow projections. Evaluation reconstructs an evaluation-only baseline state
+with the `before` profile and uses the artifact candidate state for `after`. Recovery reads the
+selected profile from the immutable run capability snapshot and rechecks each prepared request's
+exact target, route, and decision identity. It doesn't infer a missing decision, use a fallback, or
+reopen the candidate, baseline, evaluation directory, or provider catalog.
+
 The mutation lock identifies its host, process, and random token. Flow retires it only after the
 same host reports that the process does not exist. A live, foreign, changed, or invalid lock owner
 fails closed.

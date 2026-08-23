@@ -32,6 +32,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
 | [Qualify two local ACP agents](guides/qualify-acp-agents.md) | You need to verify two exact production ACP agents against one prompt-only workflow and private result contract. |
+| [Evaluate and activate phase-aware model routing](guides/phase-routing.md) | You need exact planner, executor, verifier, or escalation routes with held-out quality, cost, latency, and safety gates. |
 
 ## Operate Flow
 

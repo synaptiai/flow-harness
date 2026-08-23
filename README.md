@@ -64,6 +64,8 @@ Current capability groups include:
 - Reproducible Flow, Pi, OMP, and Prime evaluation profiles with reviewed root,
   child-specialist, and supplemental-memory candidates, including bounded model-suggested memory
   and evidence-backed relationships.
+- Exact phase-aware model routing with per-request durable evidence and held-out qualification
+  before activation.
 - A balanced three-mode experiment for complete history, verified artifact references, and bounded
   summaries. It cannot activate production compaction.
 
