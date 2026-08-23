@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,9 +33,15 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
   it("executes ACP inside the hosted Linux PID namespace profile", async () => {
     const projectRoot = await realpath(await mkdtemp(join(tmpdir(), "flow-acp-project-")));
     const privateHome = await realpath(await mkdtemp(join(tmpdir(), "flow-acp-home-")));
-    temporaryDirectories.push(projectRoot, privateHome);
+    const protectedRoot = await realpath(await mkdtemp(join(tmpdir(), "flow-acp-protected-")));
+    const attemptDirectory = await realpath(await mkdtemp(join(tmpdir(), "flow-acp-attempt-")));
+    temporaryDirectories.push(projectRoot, privateHome, protectedRoot, attemptDirectory);
     await mkdir(join(projectRoot, ".flow"));
+    await writeFile(join(projectRoot, "source.txt"), "PRIVATE_PROJECT_STATE", "utf8");
     await writeFile(join(projectRoot, ".flow", "private.txt"), "PRIVATE_FLOW_STATE", "utf8");
+    await writeFile(join(privateHome, "private.txt"), "PRIVATE_HOME_STATE", "utf8");
+    const protectedFile = join(protectedRoot, "private.txt");
+    await writeFile(protectedFile, "PRIVATE_PROTECTED_STATE", "utf8");
     const environment = {
       ...process.env,
       OPENAI_API_KEY: "PRIVATE_SELECTED_CREDENTIAL",
@@ -53,18 +59,34 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
       realpath(fixturePath),
       realpath(join(process.cwd(), "node_modules")),
     ]);
+    const containmentOptions = Buffer.from(
+      JSON.stringify({
+        projectFile: join(projectRoot, "source.txt"),
+        projectWrite: join(projectRoot, "written.txt"),
+        homeFile: join(privateHome, "private.txt"),
+        homeWrite: join(privateHome, "written.txt"),
+        protectedFile,
+      }),
+      "utf8",
+    ).toString("base64url");
     const sandbox: AcpAgentSandbox = {
       prepareAcpAgent: async (request) =>
         await srt.prepareAcpAgent({
           ...request,
           executable: process.execPath,
-          args: [fixturePath, "success"],
+          args: [fixturePath, "containment", containmentOptions],
           runtimeSupportPaths,
         }),
     };
+    let cleanupRequested = false;
     const executor = new AcpAgentExecutor({
       sandbox,
       assertCurrent: async () => undefined,
+      createAttemptDirectory: async () => attemptDirectory,
+      removeAttemptDirectory: async (path) => {
+        expect(path).toBe(attemptDirectory);
+        cleanupRequested = true;
+      },
       terminationGraceMs: 250,
       terminationConfirmationMs: 2_000,
     });
@@ -75,7 +97,7 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
       attempt: 1,
       cwd: projectRoot,
       projectRoot,
-      protectedPaths: [join(projectRoot, ".flow", "private.txt")],
+      protectedPaths: [protectedFile, join(projectRoot, ".flow", "private.txt")],
       capabilitySnapshot: acpAgentCapabilitySnapshot(),
     });
 
@@ -83,7 +105,7 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
       status: "succeeded",
       evidence: {
         kind: "agent",
-        text: "ACP process completed",
+        text: "ACP containment verified",
         acp: {
           executor: "local-acp-process-v1",
           processContainment: "linux-pid-namespace",
@@ -96,8 +118,27 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
         },
       },
     });
+    expect(cleanupRequested).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(attemptDirectory, "containment-probe.json"), "utf8")),
+    ).toEqual({
+      projectReadDenied: true,
+      projectWriteDenied: true,
+      homeReadDenied: true,
+      homeWriteDenied: true,
+      protectedReadDenied: true,
+      protectedWriteDenied: true,
+      selectedCredentialAbsent: true,
+      ambientCredentialAbsent: true,
+      networkDenied: true,
+      privateWriteSucceeded: true,
+      resistantChildAlive: true,
+    });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_SELECTED_CREDENTIAL");
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_AMBIENT_CREDENTIAL");
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROJECT_STATE");
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_HOME_STATE");
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROTECTED_STATE");
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_FLOW_STATE");
   }, 60_000);
 });

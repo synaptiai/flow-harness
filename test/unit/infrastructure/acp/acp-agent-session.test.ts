@@ -129,6 +129,31 @@ describe("ACP agent session", () => {
     connection.close();
   });
 
+  it("retains an asynchronous notification failure after the prompt response settles", async () => {
+    const transport = linkedStreams();
+    const connection = configurationAgent(transport.agent, {
+      prompt: async (params, client) => {
+        await client.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "PRIVATE_OVERSIZED_OUTPUT" },
+          },
+        });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const error = await runAcpAgentSession(transport.client, {
+      ...baseRequest(),
+      maxOutputBytes: 4,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: "output_limit" });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_OVERSIZED_OUTPUT");
+    connection.close();
+  });
+
   it("classifies tool activity as denied authority and returns no tool payload", async () => {
     const transport = linkedStreams();
     const connection = configurationAgent(transport.agent, {

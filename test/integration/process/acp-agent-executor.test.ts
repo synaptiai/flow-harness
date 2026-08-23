@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -171,6 +171,90 @@ describe("local ACP process executor", () => {
     });
   });
 
+  it("cancels only after the prompt starts and confirms process-tree termination", async () => {
+    const sandbox = fixtureSandbox("hang");
+    const executor = new AcpAgentExecutor({
+      sandbox,
+      platform: "darwin",
+      assertCurrent: async () => undefined,
+      terminationGraceMs: 25,
+      terminationConfirmationMs: 500,
+    });
+    const controller = new AbortController();
+
+    const execution = executor.execute(agentNode(), {
+      ...context(),
+      signal: controller.signal,
+    });
+    await waitForAttemptMarker(sandbox, "prompt-started");
+    controller.abort();
+    const outcome = await execution;
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "acp_agent_aborted",
+        retryable: false,
+        sideEffectStatus: "uncertain",
+      },
+      evidence: { acp: { terminationStatus: "confirmed" } },
+    });
+  });
+
+  it.each([
+    ["standard error", "stderr-limit"],
+    ["agent result", "output-limit"],
+  ])("bounds excessive %s and confirms process-tree termination", async (_label, mode) => {
+    const sandbox = fixtureSandbox(mode);
+    const executor = new AcpAgentExecutor({
+      sandbox,
+      platform: "darwin",
+      assertCurrent: async () => undefined,
+      terminationGraceMs: 25,
+      terminationConfirmationMs: 500,
+    });
+
+    const outcome = await executor.execute(agentNode(), context());
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "acp_agent_output_limit",
+        retryable: false,
+        sideEffectStatus: "uncertain",
+      },
+      evidence: { acp: { terminationStatus: "confirmed" } },
+    });
+  });
+
+  it.each([
+    ["stdout contamination", "malformed"],
+    ["partial EOF", "partial-eof"],
+  ])("fails closed on %s and settles the process tree", async (_label, mode) => {
+    const lifecycle: string[] = [];
+    const sandbox = fixtureSandbox(mode, lifecycle);
+    const executor = new AcpAgentExecutor({
+      sandbox,
+      platform: "darwin",
+      assertCurrent: async () => undefined,
+      terminationGraceMs: 25,
+      terminationConfirmationMs: 500,
+    });
+
+    const outcome = await executor.execute(agentNode(), context());
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "acp_agent_protocol_failed",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+    expect(lifecycle).toEqual(["prepare", "beforeLaunch", "release"]);
+  });
+
   it("rejects prompt-only contract drift before preparing the sandbox", async () => {
     const sandbox = fixtureSandbox("success");
     const executor = new AcpAgentExecutor({
@@ -219,6 +303,26 @@ function fixtureSandbox(mode: string, lifecycle: string[] = []) {
     },
   };
   return sandbox;
+}
+
+async function waitForAttemptMarker(
+  sandbox: { readonly requests: readonly AcpAgentSandboxRequest[] },
+  marker: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const cwd = sandbox.requests[0]?.cwd;
+    if (cwd !== undefined) {
+      try {
+        await access(join(cwd, marker));
+        return;
+      } catch {
+        // The fixture creates the marker only after session/prompt starts.
+      }
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
+  throw new Error("ACP process fixture did not start its prompt");
 }
 
 function sandboxEvidence(): SandboxEvidence {

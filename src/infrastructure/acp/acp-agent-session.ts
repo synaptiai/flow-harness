@@ -82,9 +82,16 @@ export async function runAcpAgentSession(
   }
   const values = resolveConfigurationValues(request);
   let authorityViolation: AcpAgentAuthorityViolationCategory | undefined;
+  let notificationFailure: AcpAgentSessionError | undefined;
   const noteAuthorityViolation = (category: AcpAgentAuthorityViolationCategory): void => {
     authorityViolation ??= category;
     request.onAuthorityViolation?.(category);
+  };
+  const retainNotificationFailure = (error: unknown): never => {
+    const failure =
+      error instanceof AcpAgentSessionError ? error : new AcpAgentSessionError("protocol");
+    notificationFailure ??= failure;
+    throw failure;
   };
   const stream = createAcpAgentProtocolStream(baseStream, {
     onAuthorityViolation: (category) => {
@@ -109,7 +116,11 @@ export async function runAcpAgentSession(
         return { outcome: { outcome: "cancelled" as const } };
       })
       .onNotification(methods.client.session.update, ({ params }) => {
-        acceptUpdate(params);
+        try {
+          acceptUpdate(params);
+        } catch (error) {
+          retainNotificationFailure(error);
+        }
       })
       .connectWith(stream, async (agent) => {
         const initialization = await agent.request(
@@ -159,6 +170,9 @@ export async function runAcpAgentSession(
           cancellationOptions(request.signal),
         );
         promptActive = false;
+        if (notificationFailure !== undefined) {
+          throw notificationFailure;
+        }
         if (authorityViolation !== undefined) {
           throw new AcpAgentSessionError("authority_violation", authorityViolation);
         }
@@ -192,6 +206,7 @@ export async function runAcpAgentSession(
     return Object.freeze(response);
   } catch (error) {
     await stream.settle();
+    if (notificationFailure !== undefined) throw notificationFailure;
     if (error instanceof AcpAgentSessionError) throw error;
     if (error instanceof AcpAgentProtocolStreamError) {
       throw error.code === "authority_violation"
