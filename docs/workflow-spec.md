@@ -1968,14 +1968,13 @@ profiles:
 The phase is one of `planner`, `executor`, `verifier`, or `escalation`. The `before` and `after`
 profiles must preserve ordered target and phase identity, and at least one route must change.
 Targets are unique and use the root workflow id. `childPath` lists embedded child node ids from the
-root. Packaged-child model targets must be declared but cannot change. Expanded generated model
-nodes are unaddressable and reject the candidate.
+root. Packaged-child and expanded generated model nodes are unaddressable and reject the candidate.
 
-The source is at most 65536 UTF-8 bytes. Admission performs stable no-follow reads of the candidate
-and baseline, validates the source and compiled baseline identities, and builds deterministic
-baseline and candidate workflow projections. Projection changes only declared provider, model id,
-and `thinking` tuples. The public candidate identity binds both profile digests, both workflow
-projection identities, provenance, and one candidate digest.
+The source is at most 1,048,576 UTF-8 bytes. Admission performs stable no-follow reads of the
+candidate and baseline. It validates the source and compiled baseline identities and builds
+deterministic baseline and candidate workflow projections. Projection changes only declared
+provider, model id, and `thinking` tuples. The public candidate identity binds both profile digests,
+both workflow projection identities, provenance, and one candidate digest.
 
 `flow candidate validate <candidate.yaml>` is read-only. `flow candidate compose
 <candidate.yaml>` binds the profile pair to the exact effective head and stages one immutable
@@ -1985,7 +1984,7 @@ An evaluation plan for this surface uses `purpose: phase-routing-v1`. Both `flow
 profiles select the same composed artifact with ordered `baseline` and `candidate` selections.
 `controls.phaseRoutingProfiles` contains the matching ordered profile digests. All tasks must be
 filesystem-verified holdouts. `comparison.minimumEffect` must be `0`, and the plan must declare
-`minimumCostReductionRate` and `minimumLatencyReductionRate`.
+positive `minimumCostReductionRate` and `minimumLatencyReductionRate` values.
 
 Before each provider request, Flow resolves the active profile by exact workflow id, child path,
 and node id. The durable model-request identity contains the phase, route, selection result,

@@ -230,6 +230,14 @@ describe("evaluation plan", () => {
       ),
     ).toThrow(/phase-routing|cost.*threshold/i);
     expect(() =>
+      parseEvaluationPlanText(
+        validPhaseRoutingPlan().replace(
+          "minimumLatencyReductionRate: 0.1",
+          "minimumLatencyReductionRate: 0",
+        ),
+      ),
+    ).toThrow(/phase-routing|positive.*threshold/i);
+    expect(() =>
       parseEvaluationPlanText(validPhaseRoutingPlan().replace("purpose: phase-routing-v1\n", "")),
     ).toThrow(/phase-routing.*purpose|purpose.*phase-routing/i);
   });

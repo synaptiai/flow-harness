@@ -364,9 +364,9 @@ function phaseRoutingQualificationReport(
   if (
     minimumCostReductionRate === undefined ||
     minimumLatencyReductionRate === undefined ||
-    minimumCostReductionRate < 0 ||
+    minimumCostReductionRate <= 0 ||
     minimumCostReductionRate > 1 ||
-    minimumLatencyReductionRate < 0 ||
+    minimumLatencyReductionRate <= 0 ||
     minimumLatencyReductionRate > 1
   ) {
     throw new EvaluationAggregationError(

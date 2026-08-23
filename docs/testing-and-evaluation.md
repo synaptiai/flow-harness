@@ -532,9 +532,11 @@ activation, public-output privacy, and state-digest rollback.
 
 Phase-routing tests bind complete ordered `before` and `after` profiles to one root workflow and
 its embedded children. They cover the four closed phase labels, exact target coverage, unchanged
-packaged-child assignments, denied fallback, deterministic projections, stable no-follow source
-admission, and direct-activation refusal. Runtime tests require one matching route decision before
-each provider request and preserve that evidence through root, child, replay, and recovery paths.
+route roles, packaged-child refusal, and denied fallback. They also cover deterministic projections,
+stable no-follow source admission, and direct-activation refusal.
+
+Runtime tests require one matching route decision before each provider request. They preserve that
+evidence through root, child, replay, and recovery paths.
 Evaluation tests require filesystem-verified holdouts, quality non-inferiority, complete cost and
 latency observations, explicit efficiency thresholds, and safety limits. Activation tests accept
 only the exact composed artifact with a complete `qualified` phase-routing report. They reject

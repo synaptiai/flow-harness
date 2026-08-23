@@ -646,6 +646,19 @@ describe("evaluation aggregation", () => {
       safety: { falseCompletionRate: 0, policyViolations: 0, passes: true },
       limitations: [],
     });
+
+    expect(() =>
+      aggregateEvaluation(
+        {
+          ...phaseRoutingReportInput(schedule),
+          comparison: {
+            ...phaseRoutingReportInput(schedule).comparison,
+            minimumCostReductionRate: 0,
+          },
+        },
+        records,
+      ),
+    ).toThrow(/valid cost and latency thresholds/i);
   });
 
   it.each([

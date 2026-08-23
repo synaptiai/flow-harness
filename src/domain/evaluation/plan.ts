@@ -363,12 +363,15 @@ const evaluationPlanSourceSchema = z
       }
       if (
         plan.comparison.minimumCostReductionRate === undefined ||
-        plan.comparison.minimumLatencyReductionRate === undefined
+        plan.comparison.minimumLatencyReductionRate === undefined ||
+        plan.comparison.minimumCostReductionRate <= 0 ||
+        plan.comparison.minimumLatencyReductionRate <= 0
       ) {
         context.addIssue({
           code: "custom",
           path: ["comparison"],
-          message: "phase-routing qualification requires explicit cost and latency thresholds",
+          message:
+            "phase-routing qualification requires positive cost and latency reduction thresholds",
         });
       }
       if (

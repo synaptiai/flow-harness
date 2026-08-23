@@ -39,8 +39,8 @@ Before you begin, confirm these conditions:
 - The baseline workflow is a stable local file.
 - Every model-bearing root or embedded-child node has an assignment in both profiles.
 
-- Packaged-child assignments remain unchanged. Flow cannot rewrite model routes inside a packaged
-  child workflow in this version.
+- The workflow doesn't contain packaged child workflows. This version cannot resolve them during
+  local phase-routing candidate admission.
 - Expanded generated model nodes aren't present. They don't have stable source addresses.
 - The evaluation suite contains filesystem-verified `holdout` tasks only.
 
@@ -87,9 +87,9 @@ For an embedded child, list the child node ids from the root to the target. For 
 `childPath: [delegate-review]` addresses a node inside the `delegate-review` child workflow. Keep
 `workflowId` equal to the root workflow id.
 
-The source is limited to 65536 UTF-8 bytes. Identifiers, paths, routes, targets, profile order, and
-unknown fields are validated strictly. Candidate and baseline reads don't follow symbolic links,
-and Flow rejects either file if it changes during admission.
+The source is limited to 1,048,576 UTF-8 bytes. Identifiers, paths, routes, targets, profile order,
+and unknown fields are validated strictly. Candidate and baseline reads don't follow symbolic
+links, and Flow rejects either file if it changes during admission.
 
 ## Validate and compose the candidate
 
@@ -174,8 +174,8 @@ comparison:
 ```
 
 The shared `controls.model` field remains part of the version 1 plan shape. For this purpose, the
-two exact phase profiles control model requests instead. `minimumEffect` must be `0`. The two
-explicit efficiency thresholds own the routing decision.
+two exact phase profiles control model requests instead. `minimumEffect` must be `0`. Both
+efficiency thresholds must be greater than `0` and own the routing decision.
 
 Use enough independent held-out tasks and seeds for the intended claim. Two pairs satisfy the
 minimum schema in this example, but a small or unrepresentative suite doesn't establish broad
@@ -256,7 +256,7 @@ This implementation doesn't:
 
 - Select routes from task text, provider availability, price feeds, or model output.
 - Retry through a different provider or silently use a default route.
-- Rewrite a packaged child workflow.
+- Route a workflow that contains a packaged child workflow.
 - Route opaque provider calls inside an ACP executor.
 - Route provider-generated context summaries. Use the reference-only compaction mode or a separate
   compaction experiment.

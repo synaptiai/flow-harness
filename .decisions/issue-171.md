@@ -129,8 +129,8 @@ does not authorize this surface.
 - No provider pricing catalog, availability oracle, credential broker, or remote routing service is
   introduced.
 
-- The first profile does not rewrite packaged child workflow source or claim support for opaque ACP
-  internal provider calls.
+- The first profile does not admit packaged child workflows or claim support for opaque ACP internal
+  provider calls.
 
 - Qualification does not claim that different models have equal capabilities outside the admitted
   held-out tasks, controls, and environments.
