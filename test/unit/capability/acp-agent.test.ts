@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calculateCapabilitySnapshotDigest,
+  combineCapabilitySnapshots,
+  createCapabilitySnapshot,
+  validateCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
+import {
   calculateAcpAgentRuntimeSnapshotDigest,
   createAcpAgentRuntimeSnapshot,
   MAX_ACP_AGENT_ARGUMENT_BYTES,
@@ -106,6 +112,63 @@ describe("ACP agent runtime capability", () => {
 
     expect(second).toEqual(first);
     expect(calculateAcpAgentRuntimeSnapshotDigest(first)).toBe(first.digest);
+  });
+
+  it("binds one ACP runtime into the existing capability digest", () => {
+    const acpAgent = createAcpAgentRuntimeSnapshot(validBinaryInput());
+    const capability = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      acpAgent,
+      digest: calculateCapabilitySnapshotDigest([], [], undefined, undefined, undefined, acpAgent),
+    });
+
+    expect(capability.acpAgent).toEqual(acpAgent);
+    expect(capability.digest).not.toBe(calculateCapabilitySnapshotDigest([]));
+  });
+
+  it("combines an identical ACP runtime with packages and rejects conflicts", () => {
+    const acpAgent = createAcpAgentRuntimeSnapshot(validBinaryInput());
+    const acpCapability = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      acpAgent,
+      digest: calculateCapabilitySnapshotDigest([], [], undefined, undefined, undefined, acpAgent),
+    });
+    const packageCapability = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "testing",
+        description: "Test code.",
+        metadata: {},
+        requestedTools: [],
+        trust: "project-explicit",
+        provenance: ".flow/skills/testing",
+        files: [{ path: "SKILL.md", content: Buffer.from("# Testing\n") }],
+      },
+    ]);
+
+    const combined = combineCapabilitySnapshots([packageCapability, acpCapability, acpCapability]);
+    expect(combined?.acpAgent).toEqual(acpAgent);
+    expect(combined?.packages).toHaveLength(1);
+
+    const conflictingAgent = createAcpAgentRuntimeSnapshot(validNodePackageInput());
+    const conflictingCapability = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      acpAgent: conflictingAgent,
+      digest: calculateCapabilitySnapshotDigest(
+        [],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        conflictingAgent,
+      ),
+    });
+    expect(() => combineCapabilitySnapshots([acpCapability, conflictingCapability])).toThrow(
+      /conflicting ACP agent selections/i,
+    );
   });
 
   it.each([
