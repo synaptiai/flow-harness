@@ -28,6 +28,10 @@ These instructions apply to the entire repository.
 - Use `must` for requirements, `can` for permitted actions, and `might` for possibilities. Avoid
   ambiguous uses of `should` in normative contracts.
 
+- When a registered public tool, schema, limit, capability-package family, provider seam, or
+  evaluation adapter changes, run `npm run docs:capabilities:generate`. Review both artifacts. Then
+  run `npm run docs:capabilities:check`. Never edit the generated files directly.
+
 - Before committing documentation, run `npm run docs:style`, `npm run docs:links`, and
   `npm run docs:ste`. Review the prose manually for the rules that automation cannot judge.
 

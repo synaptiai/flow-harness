@@ -47,6 +47,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | Document | Use it when |
 | --- | --- |
 | [Architecture](architecture.md) | You need the system diagram, component ownership, dependency direction, trust boundaries, failure modes, or non-goals. |
+| [Tools and capabilities](reference/tools-and-capabilities.md) | You need exact built-in model-tool names, schemas, limits, package families, or provider and evaluation seams. |
 | [Workflow specification](workflow-spec.md) | You need the normative executable graph, node, package, budget, approval, and ledger contracts. |
 | [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |
 | [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |

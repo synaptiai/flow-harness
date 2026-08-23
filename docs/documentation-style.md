@@ -113,6 +113,28 @@ second guide.
 - Specifications define executable and persisted contracts.
 - Architecture documents explain boundaries, dependencies, and non-goals.
 
+### Maintain generated capability documentation
+
+Production composition owns `docs/specs/flow-public-capability-catalog-v1.json` and
+`docs/reference/tools-and-capabilities.md`. Don't edit either generated file directly.
+
+If you change a registered public tool, schema, limit, capability-package family, provider seam, or
+evaluation adapter, regenerate both files:
+
+```sh
+npm run docs:capabilities:generate
+```
+
+Review the generated diff with the implementation. Confirm that the checked-in bytes remain
+current without changing them:
+
+```sh
+npm run docs:capabilities:check
+```
+
+Keep task guidance and architecture explanations in their canonical hand-authored documents. Link
+to the generated reference for exact names, schemas, limits, and registered families or seams.
+
 ## Review and validate changes
 
 Before you publish documentation:

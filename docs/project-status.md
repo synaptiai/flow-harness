@@ -102,6 +102,10 @@ Read [Recovery and interruption safety](recovery.md), [Local ACP v1 bridge](acp.
 
 ### Portable capabilities
 
+- A generated, versioned reference for built-in model tools, schemas, public limits, package
+  families, and provider and evaluation seams. The read-only local and CI gate rejects drift from
+  production composition.
+
 #### Package types and distribution
 
 - Agent Skills.
@@ -118,7 +122,8 @@ Read [Recovery and interruption safety](recovery.md), [Local ACP v1 bridge](acp.
 - Explicit retired-blob preview and digest-bound pruning with bounded physical storage and
   generation-safe readers on Linux and macOS.
 
-Read [Use capability packages](guides/capability-packages.md) and
+Read [Tools and capabilities](reference/tools-and-capabilities.md),
+[Use capability packages](guides/capability-packages.md), and
 [Capability sourcing](capability-sourcing.md).
 
 ### Evaluation and adaptation

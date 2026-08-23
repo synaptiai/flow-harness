@@ -4,7 +4,10 @@ import {
   type AgentSkillSessionError,
   createAgentSkillSession,
 } from "../../../src/domain/capability/agent-skill-session.js";
-import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import {
+  createCapabilitySnapshot,
+  MAX_CAPABILITY_READ_RECEIPTS,
+} from "../../../src/domain/capability/agent-skills.js";
 
 describe("Agent Skill session", () => {
   it("discloses metadata first and loads exact selected text resources on demand", () => {
@@ -58,6 +61,54 @@ describe("Agent Skill session", () => {
       expect.objectContaining<Partial<AgentSkillSessionError>>({ code }),
     );
     expect(session.evidence().reads).toEqual([]);
+  });
+
+  it("rejects a new resource before it exceeds the attempt receipt limit", () => {
+    const files = Array.from({ length: MAX_CAPABILITY_READ_RECEIPTS }, (_, index) => ({
+      path: index === 0 ? "SKILL.md" : `references/resource-${index}.txt`,
+      content: Buffer.from(`resource-${index}\n`),
+    }));
+    const session = createAgentSkillSession(
+      createCapabilitySnapshot([
+        {
+          kind: "agent-skill",
+          name: "first",
+          description: "First bounded resource set.",
+          metadata: {},
+          requestedTools: [],
+          trust: "project-explicit",
+          provenance: ".flow/skills/first",
+          files: files.slice(0, 64),
+        },
+        {
+          kind: "agent-skill",
+          name: "second",
+          description: "Second bounded resource set.",
+          metadata: {},
+          requestedTools: [],
+          trust: "project-explicit",
+          provenance: ".flow/skills/second",
+          files: [{ path: "SKILL.md", content: Buffer.from("# Second\n") }, ...files.slice(64)],
+        },
+      ]),
+      ["first", "second"],
+    );
+    const uris = [
+      ...files.slice(0, 64).map((file) => `skill://first/${file.path}`),
+      "skill://second/SKILL.md",
+      ...files.slice(64, -1).map((file) => `skill://second/${file.path}`),
+    ];
+    expect(uris).toHaveLength(MAX_CAPABILITY_READ_RECEIPTS);
+    for (const uri of uris) {
+      session.readText(uri);
+    }
+
+    expect(() =>
+      session.readText(`skill://second/${files.at(-1)?.path ?? "missing"}`),
+    ).toThrowError(
+      expect.objectContaining<Partial<AgentSkillSessionError>>({ code: "read_limit" }),
+    );
+    expect(session.evidence().reads).toHaveLength(MAX_CAPABILITY_READ_RECEIPTS);
   });
 });
 

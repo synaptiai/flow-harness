@@ -5,6 +5,8 @@ arbitrary executable extension code.
 
 Read [Capability sourcing](../capability-sourcing.md) for the authority, acquisition, storage,
 freshness, TUF, Sigstore, and recovery contracts.
+Read [Tools and capabilities](../reference/tools-and-capabilities.md) for the generated package
+family roster and the exact built-in model-tool surface.
 
 ## Package types
 

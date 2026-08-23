@@ -46,6 +46,7 @@ describe("package contract", () => {
     expect(manifest.bin).toEqual({ flow: "dist/cli/launcher.js" });
     expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
+    expect(manifest.files).toContain("docs");
     expect(manifest.files).toContain("THIRD_PARTY_NOTICES.md");
     expect(manifest.files).toContain("npm-shrinkwrap.json");
     expect(manifest.files).toContain("SECURITY.md");
@@ -114,6 +115,8 @@ describe("package contract", () => {
     expect(verifier).toContain('"the quick-start project snapshot is incomplete"');
     expect(verifier).toContain('"the quick-start project snapshot omits filesystem identity"');
     expect(verifier).toContain('"flow doctor changed the quick-start project"');
+    expect(verifier).toContain('"docs/reference/tools-and-capabilities.md"');
+    expect(verifier).toContain('"docs/specs/flow-public-capability-catalog-v1.json"');
     expect(verifier).toContain('"runtime.host"');
     expect(verifier).toContain('"sandbox.native"');
   });

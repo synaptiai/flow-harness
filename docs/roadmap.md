@@ -413,11 +413,15 @@ operator workflow, limits, and recovery actions.
 
 ### Slice 9.8: Generate capability reference documentation
 
+**Implemented in current source.**
+
 - Generate the public tool and capability catalog from the production composition.
 - Fail documentation verification when a registered public tool, schema, limit, or provider seam
   differs from the generated reference.
 - Keep explanatory guidance in its canonical task or architecture document rather than copying the
   generated catalog into the root README.
+
+Read [Tools and capabilities](reference/tools-and-capabilities.md) for the generated reference.
 
 ### Gate 9 failure behavior and non-goals
 

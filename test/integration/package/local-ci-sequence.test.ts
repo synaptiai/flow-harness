@@ -57,7 +57,17 @@ describe("local CI sequence", () => {
       ({ command, args }) =>
         command === "node" && args.join(" ") === "scripts/audit-prime-dependencies.mjs",
     );
+    const buildIndex = commands.findIndex(
+      ({ command, args }) => command === "npm" && args.join(" ") === "run build",
+    );
+    const capabilityReferenceIndex = commands.findIndex(
+      ({ command, args }) =>
+        command === "node" && args.join(" ") === "dist/cli/public-capability-reference.js --check",
+    );
 
+    expect(buildIndex).toBeGreaterThan(-1);
+    expect(capabilityReferenceIndex).toBeGreaterThan(buildIndex);
+    expect(preparationIndex).toBeGreaterThan(capabilityReferenceIndex);
     expect(preparationIndex).toBeGreaterThan(-1);
     expect(coverageIndex).toBeGreaterThan(preparationIndex);
     expect(runtimeIndex).toBeGreaterThan(preparationIndex);

@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { access, readdir, readFile, realpath } from "node:fs/promises";
 import {
   createReadToolDefinition,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   defineTool,
   type ReadOperations,
   type ToolDefinition,
@@ -11,23 +13,50 @@ import { type TSchema, Type } from "typebox";
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import {
   calculateAgentCommandDigest,
+  DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
   MAX_AGENT_COMMAND_ARG_BYTES,
   MAX_AGENT_COMMAND_ARGS,
+  MAX_AGENT_COMMAND_ARGS_BYTES,
   MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+  MAX_AGENT_COMMAND_OUTPUT_BYTES,
   MAX_AGENT_COMMAND_TIMEOUT_MS,
   normalizeAgentCommandRequest,
 } from "../../domain/agent-command.js";
-import { MAX_ARTIFACT_BYTES, MAX_ARTIFACT_READ_BYTES } from "../../domain/artifact/reference.js";
+import {
+  MAX_ARTIFACT_BYTES,
+  MAX_ARTIFACT_READ_BYTES,
+  MAX_COMMAND_ARTIFACT_BYTES,
+} from "../../domain/artifact/reference.js";
+import {
+  MAX_AGENT_SKILL_FILE_BYTES,
+  MAX_CAPABILITY_READ_RECEIPTS,
+} from "../../domain/capability/agent-skills.js";
 import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
+import { builtInAgentToolPolicyAction } from "../../domain/capability/agent-tool-policy.js";
+import type {
+  PublicAvailabilityRequirement,
+  PublicCapabilityLimitInput,
+  PublicCapabilityToolInput,
+} from "../../domain/capability/public-capability-reference.js";
 import { renderToolPackageCommand } from "../../domain/capability/tool-package-renderer.js";
 import {
   type ToolPackageSnapshot,
   validateToolPackageSnapshot,
 } from "../../domain/capability/tool-packages.js";
-import type { PolicyBroker } from "../../domain/policy/broker.js";
+import {
+  MAX_POLICY_DECISIONS,
+  MAX_POLICY_TARGET_BYTES,
+  type PolicyBroker,
+} from "../../domain/policy/broker.js";
 import {
   MAX_SEMANTIC_PATH_BYTES,
   MAX_SEMANTIC_POSITION,
+  MAX_SEMANTIC_CODE_BYTES,
+  MAX_SEMANTIC_HOVER_BYTES,
+  MAX_SEMANTIC_MESSAGE_BYTES,
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  MAX_SEMANTIC_RECEIPT_RESULT_BYTES,
+  MAX_SEMANTIC_RESULT_ITEMS,
   normalizeSemanticRequest,
   type SemanticQueryReceipt,
   type SemanticRequest,
@@ -35,9 +64,14 @@ import {
 } from "../../domain/semantic/semantic-code.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
+  MAX_AGENT_COMMANDS_PER_ATTEMPT,
+  MAX_AGENT_EFFECT_RECEIPTS,
+} from "../../domain/run/events.js";
+import {
   editHashAnchoredTextFile,
   type HashAnchoredEditRequest,
   type HashAnchoredEditResult,
+  MAX_EDIT_FILE_BYTES,
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
 } from "../fs/hash-anchored-edit.js";
@@ -49,6 +83,8 @@ const MAX_TOOL_PATH_BYTES = 1024;
 const DEFAULT_LS_LIMIT = 500;
 const MAX_LS_LIMIT = 5_000;
 const MAX_LS_OUTPUT_BYTES = 50 * 1024;
+
+const readSchema = createReadToolDefinition(".", { autoResizeImages: false }).parameters;
 
 const artifactSchema = Type.Object(
   {
@@ -139,7 +175,8 @@ const execSchema = Type.Object(
     args: Type.Optional(
       Type.Array(Type.String({ maxLength: MAX_AGENT_COMMAND_ARG_BYTES }), {
         maxItems: MAX_AGENT_COMMAND_ARGS,
-        description: "Literal argument vector passed without shell expansion.",
+        default: [],
+        description: "Literal argument vector passed without shell expansion (default: empty).",
       }),
     ),
     timeoutMs: Type.Optional(
@@ -205,6 +242,343 @@ export interface SemanticToolSession {
   evidence(): readonly SemanticQueryReceipt[];
 }
 
+export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabilityLimitInput[]>([
+  limit(
+    "agent-commands-per-attempt",
+    MAX_AGENT_COMMANDS_PER_ATTEMPT,
+    "items",
+    "Maximum flow_exec and command-tool-package executions started in one agent attempt.",
+  ),
+  limit(
+    "agent-effects-per-attempt",
+    MAX_AGENT_EFFECT_RECEIPTS,
+    "items",
+    "Maximum flow_edit effect reservations in one agent attempt.",
+  ),
+  limit("artifact-maximum-bytes", MAX_ARTIFACT_BYTES, "bytes", "Maximum retained artifact size."),
+  limit(
+    "artifact-read-window-bytes",
+    MAX_ARTIFACT_READ_BYTES,
+    "bytes",
+    "Maximum bytes returned by one artifact read.",
+    MAX_ARTIFACT_READ_BYTES,
+  ),
+  limit("edit-file-bytes", MAX_EDIT_FILE_BYTES, "bytes", "Maximum UTF-8 bytes in one edited file."),
+  limit(
+    "edit-input-characters",
+    MAX_EDIT_INPUT_BYTES,
+    "characters",
+    "Maximum Unicode code points in one old or replacement text schema value.",
+  ),
+  limit(
+    "edit-input-total-bytes",
+    MAX_EDIT_INPUT_BYTES,
+    "bytes",
+    "Maximum combined UTF-8 bytes across every old and replacement text value.",
+  ),
+  limit(
+    "edit-replacements",
+    MAX_EDIT_REPLACEMENTS,
+    "items",
+    "Maximum exact replacements in one edit call.",
+  ),
+  limit(
+    "exec-argument-bytes",
+    MAX_AGENT_COMMAND_ARG_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one command argument.",
+  ),
+  limit(
+    "exec-arguments",
+    MAX_AGENT_COMMAND_ARGS,
+    "items",
+    "Maximum arguments in one command call.",
+  ),
+  limit(
+    "exec-arguments-total-bytes",
+    MAX_AGENT_COMMAND_ARGS_BYTES,
+    "bytes",
+    "Maximum combined UTF-8 bytes in one command argument vector.",
+  ),
+  limit(
+    "exec-executable-bytes",
+    MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one executable value.",
+  ),
+  limit(
+    "exec-artifact-bytes-per-stream",
+    MAX_COMMAND_ARTIFACT_BYTES,
+    "bytes",
+    "Maximum retained command artifact bytes for each output stream.",
+  ),
+  limit(
+    "exec-output-bytes-per-stream",
+    MAX_AGENT_COMMAND_OUTPUT_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes returned inline for each command output stream.",
+  ),
+  limit(
+    "exec-timeout-milliseconds",
+    MAX_AGENT_COMMAND_TIMEOUT_MS,
+    "milliseconds",
+    "Maximum command deadline.",
+    DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
+  ),
+  limit(
+    "ls-entries",
+    MAX_LS_LIMIT,
+    "entries",
+    "Maximum requested directory entries.",
+    DEFAULT_LS_LIMIT,
+  ),
+  limit(
+    "ls-output-bytes",
+    MAX_LS_OUTPUT_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes returned by one directory listing.",
+  ),
+  limit(
+    "policy-decisions-per-attempt",
+    MAX_POLICY_DECISIONS,
+    "items",
+    "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none.",
+  ),
+  limit(
+    "policy-target-bytes",
+    MAX_POLICY_TARGET_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one policy authorization target.",
+  ),
+  limit(
+    "read-output-bytes",
+    DEFAULT_MAX_BYTES,
+    "bytes",
+    "Maximum text bytes returned by one underlying Pi read window.",
+    DEFAULT_MAX_BYTES,
+  ),
+  limit(
+    "read-output-lines",
+    DEFAULT_MAX_LINES,
+    "lines",
+    "Maximum lines returned by one underlying Pi read window.",
+    DEFAULT_MAX_LINES,
+  ),
+  limit(
+    "read-distinct-skill-resources-per-attempt",
+    MAX_CAPABILITY_READ_RECEIPTS,
+    "items",
+    "Maximum distinct skill:// resource receipts retained in one agent attempt.",
+  ),
+  limit(
+    "read-skill-resource-bytes",
+    MAX_AGENT_SKILL_FILE_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes returned for one admitted skill:// resource.",
+  ),
+  limit(
+    "semantic-code-bytes",
+    MAX_SEMANTIC_CODE_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one semantic code value.",
+  ),
+  limit(
+    "semantic-hover-bytes",
+    MAX_SEMANTIC_HOVER_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one hover value.",
+  ),
+  limit(
+    "semantic-message-bytes",
+    MAX_SEMANTIC_MESSAGE_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one semantic diagnostic message.",
+  ),
+  limit(
+    "semantic-path-characters",
+    MAX_SEMANTIC_PATH_BYTES,
+    "characters",
+    "Maximum Unicode code points in one semantic query path schema value.",
+  ),
+  limit(
+    "semantic-path-bytes",
+    MAX_SEMANTIC_PATH_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one normalized semantic query path.",
+  ),
+  limit(
+    "semantic-position",
+    MAX_SEMANTIC_POSITION,
+    "position",
+    "Maximum zero-based line or character position.",
+  ),
+  limit(
+    "semantic-result-items",
+    MAX_SEMANTIC_RESULT_ITEMS,
+    "items",
+    "Maximum diagnostics or locations returned by one semantic query.",
+  ),
+  limit(
+    "semantic-result-bytes",
+    MAX_SEMANTIC_RECEIPT_RESULT_BYTES,
+    "bytes",
+    "Maximum serialized bytes retained for one semantic query result.",
+  ),
+  limit(
+    "semantic-queries-per-attempt",
+    MAX_SEMANTIC_QUERY_RECEIPTS,
+    "items",
+    "Maximum semantic query receipts retained for one agent attempt.",
+  ),
+  limit(
+    "tool-path-characters",
+    MAX_TOOL_PATH_BYTES,
+    "characters",
+    "Maximum Unicode code points in one list or edit path schema value.",
+  ),
+  limit(
+    "tool-path-bytes",
+    MAX_TOOL_PATH_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one validated edit path.",
+  ),
+]);
+
+const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
+  read: toolReference({
+    selector: "read",
+    name: "flow_read",
+    label: "read",
+    description:
+      "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
+    inputSchema: readSchema,
+    executionMode: "default",
+    authority: ["read"],
+    policyActions: [builtInAgentToolPolicyAction("read")],
+    availability: [],
+    limitIds: [
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "read-distinct-skill-resources-per-attempt",
+      "read-output-bytes",
+      "read-output-lines",
+      "read-skill-resource-bytes",
+    ],
+  }),
+  ls: toolReference({
+    selector: "ls",
+    name: "flow_ls",
+    label: "ls",
+    description: `List workspace directory contents alphabetically, including dotfiles and '/' suffixes for directories. Output is bounded to ${DEFAULT_LS_LIMIT} entries by default and ${MAX_LS_OUTPUT_BYTES / 1024} KiB.`,
+    inputSchema: lsSchema,
+    executionMode: "default",
+    authority: ["read"],
+    policyActions: [builtInAgentToolPolicyAction("ls")],
+    availability: [],
+    limitIds: [
+      "ls-entries",
+      "ls-output-bytes",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "tool-path-characters",
+    ],
+  }),
+  edit: toolReference({
+    selector: "edit",
+    name: "flow_edit",
+    label: "edit",
+    description:
+      "Atomically edit one existing UTF-8 workspace file using its flow_read SHA-256 version and exact, unique, non-overlapping replacements. Stale versions fail without automatic merging.",
+    inputSchema: editSchema,
+    executionMode: "sequential",
+    authority: ["write"],
+    policyActions: [builtInAgentToolPolicyAction("edit")],
+    availability: ["effect-recorder"],
+    limitIds: [
+      "edit-file-bytes",
+      "agent-effects-per-attempt",
+      "edit-input-characters",
+      "edit-input-total-bytes",
+      "edit-replacements",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "tool-path-characters",
+      "tool-path-bytes",
+    ],
+  }),
+  exec: toolReference({
+    selector: "exec",
+    name: "flow_exec",
+    label: "exec",
+    description:
+      "Execute one bounded executable and literal argument vector in Flow's production sandbox. No shell, environment overrides, cwd overrides, stdin, PTY, background mode, or network access are available.",
+    inputSchema: execSchema,
+    executionMode: "sequential",
+    authority: ["execute"],
+    policyActions: [builtInAgentToolPolicyAction("exec")],
+    availability: ["command-recorder"],
+    limitIds: [
+      "agent-commands-per-attempt",
+      "exec-argument-bytes",
+      "exec-arguments",
+      "exec-arguments-total-bytes",
+      "exec-artifact-bytes-per-stream",
+      "exec-executable-bytes",
+      "exec-output-bytes-per-stream",
+      "exec-timeout-milliseconds",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+    ],
+  }),
+  semantic: toolReference({
+    selector: "semantic",
+    name: "flow_semantic",
+    label: "semantic",
+    description:
+      "Query one operator-selected language server for bounded diagnostics, definitions, references, or hover information. The tool cannot edit files or run model-selected commands.",
+    inputSchema: semanticSchema,
+    executionMode: "sequential",
+    authority: ["read"],
+    policyActions: [builtInAgentToolPolicyAction("semantic")],
+    availability: ["language-server"],
+    limitIds: [
+      "semantic-code-bytes",
+      "semantic-hover-bytes",
+      "semantic-message-bytes",
+      "semantic-path-bytes",
+      "semantic-path-characters",
+      "semantic-position",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "semantic-queries-per-attempt",
+      "semantic-result-bytes",
+      "semantic-result-items",
+    ],
+  }),
+  artifact: toolReference({
+    selector: "artifact",
+    name: "flow_artifact",
+    label: "artifact",
+    description:
+      "Read one bounded binary window from a retained command artifact owned by this run. Results are base64 encoded and never interpreted as text.",
+    inputSchema: artifactSchema,
+    executionMode: "sequential",
+    authority: ["read"],
+    policyActions: [builtInAgentToolPolicyAction("artifact")],
+    availability: ["artifact-store"],
+    limitIds: [
+      "artifact-maximum-bytes",
+      "artifact-read-window-bytes",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+    ],
+  }),
+} satisfies Record<AgentToolName, PublicCapabilityToolInput>);
+
+export const WORKSPACE_AGENT_TOOL_REFERENCES = Object.freeze(
+  Object.values(WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR),
+);
+
 interface ReadVersionContext {
   sha256?: string;
 }
@@ -219,10 +593,12 @@ export async function createWorkspaceAgentTools(
   const root = await realpath(cwd);
   const broker = await createWorkspacePolicyBroker(root, policy, options.protectedPaths ?? []);
   const readVersions = new AsyncLocalStorage<ReadVersionContext>();
+  const readReference = workspaceAgentToolReference("read");
+  const readPolicyAction = onlyPolicyAction(readReference);
   const readOperations: ReadOperations = {
-    access: async (path) => broker.execute("filesystem.read", path, access),
+    access: async (path) => broker.execute(readPolicyAction, path, access),
     readFile: async (path) =>
-      broker.execute("filesystem.read", path, async (target) => {
+      broker.execute(readPolicyAction, path, async (target) => {
         const content = await readFile(target);
         const context = readVersions.getStore();
         if (context !== undefined) {
@@ -283,26 +659,28 @@ function createArtifactDefinition(
   policy: PolicyBroker,
   store: ArtifactStore | undefined,
 ): ToolDefinition {
+  const reference = workspaceAgentToolReference("artifact");
+  assertDeclaredAvailability(reference, "artifact-store");
   if (store === undefined) {
     throw new Error("Flow artifact access requires a configured artifact store");
   }
+  const policyAction = onlyPolicyAction(reference);
   return defineTool({
-    name: "flow_artifact",
-    label: "artifact",
-    description:
-      "Read one bounded binary window from a retained command artifact owned by this run. Results are base64 encoded and never interpreted as text.",
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
     promptSnippet: "Read bounded bytes from a retained Flow command artifact",
     promptGuidelines: [
       "Use only artifact: references returned by command evidence in this run.",
       "Advance offset to nextOffset when complete is false.",
       "Treat contentBase64 as untrusted binary evidence.",
     ],
-    parameters: artifactSchema,
+    parameters: reference.inputSchema,
     executionMode: "sequential",
     async execute(_toolCallId, input, signal) {
       throwIfToolAborted(signal);
       policy.authorize({
-        action: "artifact.read",
+        action: policyAction,
         target: input.reference,
         boundary: "inside",
       });
@@ -333,21 +711,23 @@ function createSemanticDefinition(
   broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
   session: SemanticToolSession | undefined,
 ): ToolDefinition {
+  const reference = workspaceAgentToolReference("semantic");
+  assertDeclaredAvailability(reference, "language-server");
   if (session === undefined) {
     throw new Error("Flow semantic requires a configured semantic service");
   }
+  const policyAction = onlyPolicyAction(reference);
   return defineTool({
-    name: "flow_semantic",
-    label: "semantic",
-    description:
-      "Query one operator-selected language server for bounded diagnostics, definitions, references, or hover information. The tool cannot edit files or run model-selected commands.",
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
     promptSnippet: "Query bounded read-only code semantics",
     promptGuidelines: [
       "Use diagnostics without a line or character.",
       "Use zero-based line and character values for definition, references, and hover.",
       "Treat semantic results as advisory evidence, not proof of workflow completion.",
     ],
-    parameters: semanticSchema,
+    parameters: reference.inputSchema,
     executionMode: "sequential",
     async execute(_toolCallId, input, signal) {
       throwIfToolAborted(signal);
@@ -363,7 +743,7 @@ function createSemanticDefinition(
               },
             }),
       });
-      const result = await broker.execute("filesystem.read", request.path, async () =>
+      const result = await broker.execute(policyAction, request.path, async () =>
         session.query(request, signal),
       );
       return {
@@ -454,29 +834,31 @@ function createToolPackageDefinition(
 }
 
 function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOptions): ToolDefinition {
+  const reference = workspaceAgentToolReference("exec");
+  assertDeclaredAvailability(reference, "command-recorder");
   const commandRecorder = options.commandRecorder;
   if (commandRecorder === undefined) {
     throw new Error("Flow exec requires an attempt-scoped command recorder");
   }
+  const policyAction = onlyPolicyAction(reference);
   return defineTool({
-    name: "flow_exec",
-    label: "exec",
-    description:
-      "Execute one bounded executable and literal argument vector in Flow's production sandbox. No shell, environment overrides, cwd overrides, stdin, PTY, background mode, or network access are available.",
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
     promptSnippet: "Run a bounded argv-only command in the Flow sandbox",
     promptGuidelines: [
       "Pass the executable and each argument separately; shell operators and expansion are not supported.",
       "Inspect the returned exit code, signal, timeout, stdout, and stderr before deciding the next step.",
       "A failed command is evidence, not workflow completion; correct the issue or report it accurately.",
     ],
-    parameters: execSchema,
+    parameters: reference.inputSchema,
     executionMode: "sequential",
     async execute(_toolCallId, input, signal) {
       throwIfToolAborted(signal);
       const request = normalizeAgentCommandRequest(input);
       const operationDigest = calculateAgentCommandDigest(request);
       const decision = policy.authorize({
-        action: "process.execute",
+        action: policyAction,
         target: request.executable,
         boundary: "inside",
         operationDigest,
@@ -539,12 +921,13 @@ function createVersionedReadDefinition(
 ): ToolDefinition {
   const base = createReadToolDefinition(root, { autoResizeImages: false, operations });
   const baseExecute = base.execute.bind(base);
+  const reference = workspaceAgentToolReference("read");
   const definition = {
     ...base,
-    name: "flow_read",
-    label: "read",
-    description:
-      "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
+    parameters: reference.inputSchema,
     promptSnippet:
       "Read workspace text files with Flow SHA-256 versions and selected skill:// resources",
     promptGuidelines: [
@@ -594,22 +977,22 @@ function createVersionedReadDefinition(
 function createLsDefinition(
   broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
 ): ToolDefinition {
+  const reference = workspaceAgentToolReference("ls");
+  const policyAction = onlyPolicyAction(reference);
   return defineTool({
-    name: "flow_ls",
-    label: "ls",
-    description: `List workspace directory contents alphabetically, including dotfiles and '/' suffixes for directories. Output is bounded to ${DEFAULT_LS_LIMIT} entries by default and ${MAX_LS_OUTPUT_BYTES / 1024} KiB.`,
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
     promptSnippet: "List workspace directories",
     promptGuidelines: ["Use flow_ls only for paths inside the Flow execution workspace."],
-    parameters: lsSchema,
+    parameters: reference.inputSchema,
     async execute(_toolCallId, input, signal) {
       throwIfToolAborted(signal);
-      return await broker.execute("filesystem.list", input.path ?? ".", async (target) => {
+      return await broker.execute(policyAction, input.path ?? ".", async (target) => {
         throwIfToolAborted(signal);
         const entries = await readdir(target, { withFileTypes: true });
         throwIfToolAborted(signal);
-        entries.sort((left, right) =>
-          left.name.toLowerCase().localeCompare(right.name.toLowerCase()),
-        );
+        entries.sort((left, right) => compareDirectoryNames(left.name, right.name));
 
         const effectiveLimit = input.limit ?? DEFAULT_LS_LIMIT;
         const entryLimitReached = entries.length > effectiveLimit;
@@ -634,20 +1017,15 @@ function createLsDefinition(
             details: { entryLimitReached: false, outputLimitReached: false },
           };
         }
-        let text = lines.join("\n");
-        const notices: string[] = [];
-        if (entryLimitReached) {
-          notices.push(`${effectiveLimit} entries limit reached`);
-        }
-        if (outputLimitReached) {
-          notices.push(`${MAX_LS_OUTPUT_BYTES / 1024} KiB output limit reached`);
-        }
-        if (notices.length > 0) {
-          text += `\n\n[Truncated: ${notices.join(", ")}]`;
-        }
+        const bounded = boundDirectoryListing(
+          lines,
+          effectiveLimit,
+          entryLimitReached,
+          outputLimitReached,
+        );
         return {
-          content: [{ type: "text" as const, text }],
-          details: { entryLimitReached, outputLimitReached },
+          content: [{ type: "text" as const, text: bounded.text }],
+          details: { entryLimitReached, outputLimitReached: bounded.outputLimitReached },
         };
       });
     },
@@ -658,23 +1036,25 @@ function createEditDefinition(
   broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
   options: FlowAgentToolOptions,
 ): ToolDefinition {
+  const reference = workspaceAgentToolReference("edit");
+  assertDeclaredAvailability(reference, "effect-recorder");
   const effectRecorder = options.effectRecorder;
   if (effectRecorder === undefined) {
     throw new Error("Flow edit requires an attempt-scoped effect recorder");
   }
+  const policyAction = onlyPolicyAction(reference);
   const editFile = options.editFile ?? editHashAnchoredTextFile;
   return defineTool({
-    name: "flow_edit",
-    label: "edit",
-    description:
-      "Atomically edit one existing UTF-8 workspace file using its flow_read SHA-256 version and exact, unique, non-overlapping replacements. Stale versions fail without automatic merging.",
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
     promptSnippet: "Edit an existing workspace file with exact hash-anchored replacements",
     promptGuidelines: [
       "Call flow_read first and pass its full-file SHA-256 version as expectedSha256.",
       "Keep every oldText exact and unique; all replacements are matched against the same original file.",
       "On stale_version, re-read and reconsider the change instead of retrying the old request.",
     ],
-    parameters: editSchema,
+    parameters: reference.inputSchema,
     executionMode: "sequential",
     async execute(_toolCallId, input, signal) {
       validateToolPath(input.path);
@@ -684,7 +1064,7 @@ function createEditDefinition(
       };
       const operationDigest = calculateEditOperationDigest(input);
       const result = await broker.execute(
-        "filesystem.write",
+        policyAction,
         input.path,
         async (target) => {
           const reservation = effectRecorder.reserve({
@@ -731,6 +1111,103 @@ function editResult(result: HashAnchoredEditResult, path: string) {
     ],
     details: result,
   };
+}
+
+function workspaceAgentToolReference<TSelector extends AgentToolName>(
+  selector: TSelector,
+): (typeof WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR)[TSelector] {
+  return WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR[selector];
+}
+
+function onlyPolicyAction<const TReference extends PublicCapabilityToolInput>(
+  reference: TReference,
+): TReference["policyActions"][number] {
+  const [action, ...unexpected] = reference.policyActions;
+  if (action === undefined || unexpected.length > 0) {
+    throw new Error(`public tool "${reference.selector}" must declare exactly one policy action`);
+  }
+  return action as TReference["policyActions"][number];
+}
+
+function assertDeclaredAvailability(
+  reference: PublicCapabilityToolInput,
+  requirement: PublicAvailabilityRequirement,
+): void {
+  if (!reference.availability.includes(requirement)) {
+    throw new Error(
+      `public tool "${reference.selector}" must declare the ${requirement} availability requirement`,
+    );
+  }
+}
+
+function toolReference<const TInput extends PublicCapabilityToolInput>(input: TInput): TInput {
+  return Object.freeze({
+    ...input,
+    inputSchema: deepFreeze(input.inputSchema),
+    authority: Object.freeze([...input.authority]),
+    policyActions: Object.freeze([...input.policyActions]),
+    availability: Object.freeze([...input.availability]),
+    limitIds: Object.freeze([...input.limitIds]),
+  }) as TInput;
+}
+
+function boundDirectoryListing(
+  sourceLines: readonly string[],
+  effectiveLimit: number,
+  entryLimitReached: boolean,
+  initialOutputLimitReached: boolean,
+): { readonly text: string; readonly outputLimitReached: boolean } {
+  const lines = [...sourceLines];
+  let outputLimitReached = initialOutputLimitReached;
+  for (;;) {
+    const notices = [
+      ...(entryLimitReached ? [`${effectiveLimit} entries limit reached`] : []),
+      ...(outputLimitReached ? [`${MAX_LS_OUTPUT_BYTES / 1024} KiB output limit reached`] : []),
+    ];
+    const notice = notices.length === 0 ? "" : `[Truncated: ${notices.join(", ")}]`;
+    const text = [lines.join("\n"), notice].filter((part) => part.length > 0).join("\n\n");
+    if (Buffer.byteLength(text, "utf8") <= MAX_LS_OUTPUT_BYTES) {
+      return Object.freeze({ text, outputLimitReached });
+    }
+    outputLimitReached = true;
+    lines.pop();
+  }
+}
+
+function compareDirectoryNames(left: string, right: string): number {
+  const folded = compareStrings(left.toLowerCase(), right.toLowerCase());
+  return folded === 0 ? compareStrings(left, right) : folded;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || seen.has(value)) {
+    return value;
+  }
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    deepFreeze((value as Record<PropertyKey, unknown>)[key], seen);
+  }
+  return Object.freeze(value);
+}
+
+function limit(
+  id: string,
+  value: number,
+  unit: PublicCapabilityLimitInput["unit"],
+  scope: string,
+  defaultValue?: number,
+): PublicCapabilityLimitInput {
+  return Object.freeze({
+    id,
+    value,
+    unit,
+    scope,
+    ...(defaultValue === undefined ? {} : { default: defaultValue }),
+  });
 }
 
 function calculateEditOperationDigest(input: {

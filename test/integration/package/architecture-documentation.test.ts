@@ -42,6 +42,8 @@ describe("architecture documentation", () => {
     expect(overview).toContain("Execution plane");
     expect(overview).toContain("Durable project state");
     expect(overview).toContain("External systems");
+    expect(overview).toContain("Shared public capability descriptors");
+    expect(overview).toContain("Generated capability reference");
   });
 
   it("avoids reserved Mermaid node identifiers", async () => {
@@ -65,6 +67,8 @@ describe("architecture documentation", () => {
     ]);
 
     expect(architecture).toContain("## Keep the architecture view current");
+    expect(architecture).toContain("src/domain/capability/public-capability-reference.ts");
+    expect(architecture).toContain("src/cli/public-capability-reference.ts");
     expect(instructions).toContain("architecture diagram");
     expect(stylePolicy).toContain("architecture diagram");
     expect(contributing).toContain("architecture overview");

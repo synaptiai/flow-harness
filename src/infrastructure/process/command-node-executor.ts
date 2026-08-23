@@ -14,6 +14,7 @@ import type {
   NodeExecutionOutcome,
 } from "../../application/ports.js";
 import type { AgentCommandRequest } from "../../domain/agent-command.js";
+import { MAX_AGENT_COMMAND_OUTPUT_BYTES } from "../../domain/command-envelope.js";
 import {
   type ArtifactReference,
   MAX_COMMAND_ARTIFACT_BYTES,
@@ -44,7 +45,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
   readonly #terminationGraceMs: number;
 
   constructor(options: CommandNodeExecutorOptions) {
-    this.#maxOutputBytes = options.maxOutputBytes ?? 32_768;
+    this.#maxOutputBytes = options.maxOutputBytes ?? MAX_AGENT_COMMAND_OUTPUT_BYTES;
     this.#platform = options.platform ?? process.platform;
     this.#preparationSettlementMs = options.preparationSettlementMs ?? 65_000;
     this.#sandbox = options.sandbox;
@@ -53,9 +54,11 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     if (
       !Number.isSafeInteger(this.#maxOutputBytes) ||
       this.#maxOutputBytes <= 0 ||
-      this.#maxOutputBytes > 32_768
+      this.#maxOutputBytes > MAX_AGENT_COMMAND_OUTPUT_BYTES
     ) {
-      throw new RangeError("maxOutputBytes must be between 1 and 32768");
+      throw new RangeError(
+        `maxOutputBytes must be between 1 and ${MAX_AGENT_COMMAND_OUTPUT_BYTES}`,
+      );
     }
     if (!Number.isSafeInteger(this.#terminationGraceMs) || this.#terminationGraceMs < 0) {
       throw new RangeError("terminationGraceMs must be a non-negative safe integer");

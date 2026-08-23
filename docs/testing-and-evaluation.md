@@ -12,6 +12,26 @@ It verifies formatting, lint rules, strict TypeScript contracts, all default tes
 production build, and compiled-process tests. The build removes the previous `dist/` tree first so
 deleted modules cannot survive into a release artifact.
 
+## Keep the capability reference current
+
+If you change a registered model tool, input schema, public limit, capability-package family,
+ordinary model-execution seam, or evaluation adapter, regenerate the public reference:
+
+```sh
+npm run docs:capabilities:generate
+```
+
+Review both generated files with the related runtime change. Then confirm that they match
+production composition without changing either file:
+
+```sh
+npm run docs:capabilities:check
+```
+
+The complete `npm run check` gate runs the same read-only comparison after compilation. Local CI
+also runs it before preparing the Prime environment. Package verification confirms that the npm
+archive contains the versioned JSON catalog and readable Markdown reference.
+
 ## Verify a preview package
 
 Use the local package check while you develop release code:

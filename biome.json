@@ -20,5 +20,13 @@
       "semicolons": "always",
       "trailingCommas": "all"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["docs/specs/flow-public-capability-catalog-v1.json"],
+      "formatter": {
+        "enabled": false
+      }
+    }
+  ]
 }

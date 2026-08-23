@@ -4,6 +4,7 @@ import {
   type CapabilitySnapshot,
   createAgentCapabilityEvidence,
   isAgentSkillName,
+  MAX_CAPABILITY_READ_RECEIPTS,
   selectedAgentSkills,
   skillResourceUri,
 } from "./agent-skills.js";
@@ -11,6 +12,7 @@ import {
 export type AgentSkillSessionErrorCode =
   | "binary_resource"
   | "missing_resource"
+  | "read_limit"
   | "unselected_skill"
   | "unsafe_uri";
 
@@ -77,6 +79,12 @@ export function createAgentSkillSession(
         throw new AgentSkillSessionError(
           "missing_resource",
           `Agent Skill "${resource.name}" has no resource "${resource.path}"`,
+        );
+      }
+      if (!reads.has(resource.canonicalUri) && reads.size >= MAX_CAPABILITY_READ_RECEIPTS) {
+        throw new AgentSkillSessionError(
+          "read_limit",
+          `Agent Skill resource receipt limit of ${MAX_CAPABILITY_READ_RECEIPTS} was reached`,
         );
       }
       const content = Buffer.from(file.contentBase64, "base64");

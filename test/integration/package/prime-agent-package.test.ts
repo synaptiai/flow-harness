@@ -313,6 +313,10 @@ describe("Prime Agent package boundary", () => {
 
     expect(packageJson.scripts).toMatchObject({
       "prime:image:verify": "npm run build && node scripts/verify-prime-image.mjs",
+      "docs:capabilities:check":
+        "npm run build && node dist/cli/public-capability-reference.js --check",
+      "docs:capabilities:generate":
+        "npm run build && node dist/cli/public-capability-reference.js --write",
       "docs:ste": "node scripts/check-docs-ste.mjs --changed",
       "docs:style": "node scripts/check-doc-style.mjs --all",
       "ci:local": "node scripts/ci-local.mjs",

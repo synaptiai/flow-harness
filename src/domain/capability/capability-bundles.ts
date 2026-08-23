@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 import { parseStrictJson, StrictJsonError } from "../strict-json.js";
+import type { PublicCapabilityFamilyInput } from "./public-capability-reference.js";
 import { parseAgentSkillManifest } from "./agent-skill-manifest.js";
 import {
   MAX_AGENT_SKILL_FILE_BYTES,
@@ -33,9 +34,57 @@ export const MAX_CAPABILITY_BUNDLE_BYTES = 4 * 1024 * 1024;
 export const MAX_CAPABILITY_BUNDLE_DECODED_BYTES = 2 * 1024 * 1024;
 export const MAX_CAPABILITY_BUNDLE_PACKAGES = 32;
 
+export const CAPABILITY_PACKAGE_FAMILY_REFERENCES = Object.freeze([
+  capabilityFamilyReference({
+    kind: "agent-skill",
+    title: "Agent Skills",
+    summary: "Inert instructions and resources selected by exact package identity.",
+    extension: "dynamic",
+  }),
+  capabilityFamilyReference({
+    kind: "policy-package",
+    title: "Policy packages",
+    summary: "Inert policy narrowing that cannot grant authority beyond operator policy.",
+    extension: "dynamic",
+  }),
+  capabilityFamilyReference({
+    kind: "presentation-package",
+    title: "Presentation packages",
+    summary: "Inert A2UI-profile presentation metadata for supported Flow hosts.",
+    extension: "dynamic",
+  }),
+  capabilityFamilyReference({
+    kind: "tool-package",
+    title: "Command tool packages",
+    summary: "Declarative scalar inputs rendered through closed argv-only command profiles.",
+    extension: "dynamic",
+  }),
+  capabilityFamilyReference({
+    kind: "verifier-package",
+    title: "Verifier packages",
+    summary: "Inert command or model verification definitions admitted by exact identity.",
+    extension: "dynamic",
+  }),
+  capabilityFamilyReference({
+    kind: "workflow-package",
+    title: "Workflow packages",
+    summary: "Inert workflow sources compiled through the ordinary Flow workflow contract.",
+    extension: "dynamic",
+  }),
+] as const satisfies readonly PublicCapabilityFamilyInput[]);
+
+export type CapabilityPackageFamilyKind =
+  (typeof CAPABILITY_PACKAGE_FAMILY_REFERENCES)[number]["kind"];
+
+function capabilityFamilyReference<const TReference extends PublicCapabilityFamilyInput>(
+  reference: TReference,
+): TReference {
+  return Object.freeze(reference);
+}
+
 const verifierEntrySchema = z
   .object({
-    kind: z.literal("verifier-package"),
+    kind: z.literal(capabilityPackageFamilyKind("verifier-package")),
     manifestBase64: z
       .string()
       .min(1)
@@ -44,7 +93,7 @@ const verifierEntrySchema = z
   .strict();
 const toolEntrySchema = z
   .object({
-    kind: z.literal("tool-package"),
+    kind: z.literal(capabilityPackageFamilyKind("tool-package")),
     manifestBase64: z
       .string()
       .min(1)
@@ -53,7 +102,7 @@ const toolEntrySchema = z
   .strict();
 const workflowEntrySchema = z
   .object({
-    kind: z.literal("workflow-package"),
+    kind: z.literal(capabilityPackageFamilyKind("workflow-package")),
     manifestBase64: z
       .string()
       .min(1)
@@ -62,7 +111,7 @@ const workflowEntrySchema = z
   .strict();
 const policyEntrySchema = z
   .object({
-    kind: z.literal("policy-package"),
+    kind: z.literal(capabilityPackageFamilyKind("policy-package")),
     manifestBase64: z
       .string()
       .min(1)
@@ -71,7 +120,7 @@ const policyEntrySchema = z
   .strict();
 const presentationEntrySchema = z
   .object({
-    kind: z.literal("presentation-package"),
+    kind: z.literal(capabilityPackageFamilyKind("presentation-package")),
     manifestBase64: z
       .string()
       .min(1)
@@ -80,7 +129,7 @@ const presentationEntrySchema = z
   .strict();
 const agentSkillEntrySchema = z
   .object({
-    kind: z.literal("agent-skill"),
+    kind: z.literal(capabilityPackageFamilyKind("agent-skill")),
     files: z
       .array(
         z
@@ -514,6 +563,15 @@ function canonicalBase64ByteLength(value: string): number {
   }
   const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
   return (value.length / 4) * 3 - padding;
+}
+
+function capabilityPackageFamilyKind<TKind extends CapabilityPackageFamilyKind>(
+  kind: TKind,
+): TKind {
+  if (!CAPABILITY_PACKAGE_FAMILY_REFERENCES.some((item) => item.kind === kind)) {
+    throw new Error(`unsupported capability package family "${kind}"`);
+  }
+  return kind;
 }
 
 function assertCanonicalPackageOrder(packages: readonly CapabilityBundlePackage[]): void {

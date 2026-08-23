@@ -15,6 +15,7 @@ import {
 import { goalContractSchema } from "../goal/schema.js";
 import {
   type CompiledResultSchema,
+  AGENT_TOOL_NAMES,
   FLOW_WORKFLOW_API_VERSION,
   MAX_CHILD_WORKFLOW_SOURCE_BYTES,
   MAX_CONCURRENT_NODES,
@@ -183,8 +184,8 @@ const agentConfigSchema = z
     prompt: z.string().trim().min(1).max(262_144),
     model: modelSchema,
     tools: z
-      .array(z.enum(["read", "ls", "edit", "exec", "semantic", "artifact"]))
-      .max(6)
+      .array(z.enum(AGENT_TOOL_NAMES))
+      .max(AGENT_TOOL_NAMES.length)
       .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
       .default([]),
     skills: z
