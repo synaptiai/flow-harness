@@ -144,6 +144,7 @@ async function admitNodePackageLaunch(
       includePeerDependencies: true,
       maxTotalBytes: MAX_ACP_AGENT_PACKAGE_BYTES,
       maxTotalFiles: MAX_ACP_AGENT_PACKAGE_FILES,
+      rejectLinkedPackageRoots: true,
       rejectUnselectedNestedPackages: true,
       resolutionRoot: launch.packageResolutionRoot,
     },

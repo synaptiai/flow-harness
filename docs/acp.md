@@ -106,8 +106,8 @@ The strict manifest declares:
 
 Admission uses bounded, no-follow local reads. It doesn't search PATH, a package registry, a package
 manager, or a home directory. It doesn't contact a network service or start a subprocess. Flow
-checks the exact hashes, byte counts, file identities, package closure, entry point, and Node
-version before it returns an immutable runtime snapshot.
+checks the exact hashes, byte counts, file identities, package closure, and entry point. It also
+binds the manifest's declared Node version before it returns an immutable runtime snapshot.
 
 The executor identity belongs to the run capability snapshot, not workflow YAML. Changing it
 changes the capability digest without changing the workflow digest. The same digest crosses

@@ -365,6 +365,7 @@ export async function readTrustedPackageClosure(
     readonly includePeerDependencies?: boolean;
     readonly maxTotalBytes?: number;
     readonly maxTotalFiles?: number;
+    readonly rejectLinkedPackageRoots?: boolean;
     readonly rejectUnselectedNestedPackages?: boolean;
     readonly resolutionRoot?: string;
   } = {},
@@ -429,6 +430,12 @@ export async function readTrustedPackageClosure(
         return;
       }
       throw new Error(`${label} contains a missing dependency`, { cause: error });
+    }
+    if (
+      options.rejectLinkedPackageRoots === true &&
+      canonicalPackageRoot !== packageRootPath
+    ) {
+      throw new Error(`${label} contains a linked package root`);
     }
     if (packages.has(canonicalPackageRoot)) {
       return;

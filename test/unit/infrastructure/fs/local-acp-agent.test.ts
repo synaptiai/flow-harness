@@ -179,6 +179,56 @@ describe("local ACP agent admission", () => {
     ).rejects.toThrow(/^local ACP agent admission failed$/);
   });
 
+  it("rejects a transitive package reached through a linked dependency", async () => {
+    const fixture = await nodePackageFixture();
+    const dependencyRoot = join(fixture.root, "linked-dependency");
+    const dependencyLink = join(fixture.packageRoot, "node_modules", "linked-dependency");
+    await Promise.all([
+      mkdir(dependencyRoot, { recursive: true }),
+      mkdir(join(fixture.packageRoot, "node_modules"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        join(dependencyRoot, "package.json"),
+        `${JSON.stringify({ name: "linked-dependency", version: "1.0.0" })}\n`,
+        "utf8",
+      ),
+      writeFile(join(dependencyRoot, "index.js"), "export const linked = true;\n", "utf8"),
+      writeFile(
+        join(fixture.packageRoot, "package.json"),
+        `${JSON.stringify({
+          name: "@zed-industries/codex-acp",
+          version: "1.6.2",
+          dependencies: { "linked-dependency": "1.0.0" },
+        })}\n`,
+        "utf8",
+      ),
+    ]);
+    await symlink(dependencyRoot, dependencyLink);
+    const closure = await readTrustedPackageClosure(
+      fixture.packageRoot,
+      "@zed-industries/codex-acp",
+      "1.6.2",
+      "test ACP package closure",
+      new ArtifactObservations(),
+      {
+        bindResolutionGraph: true,
+        includeMarkdown: true,
+        includePeerDependencies: true,
+        rejectUnselectedNestedPackages: true,
+        resolutionRoot: fixture.root,
+      },
+    );
+    await writeNodePackageManifest(fixture, { packageSha256: closure.sha256 });
+
+    await expect(
+      admitLocalAcpAgentRuntime({
+        manifestPath: fixture.manifestPath,
+        provenance: ".flow/acp-agents/codex-acp.json",
+      }),
+    ).rejects.toThrow(/^local ACP agent admission failed$/);
+  });
+
   it("rejects a missing entrypoint and package closure mismatch", async () => {
     const fixture = await nodePackageFixture();
     await writeNodePackageManifest(fixture, { entrypoint: "dist/missing.js" });
