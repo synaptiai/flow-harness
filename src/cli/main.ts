@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { open, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -392,6 +392,7 @@ import {
   LocalGoalWorkspaceStoreError,
   MAX_GOAL_WORKSPACE_HISTORY_PAGE,
 } from "../infrastructure/fs/local-goal-workspace-store.js";
+import { admitLocalAcpAgentRuntime } from "../infrastructure/fs/local-acp-agent.js";
 import { admitLocalLanguageServer } from "../infrastructure/fs/local-language-server.js";
 import {
   PolicyPackageCatalogError,
@@ -584,8 +585,8 @@ Usage:
   flow eval compaction inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval compaction export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow runtime prepare prime-agent
-  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--goal-workspace] [--language-server <manifest.json>]
-  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--work-profile <fast|standard|long>] [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--acp-agent <project-relative-manifest.json>] [--goal-workspace] [--language-server <manifest.json>]
+  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--acp-agent <project-relative-manifest.json>] [--work-profile <fast|standard|long>] [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--work-profile <fast|standard|long>] [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
@@ -5383,8 +5384,10 @@ async function validateCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const goalWorkspace = extractBooleanFlag(args, "--goal-workspace");
+  assertStringOptionAtMostOnce(goalWorkspace.args, "acp-agent");
   assertStringOptionAtMostOnce(goalWorkspace.args, "language-server");
   const { positionals, values } = parseCommandArgs(goalWorkspace.args, {
+    "acp-agent": { type: "string" },
     "language-server": { type: "string" },
   });
   const workflowArgument = requireSinglePositional(
@@ -5410,6 +5413,7 @@ async function validateCommand(
     config,
     dependencies.signal,
   );
+  const acpAgentSnapshot = await resolveSelectedAcpAgentCapability(values["acp-agent"], config);
   const capabilitySnapshot = bindWorkflowCapabilities(
     admitted.workflow,
     combineOptionalCapabilitySnapshots([
@@ -5417,6 +5421,7 @@ async function validateCommand(
       supplementalSnapshot,
       languageServerSnapshot,
       goalWorkspaceSnapshot,
+      acpAgentSnapshot,
     ]),
   );
   assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
@@ -5432,9 +5437,10 @@ async function validateCommand(
     capabilitySnapshot?.packages.filter((item) => item.kind === "policy-package").length ?? 0;
   const languageServerCount = capabilitySnapshot?.languageServer === undefined ? 0 : 1;
   const goalWorkspaceCount = capabilitySnapshot?.goalWorkspace === undefined ? 0 : 1;
+  const acpAgentCount = capabilitySnapshot?.acpAgent === undefined ? 0 : 1;
 
   io.stdout(
-    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}, language servers: ${languageServerCount}, goal workspaces: ${goalWorkspaceCount}).`,
+    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}, language servers: ${languageServerCount}, goal workspaces: ${goalWorkspaceCount}, ACP agents: ${acpAgentCount}).`,
   );
   return 0;
 }
@@ -5446,9 +5452,11 @@ async function runCommand(
 ): Promise<number> {
   const detached = extractBooleanFlag(args, "--detach");
   const goalWorkspace = extractBooleanFlag(detached.args, "--goal-workspace");
+  assertStringOptionAtMostOnce(goalWorkspace.args, "acp-agent");
   assertStringOptionAtMostOnce(goalWorkspace.args, "language-server");
   assertStringOptionAtMostOnce(goalWorkspace.args, "work-profile");
   const { positionals, values } = parseCommandArgs(goalWorkspace.args, {
+    "acp-agent": { type: "string" },
     "command-id": { type: "string" },
     "language-server": { type: "string" },
     "run-id": { type: "string" },
@@ -5482,6 +5490,7 @@ async function runCommand(
     config,
     dependencies.signal,
   );
+  const acpAgentSnapshot = await resolveSelectedAcpAgentCapability(values["acp-agent"], config);
   const capabilitySnapshot = bindWorkflowCapabilities(
     admitted.workflow,
     combineOptionalCapabilitySnapshots([
@@ -5489,6 +5498,7 @@ async function runCommand(
       supplementalSnapshot,
       languageServerSnapshot,
       goalWorkspaceSnapshot,
+      acpAgentSnapshot,
     ]),
   );
   assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
@@ -7115,6 +7125,41 @@ async function resolveSelectedLanguageServerCapability(
     packages: [],
     languageServer,
     digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+  });
+}
+
+async function resolveSelectedAcpAgentCapability(
+  manifestPath: string | undefined,
+  config: EffectiveFlowConfig,
+): Promise<CapabilitySnapshot | undefined> {
+  if (manifestPath === undefined) {
+    return undefined;
+  }
+  if (config.projectRoot === null) {
+    throw new CliUsageError("--acp-agent requires a Flow project root");
+  }
+  const projectRoot = resolve(config.projectRoot);
+  const absoluteManifestPath = resolve(projectRoot, manifestPath);
+  const provenance = relative(projectRoot, absoluteManifestPath).split(sep).join("/");
+  if (
+    isAbsolute(manifestPath) ||
+    !provenance.startsWith(".flow/acp-agents/") ||
+    provenance.endsWith("/")
+  ) {
+    throw new CliUsageError(
+      "--acp-agent requires a project-relative manifest under .flow/acp-agents",
+    );
+  }
+  const admitted = await admitLocalAcpAgentRuntime({
+    manifestPath: absoluteManifestPath,
+    provenance,
+  });
+  const acpAgent = admitted.snapshot;
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: [],
+    acpAgent,
+    digest: calculateCapabilitySnapshotDigest([], [], undefined, undefined, undefined, acpAgent),
   });
 }
 

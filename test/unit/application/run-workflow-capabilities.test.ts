@@ -97,7 +97,7 @@ describe("run workflow capability snapshots", () => {
     const snapshot = acpAgentCapabilitySnapshot();
     let observedDigest: string | undefined;
 
-    const state = await runWorkflow(unskilledWorkflow(), {
+    const state = await runWorkflow(acpWorkflow(), {
       ...options(
         store,
         executorFrom((_node, context) => {
@@ -125,7 +125,7 @@ describe("run workflow capability snapshots", () => {
     let executorCalls = 0;
 
     await expect(
-      runWorkflow(budgetedUnskilledWorkflow("maxModelTokens: 100"), {
+      runWorkflow(budgetedAcpWorkflow("maxModelTokens: 100"), {
         ...options(
           store,
           executorFrom(() => {
@@ -149,7 +149,7 @@ describe("run workflow capability snapshots", () => {
     let executorCalls = 0;
 
     await expect(
-      runWorkflow(budgetedUnskilledWorkflow("maxCostUsd: 1"), {
+      runWorkflow(budgetedAcpWorkflow("maxCostUsd: 1"), {
         ...options(
           store,
           executorFrom(() => {
@@ -169,23 +169,20 @@ describe("run workflow capability snapshots", () => {
     const store = new MemoryStore();
     let executorCalls = 0;
 
-    const state = await runWorkflow(
-      budgetedUnskilledWorkflow("maxModelTokens: 100\n  maxCostUsd: 1"),
-      {
-        ...options(
-          store,
-          executorFrom(() => {
-            executorCalls += 1;
-            return agentSuccess();
-          }),
-        ),
-        runId: "supported-acp-budgets",
-        capabilitySnapshot: acpAgentCapabilitySnapshot("a", {
-          modelTokens: "complete",
-          costUsd: "complete",
+    const state = await runWorkflow(budgetedAcpWorkflow("maxModelTokens: 100\n  maxCostUsd: 1"), {
+      ...options(
+        store,
+        executorFrom(() => {
+          executorCalls += 1;
+          return agentSuccess();
         }),
-      },
-    );
+      ),
+      runId: "supported-acp-budgets",
+      capabilitySnapshot: acpAgentCapabilitySnapshot("a", {
+        modelTokens: "complete",
+        costUsd: "complete",
+      }),
+    });
 
     expect(executorCalls).toBe(1);
     expect(state.status).toBe("succeeded");
@@ -195,7 +192,7 @@ describe("run workflow capability snapshots", () => {
     const interrupted = new MemoryStore("node_started");
     const original = acpAgentCapabilitySnapshot("a");
     await expect(
-      runWorkflow(unskilledWorkflow(), {
+      runWorkflow(acpWorkflow(), {
         ...options(
           interrupted,
           executorFrom(() => agentSuccess()),
@@ -208,7 +205,7 @@ describe("run workflow capability snapshots", () => {
     let executorCalls = 0;
 
     await expect(
-      resumeWorkflow(unskilledWorkflow(), {
+      resumeWorkflow(acpWorkflow(), {
         ...options(
           recovered,
           executorFrom(() => {
@@ -869,8 +866,31 @@ function unskilledWorkflow() {
   return compileWorkflowText(workflowSource(""));
 }
 
-function budgetedUnskilledWorkflow(budget: string) {
-  return compileWorkflowText(workflowSource("").replace("nodes:", `budget:\n  ${budget}\nnodes:`));
+function acpWorkflow() {
+  return compileWorkflowText(acpWorkflowSource());
+}
+
+function budgetedAcpWorkflow(budget: string) {
+  return compileWorkflowText(acpWorkflowSource().replace("nodes:", `budget:\n  ${budget}\nnodes:`));
+}
+
+function acpWorkflowSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: acp-capability-workflow }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze.
+      model: { provider: openai, id: gpt-5.6-codex, thinking: medium }
+  - id: publish
+    type: result
+    dependsOn: [analyze]
+    result:
+      source: { nodeId: analyze, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`;
 }
 
 function toolPackageWorkflow() {
