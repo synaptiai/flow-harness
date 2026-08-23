@@ -4217,6 +4217,9 @@ function childEvidence(
     outcome: requireChildTerminalStatus(state.status),
     result,
     resources: state.resources,
+    ...(state.resourceAvailability === undefined
+      ? {}
+      : { resourceAvailability: state.resourceAvailability }),
     durationMs: Math.max(0, finishedAt - Date.parse(state.startedAt)),
     workspace: Object.freeze({
       backend: provenance.backend,
@@ -4239,6 +4242,9 @@ function sameChildEvidenceProjection(actual: ChildEvidence, expected: ChildEvide
     actual.resources.modelCostUsdMicros === expected.resources.modelCostUsdMicros &&
     actual.resources.executionMs === expected.resources.executionMs &&
     actual.resources.artifactBytes === expected.resources.artifactBytes &&
+    actual.resourceAvailability?.modelTokens === expected.resourceAvailability?.modelTokens &&
+    actual.resourceAvailability?.modelCostUsdMicros ===
+      expected.resourceAvailability?.modelCostUsdMicros &&
     actual.durationMs === expected.durationMs &&
     actual.workspace.backend === expected.workspace.backend &&
     actual.workspace.snapshotDigest === expected.workspace.snapshotDigest &&

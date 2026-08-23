@@ -24,6 +24,7 @@ import {
 } from "../adaptation/prompt-activation.js";
 import { type GoalWorkspaceRevision, parseGoalWorkspaceRevision } from "../goal/workspace.js";
 import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
+import { type AcpAgentRuntimeSnapshot, validateAcpAgentRuntimeSnapshot } from "./acp-agent.js";
 import { type LanguageServerSnapshot, validateLanguageServerSnapshot } from "./language-server.js";
 import {
   createPolicyPackageSnapshot,
@@ -128,6 +129,7 @@ export interface CapabilitySnapshot {
   readonly effectiveHarness?: EffectiveHarnessRuntimeSnapshot;
   readonly languageServer?: LanguageServerSnapshot;
   readonly goalWorkspace?: GoalWorkspaceRevision;
+  readonly acpAgent?: AcpAgentRuntimeSnapshot;
   readonly digest: string;
 }
 
@@ -229,6 +231,7 @@ const capabilitySnapshotSchema = z
     effectiveHarness: z.unknown().optional(),
     languageServer: z.unknown().optional(),
     goalWorkspace: z.unknown().optional(),
+    acpAgent: z.unknown().optional(),
     digest: sha256Schema,
   })
   .strict()
@@ -238,7 +241,8 @@ const capabilitySnapshotSchema = z
       snapshot.activations === undefined &&
       snapshot.effectiveHarness === undefined &&
       snapshot.languageServer === undefined &&
-      snapshot.goalWorkspace === undefined
+      snapshot.goalWorkspace === undefined &&
+      snapshot.acpAgent === undefined
     ) {
       context.addIssue({ code: "custom", message: "capability snapshot cannot be empty" });
     }
@@ -485,6 +489,8 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     parsed.goalWorkspace === undefined
       ? undefined
       : parseGoalWorkspaceRevision(parsed.goalWorkspace);
+  const acpAgent =
+    parsed.acpAgent === undefined ? undefined : validateAcpAgentRuntimeSnapshot(parsed.acpAgent);
   if (
     calculateCapabilitySnapshotDigest(
       parsed.packages,
@@ -492,6 +498,7 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
       effectiveHarness,
       languageServer,
       goalWorkspace,
+      acpAgent,
     ) !== parsed.digest
   ) {
     throw new Error("capability snapshot digest does not match");
@@ -524,6 +531,7 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
     ...(languageServer === undefined ? {} : { languageServer }),
     ...(goalWorkspace === undefined ? {} : { goalWorkspace }),
+    ...(acpAgent === undefined ? {} : { acpAgent }),
     digest: parsed.digest,
   });
 }
@@ -581,6 +589,7 @@ export function calculateCapabilitySnapshotDigest(
   effectiveHarness?: EffectiveHarnessRuntimeSnapshot,
   languageServer?: LanguageServerSnapshot,
   goalWorkspace?: GoalWorkspaceRevision,
+  acpAgent?: AcpAgentRuntimeSnapshot,
 ): string {
   return sha256(
     JSON.stringify({
@@ -614,6 +623,7 @@ export function calculateCapabilitySnapshotDigest(
               digest: goalWorkspace.digest,
             },
           }),
+      ...(acpAgent === undefined ? {} : { acpAgent: { digest: acpAgent.digest } }),
     }),
   );
 }
@@ -670,6 +680,13 @@ export function combineCapabilitySnapshots(
   if (goalWorkspaces.some((item) => item.digest !== goalWorkspace?.digest)) {
     throw new Error("capability snapshots contain conflicting goal workspace selections");
   }
+  const acpAgents = snapshots
+    .map((snapshot) => snapshot.acpAgent)
+    .filter((item): item is AcpAgentRuntimeSnapshot => item !== undefined);
+  const acpAgent = acpAgents[0];
+  if (acpAgents.some((item) => item.digest !== acpAgent?.digest)) {
+    throw new Error("capability snapshots contain conflicting ACP agent selections");
+  }
   return validateCapabilitySnapshot({
     version: 1,
     packages,
@@ -677,12 +694,14 @@ export function combineCapabilitySnapshots(
     ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
     ...(languageServer === undefined ? {} : { languageServer }),
     ...(goalWorkspace === undefined ? {} : { goalWorkspace }),
+    ...(acpAgent === undefined ? {} : { acpAgent }),
     digest: calculateCapabilitySnapshotDigest(
       packages,
       activations,
       effectiveHarness,
       languageServer,
       goalWorkspace,
+      acpAgent,
     ),
   });
 }

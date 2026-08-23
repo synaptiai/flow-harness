@@ -28,6 +28,7 @@ describe("run resource and budget replay", () => {
       },
       budget: null,
     });
+    expect(state).not.toHaveProperty("resourceAvailability");
   });
 
   it.each(["fast", "standard", "long"] as const)(
@@ -109,6 +110,120 @@ describe("run resource and budget replay", () => {
     expect(Object.isFrozen(state.resources)).toBe(true);
     expect(Object.isFrozen(state.budget)).toBe(true);
     expect(Object.isFrozen(state.budget?.remaining)).toBe(true);
+  });
+
+  it("accounts an exact token total without inventing unavailable cost or token splits", () => {
+    const evidence = agentEvidenceWithObservation(20.2, {
+      modelTokens: { status: "complete", totalTokens: 10 },
+      costUsd: { status: "unavailable" },
+    });
+    const state = reduceRunEvents([
+      runStarted(undefined, ["verify"]),
+      nodeStarted(2, "verify"),
+      nodeSucceeded(3, "verify", evidence),
+      runSucceeded(4),
+    ] as unknown as RunEvent[]);
+
+    expect(state.resources).toMatchObject({ modelTokens: 10, modelCostUsdMicros: 0 });
+    expect(state.resourceAvailability).toEqual({
+      modelTokens: "complete",
+      modelCostUsdMicros: "unavailable",
+    });
+    expect(state.nodes.verify?.evidence).toMatchObject({
+      usageObservation: {
+        modelTokens: { status: "complete", totalTokens: 10 },
+        costUsd: { status: "unavailable" },
+      },
+    });
+    expect(state.nodes.verify?.evidence).not.toHaveProperty("usage");
+  });
+
+  it("retains explicit and implicit unavailable model usage instead of treating it as zero", () => {
+    const explicit = reduceRunEvents([
+      runStarted(undefined, ["verify"]),
+      nodeStarted(2, "verify"),
+      nodeSucceeded(
+        3,
+        "verify",
+        agentEvidenceWithObservation(1, {
+          modelTokens: { status: "unavailable" },
+          costUsd: { status: "unavailable" },
+        }),
+      ),
+      runSucceeded(4),
+    ] as unknown as RunEvent[]);
+    const implicitEvidence = agentEvidence(1, {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsdMicros: 1,
+    });
+    delete (implicitEvidence as { usage?: unknown }).usage;
+    const implicit = reduceRunEvents([
+      runStarted(undefined, ["verify"]),
+      nodeStarted(2, "verify"),
+      nodeSucceeded(3, "verify", implicitEvidence),
+      runSucceeded(4),
+    ] as unknown as RunEvent[]);
+
+    for (const state of [explicit, implicit]) {
+      expect(state.resources).toMatchObject({ modelTokens: 0, modelCostUsdMicros: 0 });
+      expect(state.resourceAvailability).toEqual({
+        modelTokens: "unavailable",
+        modelCostUsdMicros: "unavailable",
+      });
+    }
+  });
+
+  it.each([
+    {
+      label: "legacy and observed usage together",
+      evidence: {
+        ...agentEvidence(1, {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          costUsdMicros: 1,
+        }),
+        usageObservation: {
+          modelTokens: { status: "complete", totalTokens: 2 },
+          costUsd: { status: "complete", costUsdMicros: 1 },
+        },
+      },
+    },
+    {
+      label: "token breakdown that does not equal the total",
+      evidence: agentEvidenceWithObservation(1, {
+        modelTokens: {
+          status: "complete",
+          totalTokens: 3,
+          breakdown: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        },
+        costUsd: { status: "complete", costUsdMicros: 1 },
+      }),
+    },
+    {
+      label: "numeric value on an unavailable dimension",
+      evidence: agentEvidenceWithObservation(1, {
+        modelTokens: { status: "unavailable", totalTokens: 0 },
+        costUsd: { status: "unavailable" },
+      } as never),
+    },
+  ])("rejects invalid usage observation: $label", ({ evidence }) => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(undefined, ["verify"]),
+        nodeStarted(2, "verify"),
+        nodeSucceeded(3, "verify", evidence),
+      ] as unknown as RunEvent[]),
+    ).toThrow(/event schema is invalid/i);
   });
 
   it("records an explicit terminal outcome at a model settlement boundary", () => {
@@ -408,6 +523,17 @@ function agentEvidence(
     policyDecisions: [],
     effectReceipts: [],
   };
+}
+
+function agentEvidenceWithObservation(durationMs: number, usageObservation: unknown) {
+  const { usage: _usage, ...evidence } = agentEvidence(durationMs, {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsdMicros: 0,
+  });
+  return { ...evidence, usageObservation };
 }
 
 function base(sequence: number) {

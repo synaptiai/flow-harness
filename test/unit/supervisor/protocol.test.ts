@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 
 import {
   encodeSupervisorMessage,
@@ -135,6 +136,43 @@ describe("supervisor protocol", () => {
         }),
       ),
     ).toThrow();
+  });
+
+  it("serializes the complete ACP runtime identity for detached run and resume", () => {
+    const capabilitySnapshot = acpAgentCapabilitySnapshot();
+    const command = {
+      type: "submit",
+      policyDigest: "a".repeat(64),
+      commandId: randomUUID(),
+      mode: "run",
+      runId: "detached-acp-run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource:
+        "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached-acp }\nnodes: []\n",
+      cwd: "/workspace",
+      capabilitySnapshot,
+    } as const;
+
+    for (const mode of ["run", "resume"] as const) {
+      const request = parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command: { ...command, mode },
+        }),
+      );
+      expect(request.command).toMatchObject({
+        mode,
+        capabilitySnapshot: {
+          digest: capabilitySnapshot.digest,
+          acpAgent: {
+            name: "opencode",
+            digest: capabilitySnapshot.acpAgent?.digest,
+            launch: { kind: "binary", executable: { sha256: "a".repeat(64) } },
+          },
+        },
+      });
+    }
   });
 
   it("accepts only exact workflow package locators as non-path source identities", () => {

@@ -61,6 +61,12 @@ const publicRunPresentationSourceSchema = z.object({
     executionMs: z.number().int().nonnegative(),
     artifactBytes: z.number().int().nonnegative(),
   }),
+  resourceAvailability: z
+    .object({
+      modelTokens: z.enum(["complete", "unavailable"]),
+      modelCostUsdMicros: z.enum(["complete", "unavailable"]),
+    })
+    .optional(),
   nodes: z
     .record(identifierSchema, nodeSchema)
     .refine(
@@ -166,10 +172,19 @@ function buildDocument(source: PublicRunPresentationSource): FlowPresentationDoc
           kind: "facts",
           items: [
             { label: "Node starts", value: String(source.resources.nodeStarts) },
-            { label: "Model tokens", value: String(source.resources.modelTokens) },
+            {
+              label: "Model tokens",
+              value:
+                source.resourceAvailability?.modelTokens === "unavailable"
+                  ? "Unavailable"
+                  : String(source.resources.modelTokens),
+            },
             {
               label: "Model cost",
-              value: `${source.resources.modelCostUsdMicros} µUSD`,
+              value:
+                source.resourceAvailability?.modelCostUsdMicros === "unavailable"
+                  ? "Unavailable"
+                  : `${source.resources.modelCostUsdMicros} µUSD`,
             },
             { label: "Execution", value: `${source.resources.executionMs} ms` },
             { label: "Artifacts", value: `${source.resources.artifactBytes} bytes` },

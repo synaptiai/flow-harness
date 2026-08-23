@@ -445,14 +445,41 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 
 ### Slice 10.1: Run a local ACP executor
 
-- Implement an Agent Client Protocol (ACP) v1 provider behind the existing `AgentExecutor` port.
-- Start one exact local agent subprocess and bind its session to the Flow run and attempt.
-- Translate committed results into provider-neutral evidence.
-- Do not forward ambient editor filesystem, terminal, credential, or Model Context Protocol (MCP)
-  authority. Route every permitted operation through existing Flow policy, approval, containment,
-  and settlement boundaries.
+**Executor-admission foundation implemented in current source. Process execution remains planned.**
+
+Implemented foundation:
+
+- Validate one strict ACP v1 manifest and bind one exact local binary or Node package closure.
+- Store executor selection only in the run capability snapshot, independent of workflow YAML and
+  its digest.
+- Propagate the exact identity through all run paths and public output. Reject identity drift before
+  executor invocation.
+- Preserve token and reported-cost missingness. Reject an unenforceable budget before its first run
+  event.
+
+Remaining runtime work:
+
+Process and authority:
+
+- Implement an ACP v1 provider behind the existing `AgentExecutor` port.
+- Add a public operator selection that admits the exact manifest before run submission.
+- Start the admitted process under fixed containment and bind its ACP session to the Flow run,
+  node, and attempt.
+- Route each allowed client request through Flow policy, approval, containment, and settlement
+  without forwarding ambient client authority.
+
+Ambient client authority includes editor filesystem, terminal, credentials, extensions,
+elicitation, and Model Context Protocol (MCP).
+
+Evidence and interoperability:
+
+- Translate settled ACP results and usage into provider-neutral evidence. Record disconnects and
+  incomplete effects as failure or uncertainty.
 - Evaluate at least two independent ACP agents against the same workflow and controls before
   claiming interoperability.
+
+Read [Local ACP v1 bridge](acp.md#local-executor-admission-foundation) for the implemented identity,
+recovery, accounting, and public-output boundary.
 
 ### Slice 10.2: Evaluate phase-aware model routing
 

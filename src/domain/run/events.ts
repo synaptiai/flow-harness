@@ -112,21 +112,24 @@ import {
 } from "../workflow/types.js";
 import {
   type AgentModelUsage,
+  type ModelUsageObservation,
   addRunResources,
   agentModelUsageSchema,
   budgetExhaustionReason,
   calculateRunBudgetState,
   committedDurationMs,
   emptyRunResources,
+  modelUsageObservationFromLegacy,
+  modelUsageObservationSchema,
   RUN_BUDGET_DIMENSIONS,
   type RunBudgetExhaustion,
   type RunBudgetState,
   type RunResourceConsumption,
+  type RunResourceAvailability,
   retainedArtifactBytes,
   runBudgetExhaustionSchema,
   runBudgetLimitsSchema,
   sameBudgetExhaustions,
-  totalModelTokens,
 } from "./budget.js";
 import {
   MODEL_SESSION_PROTOCOL,
@@ -175,6 +178,7 @@ export interface AgentEvidence {
   readonly textTruncated: boolean;
   readonly durationMs: number;
   readonly usage?: AgentModelUsage;
+  readonly usageObservation?: ModelUsageObservation;
   readonly activity?: AgentActivity;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
@@ -222,6 +226,7 @@ export interface ModelVerifierEvidence extends VerifierEvidenceBase {
   readonly rawHash: string;
   readonly rawTruncated: boolean;
   readonly usage?: AgentModelUsage;
+  readonly usageObservation?: ModelUsageObservation;
 }
 
 export type VerifierEvidence = CommandVerifierEvidence | ModelVerifierEvidence;
@@ -259,6 +264,7 @@ export interface ChildEvidence {
   readonly outcome: "succeeded" | "failed" | "cancelled" | "resource_exhausted";
   readonly result: ChildResultEvidence | null;
   readonly resources: RunResourceConsumption;
+  readonly resourceAvailability?: RunResourceAvailability;
   readonly durationMs: number;
   readonly workspace: {
     readonly backend: "reflink-copy-v1";
@@ -1442,6 +1448,7 @@ export interface RunState {
   readonly controlGraph: ControlGraph | null;
   readonly concurrency: CompiledWorkflowConcurrency;
   readonly resources: RunResourceConsumption;
+  readonly resourceAvailability?: RunResourceAvailability;
   readonly budget: RunBudgetState | null;
   readonly status: RunStatus;
   readonly startedAt: string;
@@ -1799,6 +1806,7 @@ const agentEvidenceSchema = z
     textTruncated: z.boolean(),
     durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
     usage: agentModelUsageSchema.optional(),
+    usageObservation: modelUsageObservationSchema.optional(),
     activity: z
       .object({
         turns: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -1841,7 +1849,10 @@ const agentEvidenceSchema = z
       .optional(),
     capabilities: agentCapabilityEvidenceSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((evidence) => evidence.usage === undefined || evidence.usageObservation === undefined, {
+    message: "agent evidence cannot contain legacy and observed usage together",
+  });
 
 const verifierSourceObservationSchema = z
   .object({
@@ -1890,6 +1901,7 @@ const modelVerifierEvidenceSchema = z
     rawHash: sha256Schema,
     rawTruncated: z.boolean(),
     usage: agentModelUsageSchema.optional(),
+    usageObservation: modelUsageObservationSchema.optional(),
     sources: z
       .array(verifierSourceObservationSchema)
       .min(1)
@@ -1901,7 +1913,10 @@ const modelVerifierEvidenceSchema = z
         "verifier source observations must be unique",
       ),
   })
-  .strict();
+  .strict()
+  .refine((evidence) => evidence.usage === undefined || evidence.usageObservation === undefined, {
+    message: "model verifier evidence cannot contain legacy and observed usage together",
+  });
 
 const childRunLinkSchema = z
   .object({
@@ -1948,6 +1963,13 @@ const childResourceSchema = z
   })
   .strict();
 
+const runResourceAvailabilitySchema = z
+  .object({
+    modelTokens: z.enum(["complete", "unavailable"]),
+    modelCostUsdMicros: z.enum(["complete", "unavailable"]),
+  })
+  .strict();
+
 const childEvidenceSchema = z
   .object({
     kind: z.literal("child"),
@@ -1958,6 +1980,7 @@ const childEvidenceSchema = z
     outcome: z.enum(["succeeded", "failed", "cancelled", "resource_exhausted"]),
     result: childResultEvidenceSchema.nullable(),
     resources: childResourceSchema,
+    resourceAvailability: runResourceAvailabilitySchema.optional(),
     durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
     workspace: z
       .object({
@@ -3852,6 +3875,7 @@ export function appendRunEvent(
   let failureReason: string | null = currentState.failureReason;
   let goal = currentState.goal;
   let resources = currentState.resources;
+  let resourceAvailability = currentState.resourceAvailability;
   let executionCwd = currentState.executionCwd;
 
   switch (event.type) {
@@ -5882,6 +5906,10 @@ export function appendRunEvent(
         eventIndex,
       );
       resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
+      resourceAvailability = addResourceAvailabilityForEvidence(
+        resourceAvailability,
+        event.evidence,
+      );
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "succeeded",
@@ -5957,6 +5985,10 @@ export function appendRunEvent(
       );
       if (event.evidence !== null) {
         resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
+        resourceAvailability = addResourceAvailabilityForEvidence(
+          resourceAvailability,
+          event.evidence,
+        );
       }
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -6142,6 +6174,7 @@ export function appendRunEvent(
     controlGraph: currentState.controlGraph,
     concurrency: currentState.concurrency,
     resources,
+    ...(resourceAvailability === undefined ? {} : { resourceAvailability }),
     budget,
     status,
     startedAt: currentState.startedAt,
@@ -8051,21 +8084,71 @@ function addResourcesForEvidence(
     if (evidence.kind === "child") {
       return addRunResources(resources, evidence.resources);
     }
+    const observation = modelUsageObservationForEvidence(evidence);
     return addRunResources(resources, {
       executionMs: committedDurationMs(evidence.durationMs),
       artifactBytes: artifactBytesForEvidence(evidence),
-      ...((evidence.kind === "agent" ||
-        (evidence.kind === "verifier" && evidence.driver === "model")) &&
-      evidence.usage !== undefined
-        ? {
-            modelTokens: totalModelTokens(evidence.usage),
-            modelCostUsdMicros: evidence.usage.costUsdMicros,
-          }
+      ...(observation?.modelTokens.status === "complete"
+        ? { modelTokens: observation.modelTokens.totalTokens }
+        : {}),
+      ...(observation?.costUsd.status === "complete"
+        ? { modelCostUsdMicros: observation.costUsd.costUsdMicros }
         : {}),
     });
   } catch (error) {
     throw resourceReplayError(eventIndex, error);
   }
+}
+
+function addResourceAvailabilityForEvidence(
+  current: RunResourceAvailability | undefined,
+  evidence: NodeEvidence,
+): RunResourceAvailability | undefined {
+  const observation = modelUsageObservationForEvidence(evidence);
+  const evidenceAvailability =
+    evidence.kind === "child"
+      ? evidence.resourceAvailability
+      : observation === undefined
+        ? undefined
+        : {
+            modelTokens: observation.modelTokens.status,
+            modelCostUsdMicros: observation.costUsd.status,
+          };
+  if (evidenceAvailability === undefined) {
+    return current;
+  }
+  const next = Object.freeze({
+    modelTokens:
+      current?.modelTokens === "unavailable" || evidenceAvailability.modelTokens === "unavailable"
+        ? ("unavailable" as const)
+        : ("complete" as const),
+    modelCostUsdMicros:
+      current?.modelCostUsdMicros === "unavailable" ||
+      evidenceAvailability.modelCostUsdMicros === "unavailable"
+        ? ("unavailable" as const)
+        : ("complete" as const),
+  });
+  return next.modelTokens === "complete" && next.modelCostUsdMicros === "complete"
+    ? undefined
+    : next;
+}
+
+function modelUsageObservationForEvidence(
+  evidence: NodeEvidence,
+): ModelUsageObservation | undefined {
+  if (evidence.kind !== "agent" && !(evidence.kind === "verifier" && evidence.driver === "model")) {
+    return undefined;
+  }
+  if (evidence.usageObservation !== undefined) {
+    return evidence.usageObservation;
+  }
+  if (evidence.usage !== undefined) {
+    return modelUsageObservationFromLegacy(evidence.usage);
+  }
+  return Object.freeze({
+    modelTokens: Object.freeze({ status: "unavailable" as const }),
+    costUsd: Object.freeze({ status: "unavailable" as const }),
+  });
 }
 
 function artifactBytesForEvidence(evidence: Exclude<NodeEvidence, ChildEvidence>): number {

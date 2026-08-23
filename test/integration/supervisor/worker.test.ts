@@ -74,6 +74,7 @@ import {
   supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../fixtures/effective-harness-evaluation.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -467,6 +468,66 @@ describe("detached run worker", () => {
       status: "succeeded",
       capabilitySnapshot: {
         languageServer: { digest: languageServer.digest },
+      },
+    });
+  }, 15_000);
+
+  it("executes agent work from the frozen detached ACP runtime snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-acp-agent-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const capabilitySnapshot = acpAgentCapabilitySnapshot();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-acp-agent",
+      mode: "run",
+      sourceName: join(directory, "acp.workflow.yaml"),
+      workflowSource: goalWorkspaceWorkflowSource(),
+      cwd: directory,
+      token: "8".repeat(64),
+      createdAt: "2026-08-23T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let observedDigest: string | undefined;
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          if (node.type !== "agent") throw new Error("ACP worker executed an unexpected node");
+          observedDigest = context.capabilitySnapshot?.acpAgent?.digest;
+          return { status: "succeeded", evidence: successfulAgentEvidence() };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4342,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    expect(await worker).toBe(0);
+    expect(observedDigest).toBe(capabilitySnapshot.acpAgent?.digest);
+    expect(reduceRunEvents(await new JsonlRunStore(runsDirectory).read(job.runId))).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: {
+        digest: capabilitySnapshot.digest,
+        acpAgent: { digest: capabilitySnapshot.acpAgent?.digest },
       },
     });
   }, 15_000);

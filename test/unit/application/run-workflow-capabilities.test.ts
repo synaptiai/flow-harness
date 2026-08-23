@@ -33,6 +33,7 @@ import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/to
 import { createGoalWorkspaceRevision } from "../../../src/domain/goal/workspace.js";
 import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import {
   effectiveHarnessCandidateArtifactFixture,
@@ -89,6 +90,137 @@ describe("run workflow capability snapshots", () => {
     expect(state.capabilitySnapshot).toBeNull();
     expect(state.capabilityRequirements).toEqual({});
     expect(context).not.toHaveProperty("capabilitySnapshot");
+  });
+
+  it("persists and passes the exact ACP runtime to attached agent execution", async () => {
+    const store = new MemoryStore();
+    const snapshot = acpAgentCapabilitySnapshot();
+    let observedDigest: string | undefined;
+
+    const state = await runWorkflow(unskilledWorkflow(), {
+      ...options(
+        store,
+        executorFrom((_node, context) => {
+          observedDigest = context.capabilitySnapshot?.acpAgent?.digest;
+          return agentSuccess();
+        }),
+      ),
+      runId: "attached-acp-capability-run",
+      capabilitySnapshot: snapshot,
+    });
+
+    expect(observedDigest).toBe(snapshot.acpAgent?.digest);
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: {
+        digest: snapshot.digest,
+        acpAgent: { digest: snapshot.acpAgent?.digest },
+      },
+    });
+    expect(state.capabilitySnapshot).toEqual(snapshot);
+  });
+
+  it("rejects a token budget before execution when the ACP runtime cannot account for tokens", async () => {
+    const store = new MemoryStore();
+    let executorCalls = 0;
+
+    await expect(
+      runWorkflow(budgetedUnskilledWorkflow("maxModelTokens: 100"), {
+        ...options(
+          store,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "unsupported-acp-token-budget",
+        capabilitySnapshot: acpAgentCapabilitySnapshot("a", {
+          modelTokens: "unavailable",
+          costUsd: "complete",
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_model_token_accounting" });
+    expect(executorCalls).toBe(0);
+    expect(store.events).toEqual([]);
+  });
+
+  it("rejects a cost budget before execution when the ACP runtime cannot account for cost", async () => {
+    const store = new MemoryStore();
+    let executorCalls = 0;
+
+    await expect(
+      runWorkflow(budgetedUnskilledWorkflow("maxCostUsd: 1"), {
+        ...options(
+          store,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "unsupported-acp-cost-budget",
+        capabilitySnapshot: acpAgentCapabilitySnapshot(),
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_model_cost_accounting" });
+    expect(executorCalls).toBe(0);
+    expect(store.events).toEqual([]);
+  });
+
+  it("admits budgets whose dimensions the ACP runtime accounts for completely", async () => {
+    const store = new MemoryStore();
+    let executorCalls = 0;
+
+    const state = await runWorkflow(
+      budgetedUnskilledWorkflow("maxModelTokens: 100\n  maxCostUsd: 1"),
+      {
+        ...options(
+          store,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "supported-acp-budgets",
+        capabilitySnapshot: acpAgentCapabilitySnapshot("a", {
+          modelTokens: "complete",
+          costUsd: "complete",
+        }),
+      },
+    );
+
+    expect(executorCalls).toBe(1);
+    expect(state.status).toBe("succeeded");
+  });
+
+  it("rejects changed ACP identity during recovery before executor invocation", async () => {
+    const interrupted = new MemoryStore("node_started");
+    const original = acpAgentCapabilitySnapshot("a");
+    await expect(
+      runWorkflow(unskilledWorkflow(), {
+        ...options(
+          interrupted,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "acp-recovery-mismatch",
+        capabilitySnapshot: original,
+      }),
+    ).rejects.toThrow("injected persistence failure");
+    const recovered = new MemoryStore(undefined, interrupted.events);
+    let executorCalls = 0;
+
+    await expect(
+      resumeWorkflow(unskilledWorkflow(), {
+        ...options(
+          recovered,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "acp-recovery-mismatch",
+        capabilitySnapshot: acpAgentCapabilitySnapshot("b"),
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(executorCalls).toBe(0);
   });
 
   it("renders the exact frozen goal workspace for agent execution", async () => {
@@ -735,6 +867,10 @@ function skilledWorkflow() {
 
 function unskilledWorkflow() {
   return compileWorkflowText(workflowSource(""));
+}
+
+function budgetedUnskilledWorkflow(budget: string) {
+  return compileWorkflowText(workflowSource("").replace("nodes:", `budget:\n  ${budget}\nnodes:`));
 }
 
 function toolPackageWorkflow() {
