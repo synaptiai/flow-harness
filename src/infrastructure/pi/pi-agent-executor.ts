@@ -27,6 +27,7 @@ import {
   type AgentSkillCatalogEntry,
   createAgentSkillSession,
 } from "../../domain/capability/agent-skill-session.js";
+import { builtInAgentToolPolicyAction } from "../../domain/capability/agent-tool-policy.js";
 import {
   type AgentCapabilityEvidence,
   type AgentSkillReadReceipt,
@@ -1831,32 +1832,11 @@ function policyActionsForTools(
   tools: readonly AgentToolName[],
   hasToolPackages = false,
 ): readonly PolicyAction[] {
-  const actions = tools.map((tool) => {
-    switch (tool) {
-      case "read":
-        return "filesystem.read";
-      case "ls":
-        return "filesystem.list";
-      case "edit":
-        return "filesystem.write";
-      case "exec":
-        return "process.execute";
-      case "semantic":
-        return "filesystem.read";
-      case "artifact":
-        return "artifact.read";
-      default:
-        return assertNever(tool);
-    }
-  });
+  const actions: PolicyAction[] = tools.map(builtInAgentToolPolicyAction);
   if (hasToolPackages) {
     actions.push("process.execute");
   }
   return Object.freeze([...new Set(actions)]);
-}
-
-function assertNever(value: never): never {
-  throw new TypeError(`Unsupported agent tool: ${String(value)}`);
 }
 
 function emptyAgentEvidence(

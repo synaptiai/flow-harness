@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 
 import { renderPublicCapabilityReference } from "../application/public-capability-reference.js";
 import {
+  type PublicCapabilityCatalog,
+  PublicCapabilityCatalogValidationError,
+} from "../domain/capability/public-capability-reference.js";
+import {
+  PublicCapabilityReferenceDriftError,
+  PublicCapabilityReferenceFileSafetyError,
   verifyPublicCapabilityReferenceFiles,
   writePublicCapabilityReferenceFiles,
 } from "../infrastructure/fs/public-capability-reference-files.js";
@@ -14,6 +20,7 @@ export interface PublicCapabilityReferenceCliOptions {
   readonly cwd?: string;
   readonly stdout?: (value: string) => void;
   readonly stderr?: (value: string) => void;
+  readonly createCatalog?: () => PublicCapabilityCatalog;
 }
 
 export async function runPublicCapabilityReferenceCli(
@@ -27,8 +34,10 @@ export async function runPublicCapabilityReferenceCli(
     return 2;
   }
 
-  const rendered = renderPublicCapabilityReference(createProductionPublicCapabilityCatalog());
   try {
+    const rendered = renderPublicCapabilityReference(
+      (options.createCatalog ?? createProductionPublicCapabilityCatalog)(),
+    );
     if (args[0] === "--write") {
       await writePublicCapabilityReferenceFiles(options.cwd ?? process.cwd(), rendered);
       stdout("Generated the public capability reference.\n");
@@ -38,13 +47,32 @@ export async function runPublicCapabilityReferenceCli(
     }
     return 0;
   } catch (error) {
-    stderr(`${errorMessage(error)}\n`);
+    stderr(`${publicErrorMessage(error)}\n`);
     return 1;
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function publicErrorMessage(error: unknown): string {
+  if (error instanceof PublicCapabilityCatalogValidationError) {
+    return `${error.code} at ${error.location}`;
+  }
+  if (
+    error instanceof PublicCapabilityReferenceDriftError ||
+    error instanceof PublicCapabilityReferenceFileSafetyError
+  ) {
+    return error.message;
+  }
+  if (error instanceof TypeError) {
+    return "public capability reference is invalid";
+  }
+  if (isNodeError(error)) {
+    return "public capability reference file operation failed";
+  }
+  return "public capability reference generation failed";
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function isDirectEntry(entryPath: string | undefined): boolean {

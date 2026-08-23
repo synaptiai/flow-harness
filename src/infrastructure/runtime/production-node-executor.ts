@@ -2,7 +2,10 @@ import type { CommandSandbox } from "../../application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../application/node-executor-router.js";
 import type { NodeExecutor } from "../../application/ports.js";
 import type { FlowSandboxProfile } from "../../domain/config/resolver.js";
-import type { PublicExecutionSeamInput } from "../../domain/capability/public-capability-reference.js";
+import type {
+  PublicAvailabilityRequirement,
+  PublicExecutionSeamInput,
+} from "../../domain/capability/public-capability-reference.js";
 import { createLocalSemanticToolSessionFactory } from "../lsp/local-semantic-code-service.js";
 import { PiAgentExecutor } from "../pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../process/command-node-executor.js";
@@ -13,6 +16,15 @@ import {
 } from "../sandbox/anthropic-sandbox-runtime-manager.js";
 import { SrtCommandSandbox } from "../sandbox/srt-command-sandbox.js";
 import { createProductionContainerCommandSandbox } from "./production-container-command-sandbox.js";
+
+export const PRODUCTION_COMMAND_EXECUTOR_DESCRIPTOR = Object.freeze({
+  availability: Object.freeze([
+    "production-sandbox",
+  ] as const satisfies readonly PublicAvailabilityRequirement[]),
+  create(sandbox: CommandSandbox): CommandNodeExecutor {
+    return new CommandNodeExecutor({ sandbox });
+  },
+});
 
 export const PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR = Object.freeze({
   reference: Object.freeze({
@@ -53,9 +65,7 @@ export function createProductionNodeExecutor(
 ): NodeExecutor {
   const sandbox = createProductionCommandSandbox(profile, projectRoot);
   return new NodeExecutorRouter(
-    new CommandNodeExecutor({
-      sandbox,
-    }),
+    PRODUCTION_COMMAND_EXECUTOR_DESCRIPTOR.create(sandbox),
     PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR.create(sandbox),
   );
 }

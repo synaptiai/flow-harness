@@ -169,6 +169,40 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
   verification evidence includes both generated artifacts.
 - **Does not promise**: a stable API guarantee before 1.0.
 
+## Adversarial review disposition
+
+Three independent review facets challenged the implementation for security, composition drift, and
+holdout contract gaps. The final implementation closes the confirmed findings:
+
+- It distinguishes schema character ceilings from UTF-8 runtime byte ceilings. It publishes shared
+  policy, command, effect, skill-resource, semantic-result, command-output, and artifact limits from
+  their production constants.
+
+- It bounds complete directory-list output and both generated artifacts. Verification opens only
+  regular files through a no-follow, nonblocking path and rejects symlinked directory ancestors,
+  special files, and oversized inputs.
+
+- It validates public descriptors against closed values and Draft 2020-12 JSON Schema. It does not
+  compile external schema identifiers into persistent validator state. Canonical JSON preserves
+  every own property, including `__proto__`.
+
+- It deep-freezes tool schemas and freezes every exported family and evaluation-adapter entry. The
+  runtime derives built-in policy actions from the descriptors and verifies declared prerequisites.
+
+- One selector-to-policy-action registry now drives descriptors, broker allowlists, and policy
+  package admission. Production catalog composition adds the sandbox prerequisite from the same
+  descriptor that constructs the sandbox-backed command executor.
+
+- It enforces the distinct skill-resource ceiling before decoding or recording the 129th resource.
+  Generator failures return bounded, fixed public messages without rejected values, host paths, or
+  operating-system error codes. Controlled catalog failures include a safe section and array index.
+
+- Direct mutations cover numeric limit defaults and JSON Schema defaults. Both Markdown and JSON
+  projections must change, and exact-byte verification must identify both stale artifacts.
+
+Focused tests reproduce each finding before the fix and now pass. The full repository gates remain
+the release authority.
+
 ## Stranger test
 
 A contributor unfamiliar with the implementation can identify the public and environment-neutral

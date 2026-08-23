@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runPublicCapabilityReferenceCli } from "../../../src/cli/public-capability-reference.js";
+import { PublicCapabilityCatalogValidationError } from "../../../src/domain/capability/public-capability-reference.js";
 import { PUBLIC_CAPABILITY_REFERENCE_PATHS } from "../../../src/infrastructure/fs/public-capability-reference-files.js";
 
 const temporaryDirectories: string[] = [];
@@ -53,6 +54,53 @@ describe("public capability reference CLI", () => {
       ),
     ).toBe(2);
     expect(errors).toEqual(["Usage: public-capability-reference (--check | --write)\n"]);
+  });
+
+  it("contains filesystem failures without exposing the host path", async () => {
+    const root = await temporaryRoot();
+    const missingRoot = join(root, "private-host-path");
+    const errors: string[] = [];
+
+    expect(
+      await runPublicCapabilityReferenceCli(["--check"], options(missingRoot, [], errors)),
+    ).toBe(1);
+    expect(errors.join("")).toMatch(/file operation failed/u);
+    expect(errors.join("")).not.toContain(missingRoot);
+  });
+
+  it("contains catalog failures without echoing rejected descriptor values", async () => {
+    const secret = "descriptor-secret-value";
+    const errors: string[] = [];
+
+    expect(
+      await runPublicCapabilityReferenceCli(["--check"], {
+        ...options(await temporaryRoot(), [], errors),
+        createCatalog: () => {
+          throw new TypeError(`unsupported value ${secret}`);
+        },
+      }),
+    ).toBe(1);
+    expect(errors).toEqual(["public capability reference is invalid\n"]);
+    expect(errors.join("")).not.toContain(secret);
+  });
+
+  it("identifies the safe catalog location for a controlled validation failure", async () => {
+    const secret = "descriptor-secret-value";
+    const errors: string[] = [];
+
+    expect(
+      await runPublicCapabilityReferenceCli(["--check"], {
+        ...options(await temporaryRoot(), [], errors),
+        createCatalog: () => {
+          throw new PublicCapabilityCatalogValidationError(
+            "tools[2]",
+            new TypeError(`unsupported value ${secret}`),
+          );
+        },
+      }),
+    ).toBe(1);
+    expect(errors).toEqual(["invalid_public_capability_catalog at tools[2]\n"]);
+    expect(errors.join("")).not.toContain(secret);
   });
 });
 

@@ -43,6 +43,8 @@ describe("production public capability reference", () => {
     ["tool", changeFirstTool],
     ["schema", changeFirstSchema],
     ["limit", changeFirstLimit],
+    ["limit default", changeFirstLimitDefault],
+    ["schema default", changeExecArgumentDefault],
     ["capability family", changeFirstFamily],
     ["provider seam", changeFirstSeam],
     ["evaluation adapter", changeFirstAdapter],
@@ -93,6 +95,43 @@ function changeFirstLimit(catalog: PublicCapabilityCatalogInput): PublicCapabili
     limits: catalog.limits.map((limit, index) =>
       index === 0 ? { ...limit, value: limit.value + 1 } : limit,
     ),
+  };
+}
+
+function changeFirstLimitDefault(
+  catalog: PublicCapabilityCatalogInput,
+): PublicCapabilityCatalogInput {
+  return {
+    ...catalog,
+    limits: catalog.limits.map((limit) =>
+      limit.id === "ls-entries" ? { ...limit, default: 501 } : limit,
+    ),
+  };
+}
+
+function changeExecArgumentDefault(
+  catalog: PublicCapabilityCatalogInput,
+): PublicCapabilityCatalogInput {
+  return {
+    ...catalog,
+    tools: catalog.tools.map((tool) => {
+      if (tool.selector !== "exec") {
+        return tool;
+      }
+      const schema = tool.inputSchema as {
+        readonly properties: Record<string, Record<string, unknown>>;
+      };
+      return {
+        ...tool,
+        inputSchema: {
+          ...schema,
+          properties: {
+            ...schema.properties,
+            args: { ...schema.properties.args, default: ["--changed"] },
+          },
+        },
+      };
+    }),
   };
 }
 

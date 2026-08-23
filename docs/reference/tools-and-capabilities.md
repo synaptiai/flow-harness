@@ -33,7 +33,7 @@ Read one bounded binary window from a retained command artifact owned by this ru
 - Workflow selector: `artifact`
 - Execution mode: `sequential`
 - Policy actions: `artifact.read`
-- Public limits: `artifact-maximum-bytes`, `artifact-read-window-bytes`
+- Public limits: `artifact-maximum-bytes`, `artifact-read-window-bytes`, `policy-decisions-per-attempt`, `policy-target-bytes`
 
 Input schema:
 
@@ -73,7 +73,7 @@ Atomically edit one existing UTF-8 workspace file using its flow_read SHA-256 ve
 - Workflow selector: `edit`
 - Execution mode: `sequential`
 - Policy actions: `filesystem.write`
-- Public limits: `edit-file-bytes`, `edit-input-characters`, `edit-replacements`, `tool-path-characters`
+- Public limits: `agent-effects-per-attempt`, `edit-file-bytes`, `edit-input-characters`, `edit-input-total-bytes`, `edit-replacements`, `policy-decisions-per-attempt`, `policy-target-bytes`, `tool-path-bytes`, `tool-path-characters`
 
 Input schema:
 
@@ -135,7 +135,7 @@ Execute one bounded executable and literal argument vector in Flow's production 
 - Workflow selector: `exec`
 - Execution mode: `sequential`
 - Policy actions: `process.execute`
-- Public limits: `exec-argument-bytes`, `exec-arguments`, `exec-arguments-total-bytes`, `exec-executable-bytes`, `exec-timeout-milliseconds`
+- Public limits: `agent-commands-per-attempt`, `exec-argument-bytes`, `exec-arguments`, `exec-arguments-total-bytes`, `exec-artifact-bytes-per-stream`, `exec-executable-bytes`, `exec-output-bytes-per-stream`, `exec-timeout-milliseconds`, `policy-decisions-per-attempt`, `policy-target-bytes`
 
 Input schema:
 
@@ -144,7 +144,8 @@ Input schema:
   "additionalProperties": false,
   "properties": {
     "args": {
-      "description": "Literal argument vector passed without shell expansion.",
+      "default": [],
+      "description": "Literal argument vector passed without shell expansion (default: empty).",
       "items": {
         "maxLength": 8192,
         "type": "string"
@@ -179,7 +180,7 @@ List workspace directory contents alphabetically, including dotfiles and '/' suf
 - Workflow selector: `ls`
 - Execution mode: `default`
 - Policy actions: `filesystem.list`
-- Public limits: `ls-entries`, `ls-output-bytes`, `tool-path-characters`
+- Public limits: `ls-entries`, `ls-output-bytes`, `policy-decisions-per-attempt`, `policy-target-bytes`, `tool-path-characters`
 
 Input schema:
 
@@ -211,7 +212,7 @@ Read a UTF-8 text file inside the Flow execution workspace or an explicitly sele
 - Workflow selector: `read`
 - Execution mode: `default`
 - Policy actions: `filesystem.read`
-- Public limits: `read-output-bytes`, `read-output-lines`
+- Public limits: `policy-decisions-per-attempt`, `policy-target-bytes`, `read-distinct-skill-resources-per-attempt`, `read-output-bytes`, `read-output-lines`, `read-skill-resource-bytes`
 
 Input schema:
 
@@ -245,7 +246,7 @@ Query one operator-selected language server for bounded diagnostics, definitions
 - Workflow selector: `semantic`
 - Execution mode: `sequential`
 - Policy actions: `filesystem.read`
-- Public limits: `semantic-code-bytes`, `semantic-hover-bytes`, `semantic-message-bytes`, `semantic-path-characters`, `semantic-position`, `semantic-queries-per-attempt`, `semantic-result-items`
+- Public limits: `policy-decisions-per-attempt`, `policy-target-bytes`, `semantic-code-bytes`, `semantic-hover-bytes`, `semantic-message-bytes`, `semantic-path-bytes`, `semantic-path-characters`, `semantic-position`, `semantic-queries-per-attempt`, `semantic-result-bytes`, `semantic-result-items`
 
 Input schema:
 
@@ -307,28 +308,40 @@ Schema `default` annotations alone don't insert a value.
 
 | Identifier | Limit | Default | Scope |
 | --- | ---: | ---: | --- |
+| `agent-commands-per-attempt` | 32 items | — | Maximum flow_exec and command-tool-package executions started in one agent attempt. |
+| `agent-effects-per-attempt` | 32 items | — | Maximum flow_edit effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |
 | `edit-file-bytes` | 8388608 bytes | — | Maximum UTF-8 bytes in one edited file. |
-| `edit-input-characters` | 262144 items | — | Maximum JavaScript characters in one old or replacement text value. |
+| `edit-input-characters` | 262144 characters | — | Maximum Unicode code points in one old or replacement text schema value. |
+| `edit-input-total-bytes` | 262144 bytes | — | Maximum combined UTF-8 bytes across every old and replacement text value. |
 | `edit-replacements` | 32 items | — | Maximum exact replacements in one edit call. |
 | `exec-argument-bytes` | 8192 bytes | — | Maximum UTF-8 bytes in one command argument. |
 | `exec-arguments` | 64 items | — | Maximum arguments in one command call. |
 | `exec-arguments-total-bytes` | 32768 bytes | — | Maximum combined UTF-8 bytes in one command argument vector. |
+| `exec-artifact-bytes-per-stream` | 1048576 bytes | — | Maximum retained command artifact bytes for each output stream. |
 | `exec-executable-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one executable value. |
+| `exec-output-bytes-per-stream` | 32768 bytes | — | Maximum UTF-8 bytes returned inline for each command output stream. |
 | `exec-timeout-milliseconds` | 600000 milliseconds | 120000 milliseconds | Maximum command deadline. |
 | `ls-entries` | 5000 entries | 500 entries | Maximum requested directory entries. |
 | `ls-output-bytes` | 51200 bytes | — | Maximum UTF-8 bytes returned by one directory listing. |
+| `policy-decisions-per-attempt` | 64 items | — | Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none. |
+| `policy-target-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one policy authorization target. |
+| `read-distinct-skill-resources-per-attempt` | 128 items | — | Maximum distinct skill:// resource receipts retained in one agent attempt. |
 | `read-output-bytes` | 51200 bytes | 51200 bytes | Maximum text bytes returned by one underlying Pi read window. |
 | `read-output-lines` | 2000 lines | 2000 lines | Maximum lines returned by one underlying Pi read window. |
+| `read-skill-resource-bytes` | 131072 bytes | — | Maximum UTF-8 bytes returned for one admitted skill:// resource. |
 | `semantic-code-bytes` | 256 bytes | — | Maximum UTF-8 bytes in one semantic code value. |
 | `semantic-hover-bytes` | 16384 bytes | — | Maximum UTF-8 bytes in one hover value. |
 | `semantic-message-bytes` | 4096 bytes | — | Maximum UTF-8 bytes in one semantic diagnostic message. |
-| `semantic-path-characters` | 1024 items | — | Maximum characters in one semantic query path. |
+| `semantic-path-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one normalized semantic query path. |
+| `semantic-path-characters` | 1024 characters | — | Maximum Unicode code points in one semantic query path schema value. |
 | `semantic-position` | 10000000 position | — | Maximum zero-based line or character position. |
 | `semantic-queries-per-attempt` | 16 items | — | Maximum semantic query receipts retained for one agent attempt. |
+| `semantic-result-bytes` | 1048576 bytes | — | Maximum serialized bytes retained for one semantic query result. |
 | `semantic-result-items` | 512 items | — | Maximum diagnostics or locations returned by one semantic query. |
-| `tool-path-characters` | 1024 items | — | Maximum JavaScript characters in one tool path value. |
+| `tool-path-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one validated edit path. |
+| `tool-path-characters` | 1024 characters | — | Maximum Unicode code points in one list or edit path schema value. |
 
 ## Capability-package families
 

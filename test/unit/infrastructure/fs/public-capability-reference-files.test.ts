@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RenderedPublicCapabilityReference } from "../../../../src/application/public-capability-reference.js";
 import {
+  MAX_PUBLIC_CAPABILITY_REFERENCE_ARTIFACT_BYTES,
   PUBLIC_CAPABILITY_REFERENCE_PATHS,
   PublicCapabilityReferenceDriftError,
   verifyPublicCapabilityReferenceFiles,
@@ -82,6 +83,67 @@ describe("public capability reference files", () => {
     ).rejects.toThrow(/injected second replacement failure/u);
 
     expect(await readArtifacts(root)).toEqual(before);
+  });
+
+  it("rejects a symlinked documentation ancestor before writing outside the root", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    await symlink(outside, join(root, "docs"), "dir");
+
+    await expect(writePublicCapabilityReferenceFiles(root, reference("changed"))).rejects.toThrow(
+      /symbolic link/u,
+    );
+    await expect(
+      readFile(join(outside, "specs/flow-public-capability-catalog-v1.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects symbolic-link artifact targets without changing their referents", async () => {
+    const root = await temporaryRoot();
+    const outside = await temporaryRoot();
+    await writePublicCapabilityReferenceFiles(root, reference("committed"));
+    const outsideFile = join(outside, "outside.json");
+    await writeFile(outsideFile, "outside\n", "utf8");
+    const jsonTarget = join(root, PUBLIC_CAPABILITY_REFERENCE_PATHS.json);
+    await rm(jsonTarget);
+    await symlink(outsideFile, jsonTarget);
+
+    await expect(
+      verifyPublicCapabilityReferenceFiles(root, reference("committed")),
+    ).rejects.toThrow(/symbolic link/u);
+    await expect(writePublicCapabilityReferenceFiles(root, reference("changed"))).rejects.toThrow(
+      /symbolic link/u,
+    );
+    expect(await readFile(outsideFile, "utf8")).toBe("outside\n");
+  });
+
+  it("rejects oversized existing artifacts before reading them into memory", async () => {
+    const root = await temporaryRoot();
+    await writePublicCapabilityReferenceFiles(root, reference("committed"));
+    await writeFile(
+      join(root, PUBLIC_CAPABILITY_REFERENCE_PATHS.json),
+      Buffer.alloc(4 * 1024 * 1024 + 1),
+    );
+
+    await expect(writePublicCapabilityReferenceFiles(root, reference("changed"))).rejects.toThrow(
+      /safe size limit/u,
+    );
+  });
+
+  it("rejects oversized rendered artifacts before any filesystem operation", async () => {
+    const root = await temporaryRoot();
+    const json = `${JSON.stringify({
+      version: "flow.public-capabilities/v1",
+      padding: "x".repeat(MAX_PUBLIC_CAPABILITY_REFERENCE_ARTIFACT_BYTES),
+    })}\n`;
+
+    await expect(
+      writePublicCapabilityReferenceFiles(root, { json, markdown: reference("ok").markdown }),
+    ).rejects.toThrow(/artifact byte limit/u);
+    await expect(
+      verifyPublicCapabilityReferenceFiles(root, { json, markdown: reference("ok").markdown }),
+    ).rejects.toThrow(/artifact byte limit/u);
+    await expect(readFile(join(root, "docs"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

@@ -21,33 +21,39 @@ export const MAX_EVALUATION_PLAN_BYTES = 1_048_576;
 export const MAX_EVALUATION_INSTRUCTION_BYTES = 256 * 1_024;
 
 export const EVALUATION_ADAPTER_REFERENCES = Object.freeze([
-  {
+  evaluationAdapterReference({
     id: "flow-workflow-v1",
     title: "Flow workflow",
     summary: "Execute an admitted workflow through the ordinary Flow runtime.",
     isolation: "flow-runtime",
-  },
-  {
+  }),
+  evaluationAdapterReference({
     id: "omp-native-v1",
     title: "Native OMP",
     summary: "Execute the pinned native OMP harness through a local process adapter.",
     isolation: "local-process",
-  },
-  {
+  }),
+  evaluationAdapterReference({
     id: "pi-native-v1",
     title: "Native Pi",
     summary: "Execute the pinned native Pi harness through a local process adapter.",
     isolation: "local-process",
-  },
-  {
+  }),
+  evaluationAdapterReference({
     id: "prime-agent-native-v1",
     title: "Prime Agent",
     summary: "Execute the admitted Prime Agent harness through its OCI runtime contract.",
     isolation: "oci-container",
-  },
+  }),
 ] as const satisfies readonly PublicEvaluationAdapterInput[]);
 
 export type EvaluationAdapterId = (typeof EVALUATION_ADAPTER_REFERENCES)[number]["id"];
+
+function evaluationAdapterReference<const TReference extends PublicEvaluationAdapterInput>(
+  reference: TReference,
+): TReference {
+  return Object.freeze(reference);
+}
 
 const identifierSchema = z
   .string()

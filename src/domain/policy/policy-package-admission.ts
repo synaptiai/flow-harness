@@ -1,10 +1,11 @@
 import type { CapabilitySnapshot } from "../capability/agent-skills.js";
+import { builtInAgentToolPolicyAction } from "../capability/agent-tool-policy.js";
 import type {
   PolicyPackageDefinition,
   PolicyPackageSnapshot,
 } from "../capability/policy-packages.js";
 import type { ToolPackageSnapshot } from "../capability/tool-packages.js";
-import type { AgentToolName, CompiledRunBudget, CompiledWorkflow } from "../workflow/types.js";
+import type { CompiledRunBudget, CompiledWorkflow } from "../workflow/types.js";
 import { composePolicyPackages } from "./policy-package-composition.js";
 import type { PolicyAction } from "./types.js";
 
@@ -59,7 +60,7 @@ function assertWorkflow(
         `${path}.agent.model`,
       );
       const tools: string[] = [...node.agent.tools];
-      const permissions: PolicyAction[] = node.agent.tools.map(builtInToolPermission);
+      const permissions: PolicyAction[] = node.agent.tools.map(builtInAgentToolPolicyAction);
       for (const reference of node.agent.toolPackages) {
         const selected = toolPackages.get(`${reference.name}\0${reference.version}`);
         if (selected === undefined) {
@@ -190,23 +191,6 @@ const budgetFields = Object.freeze([
   "maxExecutionMs",
   "maxArtifactBytes",
 ] as const satisfies readonly (keyof CompiledRunBudget)[]);
-
-function builtInToolPermission(tool: AgentToolName): PolicyAction {
-  switch (tool) {
-    case "read":
-      return "filesystem.read";
-    case "ls":
-      return "filesystem.list";
-    case "edit":
-      return "filesystem.write";
-    case "exec":
-      return "process.execute";
-    case "semantic":
-      return "filesystem.read";
-    case "artifact":
-      return "artifact.read";
-  }
-}
 
 function violation(fieldPath: string, message: string): PolicyPackageAdmissionError {
   return new PolicyPackageAdmissionError("policy_violation", fieldPath, message);

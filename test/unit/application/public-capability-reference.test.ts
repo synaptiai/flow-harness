@@ -36,6 +36,21 @@ describe("public capability reference rendering", () => {
     expect(rendered.markdown.endsWith("\n")).toBe(true);
     expect(rendered.markdown.endsWith("\n\n")).toBe(false);
   });
+
+  it("renders schema and public-limit defaults in both artifacts", () => {
+    const rendered = renderPublicCapabilityReference(fixture());
+    const parsed = JSON.parse(rendered.json) as {
+      readonly tools: readonly { readonly inputSchema: unknown }[];
+      readonly limits: readonly { readonly default?: number }[];
+    };
+
+    expect(parsed.tools[0]?.inputSchema).toMatchObject({
+      properties: { path: { default: "." } },
+    });
+    expect(parsed.limits[0]?.default).toBe(32_768);
+    expect(rendered.markdown).toContain('"default": "."');
+    expect(rendered.markdown).toContain("| `read-output-bytes` | 65536 bytes | 32768 bytes |");
+  });
 });
 
 function fixture() {
@@ -50,7 +65,7 @@ function fixture() {
         description: "Read one admitted workspace file.",
         inputSchema: {
           type: "object",
-          properties: { path: { type: "string" } },
+          properties: { path: { type: "string", default: "." } },
           required: ["path"],
         },
         executionMode: "default",
@@ -64,6 +79,7 @@ function fixture() {
       {
         id: "read-output-bytes",
         value: 65_536,
+        default: 32_768,
         unit: "bytes",
         scope: "Maximum bytes returned by one read call.",
       },

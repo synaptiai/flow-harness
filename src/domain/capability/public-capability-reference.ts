@@ -1,3 +1,6 @@
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { classifyPolicyAction } from "../policy/broker.js";
+
 export const PUBLIC_CAPABILITY_CATALOG_VERSION = "flow.public-capabilities/v1" as const;
 export const PUBLIC_CAPABILITY_JSON_SCHEMA_DIALECT =
   "https://json-schema.org/draft/2020-12/schema" as const;
@@ -17,7 +20,60 @@ export type PublicPolicyAction =
   | "filesystem.read"
   | "filesystem.write"
   | "process.execute";
-export type PublicLimitUnit = "bytes" | "entries" | "items" | "lines" | "milliseconds" | "position";
+export type PublicAvailabilityRequirement =
+  | "artifact-store"
+  | "command-recorder"
+  | "effect-recorder"
+  | "language-server"
+  | "production-sandbox";
+export type PublicLimitUnit =
+  | "bytes"
+  | "characters"
+  | "entries"
+  | "items"
+  | "lines"
+  | "milliseconds"
+  | "position";
+
+export class PublicCapabilityCatalogValidationError extends TypeError {
+  override readonly name = "PublicCapabilityCatalogValidationError";
+  readonly code = "invalid_public_capability_catalog" as const;
+
+  constructor(
+    readonly location: string,
+    cause: Error,
+  ) {
+    super(cause.message, { cause });
+  }
+}
+
+const PUBLIC_AUTHORITY_CLASSES = ["execute", "read", "write"] as const;
+const PUBLIC_POLICY_ACTIONS = [
+  "artifact.read",
+  "filesystem.list",
+  "filesystem.read",
+  "filesystem.write",
+  "process.execute",
+] as const;
+const PUBLIC_EXECUTION_MODES = ["default", "parallel", "sequential"] as const;
+const PUBLIC_AVAILABILITY_REQUIREMENTS = [
+  "artifact-store",
+  "command-recorder",
+  "effect-recorder",
+  "language-server",
+  "production-sandbox",
+] as const;
+const PUBLIC_LIMIT_UNITS = [
+  "bytes",
+  "characters",
+  "entries",
+  "items",
+  "lines",
+  "milliseconds",
+  "position",
+] as const;
+const PUBLIC_EVALUATION_ISOLATIONS = ["flow-runtime", "local-process", "oci-container"] as const;
+const publicSchemaValidator = new Ajv2020({ allErrors: true, strict: true });
 
 export interface PublicCapabilityToolInput {
   readonly selector: string;
@@ -28,7 +84,7 @@ export interface PublicCapabilityToolInput {
   readonly executionMode: "default" | "parallel" | "sequential";
   readonly authority: readonly PublicAuthorityClass[];
   readonly policyActions: readonly PublicPolicyAction[];
-  readonly availability: readonly string[];
+  readonly availability: readonly PublicAvailabilityRequirement[];
   readonly limitIds: readonly string[];
 }
 
@@ -86,40 +142,64 @@ export function definePublicCapabilityCatalog(
   input: PublicCapabilityCatalogInput,
 ): PublicCapabilityCatalog {
   if (input.version !== PUBLIC_CAPABILITY_CATALOG_VERSION) {
-    throw new TypeError(`unsupported public capability catalog version "${input.version}"`);
+    throw validationError(
+      "version",
+      new TypeError(`unsupported public capability catalog version "${input.version}"`),
+    );
   }
   if (input.jsonSchemaDialect !== PUBLIC_CAPABILITY_JSON_SCHEMA_DIALECT) {
-    throw new TypeError(
-      `unsupported public capability JSON Schema dialect "${input.jsonSchemaDialect}"`,
+    throw validationError(
+      "jsonSchemaDialect",
+      new TypeError(
+        `unsupported public capability JSON Schema dialect "${input.jsonSchemaDialect}"`,
+      ),
     );
   }
 
-  const limits = normalizeByIdentifier(
-    input.limits.map((item) => normalizeLimit(item)),
-    "public limit identifier",
-    (item) => item.id,
+  const limits = validateAt("limits", () =>
+    normalizeByIdentifier(
+      input.limits.map((item, index) => validateAt(`limits[${index}]`, () => normalizeLimit(item))),
+      "public limit identifier",
+      (item) => item.id,
+    ),
   );
   const limitIds = new Set(limits.map((item) => item.id));
-  const tools = normalizeByIdentifier(
-    input.tools.map((item) => normalizeTool(item, limitIds)),
-    "public tool selector",
-    (item) => item.selector,
+  const tools = validateAt("tools", () =>
+    normalizeByIdentifier(
+      input.tools.map((item, index) =>
+        validateAt(`tools[${index}]`, () => normalizeTool(item, limitIds)),
+      ),
+      "public tool selector",
+      (item) => item.selector,
+    ),
   );
-  assertUnique(tools, "public tool name", (item) => item.name);
-  const capabilityFamilies = normalizeByIdentifier(
-    input.capabilityFamilies.map(normalizeCapabilityFamily),
-    "public capability family",
-    (item) => item.kind,
+  validateAt("tools", () => assertUnique(tools, "public tool name", (item) => item.name));
+  const capabilityFamilies = validateAt("capabilityFamilies", () =>
+    normalizeByIdentifier(
+      input.capabilityFamilies.map((item, index) =>
+        validateAt(`capabilityFamilies[${index}]`, () => normalizeCapabilityFamily(item)),
+      ),
+      "public capability family",
+      (item) => item.kind,
+    ),
   );
-  const executionSeams = normalizeByIdentifier(
-    input.executionSeams.map(normalizeExecutionSeam),
-    "public execution seam",
-    (item) => item.id,
+  const executionSeams = validateAt("executionSeams", () =>
+    normalizeByIdentifier(
+      input.executionSeams.map((item, index) =>
+        validateAt(`executionSeams[${index}]`, () => normalizeExecutionSeam(item)),
+      ),
+      "public execution seam",
+      (item) => item.id,
+    ),
   );
-  const evaluationAdapters = normalizeByIdentifier(
-    input.evaluationAdapters.map(normalizeEvaluationAdapter),
-    "public evaluation adapter",
-    (item) => item.id,
+  const evaluationAdapters = validateAt("evaluationAdapters", () =>
+    normalizeByIdentifier(
+      input.evaluationAdapters.map((item, index) =>
+        validateAt(`evaluationAdapters[${index}]`, () => normalizeEvaluationAdapter(item)),
+      ),
+      "public evaluation adapter",
+      (item) => item.id,
+    ),
   );
 
   return deepFreeze({
@@ -145,13 +225,44 @@ function normalizeTool(
   if (!isJsonObject(inputSchema)) {
     throw new TypeError(`public tool "${selector}" input schema must be a JSON object`);
   }
-  const authority = uniqueSorted(input.authority, `public tool "${selector}" authority`);
+  assertValidJsonSchema(inputSchema, selector);
+  const executionMode = requiredEnum(
+    input.executionMode,
+    PUBLIC_EXECUTION_MODES,
+    `public tool "${selector}" execution mode`,
+  );
+  const authority = uniqueSorted(
+    input.authority.map((item) =>
+      requiredEnum(item, PUBLIC_AUTHORITY_CLASSES, `public tool "${selector}" authority`),
+    ),
+    `public tool "${selector}" authority`,
+  );
   const policyActions = uniqueSorted(
-    input.policyActions,
+    input.policyActions.map((item) =>
+      requiredEnum(item, PUBLIC_POLICY_ACTIONS, `public tool "${selector}" policy action`),
+    ),
     `public tool "${selector}" policy action`,
   );
+  if (authority.length === 0 || policyActions.length === 0) {
+    throw new TypeError(`public tool "${selector}" must declare authority and a policy action`);
+  }
+  const policyAuthority = uniqueSorted(
+    policyActions.map((action) => classifyPolicyAction(action)),
+    `public tool "${selector}" policy authority`,
+  );
+  if (!sameStrings(authority, policyAuthority)) {
+    throw new TypeError(
+      `public tool "${selector}" authority must match its declared policy actions`,
+    );
+  }
   const availability = uniqueSorted(
-    input.availability.map((item) => requiredIdentifier(item, "availability requirement")),
+    input.availability.map((item) =>
+      requiredEnum(
+        item,
+        PUBLIC_AVAILABILITY_REQUIREMENTS,
+        `public tool "${selector}" availability requirement`,
+      ),
+    ),
     `public tool "${selector}" availability requirement`,
   );
   const referencedLimits = uniqueSorted(
@@ -169,7 +280,7 @@ function normalizeTool(
     label,
     description,
     inputSchema,
-    executionMode: input.executionMode,
+    executionMode,
     authority,
     policyActions,
     availability,
@@ -191,7 +302,7 @@ function normalizeLimit(input: PublicCapabilityLimitInput): PublicCapabilityLimi
   return {
     id,
     value,
-    unit: input.unit,
+    unit: requiredEnum(input.unit, PUBLIC_LIMIT_UNITS, `public limit "${id}" unit`),
     scope,
     ...(defaultValue === undefined ? {} : { default: defaultValue }),
   };
@@ -204,7 +315,11 @@ function normalizeCapabilityFamily(
     kind: requiredIdentifier(input.kind, "public capability family"),
     title: requiredText(input.title, "public capability family title"),
     summary: requiredText(input.summary, "public capability family summary"),
-    extension: input.extension,
+    extension: requiredEnum(
+      input.extension,
+      ["dynamic"] as const,
+      `public capability family "${input.kind}" extension`,
+    ),
   };
 }
 
@@ -213,7 +328,11 @@ function normalizeExecutionSeam(input: PublicExecutionSeamInput): PublicExecutio
     id: requiredIdentifier(input.id, "public execution seam"),
     title: requiredText(input.title, "public execution seam title"),
     summary: requiredText(input.summary, "public execution seam summary"),
-    openness: input.openness,
+    openness: requiredEnum(
+      input.openness,
+      ["open"] as const,
+      `public execution seam "${input.id}" openness`,
+    ),
     implementation: requiredIdentifier(input.implementation, "execution seam implementation"),
   };
 }
@@ -225,7 +344,11 @@ function normalizeEvaluationAdapter(
     id: requiredIdentifier(input.id, "public evaluation adapter"),
     title: requiredText(input.title, "public evaluation adapter title"),
     summary: requiredText(input.summary, "public evaluation adapter summary"),
-    isolation: input.isolation,
+    isolation: requiredEnum(
+      input.isolation,
+      PUBLIC_EVALUATION_ISOLATIONS,
+      `public evaluation adapter "${input.id}" isolation`,
+    ),
   };
 }
 
@@ -252,7 +375,12 @@ function canonicalJson(input: unknown, label: string): PublicJsonValue {
   const output: Record<string, PublicJsonValue> = {};
   for (const key of Object.keys(input).sort(compareStrings)) {
     const value = (input as Record<string, unknown>)[key];
-    output[key] = canonicalJson(value, `${label}.${key}`);
+    Object.defineProperty(output, key, {
+      value: canonicalJson(value, `${label}.${key}`),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return output;
 }
@@ -311,6 +439,27 @@ function finiteNonNegative(value: number, label: string): number {
   return value;
 }
 
+function requiredEnum<const TValue extends string>(
+  value: string,
+  allowed: readonly TValue[],
+  label: string,
+): TValue {
+  if (!allowed.includes(value as TValue)) {
+    throw new TypeError(`${label} contains unsupported value "${value}"`);
+  }
+  return value as TValue;
+}
+
+function assertValidJsonSchema(schema: object, selector: string): void {
+  if (!publicSchemaValidator.validateSchema(schema)) {
+    throw new TypeError(`public tool "${selector}" input must be valid Draft 2020-12 JSON Schema`);
+  }
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
 function isJsonObject(
   value: PublicJsonValue,
 ): value is { readonly [key: string]: PublicJsonValue } {
@@ -329,4 +478,22 @@ function deepFreeze<T>(value: T): T {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function validateAt<T>(location: string, operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof PublicCapabilityCatalogValidationError) {
+      throw error;
+    }
+    throw validationError(
+      location,
+      error instanceof Error ? error : new TypeError("public capability value is invalid"),
+    );
+  }
+}
+
+function validationError(location: string, cause: Error): PublicCapabilityCatalogValidationError {
+  return new PublicCapabilityCatalogValidationError(location, cause);
 }

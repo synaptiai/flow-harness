@@ -274,6 +274,55 @@ describe("workspace-confined Pi tools", () => {
     });
   });
 
+  it("bounds the complete directory listing including its truncation notice", async () => {
+    const root = await createTemporaryDirectory();
+    await Promise.all(
+      Array.from({ length: 201 }, (_, index) => {
+        const prefix = index.toString().padStart(3, "0");
+        return writeFile(join(root, `${prefix}${"x".repeat(252)}`), "", "utf8");
+      }),
+    );
+    const tools = await createWorkspaceAgentTools(root, ["ls"], policyBroker());
+    const lsTool = tools.definitions[0];
+    if (lsTool === undefined) {
+      throw new Error("ls tool was not registered");
+    }
+
+    const result = await lsTool.execute(
+      "ls-bounded-call",
+      { path: root },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const text = result.content.find((item) => item.type === "text")?.text;
+
+    expect(text).toBeDefined();
+    expect(Buffer.byteLength(text ?? "", "utf8")).toBeLessThanOrEqual(50 * 1024);
+    expect(text).toContain("50 KiB output limit reached");
+    expect(result.details).toMatchObject({ outputLimitReached: true });
+  });
+
+  it("sorts directory names with a locale-independent total order", async () => {
+    const root = await createTemporaryDirectory();
+    await Promise.all(["ä", "z", "á"].map((name) => writeFile(join(root, name), "", "utf8")));
+    const tools = await createWorkspaceAgentTools(root, ["ls"], policyBroker());
+    const lsTool = tools.definitions[0];
+    if (lsTool === undefined) {
+      throw new Error("ls tool was not registered");
+    }
+
+    const result = await lsTool.execute(
+      "ls-order-call",
+      { path: root },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(result.content).toContainEqual({ type: "text", text: "z\ná\nä" });
+  });
+
   it("versions the full exact file even when read output is paged", async () => {
     const root = await createTemporaryDirectory();
     const content = "first\nsecond\nthird\n";

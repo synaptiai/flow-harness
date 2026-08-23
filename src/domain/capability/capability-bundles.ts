@@ -35,46 +35,52 @@ export const MAX_CAPABILITY_BUNDLE_DECODED_BYTES = 2 * 1024 * 1024;
 export const MAX_CAPABILITY_BUNDLE_PACKAGES = 32;
 
 export const CAPABILITY_PACKAGE_FAMILY_REFERENCES = Object.freeze([
-  {
+  capabilityFamilyReference({
     kind: "agent-skill",
     title: "Agent Skills",
     summary: "Inert instructions and resources selected by exact package identity.",
     extension: "dynamic",
-  },
-  {
+  }),
+  capabilityFamilyReference({
     kind: "policy-package",
     title: "Policy packages",
     summary: "Inert policy narrowing that cannot grant authority beyond operator policy.",
     extension: "dynamic",
-  },
-  {
+  }),
+  capabilityFamilyReference({
     kind: "presentation-package",
     title: "Presentation packages",
     summary: "Inert A2UI-profile presentation metadata for supported Flow hosts.",
     extension: "dynamic",
-  },
-  {
+  }),
+  capabilityFamilyReference({
     kind: "tool-package",
     title: "Command tool packages",
     summary: "Declarative scalar inputs rendered through closed argv-only command profiles.",
     extension: "dynamic",
-  },
-  {
+  }),
+  capabilityFamilyReference({
     kind: "verifier-package",
     title: "Verifier packages",
     summary: "Inert command or model verification definitions admitted by exact identity.",
     extension: "dynamic",
-  },
-  {
+  }),
+  capabilityFamilyReference({
     kind: "workflow-package",
     title: "Workflow packages",
     summary: "Inert workflow sources compiled through the ordinary Flow workflow contract.",
     extension: "dynamic",
-  },
+  }),
 ] as const satisfies readonly PublicCapabilityFamilyInput[]);
 
 export type CapabilityPackageFamilyKind =
   (typeof CAPABILITY_PACKAGE_FAMILY_REFERENCES)[number]["kind"];
+
+function capabilityFamilyReference<const TReference extends PublicCapabilityFamilyInput>(
+  reference: TReference,
+): TReference {
+  return Object.freeze(reference);
+}
 
 const verifierEntrySchema = z
   .object({

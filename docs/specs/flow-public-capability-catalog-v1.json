@@ -45,7 +45,9 @@
       ],
       "limitIds": [
         "artifact-maximum-bytes",
-        "artifact-read-window-bytes"
+        "artifact-read-window-bytes",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes"
       ]
     },
     {
@@ -112,9 +114,14 @@
         "effect-recorder"
       ],
       "limitIds": [
+        "agent-effects-per-attempt",
         "edit-file-bytes",
         "edit-input-characters",
+        "edit-input-total-bytes",
         "edit-replacements",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
+        "tool-path-bytes",
         "tool-path-characters"
       ]
     },
@@ -127,7 +134,8 @@
         "additionalProperties": false,
         "properties": {
           "args": {
-            "description": "Literal argument vector passed without shell expansion.",
+            "default": [],
+            "description": "Literal argument vector passed without shell expansion (default: empty).",
             "items": {
               "maxLength": 8192,
               "type": "string"
@@ -165,11 +173,16 @@
         "production-sandbox"
       ],
       "limitIds": [
+        "agent-commands-per-attempt",
         "exec-argument-bytes",
         "exec-arguments",
         "exec-arguments-total-bytes",
+        "exec-artifact-bytes-per-stream",
         "exec-executable-bytes",
-        "exec-timeout-milliseconds"
+        "exec-output-bytes-per-stream",
+        "exec-timeout-milliseconds",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes"
       ]
     },
     {
@@ -206,6 +219,8 @@
       "limitIds": [
         "ls-entries",
         "ls-output-bytes",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
         "tool-path-characters"
       ]
     },
@@ -243,8 +258,12 @@
       ],
       "availability": [],
       "limitIds": [
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
+        "read-distinct-skill-resources-per-attempt",
         "read-output-bytes",
-        "read-output-lines"
+        "read-output-lines",
+        "read-skill-resource-bytes"
       ]
     },
     {
@@ -311,17 +330,33 @@
         "language-server"
       ],
       "limitIds": [
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
         "semantic-code-bytes",
         "semantic-hover-bytes",
         "semantic-message-bytes",
+        "semantic-path-bytes",
         "semantic-path-characters",
         "semantic-position",
         "semantic-queries-per-attempt",
+        "semantic-result-bytes",
         "semantic-result-items"
       ]
     }
   ],
   "limits": [
+    {
+      "id": "agent-commands-per-attempt",
+      "value": 32,
+      "unit": "items",
+      "scope": "Maximum flow_exec and command-tool-package executions started in one agent attempt."
+    },
+    {
+      "id": "agent-effects-per-attempt",
+      "value": 32,
+      "unit": "items",
+      "scope": "Maximum flow_edit effect reservations in one agent attempt."
+    },
     {
       "id": "artifact-maximum-bytes",
       "value": 16777216,
@@ -344,8 +379,14 @@
     {
       "id": "edit-input-characters",
       "value": 262144,
-      "unit": "items",
-      "scope": "Maximum JavaScript characters in one old or replacement text value."
+      "unit": "characters",
+      "scope": "Maximum Unicode code points in one old or replacement text schema value."
+    },
+    {
+      "id": "edit-input-total-bytes",
+      "value": 262144,
+      "unit": "bytes",
+      "scope": "Maximum combined UTF-8 bytes across every old and replacement text value."
     },
     {
       "id": "edit-replacements",
@@ -372,10 +413,22 @@
       "scope": "Maximum combined UTF-8 bytes in one command argument vector."
     },
     {
+      "id": "exec-artifact-bytes-per-stream",
+      "value": 1048576,
+      "unit": "bytes",
+      "scope": "Maximum retained command artifact bytes for each output stream."
+    },
+    {
       "id": "exec-executable-bytes",
       "value": 1024,
       "unit": "bytes",
       "scope": "Maximum UTF-8 bytes in one executable value."
+    },
+    {
+      "id": "exec-output-bytes-per-stream",
+      "value": 32768,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes returned inline for each command output stream."
     },
     {
       "id": "exec-timeout-milliseconds",
@@ -398,6 +451,24 @@
       "scope": "Maximum UTF-8 bytes returned by one directory listing."
     },
     {
+      "id": "policy-decisions-per-attempt",
+      "value": 64,
+      "unit": "items",
+      "scope": "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none."
+    },
+    {
+      "id": "policy-target-bytes",
+      "value": 1024,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one policy authorization target."
+    },
+    {
+      "id": "read-distinct-skill-resources-per-attempt",
+      "value": 128,
+      "unit": "items",
+      "scope": "Maximum distinct skill:// resource receipts retained in one agent attempt."
+    },
+    {
       "id": "read-output-bytes",
       "value": 51200,
       "unit": "bytes",
@@ -410,6 +481,12 @@
       "unit": "lines",
       "scope": "Maximum lines returned by one underlying Pi read window.",
       "default": 2000
+    },
+    {
+      "id": "read-skill-resource-bytes",
+      "value": 131072,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes returned for one admitted skill:// resource."
     },
     {
       "id": "semantic-code-bytes",
@@ -430,10 +507,16 @@
       "scope": "Maximum UTF-8 bytes in one semantic diagnostic message."
     },
     {
+      "id": "semantic-path-bytes",
+      "value": 1024,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one normalized semantic query path."
+    },
+    {
       "id": "semantic-path-characters",
       "value": 1024,
-      "unit": "items",
-      "scope": "Maximum characters in one semantic query path."
+      "unit": "characters",
+      "scope": "Maximum Unicode code points in one semantic query path schema value."
     },
     {
       "id": "semantic-position",
@@ -448,16 +531,28 @@
       "scope": "Maximum semantic query receipts retained for one agent attempt."
     },
     {
+      "id": "semantic-result-bytes",
+      "value": 1048576,
+      "unit": "bytes",
+      "scope": "Maximum serialized bytes retained for one semantic query result."
+    },
+    {
       "id": "semantic-result-items",
       "value": 512,
       "unit": "items",
       "scope": "Maximum diagnostics or locations returned by one semantic query."
     },
     {
+      "id": "tool-path-bytes",
+      "value": 1024,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one validated edit path."
+    },
+    {
       "id": "tool-path-characters",
       "value": 1024,
-      "unit": "items",
-      "scope": "Maximum JavaScript characters in one tool path value."
+      "unit": "characters",
+      "scope": "Maximum Unicode code points in one list or edit path schema value."
     }
   ],
   "capabilityFamilies": [
