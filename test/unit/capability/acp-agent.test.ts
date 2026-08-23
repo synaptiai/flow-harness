@@ -377,6 +377,25 @@ describe("ACP agent runtime capability", () => {
         },
       }),
     ).not.toThrow();
+    for (const packageIdentity of [
+      {
+        ...validNodePackageInput().launch.package,
+        bytes: MAX_ACP_AGENT_PACKAGE_BYTES + 1,
+        files: MAX_ACP_AGENT_PACKAGE_FILES,
+      },
+      {
+        ...validNodePackageInput().launch.package,
+        bytes: MAX_ACP_AGENT_PACKAGE_BYTES,
+        files: MAX_ACP_AGENT_PACKAGE_FILES + 1,
+      },
+    ]) {
+      expect(() =>
+        createAcpAgentRuntimeSnapshot({
+          ...validNodePackageInput(),
+          launch: { ...validNodePackageInput().launch, package: packageIdentity },
+        }),
+      ).toThrow(/^ACP agent runtime snapshot is invalid$/);
+    }
   });
 
   it("binds exact argument count, per-argument bytes, and aggregate bytes", () => {
