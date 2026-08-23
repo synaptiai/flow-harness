@@ -12,7 +12,11 @@ import {
   VERIFIER_SYSTEM_PROMPT,
   VerifierNodeExecutor,
 } from "../../../src/application/verifier-executor.js";
-import type { AgentEvidence, CommandEvidence } from "../../../src/domain/run/events.js";
+import {
+  calculateAcpAgentSessionBindingDigest,
+  type AgentEvidence,
+  type CommandEvidence,
+} from "../../../src/domain/run/events.js";
 import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../src/domain/run/work-profile.js";
 import type { CompiledVerifierNode } from "../../../src/domain/workflow/types.js";
 
@@ -257,6 +261,40 @@ describe("verifier node executor", () => {
         sideEffectStatus: "none",
       },
       evidence: { result: "parsed", verdict: "rejected" },
+    });
+  });
+
+  it("preserves ACP process and observed-usage provenance in model verifier evidence", async () => {
+    const raw = verdictJson("accepted", "ACP verified the declared evidence.");
+    const agent = fakeAgentExecutor({
+      status: "succeeded",
+      evidence: acpAgentEvidence(raw),
+    });
+    const executor = new VerifierNodeExecutor(fakeCommandExecutor(), agent);
+
+    const outcome = await executor.execute(modelVerifier(), contextWithSources());
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        driver: "model",
+        usageObservation: {
+          modelTokens: { status: "complete", totalTokens: 21 },
+          costUsd: { status: "unavailable" },
+        },
+        acp: {
+          executor: "local-acp-process-v1",
+          terminationStatus: "confirmed",
+          sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+            runId: "run-1",
+            workflowId: "workflow-1",
+            nodeId: "review",
+            attempt: 1,
+            agentDigest: "a".repeat(64),
+            sessionIdHash: "b".repeat(64),
+          }),
+        },
+      },
     });
   });
 
@@ -570,6 +608,52 @@ function agentEvidence(text: string): AgentEvidence {
     },
     policyDecisions: [],
     effectReceipts: [],
+  };
+}
+
+function acpAgentEvidence(text: string): AgentEvidence {
+  const agentDigest = "a".repeat(64);
+  const sessionIdHash = "b".repeat(64);
+  const { usage: _legacyUsage, ...base } = agentEvidence(text);
+  return {
+    ...base,
+    usageObservation: {
+      modelTokens: { status: "complete", totalTokens: 21 },
+      costUsd: { status: "unavailable" },
+    },
+    acp: {
+      version: 1,
+      executor: "local-acp-process-v1",
+      agentName: "fixture",
+      agentDigest,
+      protocol: "acp-v1",
+      compatibilityProfile: "prompt-only-v1",
+      containmentProfile: "acp-prompt-only-v1",
+      runtimeIdentity: "revalidated",
+      credentialLease: "srt-host-scoped-sentinel",
+      sessionIdHash,
+      sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+        runId: "run-1",
+        workflowId: "workflow-1",
+        nodeId: "review",
+        attempt: 1,
+        agentDigest,
+        sessionIdHash,
+      }),
+      processContainment: "process-group",
+      terminationStatus: "confirmed",
+      sandbox: {
+        backend: "anthropic-sandbox-runtime",
+        backendVersion: "0.0.70",
+        profile: "acp-prompt-only-v1",
+        policyDigest: "c".repeat(64),
+      },
+      usageProvenance: {
+        modelTokens: "prompt-response",
+        costUsd: "declared-unavailable",
+      },
+      updateCount: 1,
+    },
   };
 }
 

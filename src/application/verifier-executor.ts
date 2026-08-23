@@ -373,6 +373,10 @@ function modelEvidence(
     rawTruncated,
     durationMs,
     ...(agentEvidence?.usage === undefined ? {} : { usage: agentEvidence.usage }),
+    ...(agentEvidence?.usageObservation === undefined
+      ? {}
+      : { usageObservation: agentEvidence.usageObservation }),
+    ...(agentEvidence?.acp === undefined ? {} : { acp: agentEvidence.acp }),
     sources: Object.freeze(
       sources.map((source) =>
         Object.freeze({

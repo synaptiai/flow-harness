@@ -176,6 +176,16 @@ run.
 Read [Local ACP v1 bridge](../acp.md) for the session, transport, replay, and unsupported-method
 contracts.
 
+### Prompt-only ACP executor
+
+Select one admitted local ACP agent for an attached or detached run with
+`--acp-agent .flow/acp-agents/<manifest>.json`. This selection is separate from the ACP editor
+bridge. It replaces the embedded Pi route only for the selected run. Every agent node must declare
+no tools, skills, tool packages, or command approval.
+
+Read [Run a local ACP executor](../acp.md#run-a-local-acp-executor) before you prepare a manifest,
+credential, workflow, or recovery procedure.
+
 ## Approve or deny work
 
 Flow has three approval boundaries. The same `approve` and `deny` commands route by request type.

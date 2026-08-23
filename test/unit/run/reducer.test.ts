@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 import {
+  calculateAcpAgentSessionBindingDigest,
   calculateChildRunId,
   parseRunEvent,
   type RunEvent,
@@ -9,6 +10,7 @@ import {
   type RunStartedEvent,
   reduceRunEvents,
 } from "../../../src/domain/run/events.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 
 describe("reduceRunEvents", () => {
   it("reconstructs a successful run from authoritative events", () => {
@@ -102,6 +104,70 @@ describe("reduceRunEvents", () => {
           }
         : undefined,
     ).toEqual({ policyDecisions: [], effectReceipts: [] });
+  });
+
+  it("validates durable ACP session binding and confirmed success termination", () => {
+    const capabilitySnapshot = acpAgentCapabilitySnapshot();
+    const evidence = acpAgentEvidence("completed", capabilitySnapshot);
+    const events: RunEvent[] = [
+      { ...runStarted(), capabilitySnapshot },
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_succeeded",
+        nodeId: "node-version",
+        attempt: 1,
+        evidence,
+      },
+    ];
+
+    const state = reduceRunEvents(structuredClone(events));
+    expect(state.nodes["node-version"]?.evidence).toMatchObject({
+      kind: "agent",
+      acp: {
+        executor: "local-acp-process-v1",
+        terminationStatus: "confirmed",
+        sessionBindingDigest: evidence.acp.sessionBindingDigest,
+      },
+    });
+
+    const terminal = events[2];
+    if (
+      terminal?.type !== "node_succeeded" ||
+      terminal.evidence.kind !== "agent" ||
+      terminal.evidence.acp === undefined
+    ) {
+      throw new Error("missing ACP evidence fixture");
+    }
+    const agentTerminal = terminal;
+    const agentTerminalEvidence = terminal.evidence;
+    const durableAcpEvidence = terminal.evidence.acp;
+    expect(() =>
+      reduceRunEvents([
+        events[0] as RunEvent,
+        events[1] as RunEvent,
+        {
+          ...agentTerminal,
+          evidence: {
+            ...agentTerminalEvidence,
+            acp: { ...durableAcpEvidence, sessionBindingDigest: "f".repeat(64) },
+          },
+        },
+      ]),
+    ).toThrow(/session binding digest is invalid/i);
+    expect(() =>
+      reduceRunEvents([
+        events[0] as RunEvent,
+        events[1] as RunEvent,
+        {
+          ...agentTerminal,
+          evidence: {
+            ...agentTerminalEvidence,
+            acp: { ...durableAcpEvidence, terminationStatus: "unconfirmed" },
+          },
+        },
+      ]),
+    ).toThrow(/confirmed termination/i);
   });
 
   it("preserves a committed edit receipt bound to its allowed policy decision", () => {
@@ -852,6 +918,51 @@ function agentEvidence(text: string) {
     durationMs: 1,
     policyDecisions: [],
     effectReceipts: [],
+  };
+}
+
+function acpAgentEvidence(text: string, capabilitySnapshot = acpAgentCapabilitySnapshot()) {
+  const agentDigest = capabilitySnapshot.acpAgent?.digest ?? "";
+  const sessionIdHash = "b".repeat(64);
+  return {
+    ...agentEvidence(text),
+    usageObservation: {
+      modelTokens: { status: "unavailable" as const },
+      costUsd: { status: "unavailable" as const },
+    },
+    acp: {
+      version: 1 as const,
+      executor: "local-acp-process-v1" as const,
+      agentName: "opencode",
+      agentDigest,
+      protocol: "acp-v1" as const,
+      compatibilityProfile: "prompt-only-v1" as const,
+      containmentProfile: "acp-prompt-only-v1" as const,
+      runtimeIdentity: "revalidated" as const,
+      credentialLease: "srt-host-scoped-sentinel" as const,
+      sessionIdHash,
+      sessionBindingDigest: calculateAcpAgentSessionBindingDigest({
+        runId: "run-1",
+        workflowId: "verify-foundation",
+        nodeId: "node-version",
+        attempt: 1,
+        agentDigest,
+        sessionIdHash,
+      }),
+      processContainment: "process-group" as const,
+      terminationStatus: "confirmed" as const,
+      sandbox: {
+        backend: "anthropic-sandbox-runtime",
+        backendVersion: "0.0.70",
+        profile: "acp-prompt-only-v1",
+        policyDigest: "c".repeat(64),
+      },
+      usageProvenance: {
+        modelTokens: "declared-unavailable" as const,
+        costUsd: "declared-unavailable" as const,
+      },
+      updateCount: 0,
+    },
   };
 }
 

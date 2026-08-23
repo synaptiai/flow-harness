@@ -30,7 +30,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) | You need to author, review, activate, recover, or roll back evidence-backed relationships between exact memory entries. |
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
-| [Local ACP v1 bridge](acp.md) | You need to observe and control Flow from a compatible local editor. |
+| [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
 
 ## Operate Flow
 

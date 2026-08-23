@@ -364,7 +364,7 @@ operator-installed instances.
 
 | Seam | Implementation | Openness | Summary |
 | --- | --- | --- | --- |
-| `model-provider` | `pi` | open | Provider and model identifiers resolve through the embedded Pi adapter at runtime. |
+| `model-provider` | `pi-acp` | open | Provider and model identifiers resolve through embedded Pi or an exactly admitted prompt-only ACP agent at runtime. |
 
 Provider and model identifiers are runtime inputs. This reference doesn't promise that a
 specific provider, model, credential, price, or availability state exists.

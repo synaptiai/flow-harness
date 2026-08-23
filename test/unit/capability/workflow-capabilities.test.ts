@@ -18,6 +18,7 @@ import {
 } from "../../../src/domain/capability/workflow-capabilities.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 
 describe("workflow capability binding", () => {
   it("collects a unique sorted set recursively from root and child workflows", () => {
@@ -114,6 +115,37 @@ describe("workflow capability binding", () => {
     expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
       expect.objectContaining<Partial<WorkflowCapabilityError>>({
         code: "unexpected_language_server",
+      }),
+    );
+  });
+
+  it("enforces ACP token accounting for a model verifier without an agent node", () => {
+    const workflow = compileWorkflowText(
+      workflowSource(
+        "acp-model-verifier-budget",
+        `
+  - id: prepare
+    type: command
+    command: { executable: node }
+  - id: review
+    type: verifier
+    dependsOn: [prepare]
+    verifier:
+      kind: model
+      prompt: Verify the output.
+      evidence: [{ nodeId: prepare, field: command.stdout }]
+      model: { provider: openai, id: gpt-5.6-codex, thinking: medium }
+`,
+      ),
+    );
+    const snapshot = acpAgentCapabilitySnapshot("a", {
+      modelTokens: "unavailable",
+      costUsd: "complete",
+    });
+
+    expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({
+        code: "unsupported_model_token_accounting",
       }),
     );
   });

@@ -19,6 +19,9 @@ export type WorkflowCapabilityErrorCode =
   | "missing_snapshot"
   | "package_kind_mismatch"
   | "tool_name_collision"
+  | "unexpected_acp_agent"
+  | "unsupported_acp_authority"
+  | "unsupported_acp_configuration"
   | "unsupported_model_cost_accounting"
   | "unsupported_model_token_accounting"
   | "unexpected_activation"
@@ -117,6 +120,7 @@ export function bindWorkflowCapabilities(
   const requiredWorkflows = collectWorkflowPackageReferences(workflow);
   const requiresLanguageServer = workflowUsesSemantic(workflow);
   const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
+  assertAcpAgentWorkflowCompatibility(workflow, boundSnapshot);
   assertAcpAgentBudgetSupport(workflow, boundSnapshot);
   assertPromptActivationBinding(workflow, boundSnapshot, options.allowUnexpected === true);
   if (requiresLanguageServer && boundSnapshot?.languageServer === undefined) {
@@ -349,7 +353,7 @@ function assertAcpAgentBudgetSupport(
   if (acpAgent === undefined) {
     return;
   }
-  if (workflow.budget !== undefined && workflowUsesAgent(workflow)) {
+  if (workflow.budget !== undefined && workflowUsesModel(workflow)) {
     if (workflow.budget.maxModelTokens !== undefined && acpAgent.usage.modelTokens !== "complete") {
       throw new WorkflowCapabilityError(
         "unsupported_model_token_accounting",
@@ -370,10 +374,101 @@ function assertAcpAgentBudgetSupport(
   }
 }
 
-function workflowUsesAgent(workflow: CompiledWorkflow): boolean {
+function assertAcpAgentWorkflowCompatibility(
+  workflow: CompiledWorkflow,
+  snapshot: CapabilitySnapshot | undefined,
+): void {
+  const acpAgent = snapshot?.acpAgent;
+  if (acpAgent === undefined) {
+    return;
+  }
+  let modelBackedNodes = 0;
+  const visit = (current: CompiledWorkflow): void => {
+    for (const node of current.nodes) {
+      if (node.type === "agent") {
+        modelBackedNodes += 1;
+        if (
+          node.agent.tools.length > 0 ||
+          node.agent.skills.length > 0 ||
+          node.agent.toolPackages.length > 0 ||
+          node.agent.toolApproval !== undefined
+        ) {
+          throw new WorkflowCapabilityError(
+            "unsupported_acp_authority",
+            `agent node "${node.id}" requests authority that prompt-only ACP execution cannot provide`,
+          );
+        }
+        assertAcpAgentModelSelection(
+          acpAgent,
+          node.id,
+          node.agent.model.provider,
+          node.agent.model.id,
+          node.agent.model.thinking,
+        );
+      } else if (
+        node.type === "verifier" &&
+        (node.verifier.kind === "model" || node.verifier.kind === "packaged-model")
+      ) {
+        modelBackedNodes += 1;
+        assertAcpAgentModelSelection(
+          acpAgent,
+          node.id,
+          node.verifier.model.provider,
+          node.verifier.model.id,
+          node.verifier.model.thinking,
+        );
+      } else if (node.type === "child") {
+        visit(node.child.workflow);
+      }
+    }
+  };
+  visit(workflow);
+  if (modelBackedNodes === 0) {
+    throw new WorkflowCapabilityError(
+      "unexpected_acp_agent",
+      `workflow "${workflow.id}" has no model-backed node for the selected ACP agent`,
+    );
+  }
+}
+
+function assertAcpAgentModelSelection(
+  acpAgent: NonNullable<CapabilitySnapshot["acpAgent"]>,
+  nodeId: string,
+  provider: string,
+  model: string,
+  thinking: string,
+): void {
+  if (
+    !acpAgent.modelMappings.some(
+      (mapping) => mapping.provider === provider && mapping.model === model,
+    )
+  ) {
+    throw new WorkflowCapabilityError(
+      "unsupported_acp_configuration",
+      `model-backed node "${nodeId}" has no exact ACP provider and model mapping`,
+    );
+  }
+  const thinkingAssignment = acpAgent.configuration.assignments.find(
+    (assignment) => assignment.source === "thinking",
+  );
+  if (
+    thinkingAssignment?.source !== "thinking" ||
+    !thinkingAssignment.mappings.some((mapping) => mapping.thinking === thinking)
+  ) {
+    throw new WorkflowCapabilityError(
+      "unsupported_acp_configuration",
+      `model-backed node "${nodeId}" has no exact ACP reasoning mapping`,
+    );
+  }
+}
+
+function workflowUsesModel(workflow: CompiledWorkflow): boolean {
   return workflow.nodes.some(
     (node) =>
-      node.type === "agent" || (node.type === "child" && workflowUsesAgent(node.child.workflow)),
+      node.type === "agent" ||
+      (node.type === "verifier" &&
+        (node.verifier.kind === "model" || node.verifier.kind === "packaged-model")) ||
+      (node.type === "child" && workflowUsesModel(node.child.workflow)),
   );
 }
 

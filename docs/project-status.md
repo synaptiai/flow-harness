@@ -32,7 +32,7 @@ on it.
 | Agent `exec` | Implemented | Unavailable | Linux requires verified PID-namespace descendant containment. |
 | Detached supervisor and workers | Implemented | Implemented | Same-host and same-user only. |
 | Terminal, browser, and ACP presentation | Implemented | Implemented | Local operator surfaces only. |
-| ACP executor identity and budget admission | Implemented | Implemented | Internal Gate 10 foundation only. Current source doesn't expose an executor-selection command or start an ACP agent process. |
+| Prompt-only local ACP executor | Linux x64 runtime proof | Limited | Current source supports operator selection, attached and detached execution, fresh recovery, and provider-neutral evidence. Hosted process-containment proof covers Linux x64; macOS has source and contract coverage. |
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
 | Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
@@ -97,9 +97,10 @@ the [Security policy](../SECURITY.md).
 - Durable FIFO admission, authenticated workers, cancellation, and event replay.
 - Proof-gated fresh recovery for eligible interrupted agent attempts.
 - Terminal, browser, and ACP v1 observation and steering.
-- Exact local ACP v1 executor identity, detached and recovery propagation, truthful usage
-  availability, and pre-event budget compatibility. A public executor selection and process launch
-  remain planned.
+- Exact local ACP v1 executor selection for attached and detached runs.
+- One fresh contained process and session for each attempt.
+- Exact model configuration, prompt-only authority, provider-neutral evidence, truthful usage, and
+  proof-gated fresh recovery.
 
 Read [Recovery and interruption safety](recovery.md), [Local ACP v1 bridge](acp.md), and
 [Run and control workflows](guides/run-and-control.md).
@@ -152,7 +153,7 @@ Read [Manage supplemental-memory relationships](guides/supplemental-memory-relat
 
 - Executable or remote UI extensions.
 - Model-owned network tools.
-- Local ACP agent process execution and cross-agent interoperability evaluation.
+- Cross-agent ACP interoperability evaluation and any broader brokered authority profile.
 - Remote or multi-host supervisor control.
 - VM-grade isolation for the host-side agent runtime.
 - A stable executable format and migration promise.

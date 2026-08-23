@@ -53,6 +53,8 @@ Current capability groups include:
   resumed, and child runs without gaining workflow authority.
 - Bounded read-only semantic code queries through an exact operator-selected language server.
 - Attached and detached execution with local terminal, browser, and ACP control.
+- Operator-selected prompt-only local ACP v1 execution with exact runtime identity, fresh isolated
+  processes and sessions, and provider-neutral evidence.
 
 ### Capability distribution and evaluation
 

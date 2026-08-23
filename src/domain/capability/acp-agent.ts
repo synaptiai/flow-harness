@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 
 import { z } from "zod";
-import { parseStrictJson, type StrictJsonObject, type StrictJsonValue } from "../strict-json.js";
+import { parseStrictJson, type StrictJsonValue } from "../strict-json.js";
 
 export const ACP_AGENT_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const ACP_AGENT_PROTOCOL = "acp-v1" as const;
@@ -17,6 +17,7 @@ export const MAX_ACP_AGENT_ARG_BYTES = 4_096;
 export const MAX_ACP_AGENT_ARGUMENT_BYTES = 32 * 1024;
 export const MAX_ACP_AGENT_MODEL_MAPPINGS = 32;
 export const MAX_ACP_AGENT_PROVIDER_AUTHORITIES = 8;
+export const MAX_ACP_AGENT_CONFIGURATION_ASSIGNMENTS = 16;
 export const MAX_ACP_AGENT_SNAPSHOT_SERIALIZED_BYTES = 256 * 1024;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -74,6 +75,9 @@ const argumentsSchema = z
       args.reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0) <=
       MAX_ACP_AGENT_ARGUMENT_BYTES,
   );
+const configurationIdentifierSchema = z.string().min(1).max(256).refine(isBoundedPlainText);
+const configurationValueSchema = z.string().min(1).max(256).refine(isBoundedPlainText);
+const thinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 const modelMappingSchema = z
   .object({
@@ -97,6 +101,78 @@ const usageSupportSchema = z
     costUsd: z.enum(["complete", "unavailable"]),
   })
   .strict();
+
+const literalConfigurationAssignmentSchema = z
+  .object({
+    configId: configurationIdentifierSchema,
+    source: z.literal("literal"),
+    value: z.union([configurationValueSchema, z.boolean()]),
+  })
+  .strict();
+
+const modelConfigurationAssignmentSchema = z
+  .object({
+    configId: configurationIdentifierSchema,
+    source: z.literal("model"),
+  })
+  .strict();
+
+const thinkingConfigurationAssignmentSchema = z
+  .object({
+    configId: configurationIdentifierSchema,
+    source: z.literal("thinking"),
+    mappings: z
+      .array(
+        z
+          .object({
+            thinking: thinkingLevelSchema,
+            value: configurationValueSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(6)
+      .refine(isCanonicalThinkingMapping),
+  })
+  .strict();
+
+const configurationAssignmentSchema = z.discriminatedUnion("source", [
+  literalConfigurationAssignmentSchema,
+  modelConfigurationAssignmentSchema,
+  thinkingConfigurationAssignmentSchema,
+]);
+
+const configurationSchema = z
+  .object({
+    assignments: z
+      .array(configurationAssignmentSchema)
+      .min(2)
+      .max(MAX_ACP_AGENT_CONFIGURATION_ASSIGNMENTS),
+  })
+  .strict()
+  .superRefine((configuration, context) => {
+    const ids = configuration.assignments.map((assignment) => assignment.configId);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({ code: "custom", message: "configuration identifiers must be unique" });
+    }
+    const modelIndices = configuration.assignments.flatMap((assignment, index) =>
+      assignment.source === "model" ? [index] : [],
+    );
+    const thinkingIndices = configuration.assignments.flatMap((assignment, index) =>
+      assignment.source === "thinking" ? [index] : [],
+    );
+    if (
+      modelIndices.length !== 1 ||
+      thinkingIndices.length !== 1 ||
+      (modelIndices[0] ?? Number.POSITIVE_INFINITY) >=
+        (thinkingIndices[0] ?? Number.NEGATIVE_INFINITY)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "configuration must select one model before one reasoning setting",
+      });
+    }
+  });
 
 const binaryManifestLaunchSchema = z
   .object({
@@ -148,7 +224,7 @@ const manifestSchema = z
           .refine((items) => isSortedUnique(items.map((item) => item.provider))),
         containmentProfile: z.literal(ACP_AGENT_CONTAINMENT_PROFILE),
         usage: usageSupportSchema,
-        configuration: z.unknown().refine(isStrictJsonObject).optional(),
+        configuration: configurationSchema,
       })
       .strict()
       .superRefine((spec, context) => {
@@ -262,7 +338,7 @@ const snapshotSchema = z
       .max(MAX_ACP_AGENT_PROVIDER_AUTHORITIES),
     containmentProfile: z.literal(ACP_AGENT_CONTAINMENT_PROFILE),
     usage: usageSupportSchema,
-    configuration: z.unknown().refine(isStrictJsonObject).optional(),
+    configuration: configurationSchema,
     manifest: storedManifestSchema,
     digest: sha256Schema,
   })
@@ -326,6 +402,9 @@ export interface AcpAgentUsageSupport {
   readonly costUsd: "complete" | "unavailable";
 }
 
+export type AcpAgentConfigurationAssignment = z.infer<typeof configurationAssignmentSchema>;
+export type AcpAgentConfiguration = z.infer<typeof configurationSchema>;
+
 export interface AcpAgentRuntimeSnapshot {
   readonly version: 1;
   readonly kind: "acp-agent";
@@ -337,7 +416,7 @@ export interface AcpAgentRuntimeSnapshot {
   readonly providerAuthorities: readonly AcpAgentProviderAuthority[];
   readonly containmentProfile: typeof ACP_AGENT_CONTAINMENT_PROFILE;
   readonly usage: AcpAgentUsageSupport;
-  readonly configuration?: StrictJsonObject | undefined;
+  readonly configuration: AcpAgentConfiguration;
   readonly manifest: {
     readonly provenance: string;
     readonly sha256: string;
@@ -446,7 +525,7 @@ export function calculateAcpAgentRuntimeSnapshotDigest(
       providerAuthorities: snapshot.providerAuthorities,
       containmentProfile: snapshot.containmentProfile,
       usage: snapshot.usage,
-      configuration: snapshot.configuration ?? null,
+      configuration: snapshot.configuration,
       manifest: {
         provenance: snapshot.manifest.provenance,
         sha256: snapshot.manifest.sha256,
@@ -556,9 +635,7 @@ function snapshotFromManifest(
     providerAuthorities: manifest.spec.providerAuthorities,
     containmentProfile: manifest.spec.containmentProfile,
     usage: manifest.spec.usage,
-    ...(manifest.spec.configuration === undefined
-      ? {}
-      : { configuration: manifest.spec.configuration as StrictJsonObject }),
+    configuration: manifest.spec.configuration,
     manifest: {
       provenance: portablePathSchema.parse(provenance),
       sha256: sha256(manifestContent),
@@ -625,6 +702,22 @@ function isBoundedPlainText(value: string): boolean {
   );
 }
 
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+function isCanonicalThinkingMapping(
+  mappings: readonly { readonly thinking: string; readonly value: string }[],
+): boolean {
+  const levels = mappings.map((mapping) =>
+    THINKING_LEVELS.indexOf(mapping.thinking as (typeof THINKING_LEVELS)[number]),
+  );
+  const values = mappings.map((mapping) => mapping.value);
+  return (
+    levels.every(
+      (level, index) => level >= 0 && (index === 0 || (levels[index - 1] ?? -1) < level),
+    ) && new Set(values).size === values.length
+  );
+}
+
 function containsControlCharacter(value: string): boolean {
   return Array.from(value).some((character) => {
     const point = character.codePointAt(0);
@@ -632,7 +725,7 @@ function containsControlCharacter(value: string): boolean {
   });
 }
 
-function isStrictJsonObject(value: unknown): value is StrictJsonObject {
+function isStrictJsonObject(value: unknown): value is Record<string, StrictJsonValue> {
   return (
     typeof value === "object" &&
     value !== null &&

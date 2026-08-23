@@ -5,6 +5,10 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import type {
+  AcpAgentSandbox,
+  AcpAgentSandboxRequest,
+} from "../../application/acp-agent-sandbox.js";
+import type {
   CommandSandbox,
   CommandSandboxRequest,
   PreparedCommand,
@@ -13,6 +17,7 @@ import type { SandboxEvidence } from "../../domain/run/events.js";
 import { encodePosixCommand } from "./posix-argv.js";
 
 export const FLOW_SANDBOX_PROFILE = "workspace-write-network-deny-v1" as const;
+export const ACP_AGENT_SANDBOX_PROFILE = "acp-prompt-only-v1" as const;
 
 const SAFE_ENVIRONMENT_NAMES = Object.freeze([
   "PATH",
@@ -28,6 +33,7 @@ const SAFE_ENVIRONMENT_NAMES = Object.freeze([
 ]);
 const TRUSTED_RUNTIME_ENVIRONMENT_NAMES = Object.freeze(["NODE_PATH"] as const);
 const MAX_TRUSTED_RUNTIME_ENVIRONMENT_BYTES = 128 * 1_024;
+const MAX_ACP_AGENT_CREDENTIAL_BYTES = 128 * 1_024;
 
 const FLOW_WORKSPACE_COLLECTION_SUFFIX = ".flow-workspaces";
 const MAX_COLLECTION_DISCOVERY_ENTRIES = 200_000;
@@ -54,6 +60,31 @@ const SEMANTIC_POLICY = Object.freeze({
   }),
 });
 
+const ACP_AGENT_SEMANTIC_POLICY = Object.freeze({
+  version: 1,
+  profile: ACP_AGENT_SANDBOX_PROFILE,
+  network: Object.freeze({
+    mode: "one-provider-domain",
+    tlsTermination: true,
+    localBinding: false,
+    unixSockets: "deny",
+  }),
+  filesystem: Object.freeze({
+    home: "deny-read",
+    project: "deny-read-write",
+    privateAttempt: "read-write",
+    privateTemp: "read-write",
+    runtimeSupport: "read-only",
+    protectedPaths: "deny-read-write",
+  }),
+  environment: Object.freeze({
+    mode: "allowlist-plus-srt-generated",
+    names: Object.freeze(["PATH", "LANG", "LC_ALL", "LC_CTYPE"]),
+    privateTempVariables: Object.freeze(["TMPDIR", "TMP", "TEMP"]),
+    selectedCredential: "srt-host-scoped-sentinel",
+  }),
+});
+
 export const FLOW_SANDBOX_POLICY_DIGEST = createHash("sha256")
   .update(JSON.stringify(SEMANTIC_POLICY))
   .digest("hex");
@@ -67,6 +98,9 @@ export const FLOW_NODE_PATH_SANDBOX_POLICY_DIGEST = createHash("sha256")
       },
     }),
   )
+  .digest("hex");
+export const ACP_AGENT_SANDBOX_POLICY_DIGEST = createHash("sha256")
+  .update(JSON.stringify(ACP_AGENT_SEMANTIC_POLICY))
   .digest("hex");
 
 interface ManagerRuntimeState {
@@ -89,6 +123,12 @@ export interface SrtRuntimeConfig {
     readonly allowUnixSockets: readonly string[];
     readonly allowAllUnixSockets: boolean;
     readonly allowLocalBinding: boolean;
+    readonly tlsTerminate?: Readonly<{
+      readonly caCertPath?: string;
+      readonly caKeyPath?: string;
+      readonly excludeDomains?: readonly string[];
+      readonly extraCaCertPaths?: readonly string[];
+    }>;
   };
   readonly filesystem: {
     readonly denyRead: readonly string[];
@@ -101,6 +141,13 @@ export interface SrtRuntimeConfig {
   readonly allowPty: boolean;
   readonly enableWeakerNestedSandbox: boolean;
   readonly enableWeakerNetworkIsolation: boolean;
+  readonly credentials?: Readonly<{
+    readonly envVars: readonly Readonly<{
+      readonly name: string;
+      readonly mode: "mask";
+      readonly injectHosts: readonly string[];
+    }>[];
+  }>;
   readonly seccomp?: { readonly applyPath: string };
 }
 
@@ -138,7 +185,7 @@ export interface SrtCommandSandboxOptions {
   readonly resolveTrustedBwrapPath?: (workspace: string) => Promise<string>;
 }
 
-export class SrtCommandSandbox implements CommandSandbox {
+export class SrtCommandSandbox implements CommandSandbox, AcpAgentSandbox {
   readonly #backendVersion: string;
   readonly #canonicalize: (path: string) => Promise<string>;
   readonly #cleanupTimeoutMs: number;
@@ -331,6 +378,156 @@ export class SrtCommandSandbox implements CommandSandbox {
     }
   }
 
+  async prepareAcpAgent(request: AcpAgentSandboxRequest): Promise<PreparedCommand> {
+    if (this.#platform !== "darwin" && this.#platform !== "linux") {
+      throw new Error(`ACP agent sandbox is not supported on ${this.#platform}`);
+    }
+    assertAcpAgentAuthorityInput(request, this.#environment);
+    const runtimeState = managerRuntimeState(this.#manager);
+    if (runtimeState.poisonedReason !== undefined) {
+      throw new Error(
+        `ACP agent sandbox is unavailable after cleanup failure: ${runtimeState.poisonedReason}`,
+      );
+    }
+    if (request.signal?.aborted === true) {
+      throw new Error("ACP agent sandbox preparation was cancelled");
+    }
+
+    let privateTemporaryDirectory: string | undefined;
+    let sessionAcquired = false;
+    let wrapped = false;
+    try {
+      const [canonicalWorkspace, canonicalProjectRoot] = await Promise.all([
+        this.#canonicalize(request.cwd),
+        this.#canonicalize(request.projectRoot),
+      ]);
+      assertAcpAgentFilesystemBoundary(
+        canonicalWorkspace,
+        canonicalProjectRoot,
+        this.#homeDirectory,
+      );
+      const trustedBwrapPath =
+        this.#platform === "linux"
+          ? await this.#resolveTrustedBwrapPath(canonicalWorkspace)
+          : undefined;
+      const privateWorkspaceCollections =
+        await this.#discoverPrivateWorkspaceCollections(canonicalWorkspace);
+      const privateWorkspaceCollectionAncestors =
+        await this.#discoverPrivateWorkspaceCollectionAncestors(canonicalWorkspace);
+      const canonicalRuntimeSupportPaths = Object.freeze(
+        await Promise.all(
+          [...new Set(request.runtimeSupportPaths)].map((path) => this.#canonicalize(path)),
+        ),
+      );
+      if (canonicalRuntimeSupportPaths.some((path) => pathsOverlap(path, canonicalProjectRoot))) {
+        throw new Error("ACP agent runtime support must be outside the Flow project");
+      }
+      const canonicalWriteProtectedPaths = await Promise.all(
+        [
+          ...new Set([
+            canonicalProjectRoot,
+            ...request.protectedPaths,
+            ...privateWorkspaceCollections,
+          ]),
+        ].map((path) => this.#canonicalize(path)),
+      );
+      const canonicalReadProtectedPaths = Object.freeze([
+        ...canonicalWriteProtectedPaths,
+        ...(await Promise.all(
+          privateWorkspaceCollectionAncestors.map((path) => this.#canonicalize(path)),
+        )),
+      ]);
+      const canonicalSeccompApplyPath =
+        this.#seccompApplyPath === undefined
+          ? undefined
+          : await this.#canonicalize(this.#seccompApplyPath);
+      privateTemporaryDirectory = await this.#createTemporaryDirectory();
+
+      const dependencies = this.#manager.checkDependencies();
+      const dependencyProblems = [...dependencies.errors, ...dependencies.warnings];
+      if (dependencyProblems.length > 0) {
+        throw new Error(`sandbox dependencies unavailable: ${dependencyProblems.join("; ")}`);
+      }
+
+      const config = createAcpAgentRuntimeConfig(
+        canonicalWorkspace,
+        privateTemporaryDirectory,
+        canonicalReadProtectedPaths,
+        canonicalWriteProtectedPaths,
+        canonicalRuntimeSupportPaths,
+        this.#homeDirectory,
+        request.providerDomain,
+        request.credentialEnvironmentVariable,
+        canonicalSeccompApplyPath,
+        trustedBwrapPath,
+      );
+      const sessionKey = sandboxSessionKey(
+        this.#platform,
+        canonicalWorkspace,
+        canonicalReadProtectedPaths,
+        canonicalWriteProtectedPaths,
+        canonicalRuntimeSupportPaths,
+        Object.freeze({}),
+        this.#homeDirectory,
+        canonicalSeccompApplyPath,
+        trustedBwrapPath,
+        Object.freeze({
+          profile: ACP_AGENT_SANDBOX_PROFILE,
+          providerDomain: request.providerDomain,
+          credentialEnvironmentVariable: request.credentialEnvironmentVariable,
+        }),
+      );
+      await this.#acquireSession(config, sessionKey, request.signal);
+      sessionAcquired = true;
+      const command = encodePosixCommand(request.executable, request.args);
+      const descriptor = await this.#manager.wrapWithSandboxArgv(
+        command,
+        "/bin/bash",
+        config,
+        request.signal,
+        canonicalWorkspace,
+      );
+      wrapped = true;
+      validateDescriptor(descriptor.argv);
+      const processContainment = validateProcessContainment(
+        this.#platform,
+        descriptor.argv,
+        trustedBwrapPath,
+      );
+
+      const launch = Object.freeze({
+        executable: descriptor.argv[0] as string,
+        args: Object.freeze(descriptor.argv.slice(1)),
+        env: buildAcpAgentEnvironment(this.#environment, privateTemporaryDirectory),
+      });
+      const evidence = sandboxEvidence(
+        this.#backendVersion,
+        ACP_AGENT_SANDBOX_POLICY_DIGEST,
+        ACP_AGENT_SANDBOX_PROFILE,
+      );
+      let released = false;
+      return Object.freeze({
+        processContainment,
+        launch,
+        evidence,
+        release: async () => {
+          if (released) return;
+          released = true;
+          await this.#release(privateTemporaryDirectory as string, wrapped, sessionAcquired);
+        },
+      });
+    } catch (error) {
+      const cleanupErrors = await this.#release(
+        privateTemporaryDirectory,
+        wrapped,
+        sessionAcquired,
+        false,
+      );
+      if (cleanupErrors.length === 0) throw error;
+      throw combinedError(error, cleanupErrors);
+    }
+  }
+
   async #acquireSession(
     config: SrtRuntimeConfig,
     sessionKey: string,
@@ -519,6 +716,7 @@ function sandboxSessionKey(
   homeDirectory: string,
   seccompApplyPath: string | undefined,
   trustedBwrapPath: string | undefined,
+  profileIdentity: unknown = null,
 ): string {
   return createHash("sha256")
     .update(
@@ -532,6 +730,7 @@ function sandboxSessionKey(
         homeDirectory,
         seccompApplyPath: seccompApplyPath ?? null,
         trustedBwrapPath: trustedBwrapPath ?? null,
+        profileIdentity,
       }),
     )
     .digest("hex");
@@ -631,6 +830,79 @@ function createRuntimeConfig(
   });
 }
 
+function createAcpAgentRuntimeConfig(
+  workspace: string,
+  privateTemporaryDirectory: string,
+  readProtectedPaths: readonly string[],
+  writeProtectedPaths: readonly string[],
+  runtimeSupportPaths: readonly string[],
+  homeDirectory: string,
+  providerDomain: string,
+  credentialEnvironmentVariable: string,
+  seccompApplyPath: string | undefined,
+  trustedBwrapPath: string | undefined,
+): SrtRuntimeConfig {
+  const allowRead = [workspace, privateTemporaryDirectory, ...runtimeSupportPaths];
+  if (
+    seccompApplyPath !== undefined &&
+    !allowRead.some((path) => isAtOrWithin(seccompApplyPath, path))
+  ) {
+    allowRead.push(seccompApplyPath);
+  }
+  const denyWrite = [
+    ...new Set([
+      ...writeProtectedPaths,
+      ...runtimeSupportPaths,
+      join(workspace, ".flow"),
+      join(workspace, ".git"),
+      join(workspace, ".env"),
+      join(workspace, ".env.*"),
+      join(workspace, "**/*.pem"),
+      join(workspace, "**/*.key"),
+    ]),
+  ].filter(
+    (candidate) =>
+      !writeProtectedPaths.some(
+        (protectedPath) => candidate !== protectedPath && isAtOrWithin(candidate, protectedPath),
+      ),
+  );
+  return Object.freeze({
+    ...(trustedBwrapPath === undefined ? {} : { bwrapPath: trustedBwrapPath }),
+    network: Object.freeze({
+      allowedDomains: Object.freeze([providerDomain]),
+      deniedDomains: Object.freeze([]),
+      strictAllowlist: true,
+      allowUnixSockets: Object.freeze([]),
+      allowAllUnixSockets: false,
+      allowLocalBinding: false,
+      tlsTerminate: Object.freeze({}),
+    }),
+    filesystem: Object.freeze({
+      denyRead: Object.freeze([...new Set([homeDirectory, ...readProtectedPaths])]),
+      allowRead: Object.freeze(allowRead),
+      allowWrite: Object.freeze([workspace, privateTemporaryDirectory]),
+      denyWrite: Object.freeze(denyWrite),
+      allowGitConfig: false,
+    }),
+    credentials: Object.freeze({
+      envVars: Object.freeze([
+        Object.freeze({
+          name: credentialEnvironmentVariable,
+          mode: "mask" as const,
+          injectHosts: Object.freeze([providerDomain]),
+        }),
+      ]),
+    }),
+    allowAppleEvents: false,
+    allowPty: false,
+    enableWeakerNestedSandbox: false,
+    enableWeakerNetworkIsolation: false,
+    ...(seccompApplyPath === undefined
+      ? {}
+      : { seccomp: Object.freeze({ applyPath: seccompApplyPath }) }),
+  });
+}
+
 async function discoverPrivateWorkspaceCollections(workspace: string): Promise<readonly string[]> {
   const pending = [workspace];
   const collections: string[] = [];
@@ -698,6 +970,43 @@ function assertLinuxProjectBoundary(workspace: string, projectRoot: string): voi
   }
 }
 
+function assertAcpAgentAuthorityInput(
+  request: AcpAgentSandboxRequest,
+  environment: NodeJS.ProcessEnv,
+): void {
+  if (
+    !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+      request.providerDomain,
+    ) ||
+    !/^[A-Z][A-Z0-9_]{0,127}$/.test(request.credentialEnvironmentVariable)
+  ) {
+    throw new Error("ACP agent provider authority is invalid");
+  }
+  const credential = environment[request.credentialEnvironmentVariable];
+  if (
+    credential === undefined ||
+    credential.length === 0 ||
+    credential.includes("\0") ||
+    Buffer.byteLength(credential, "utf8") > MAX_ACP_AGENT_CREDENTIAL_BYTES
+  ) {
+    throw new Error("selected ACP provider credential is unavailable");
+  }
+}
+
+function assertAcpAgentFilesystemBoundary(
+  workspace: string,
+  projectRoot: string,
+  homeDirectory: string,
+): void {
+  if (pathsOverlap(workspace, projectRoot) || pathsOverlap(workspace, homeDirectory)) {
+    throw new Error("ACP agent attempt directory must be private from Flow project and home state");
+  }
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+  return isAtOrWithin(first, second) || isAtOrWithin(second, first);
+}
+
 function isAtOrWithin(path: string, directory: string): boolean {
   const pathFromDirectory = relative(directory, path);
   return (
@@ -724,6 +1033,21 @@ function buildSafeEnvironment(
   environment.TMP = privateTemporaryDirectory;
   environment.TEMP = privateTemporaryDirectory;
   Object.assign(environment, runtimeEnvironment);
+  return Object.freeze(environment);
+}
+
+function buildAcpAgentEnvironment(
+  source: NodeJS.ProcessEnv,
+  privateTemporaryDirectory: string,
+): Readonly<Record<string, string>> {
+  const environment: Record<string, string> = {};
+  for (const name of ["PATH", "LANG", "LC_ALL", "LC_CTYPE"] as const) {
+    const value = source[name];
+    if (value !== undefined) environment[name] = value;
+  }
+  environment.TMPDIR = privateTemporaryDirectory;
+  environment.TMP = privateTemporaryDirectory;
+  environment.TEMP = privateTemporaryDirectory;
   return Object.freeze(environment);
 }
 
@@ -756,11 +1080,15 @@ async function canonicalizeRuntimeEnvironment(
   return Object.freeze({ NODE_PATH: canonicalEntries.join(delimiter) });
 }
 
-function sandboxEvidence(backendVersion: string, policyDigest: string): SandboxEvidence {
+function sandboxEvidence(
+  backendVersion: string,
+  policyDigest: string,
+  profile: string = FLOW_SANDBOX_PROFILE,
+): SandboxEvidence {
   return Object.freeze({
     backend: "anthropic-sandbox-runtime",
     backendVersion,
-    profile: FLOW_SANDBOX_PROFILE,
+    profile,
     policyDigest,
   });
 }
