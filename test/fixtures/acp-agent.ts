@@ -1,11 +1,17 @@
 import {
-  calculateCapabilitySnapshotDigest,
+  type AcpAgentUsageSupport,
+  createAcpAgentRuntimeSnapshot,
+} from "../../src/domain/capability/acp-agent.js";
+import {
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
   validateCapabilitySnapshot,
 } from "../../src/domain/capability/agent-skills.js";
-import { createAcpAgentRuntimeSnapshot } from "../../src/domain/capability/acp-agent.js";
 
-export function acpAgentCapabilitySnapshot(seed = "a"): CapabilitySnapshot {
+export function acpAgentCapabilitySnapshot(
+  seed = "a",
+  usage: AcpAgentUsageSupport = { modelTokens: "complete", costUsd: "unavailable" },
+): CapabilitySnapshot {
   if (!/^[a-f]$/.test(seed)) {
     throw new Error("ACP agent fixture seed must be one lowercase hexadecimal character");
   }
@@ -42,7 +48,7 @@ export function acpAgentCapabilitySnapshot(seed = "a"): CapabilitySnapshot {
             },
           ],
           containmentProfile: "acp-prompt-only-v1",
-          usage: { modelTokens: "complete", costUsd: "unavailable" },
+          usage,
         },
       }),
     ),

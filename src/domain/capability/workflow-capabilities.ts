@@ -19,6 +19,8 @@ export type WorkflowCapabilityErrorCode =
   | "missing_snapshot"
   | "package_kind_mismatch"
   | "tool_name_collision"
+  | "unsupported_model_cost_accounting"
+  | "unsupported_model_token_accounting"
   | "unexpected_activation"
   | "unexpected_language_server"
   | "unexpected_package"
@@ -115,6 +117,7 @@ export function bindWorkflowCapabilities(
   const requiredWorkflows = collectWorkflowPackageReferences(workflow);
   const requiresLanguageServer = workflowUsesSemantic(workflow);
   const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
+  assertAcpAgentBudgetSupport(workflow, boundSnapshot);
   assertPromptActivationBinding(workflow, boundSnapshot, options.allowUnexpected === true);
   if (requiresLanguageServer && boundSnapshot?.languageServer === undefined) {
     throw new WorkflowCapabilityError(
@@ -336,6 +339,42 @@ export function bindWorkflowCapabilities(
     );
   }
   return boundSnapshot;
+}
+
+function assertAcpAgentBudgetSupport(
+  workflow: CompiledWorkflow,
+  snapshot: CapabilitySnapshot | undefined,
+): void {
+  const acpAgent = snapshot?.acpAgent;
+  if (acpAgent === undefined) {
+    return;
+  }
+  if (workflow.budget !== undefined && workflowUsesAgent(workflow)) {
+    if (workflow.budget.maxModelTokens !== undefined && acpAgent.usage.modelTokens !== "complete") {
+      throw new WorkflowCapabilityError(
+        "unsupported_model_token_accounting",
+        `workflow "${workflow.id}" limits model tokens but ACP agent "${acpAgent.name}" cannot provide complete model-token accounting`,
+      );
+    }
+    if (workflow.budget.maxCostUsdMicros !== undefined && acpAgent.usage.costUsd !== "complete") {
+      throw new WorkflowCapabilityError(
+        "unsupported_model_cost_accounting",
+        `workflow "${workflow.id}" limits model cost but ACP agent "${acpAgent.name}" cannot provide complete model-cost accounting`,
+      );
+    }
+  }
+  for (const node of workflow.nodes) {
+    if (node.type === "child") {
+      assertAcpAgentBudgetSupport(node.child.workflow, snapshot);
+    }
+  }
+}
+
+function workflowUsesAgent(workflow: CompiledWorkflow): boolean {
+  return workflow.nodes.some(
+    (node) =>
+      node.type === "agent" || (node.type === "child" && workflowUsesAgent(node.child.workflow)),
+  );
 }
 
 function workflowUsesSemantic(workflow: CompiledWorkflow): boolean {

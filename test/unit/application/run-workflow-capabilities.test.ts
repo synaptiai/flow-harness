@@ -120,6 +120,77 @@ describe("run workflow capability snapshots", () => {
     expect(state.capabilitySnapshot).toEqual(snapshot);
   });
 
+  it("rejects a token budget before execution when the ACP runtime cannot account for tokens", async () => {
+    const store = new MemoryStore();
+    let executorCalls = 0;
+
+    await expect(
+      runWorkflow(budgetedUnskilledWorkflow("maxModelTokens: 100"), {
+        ...options(
+          store,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "unsupported-acp-token-budget",
+        capabilitySnapshot: acpAgentCapabilitySnapshot("a", {
+          modelTokens: "unavailable",
+          costUsd: "complete",
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_model_token_accounting" });
+    expect(executorCalls).toBe(0);
+    expect(store.events).toEqual([]);
+  });
+
+  it("rejects a cost budget before execution when the ACP runtime cannot account for cost", async () => {
+    const store = new MemoryStore();
+    let executorCalls = 0;
+
+    await expect(
+      runWorkflow(budgetedUnskilledWorkflow("maxCostUsd: 1"), {
+        ...options(
+          store,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "unsupported-acp-cost-budget",
+        capabilitySnapshot: acpAgentCapabilitySnapshot(),
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_model_cost_accounting" });
+    expect(executorCalls).toBe(0);
+    expect(store.events).toEqual([]);
+  });
+
+  it("admits budgets whose dimensions the ACP runtime accounts for completely", async () => {
+    const store = new MemoryStore();
+    let executorCalls = 0;
+
+    const state = await runWorkflow(
+      budgetedUnskilledWorkflow("maxModelTokens: 100\n  maxCostUsd: 1"),
+      {
+        ...options(
+          store,
+          executorFrom(() => {
+            executorCalls += 1;
+            return agentSuccess();
+          }),
+        ),
+        runId: "supported-acp-budgets",
+        capabilitySnapshot: acpAgentCapabilitySnapshot("a", {
+          modelTokens: "complete",
+          costUsd: "complete",
+        }),
+      },
+    );
+
+    expect(executorCalls).toBe(1);
+    expect(state.status).toBe("succeeded");
+  });
+
   it("rejects changed ACP identity during recovery before executor invocation", async () => {
     const interrupted = new MemoryStore("node_started");
     const original = acpAgentCapabilitySnapshot("a");
@@ -796,6 +867,10 @@ function skilledWorkflow() {
 
 function unskilledWorkflow() {
   return compileWorkflowText(workflowSource(""));
+}
+
+function budgetedUnskilledWorkflow(budget: string) {
+  return compileWorkflowText(workflowSource("").replace("nodes:", `budget:\n  ${budget}\nnodes:`));
 }
 
 function toolPackageWorkflow() {
