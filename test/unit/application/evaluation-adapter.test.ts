@@ -15,6 +15,7 @@ import {
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import type { ModelUsageObservation } from "../../../src/domain/run/budget.js";
 import {
   calculatePortableHistoryIdentity,
   selectContextCompactionRange,
@@ -85,6 +86,79 @@ describe("Flow workflow evaluation adapter", () => {
     ).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "run_succeeded" })]),
     );
+  });
+
+  it("keeps independently unavailable ACP usage dimensions out of evaluation metrics", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: successfulExecutor(undefined, {
+          modelTokens: { status: "complete", totalTokens: 8 },
+          costUsd: { status: "unavailable" },
+        }),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root))).resolves.toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: {
+        costUsdMicros: null,
+        inputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        outputTokens: null,
+      },
+    });
+  });
+
+  it("projects complete ACP usage observations into evaluation metrics", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: successfulExecutor(undefined, {
+          modelTokens: {
+            status: "complete",
+            totalTokens: 11,
+            breakdown: {
+              inputTokens: 4,
+              cacheReadTokens: 2,
+              cacheWriteTokens: 1,
+              outputTokens: 4,
+            },
+          },
+          costUsd: { status: "complete", costUsdMicros: 19 },
+        }),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root))).resolves.toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: {
+        costUsdMicros: 19,
+        inputTokens: 4,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 1,
+        outputTokens: 4,
+      },
+    });
   });
 
   it("forwards the project artifact store into an evaluation trial", async () => {
@@ -622,7 +696,10 @@ function publicRequest(cwd: string, profileId = "candidate"): HarnessEvaluationR
   });
 }
 
-function successfulExecutor(capabilitySnapshot?: CapabilitySnapshot): NodeExecutor {
+function successfulExecutor(
+  capabilitySnapshot?: CapabilitySnapshot,
+  usageObservation?: ModelUsageObservation,
+): NodeExecutor {
   return {
     execute: async (node, context) => {
       if (node.type !== "agent") {
@@ -639,13 +716,17 @@ function successfulExecutor(capabilitySnapshot?: CapabilitySnapshot): NodeExecut
           textHash: sha256('"complete"'),
           textTruncated: false,
           durationMs: 4,
-          usage: {
-            inputTokens: 3,
-            cacheReadTokens: 1,
-            cacheWriteTokens: 2,
-            outputTokens: 5,
-            costUsdMicros: 17,
-          },
+          ...(usageObservation === undefined
+            ? {
+                usage: {
+                  inputTokens: 3,
+                  cacheReadTokens: 1,
+                  cacheWriteTokens: 2,
+                  outputTokens: 5,
+                  costUsdMicros: 17,
+                },
+              }
+            : { usageObservation }),
           activity: { turns: 2, toolCalls: 1, toolErrors: 0 },
           policyDecisions: [],
           effectReceipts: [],

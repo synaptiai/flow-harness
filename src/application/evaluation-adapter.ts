@@ -7,7 +7,11 @@ import type {
   EvaluationMetrics,
 } from "../domain/evaluation/records.js";
 import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
-import type { AgentModelUsage } from "../domain/run/budget.js";
+import {
+  type AgentModelTokenBreakdown,
+  type ModelUsageObservation,
+  modelUsageObservationFromLegacy,
+} from "../domain/run/budget.js";
 import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import type { AgentEvidence, NodeEvidence, RunState } from "../domain/run/events.js";
 import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
@@ -365,15 +369,27 @@ function metricsFromState(
   wallTimeMs: number,
 ): EvaluationMetrics {
   const attemptedModels = attemptedNodes(workflow, state, isModelNode);
-  const modelEvidence = attemptedModels.map(({ state: node }) => modelUsage(node.evidence));
-  const usageComplete = modelEvidence.every((usage) => usage !== undefined);
+  const modelEvidence = attemptedModels.map(({ state: node }) =>
+    modelUsageObservation(node.evidence),
+  );
+  const tokenBreakdownComplete = modelEvidence.every(
+    (usage) =>
+      usage?.modelTokens.status === "complete" && usage.modelTokens.breakdown !== undefined,
+  );
   const costComplete = attemptedModels.every(({ node, state: nodeState }) =>
     node.type === "child"
-      ? nodeState.evidence?.kind === "child"
-      : modelUsage(nodeState.evidence) !== undefined,
+      ? nodeState.evidence?.kind === "child" &&
+        nodeState.evidence.resourceAvailability?.modelCostUsdMicros !== "unavailable"
+      : modelUsageObservation(nodeState.evidence)?.costUsd.status === "complete",
   );
-  const usage = usageComplete
-    ? sumUsage(modelEvidence.filter((item): item is AgentModelUsage => item !== undefined))
+  const usage = tokenBreakdownComplete
+    ? sumTokenBreakdowns(
+        modelEvidence.flatMap((item) =>
+          item?.modelTokens.status === "complete" && item.modelTokens.breakdown !== undefined
+            ? [item.modelTokens.breakdown]
+            : [],
+        ),
+      )
     : undefined;
   const attemptedAgents = attemptedNodes(workflow, state, (node) => node.type === "agent");
   const hasAttemptedChild =
@@ -466,31 +482,35 @@ function isModelNode(node: CompiledNode): boolean {
   );
 }
 
-function modelUsage(evidence: NodeEvidence | null): AgentModelUsage | undefined {
+function modelUsageObservation(evidence: NodeEvidence | null): ModelUsageObservation | undefined {
   if (evidence?.kind === "agent") {
-    return evidence.usage;
+    return (
+      evidence.usageObservation ??
+      (evidence.usage === undefined ? undefined : modelUsageObservationFromLegacy(evidence.usage))
+    );
   }
   if (evidence?.kind === "verifier" && evidence.driver === "model") {
-    return evidence.usage;
+    return (
+      evidence.usageObservation ??
+      (evidence.usage === undefined ? undefined : modelUsageObservationFromLegacy(evidence.usage))
+    );
   }
   return undefined;
 }
 
-function sumUsage(usages: readonly AgentModelUsage[]): AgentModelUsage {
-  return usages.reduce<AgentModelUsage>(
+function sumTokenBreakdowns(usages: readonly AgentModelTokenBreakdown[]): AgentModelTokenBreakdown {
+  return usages.reduce<AgentModelTokenBreakdown>(
     (total, usage) => ({
-      inputTokens: total.inputTokens + usage.inputTokens,
-      cacheReadTokens: total.cacheReadTokens + usage.cacheReadTokens,
-      cacheWriteTokens: total.cacheWriteTokens + usage.cacheWriteTokens,
-      outputTokens: total.outputTokens + usage.outputTokens,
-      costUsdMicros: total.costUsdMicros + usage.costUsdMicros,
+      inputTokens: safeMetricSum(total.inputTokens, usage.inputTokens),
+      cacheReadTokens: safeMetricSum(total.cacheReadTokens, usage.cacheReadTokens),
+      cacheWriteTokens: safeMetricSum(total.cacheWriteTokens, usage.cacheWriteTokens),
+      outputTokens: safeMetricSum(total.outputTokens, usage.outputTokens),
     }),
     {
       inputTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       outputTokens: 0,
-      costUsdMicros: 0,
     },
   );
 }
