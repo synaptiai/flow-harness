@@ -49,6 +49,10 @@ export interface AcpAgentSessionRequest {
   readonly prompt: string;
   readonly maxOutputBytes: number;
   readonly signal?: AbortSignal;
+  readonly onSessionCreated?: (sessionId: string) => void;
+  readonly onPromptStarted?: () => void;
+  readonly onAuthorityViolation?: (category: AcpAgentAuthorityViolationCategory) => void;
+  readonly onUpdateCount?: (count: number) => void;
 }
 
 export interface AcpAgentSessionResult {
@@ -78,10 +82,18 @@ export async function runAcpAgentSession(
   }
   const values = resolveConfigurationValues(request);
   let authorityViolation: AcpAgentAuthorityViolationCategory | undefined;
+  const noteAuthorityViolation = (category: AcpAgentAuthorityViolationCategory): void => {
+    authorityViolation ??= category;
+    request.onAuthorityViolation?.(category);
+  };
   const stream = createAcpAgentProtocolStream(baseStream, {
     onAuthorityViolation: (category) => {
       authorityViolation ??= category;
+      if (category !== "permission") {
+        request.onAuthorityViolation?.(category);
+      }
     },
+    onPermissionResponse: () => noteAuthorityViolation("permission"),
   });
   let sessionId: string | undefined;
   let assignedCount = 0;
@@ -94,7 +106,6 @@ export async function runAcpAgentSession(
   try {
     const response = await client({ name: "flow-harness" })
       .onRequest(methods.client.session.requestPermission, () => {
-        authorityViolation ??= "permission";
         return { outcome: { outcome: "cancelled" as const } };
       })
       .onNotification(methods.client.session.update, ({ params }) => {
@@ -124,6 +135,7 @@ export async function runAcpAgentSession(
           throw new AcpAgentSessionError("configuration_rejected");
         }
         sessionId = created.sessionId;
+        request.onSessionCreated?.(sessionId);
         assertConfigurationState(created.configOptions, values.assignments, assignedCount, true);
 
         for (const [index, assignment] of values.assignments.entries()) {
@@ -137,6 +149,7 @@ export async function runAcpAgentSession(
         }
 
         promptActive = true;
+        request.onPromptStarted?.();
         const promptResponse = await agent.request(
           methods.agent.session.prompt,
           {
@@ -196,6 +209,7 @@ export async function runAcpAgentSession(
       throw new AcpAgentSessionError("protocol");
     }
     updateCount += 1;
+    request.onUpdateCount?.(updateCount);
     if (updateCount > MAX_ACP_AGENT_SESSION_UPDATES) {
       throw new AcpAgentSessionError("output_limit");
     }
@@ -209,7 +223,7 @@ export async function runAcpAgentSession(
       update.sessionUpdate === "tool_call_update" ||
       update.sessionUpdate === "available_commands_update"
     ) {
-      authorityViolation ??= "tool";
+      noteAuthorityViolation("tool");
       throw new AcpAgentSessionError("authority_violation", "tool");
     }
     if (update.sessionUpdate === "current_mode_update") {

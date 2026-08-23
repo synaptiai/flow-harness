@@ -195,8 +195,8 @@ export interface AcpAgentExecutionEvidence {
   readonly terminationStatus: "confirmed" | "unconfirmed";
   readonly sandbox: SandboxEvidence;
   readonly usageProvenance: {
-    readonly modelTokens: "prompt-response" | "declared-unavailable";
-    readonly costUsd: "session-usage-update" | "declared-unavailable";
+    readonly modelTokens: "prompt-response" | "declared-unavailable" | "not-observed";
+    readonly costUsd: "session-usage-update" | "declared-unavailable" | "not-observed";
   };
   readonly updateCount: number;
   readonly authorityViolation?: AcpAgentAuthorityViolation;
@@ -1804,8 +1804,8 @@ const acpAgentExecutionEvidenceSchema = z
     sandbox: sandboxEvidenceSchema,
     usageProvenance: z
       .object({
-        modelTokens: z.enum(["prompt-response", "declared-unavailable"]),
-        costUsd: z.enum(["session-usage-update", "declared-unavailable"]),
+        modelTokens: z.enum(["prompt-response", "declared-unavailable", "not-observed"]),
+        costUsd: z.enum(["session-usage-update", "declared-unavailable", "not-observed"]),
       })
       .strict(),
     updateCount: z.number().int().nonnegative().max(4_096),

@@ -43,6 +43,7 @@ export interface AcpAgentProtocolStream extends Stream {
 export interface AcpAgentProtocolStreamOptions {
   readonly operationTimeoutMs?: number;
   readonly onAuthorityViolation?: (category: AcpAgentAuthorityViolationCategory) => void;
+  readonly onPermissionResponse?: () => void;
 }
 
 type ProtocolPhase = "await_initialize" | "initializing" | "ready" | "failed";
@@ -63,6 +64,7 @@ export function createAcpAgentProtocolStream(
   const reader = base.readable.getReader();
   const writer = base.writable.getWriter();
   const incomingRequests = new Set<string>();
+  const permissionRequests = new Set<string>();
   const outgoingRequests = new Set<string>();
   let phase: ProtocolPhase = "await_initialize";
   let initializeId: string | undefined;
@@ -222,7 +224,9 @@ export function createAcpAgentProtocolStream(
         if (category !== "permission") {
           throw new AcpAgentProtocolStreamError("authority_violation", category);
         }
-        addRequest(incomingRequests, requestKey(message.id));
+        const key = requestKey(message.id);
+        addRequest(incomingRequests, key);
+        permissionRequests.add(key);
         return;
       }
       if (AGENT_NOTIFICATION_METHODS.has(message.method)) {
@@ -300,6 +304,9 @@ export function createAcpAgentProtocolStream(
   function commitOutgoing(outgoing: OutgoingSettlement): void {
     if (outgoing.kind === "agent_response") {
       incomingRequests.delete(outgoing.key);
+      if (permissionRequests.delete(outgoing.key)) {
+        notifyPermissionResponse();
+      }
     }
   }
 
@@ -314,6 +321,14 @@ export function createAcpAgentProtocolStream(
   function notifyAuthorityViolation(category: AcpAgentAuthorityViolationCategory): void {
     try {
       options.onAuthorityViolation?.(category);
+    } catch {
+      throw new AcpAgentProtocolStreamError("io");
+    }
+  }
+
+  function notifyPermissionResponse(): void {
+    try {
+      options.onPermissionResponse?.();
     } catch {
       throw new AcpAgentProtocolStreamError("io");
     }

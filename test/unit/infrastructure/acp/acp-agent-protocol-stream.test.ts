@@ -43,9 +43,11 @@ describe("ACP agent client protocol stream", () => {
 
   it("passes a permission request only so the client can cancel it and records the violation", async () => {
     const violations: AcpAgentAuthorityViolationCategory[] = [];
+    const permissionResponses: string[] = [];
     const base = memoryStream();
     const stream = createAcpAgentProtocolStream(base.stream, {
       onAuthorityViolation: (category) => violations.push(category),
+      onPermissionResponse: () => permissionResponses.push("written"),
     });
     const reader = stream.readable.getReader();
     const writer = stream.writable.getWriter();
@@ -67,6 +69,7 @@ describe("ACP agent client protocol stream", () => {
     });
 
     expect(violations).toEqual(["permission"]);
+    expect(permissionResponses).toEqual(["written"]);
     expect(base.written.at(-1)).toEqual({
       jsonrpc: "2.0",
       id: "permission-1",

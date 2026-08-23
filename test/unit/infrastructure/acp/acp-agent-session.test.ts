@@ -12,6 +12,7 @@ describe("ACP agent session", () => {
     const observed: Array<{ readonly method: string; readonly params: unknown }> = [];
     let model = "fallback-model";
     let thinking = "low";
+    const lifecycle: string[] = [];
     const connection = agent({ name: "fixture-agent" })
       .onRequest(methods.agent.initialize, ({ params }) => {
         observed.push({ method: "initialize", params });
@@ -60,6 +61,8 @@ describe("ACP agent session", () => {
       cwd: "/private/attempt",
       prompt: "Flow authority capsule\n\nComplete the task.",
       maxOutputBytes: 65_536,
+      onSessionCreated: (sessionId) => lifecycle.push(`session:${sessionId}`),
+      onPromptStarted: () => lifecycle.push("prompt"),
     });
 
     expect(result).toEqual({
@@ -109,6 +112,7 @@ describe("ACP agent session", () => {
         },
       },
     ]);
+    expect(lifecycle).toEqual(["session:session-private", "prompt"]);
     connection.close();
   });
 
@@ -141,19 +145,25 @@ describe("ACP agent session", () => {
       },
     });
 
-    const error = await runAcpAgentSession(transport.client, baseRequest()).catch(
+    const violations: string[] = [];
+    const error = await runAcpAgentSession(transport.client, {
+      ...baseRequest(),
+      onAuthorityViolation: (category) => violations.push(category),
+    }).catch(
       (caught: unknown) => caught,
     );
 
     expect(error).toMatchObject({ code: "authority_violation", authorityCategory: "tool" });
     expect(JSON.stringify(error)).not.toContain("PRIVATE_TOOL_ID");
     expect(JSON.stringify(error)).not.toContain("PRIVATE_TOOL_TITLE");
+    expect(violations).toEqual(["tool"]);
     connection.close();
   });
 
   it("returns explicit cancellation for a permission request and fails the session", async () => {
     const transport = linkedStreams();
     let permissionOutcome: unknown;
+    const violations: string[] = [];
     const connection = configurationAgent(transport.agent, {
       prompt: async (params, client) => {
         permissionOutcome = await client.request(methods.client.session.requestPermission, {
@@ -165,11 +175,17 @@ describe("ACP agent session", () => {
       },
     });
 
-    await expect(runAcpAgentSession(transport.client, baseRequest())).rejects.toMatchObject({
+    await expect(
+      runAcpAgentSession(transport.client, {
+        ...baseRequest(),
+        onAuthorityViolation: (category) => violations.push(category),
+      }),
+    ).rejects.toMatchObject({
       code: "authority_violation",
       authorityCategory: "permission",
     });
     expect(permissionOutcome).toEqual({ outcome: { outcome: "cancelled" } });
+    expect(violations).toEqual(["permission"]);
     connection.close();
   });
 });
