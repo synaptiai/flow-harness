@@ -3515,6 +3515,7 @@ async function evaluationCommand(
                     projectRoot,
                   ),
                   createStore: () => dependencies.createStore(runStoreDirectory),
+                  modelSessionStore: dependencies.createModelSessionStore(runStoreDirectory),
                   workspaceIsolator,
                   artifactStore: dependencies.createArtifactStore(projectRoot),
                   ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),

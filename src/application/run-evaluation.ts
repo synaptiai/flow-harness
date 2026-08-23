@@ -17,11 +17,13 @@ import {
   type EvaluationEnvironment,
   type EvaluationHarnessOutcome,
   type EvaluationMetrics,
+  type PhaseRoutingObservation,
   type EvaluationTrialRecord,
   type EvaluationVerificationOutcome,
   parseAcpQualificationObservation,
   parseEvaluationHarnessOutcome,
   parseEvaluationMetrics,
+  parsePhaseRoutingObservation,
   parseEvaluationTrialRecord,
   parseEvaluationVerificationOutcome,
   unavailableEvaluationMetrics,
@@ -36,7 +38,7 @@ import type { WorkspaceIsolator } from "./ports.js";
 
 export interface EvaluationExecutionPlan {
   readonly planDigest: string;
-  readonly purpose?: "acp-interoperability-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly controls: EvaluationPlanSource["controls"];
   readonly tasks: readonly {
@@ -166,6 +168,7 @@ export async function runEvaluationTrials(
     let metrics: EvaluationMetrics = unavailableEvaluationMetrics();
     let verification: EvaluationVerificationOutcome = notRun(task.verifier.digest);
     let qualification: AcpQualificationObservation | undefined;
+    let phaseRouting: PhaseRoutingObservation | undefined;
     let attempt: EvaluationTrialAttempt | undefined;
 
     try {
@@ -271,6 +274,12 @@ export async function runEvaluationTrials(
             }
             qualification = parseAcpQualificationObservation(result.qualification);
           }
+          if (result.phaseRouting !== undefined) {
+            if (input.plan.purpose !== "phase-routing-v1") {
+              throw new Error("adapter returned phase-routing evidence for an ordinary trial");
+            }
+            phaseRouting = parsePhaseRoutingObservation(result.phaseRouting);
+          }
         } catch (error) {
           harness = {
             outcome: "malformed_output",
@@ -279,6 +288,7 @@ export async function runEvaluationTrials(
           };
           metrics = unavailableEvaluationMetrics();
           qualification = undefined;
+          phaseRouting = undefined;
         }
       }
       if (harness.outcome === "completed") {
@@ -316,6 +326,7 @@ export async function runEvaluationTrials(
       harness = { outcome: "crashed", runId: null, reason: boundedReason(error) };
       metrics = unavailableEvaluationMetrics();
       qualification = undefined;
+      phaseRouting = undefined;
     }
 
     if (isSignalAborted(input.signal)) {
@@ -328,6 +339,7 @@ export async function runEvaluationTrials(
       metrics = unavailableEvaluationMetrics();
       verification = notRun(task.verifier.digest);
       qualification = undefined;
+      phaseRouting = undefined;
     }
 
     const completedAt = now().toISOString();
@@ -348,6 +360,7 @@ export async function runEvaluationTrials(
         verification,
         metrics,
         ...(qualification === undefined ? {} : { qualification }),
+        ...(phaseRouting === undefined ? {} : { phaseRouting }),
       });
     } catch (error) {
       record = createEvaluationTrialRecord({

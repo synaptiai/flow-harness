@@ -189,6 +189,51 @@ describe("evaluation plan", () => {
     ).toThrow(/effective baseline|effective.*profile/i);
   });
 
+  it("parses a closed phase-routing qualification with exact profile identities and thresholds", () => {
+    const plan = parseEvaluationPlanText(validPhaseRoutingPlan(), "phase-routing.yaml");
+
+    expect(plan).toMatchObject({
+      purpose: "phase-routing-v1",
+      profiles: [
+        {
+          id: "baseline",
+          effectiveCandidate: "route.effective-harness.json",
+          selection: "baseline",
+        },
+        {
+          id: "candidate",
+          effectiveCandidate: "route.effective-harness.json",
+          selection: "candidate",
+        },
+      ],
+      controls: {
+        phaseRoutingProfiles: [
+          { profileId: "baseline", profileDigest: "1".repeat(64) },
+          { profileId: "candidate", profileDigest: "2".repeat(64) },
+        ],
+      },
+      comparison: {
+        maxVerifiedSuccessRegression: 0,
+        minimumCostReductionRate: 0.1,
+        minimumLatencyReductionRate: 0.1,
+      },
+    });
+
+    expect(() =>
+      parseEvaluationPlanText(
+        validPhaseRoutingPlan().replace("profileId: baseline", "profileId: candidate"),
+      ),
+    ).toThrow(/phase-routing|profile|baseline/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validPhaseRoutingPlan().replace("  minimumCostReductionRate: 0.1\n", ""),
+      ),
+    ).toThrow(/phase-routing|cost.*threshold/i);
+    expect(() =>
+      parseEvaluationPlanText(validPhaseRoutingPlan().replace("purpose: phase-routing-v1\n", "")),
+    ).toThrow(/phase-routing.*purpose|purpose.*phase-routing/i);
+  });
+
   it("rejects unknown fields and ambiguous profile identities", () => {
     expect(() =>
       parseEvaluationPlanText(validPlan().replace("order:", "unexpected: true\norder:")),
@@ -482,4 +527,28 @@ comparison:
   maxPolicyViolations: 0
   maxVerifiedSuccessRegression: 0
 `;
+}
+
+function validPhaseRoutingPlan(): string {
+  return validPlan()
+    .replace("kind: EvaluationPlan\n", "kind: EvaluationPlan\npurpose: phase-routing-v1\n")
+    .replace(
+      "workflow: baseline.workflow.yaml",
+      "effectiveCandidate: route.effective-harness.json\n    selection: baseline",
+    )
+    .replace(
+      "workflow: candidate.workflow.yaml",
+      "effectiveCandidate: route.effective-harness.json\n    selection: candidate",
+    )
+    .replace(
+      "  budget:",
+      `  phaseRoutingProfiles:
+    - { profileId: baseline, profileDigest: "${"1".repeat(64)}" }
+    - { profileId: candidate, profileDigest: "${"2".repeat(64)}" }
+  budget:`,
+    )
+    .replace(
+      "  maxVerifiedSuccessRegression: 0",
+      "  maxVerifiedSuccessRegression: 0\n  minimumCostReductionRate: 0.1\n  minimumLatencyReductionRate: 0.1",
+    );
 }

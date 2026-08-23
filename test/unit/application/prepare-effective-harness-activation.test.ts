@@ -5,6 +5,8 @@ import {
   childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
+  phaseRoutingEffectiveHarnessCandidateArtifactFixture,
+  qualifiedPhaseRoutingEffectiveHarnessEvaluation,
   superiorEffectiveHarnessEvaluation,
   supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../fixtures/effective-harness-evaluation.js";
@@ -208,6 +210,30 @@ describe("effective harness activation preparation", () => {
         stored: superiorEffectiveHarnessEvaluation(artifact, false),
       }),
     ).toThrowError(expect.objectContaining({ code: "evaluation_not_superior" }));
+  });
+
+  it("activates only an exactly bound, qualified phase-routing profile pair", () => {
+    const artifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture();
+    const stored = qualifiedPhaseRoutingEffectiveHarnessEvaluation(artifact);
+
+    expect(prepareEffectiveHarnessActivation({ artifact, stored }).artifact).toEqual(artifact);
+
+    const changed = structuredClone(stored) as DeepMutable<typeof stored>;
+    const controls = changed.header.controls.phaseRoutingProfiles;
+    if (controls === undefined) throw new Error("phase-routing fixture controls are missing");
+    controls[1].profileDigest = "9".repeat(64);
+    expect(() => prepareEffectiveHarnessActivation({ artifact, stored: changed })).toThrowError(
+      expect.objectContaining({ code: "identity_mismatch" }),
+    );
+  });
+
+  it("rejects complete phase-routing evidence that misses an efficiency gate", () => {
+    const artifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture();
+    const stored = qualifiedPhaseRoutingEffectiveHarnessEvaluation(artifact, false);
+
+    expect(() => prepareEffectiveHarnessActivation({ artifact, stored })).toThrowError(
+      expect.objectContaining({ code: "evaluation_not_qualified" }),
+    );
   });
 });
 

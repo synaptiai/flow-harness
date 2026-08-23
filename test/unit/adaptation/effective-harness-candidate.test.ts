@@ -12,6 +12,7 @@ import {
   createEffectiveHarnessCandidateArtifact,
   EffectiveHarnessCandidateError,
   parseEffectiveHarnessCandidateArtifact,
+  projectPhaseRoutingEvaluationState,
 } from "../../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   calculateEffectiveHarnessStateDigest,
@@ -437,6 +438,19 @@ describe("effective harness candidate artifacts", () => {
         },
       },
     });
+    const evaluationBaseline = projectPhaseRoutingEvaluationState(artifact, "baseline");
+    const evaluationCandidate = projectPhaseRoutingEvaluationState(artifact, "candidate");
+    expect(evaluationBaseline).toMatchObject({
+      scopeDigest: artifact.baselineState.scopeDigest,
+      workflow: artifact.baselineState.workflow,
+      packages: artifact.baselineState.packages,
+      phaseRoutingProfile: {
+        profileDigest: routing.identity.profiles.before.profileDigest,
+      },
+    });
+    expect(evaluationBaseline.stateDigest).not.toBe(artifact.baselineState.stateDigest);
+    expect(projectPhaseRoutingEvaluationState(artifact, "baseline")).toEqual(evaluationBaseline);
+    expect(evaluationCandidate).toEqual(artifact.candidateState);
   });
 
   it("rejects fully redigested model-routing state outside the declared route", () => {

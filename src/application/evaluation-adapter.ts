@@ -6,6 +6,7 @@ import type {
   ContextCompactionEvaluationMetrics,
   EvaluationHarnessOutcome,
   EvaluationMetrics,
+  PhaseRoutingObservation,
 } from "../domain/evaluation/records.js";
 import {
   parseAcpQualificationObservation,
@@ -17,7 +18,18 @@ import {
   modelUsageObservationFromLegacy,
 } from "../domain/run/budget.js";
 import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
-import type { AgentEvidence, NodeEvidence, RunState } from "../domain/run/events.js";
+import {
+  type AgentEvidence,
+  type NodeEvidence,
+  type RunState,
+  reduceRunEvents,
+} from "../domain/run/events.js";
+import type {
+  ModelSessionModelMessageEvent,
+  ModelSessionRequestPreparedEvent,
+  ModelSessionRequestSettledEvent,
+  ModelSessionState,
+} from "../domain/run/model-session.js";
 import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
 import type { ArtifactStore } from "./artifact-store.js";
 import type { ModelSessionStore, NodeExecutor, RunEventStore, WorkspaceIsolator } from "./ports.js";
@@ -68,6 +80,7 @@ export interface HarnessEvaluationResult {
   readonly harness: EvaluationHarnessOutcome;
   readonly metrics: EvaluationMetrics;
   readonly qualification?: AcpQualificationObservation;
+  readonly phaseRouting?: PhaseRoutingObservation;
 }
 
 export class HarnessUnsafeStateError extends Error {
@@ -147,6 +160,14 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         elapsed(started, clock()),
       );
     }
+    const phaseRoutingProfile =
+      this.profile.capabilitySnapshot?.effectiveHarness?.phaseRoutingProfile;
+    if (phaseRoutingProfile !== undefined && this.dependencies.modelSessionStore === undefined) {
+      return crashedResult(
+        "phase-routing evaluation requires a durable model-session store",
+        elapsed(started, clock()),
+      );
+    }
     try {
       const artifactReopens = { attempts: 0, successes: 0 };
       const artifactStore =
@@ -159,10 +180,11 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         this.dependencies.contextCompaction === undefined
           ? this.dependencies.executor
           : compactionExecutor(this.dependencies.executor, this.dependencies.contextCompaction);
+      const runStore = this.dependencies.createStore(runId);
       const state = await runWorkflow(this.profile.workflow.compiled, {
         cwd: request.workspace.cwd,
         protectedPaths: [join(request.workspace.cwd, request.instruction.path)],
-        store: this.dependencies.createStore(runId),
+        store: runStore,
         executor,
         runId,
         ...(this.profile.capabilitySnapshot === undefined
@@ -194,6 +216,16 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
               artifactReopens,
             );
       const qualification = acpQualificationObservation(this.profile, state);
+      const phaseRouting =
+        phaseRoutingProfile === undefined
+          ? undefined
+          : await phaseRoutingObservation(
+              this.profile.workflow.compiled,
+              state,
+              runStore,
+              requireModelSessionStore(this.dependencies.modelSessionStore),
+              phaseRoutingProfile.profileDigest,
+            );
       return Object.freeze({
         harness: harnessOutcome(state),
         metrics:
@@ -201,11 +233,156 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
             ? metrics
             : metricsWithContextCompaction(metrics, contextCompaction),
         ...(qualification === undefined ? {} : { qualification }),
+        ...(phaseRouting === undefined ? {} : { phaseRouting }),
       });
     } catch (error) {
       return crashedResult(boundedReason(error), elapsed(started, clock()));
     }
   }
+}
+
+interface RoutedRequestEvidence {
+  readonly prepared: ModelSessionRequestPreparedEvent;
+  readonly settled?: ModelSessionRequestSettledEvent | undefined;
+  readonly message?: ModelSessionModelMessageEvent | undefined;
+}
+
+async function phaseRoutingObservation(
+  workflow: CompiledWorkflow,
+  state: RunState,
+  runStore: RunEventStore,
+  modelSessionStore: ModelSessionStore,
+  profileDigest: string,
+): Promise<PhaseRoutingObservation | undefined> {
+  const requests: RoutedRequestEvidence[] = [];
+  await collectRoutedRequests(workflow, state, runStore, modelSessionStore, requests);
+  if (requests.length === 0) return undefined;
+  if (requests.length > 1_024) {
+    throw new Error("phase-routing observation exceeds the request evidence limit");
+  }
+  for (const request of requests) {
+    if (request.prepared.identity.routing?.profileDigest !== profileDigest) {
+      throw new Error("model request is missing the admitted phase-routing profile evidence");
+    }
+  }
+  const settled = requests.filter(
+    (request): request is RoutedRequestEvidence & { settled: ModelSessionRequestSettledEvent } =>
+      request.settled !== undefined,
+  );
+  const completeCost = requests.every((request) => request.message?.usage !== undefined);
+  const completeLatency = settled.length === requests.length;
+  return Object.freeze({
+    version: 1,
+    profileDigest,
+    requestCount: requests.length,
+    settledRequestCount: settled.length,
+    decisionDigests: requests.map(
+      (request) => requireRoutingDecision(request.prepared).decisionDigest,
+    ),
+    costUsdMicros: completeCost
+      ? safeObservationTotal(
+          requests.map((request) => requireMessageUsage(request).costUsdMicros),
+          "phase-routing cost",
+        )
+      : null,
+    latencyMs: completeLatency
+      ? safeObservationTotal(
+          settled.map((request) => requestLatencyMs(request.prepared, request.settled)),
+          "phase-routing latency",
+        )
+      : null,
+  });
+}
+
+function requestLatencyMs(
+  prepared: ModelSessionRequestPreparedEvent,
+  settled: ModelSessionRequestSettledEvent,
+): number {
+  const latencyMs = Date.parse(settled.at) - Date.parse(prepared.at);
+  if (!Number.isSafeInteger(latencyMs) || latencyMs < 0) {
+    throw new Error("phase-routing request timestamps are not monotonic");
+  }
+  return latencyMs;
+}
+
+function safeObservationTotal(values: readonly number[], label: string): number {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error(`${label} exceeds the safe evidence range`);
+  }
+  return total;
+}
+
+async function collectRoutedRequests(
+  workflow: CompiledWorkflow,
+  state: RunState,
+  runStore: RunEventStore,
+  modelSessionStore: ModelSessionStore,
+  output: RoutedRequestEvidence[],
+): Promise<void> {
+  for (const node of workflow.nodes) {
+    const nodeState = state.nodes[node.id];
+    if (nodeState?.modelSession !== null && nodeState?.modelSession !== undefined) {
+      const session = await modelSessionStore.read({
+        runId: state.runId,
+        workflowId: state.workflowId,
+        nodeId: node.id,
+      });
+      appendSessionRequests(session, output);
+    }
+    if (
+      node.type === "child" &&
+      nodeState?.childRun !== null &&
+      nodeState?.childRun !== undefined
+    ) {
+      const childState = reduceRunEvents(await runStore.read(nodeState.childRun.runId));
+      await collectRoutedRequests(
+        node.child.workflow,
+        childState,
+        runStore,
+        modelSessionStore,
+        output,
+      );
+    }
+  }
+}
+
+function appendSessionRequests(session: ModelSessionState, output: RoutedRequestEvidence[]): void {
+  for (const prepared of session.events.filter(
+    (event): event is ModelSessionRequestPreparedEvent => event.type === "model_request_prepared",
+  )) {
+    const matches = (event: {
+      readonly attempt: number;
+      readonly turn: number;
+      readonly request: number;
+    }) =>
+      event.attempt === prepared.attempt &&
+      event.turn === prepared.turn &&
+      event.request === prepared.request;
+    output.push({
+      prepared,
+      settled: session.events.find(
+        (event): event is ModelSessionRequestSettledEvent =>
+          event.type === "model_request_settled" && matches(event),
+      ),
+      message: session.events.find(
+        (event): event is ModelSessionModelMessageEvent =>
+          event.type === "model_message_committed" && matches(event),
+      ),
+    });
+  }
+}
+
+function requireRoutingDecision(request: ModelSessionRequestPreparedEvent) {
+  const decision = request.identity.routing;
+  if (decision === undefined) throw new Error("model request has no phase-routing decision");
+  return decision;
+}
+
+function requireMessageUsage(request: RoutedRequestEvidence) {
+  const usage = request.message?.usage;
+  if (usage === undefined) throw new Error("model request has no complete usage evidence");
+  return usage;
 }
 
 function acpQualificationObservation(

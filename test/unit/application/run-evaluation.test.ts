@@ -136,6 +136,75 @@ describe("evaluation trial runner", () => {
     expect(observed.get("candidate")).not.toHaveProperty("modelRoutes");
   });
 
+  it("persists phase-routing evidence only for its declared evaluation purpose", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const digests = { baseline: "1".repeat(64), candidate: "2".repeat(64) } as const;
+    const plan: RunEvaluationTrialsInput["plan"] = {
+      ...base,
+      purpose: "phase-routing-v1",
+      controls: {
+        ...base.controls,
+        phaseRoutingProfiles: [
+          { profileId: "baseline", profileDigest: digests.baseline },
+          { profileId: "candidate", profileDigest: digests.candidate },
+        ],
+      },
+    };
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: (profileId) => ({
+        kind: "flow-workflow-v1",
+        run: async () => ({
+          harness: { outcome: "completed", runId: `durable-${profileId}`, reason: null },
+          metrics: {
+            ...unavailableEvaluationMetrics(),
+            costUsdMicros: 10,
+            wallTimeMs: 50,
+          },
+          phaseRouting: {
+            version: 1,
+            profileDigest: digests[profileId as keyof typeof digests],
+            requestCount: 1,
+            settledRequestCount: 1,
+            decisionDigests: ["3".repeat(64)],
+            costUsdMicros: 10,
+            latencyMs: 20,
+          },
+        }),
+      }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        profileId: "baseline",
+        phaseRouting: expect.objectContaining({
+          profileDigest: digests.baseline,
+          latencyMs: 20,
+        }),
+      }),
+      expect.objectContaining({
+        profileId: "candidate",
+        phaseRouting: expect.objectContaining({
+          profileDigest: digests.candidate,
+          latencyMs: 20,
+        }),
+      }),
+    ]);
+  });
+
   it("keeps private verifier bodies outside the adapter and records verifier-authoritative failure", async () => {
     const root = await temporaryDirectory();
     const plan = executionPlan(root);

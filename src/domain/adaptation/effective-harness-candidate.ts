@@ -23,6 +23,7 @@ import {
 } from "./child-specialist-candidate.js";
 import {
   compileEffectiveHarnessState,
+  createEffectiveHarnessState,
   type EffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
   effectiveHarnessWorkflowSource,
@@ -107,6 +108,53 @@ export interface EffectiveHarnessCandidateArtifact {
   readonly baselineState: EffectiveHarnessState;
   readonly candidateState: EffectiveHarnessState;
   readonly artifactDigest: string;
+}
+
+export function projectPhaseRoutingEvaluationState(
+  artifactInput: EffectiveHarnessCandidateArtifact,
+  selection: "baseline" | "candidate",
+): EffectiveHarnessState {
+  const artifact = parseEffectiveHarnessCandidateArtifact(artifactInput);
+  if (
+    artifact.surface !== "phase-routing" ||
+    !("kind" in artifact.candidate) ||
+    artifact.candidate.kind !== "phase-routing-candidate"
+  ) {
+    throw new Error("phase-routing evaluation requires a phase-routing effective candidate");
+  }
+  if (selection === "candidate") return artifact.candidateState;
+  if (
+    artifact.baselineState.phaseRoutingProfile?.profileDigest ===
+    artifact.candidate.profiles.before.profileDigest
+  ) {
+    return artifact.baselineState;
+  }
+  return createEffectiveHarnessState({
+    scopeDigest: artifact.baselineState.scopeDigest,
+    workflowSource: effectiveHarnessWorkflowSource(artifact.baselineState),
+    ...(artifact.baselineState.rootPackage === undefined
+      ? {}
+      : { rootPackage: artifact.baselineState.rootPackage }),
+    packages: artifact.baselineState.packages,
+    ...(artifact.baselineState.supplementalMemory === undefined
+      ? {}
+      : {
+          supplementalMemory: artifact.baselineState.supplementalMemory.map((entry) => ({
+            id: entry.id,
+            target: entry.target,
+            content: Buffer.from(entry.contentBase64, "base64").toString("utf8"),
+          })),
+        }),
+    ...(artifact.baselineState.supplementalMemoryRelationships === undefined
+      ? {}
+      : {
+          supplementalMemoryRelationships:
+            artifact.baselineState.supplementalMemoryRelationships.relationships.map(
+              ({ digest: _digest, ...relationship }) => relationship,
+            ),
+        }),
+    phaseRoutingProfile: artifact.candidate.profiles.before,
+  });
 }
 
 export interface CreateEffectiveHarnessCandidateArtifactInput {

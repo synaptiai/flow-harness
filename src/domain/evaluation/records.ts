@@ -483,6 +483,44 @@ const acpQualificationObservationSchema = z
     }
   });
 
+const phaseRoutingObservationSchema = z
+  .object({
+    version: z.literal(1),
+    profileDigest: sha256Schema,
+    requestCount: z.number().int().positive().max(1_024),
+    settledRequestCount: z.number().int().nonnegative().max(1_024),
+    decisionDigests: z.array(sha256Schema).min(1).max(1_024),
+    costUsdMicros: optionalMetricSchema,
+    latencyMs: optionalMetricSchema,
+  })
+  .strict()
+  .superRefine((observation, context) => {
+    if (observation.settledRequestCount > observation.requestCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["settledRequestCount"],
+        message: "settled requests cannot exceed prepared requests",
+      });
+    }
+    if (observation.decisionDigests.length !== observation.requestCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["decisionDigests"],
+        message: "every prepared request requires one phase-routing decision digest",
+      });
+    }
+    if (
+      observation.latencyMs !== null &&
+      observation.settledRequestCount !== observation.requestCount
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["latencyMs"],
+        message: "complete latency requires every prepared request to settle",
+      });
+    }
+  });
+
 const trialRecordSchema = z
   .object({
     version: z.literal(1),
@@ -516,6 +554,7 @@ const trialRecordSchema = z
     ]),
     metrics: metricsSchema,
     qualification: acpQualificationObservationSchema.optional(),
+    phaseRouting: phaseRoutingObservationSchema.optional(),
     previousDigest: sha256Schema.nullable(),
     recordDigest: sha256Schema,
   })
@@ -526,6 +565,7 @@ export type EvaluationHarnessOutcome = EvaluationTrialRecord["harness"];
 export type EvaluationVerificationOutcome = EvaluationTrialRecord["verification"];
 export type EvaluationEnvironment = EvaluationTrialRecord["environment"];
 export type AcpQualificationObservation = z.infer<typeof acpQualificationObservationSchema>;
+export type PhaseRoutingObservation = z.infer<typeof phaseRoutingObservationSchema>;
 
 export interface CreateEvaluationTrialRecordInput {
   readonly schedule: EvaluationTrialScheduleItem;
@@ -538,6 +578,7 @@ export interface CreateEvaluationTrialRecordInput {
   readonly verification: EvaluationVerificationOutcome;
   readonly metrics: EvaluationMetrics;
   readonly qualification?: AcpQualificationObservation;
+  readonly phaseRouting?: PhaseRoutingObservation;
 }
 
 export class EvaluationRecordError extends Error {
@@ -579,6 +620,10 @@ export function parseAcpQualificationObservation(input: unknown): AcpQualificati
   return parseEvidence(acpQualificationObservationSchema, input, "ACP qualification observation");
 }
 
+export function parsePhaseRoutingObservation(input: unknown): PhaseRoutingObservation {
+  return parseEvidence(phaseRoutingObservationSchema, input, "phase-routing observation");
+}
+
 export function createEvaluationTrialRecord(
   input: CreateEvaluationTrialRecordInput,
 ): EvaluationTrialRecord {
@@ -601,6 +646,7 @@ export function createEvaluationTrialRecord(
     classification,
     metrics: input.metrics,
     ...(input.qualification === undefined ? {} : { qualification: input.qualification }),
+    ...(input.phaseRouting === undefined ? {} : { phaseRouting: input.phaseRouting }),
     previousDigest: input.previousDigest,
   };
   const record = {
@@ -638,6 +684,12 @@ export function parseEvaluationTrialRecord(input: unknown): EvaluationTrialRecor
   const classification = classifyTrial(parsed.data.harness, parsed.data.verification);
   if (classification !== parsed.data.classification) {
     throw new EvaluationRecordError("evaluation trial classification contradicts its outcomes");
+  }
+  if (
+    parsed.data.phaseRouting !== undefined &&
+    parsed.data.phaseRouting.costUsdMicros !== parsed.data.metrics.costUsdMicros
+  ) {
+    throw new EvaluationRecordError("phase-routing accounting contradicts the trial cost metrics");
   }
   return deepFreeze(parsed.data);
 }

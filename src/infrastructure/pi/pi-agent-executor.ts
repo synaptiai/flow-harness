@@ -1119,6 +1119,14 @@ function attachModelSessionRecorder(
     ) {
       throw new Error("phase-routing decision does not match the provider request surface");
     }
+    if (
+      request.phaseRouting !== undefined &&
+      request.contextCompactionMode === "references-and-summary"
+    ) {
+      throw new Error(
+        "phase-routed model sessions do not support provider-generated context summaries",
+      );
+    }
     const state = await journal.read();
     const prepared = state.events.filter((event) => event.type === "model_request_prepared");
     const requestSequence = (prepared.at(-1)?.request ?? 0) + 1;

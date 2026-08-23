@@ -34,6 +34,10 @@ import {
   parseModelRoutingCandidateIdentity,
 } from "../../domain/adaptation/model-routing-candidate.js";
 import {
+  type PhaseRoutingCandidateIdentity,
+  parsePhaseRoutingCandidateIdentity,
+} from "../../domain/adaptation/phase-routing-candidate.js";
+import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
@@ -182,9 +186,23 @@ const candidateIdentitySchema = z
       | AgentSkillCandidateIdentity
       | AgentSkillPackageCandidateIdentity
       | ModelRoutingCandidateIdentity
+      | PhaseRoutingCandidateIdentity
       | ChildSpecialistCandidateIdentity
       | SupplementalMemoryCandidateIdentity
     >((value) => {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "phase-routing-candidate"
+      ) {
+        try {
+          parsePhaseRoutingCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       if (
         typeof value === "object" &&
         value !== null &&
@@ -283,6 +301,7 @@ const flowProfileSchema = z
           "agent-skill-resource",
           "agent-skill-package",
           "model-routing",
+          "phase-routing",
           "child-specialist",
           "supplemental-memory",
         ]),
@@ -370,6 +389,9 @@ const evaluationModelSchema = z
 const modelRouteControlSchema = z
   .object({ profileId: identifierSchema, nodeId: identifierSchema, route: evaluationModelSchema })
   .strict();
+const phaseRoutingProfileControlSchema = z
+  .object({ profileId: identifierSchema, profileDigest: sha256Schema })
+  .strict();
 
 const publicHeaderSchema = z
   .object({
@@ -379,7 +401,7 @@ const publicHeaderSchema = z
     planDigest: sha256Schema,
     apiVersion: z.literal(EVALUATION_PLAN_API_VERSION),
     planId: identifierSchema,
-    purpose: z.literal("acp-interoperability-v1").optional(),
+    purpose: z.enum(["acp-interoperability-v1", "phase-routing-v1"]).optional(),
     suite: z
       .object({
         id: identifierSchema,
@@ -393,6 +415,10 @@ const publicHeaderSchema = z
         model: evaluationModelSchema,
         modelRoutes: z
           .tuple([modelRouteControlSchema, modelRouteControlSchema])
+          .readonly()
+          .optional(),
+        phaseRoutingProfiles: z
+          .tuple([phaseRoutingProfileControlSchema, phaseRoutingProfileControlSchema])
           .readonly()
           .optional(),
         budget: budgetSchema,
@@ -412,6 +438,8 @@ const publicHeaderSchema = z
         maxFalseCompletionRate: rateSchema,
         maxPolicyViolations: nonNegativeSafeIntegerSchema,
         maxVerifiedSuccessRegression: rateSchema,
+        minimumCostReductionRate: rateSchema.optional(),
+        minimumLatencyReductionRate: rateSchema.optional(),
       })
       .strict(),
     schedule: z.array(scheduleItemSchema).min(2).max(MAX_EVALUATION_TRIALS),
@@ -550,6 +578,7 @@ const publicHeaderSchema = z
       const candidateBinding = flowCandidate?.effectiveHarness;
       const routeIdentity = flowCandidate?.candidate?.identity;
       const modelRoutes = header.controls.modelRoutes;
+      const phaseProfiles = header.controls.phaseRoutingProfiles;
       const workflowIdsMatch =
         baselineBinding?.workflowId === undefined && candidateBinding?.workflowId === undefined
           ? true
@@ -571,6 +600,28 @@ const publicHeaderSchema = z
             modelRoutes[1].nodeId === routeIdentity.scope.nodeId &&
             sameModelRoute(modelRoutes[0].route, routeIdentity.route.before) &&
             sameModelRoute(modelRoutes[1].route, routeIdentity.route.after);
+      const phaseRoutingMatches =
+        candidateBinding?.surface === "phase-routing"
+          ? header.purpose === "phase-routing-v1" &&
+            baselineBinding?.surface === "phase-routing" &&
+            routeIdentity !== undefined &&
+            "kind" in routeIdentity &&
+            routeIdentity.kind === "phase-routing-candidate" &&
+            phaseProfiles !== undefined &&
+            phaseProfiles[0].profileId === flowBaseline?.id &&
+            phaseProfiles[1].profileId === flowCandidate?.id &&
+            phaseProfiles[0].profileDigest === routeIdentity.profiles.before.profileDigest &&
+            phaseProfiles[1].profileDigest === routeIdentity.profiles.after.profileDigest &&
+            header.comparison.minimumCostReductionRate !== undefined &&
+            header.comparison.minimumLatencyReductionRate !== undefined &&
+            header.comparison.minimumEffect === 0 &&
+            header.suite.tasks.every(
+              (task) => task.partition === "holdout" && task.verifier.kind === "filesystem-v1",
+            )
+          : header.purpose !== "phase-routing-v1" &&
+            phaseProfiles === undefined &&
+            header.comparison.minimumCostReductionRate === undefined &&
+            header.comparison.minimumLatencyReductionRate === undefined;
       const childSpecialistMatches =
         candidateBinding?.surface !== "child-specialist"
           ? true
@@ -593,6 +644,13 @@ const publicHeaderSchema = z
               (flowCandidate.capabilitySnapshotDigest ?? calculateCapabilitySnapshotDigest([]));
       const samePackages = (profile: z.infer<typeof flowProfileSchema>): boolean => {
         const packageDigests = profile.effectiveHarness?.packageDigests ?? [];
+        if (profile.effectiveHarness?.surface === "phase-routing") {
+          return (
+            profile.capabilitySnapshotDigest !== undefined &&
+            profile.capabilityPackageDigests !== undefined &&
+            isDeepStrictEqual(profile.capabilityPackageDigests, packageDigests)
+          );
+        }
         return packageDigests.length === 0
           ? profile.capabilitySnapshotDigest === undefined &&
               profile.capabilityPackageDigests === undefined
@@ -605,6 +663,13 @@ const publicHeaderSchema = z
           code: "custom",
           path: ["controls", "modelRoutes"],
           message: "model routes must bind the exact effective candidate route identities",
+        });
+      }
+      if (!phaseRoutingMatches) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "phaseRoutingProfiles"],
+          message: "phase-routing controls must bind the exact effective profile pair",
         });
       }
       if (
@@ -724,6 +789,9 @@ const publicHeaderSchema = z
           return false;
         }
         if ("kind" in identity && identity.kind === "supplemental-memory-candidate") {
+          return false;
+        }
+        if ("kind" in identity && identity.kind === "phase-routing-candidate") {
           return false;
         }
         return (
@@ -959,6 +1027,18 @@ export function evaluationReportInput(header: PublicEvaluationHeader): Evaluatio
         ),
       ),
     ),
+    ...(header.controls.phaseRoutingProfiles === undefined
+      ? {}
+      : {
+          profilePhaseRoutingDigests: Object.freeze(
+            Object.fromEntries(
+              header.controls.phaseRoutingProfiles.map((profile) => [
+                profile.profileId,
+                profile.profileDigest,
+              ]),
+            ),
+          ),
+        }),
     tasks: Object.freeze(
       header.suite.tasks.map((task) =>
         Object.freeze({

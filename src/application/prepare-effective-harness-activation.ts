@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   type EffectiveHarnessCandidateArtifact,
   parseEffectiveHarnessCandidateArtifact,
+  projectPhaseRoutingEvaluationState,
 } from "../domain/adaptation/effective-harness-candidate.js";
 import type { ModelRoute } from "../domain/adaptation/model-routing-candidate.js";
 import {
@@ -18,6 +19,7 @@ export interface EffectiveHarnessStoredEvaluation {
   readonly header: {
     readonly evaluationId: string;
     readonly planDigest: string;
+    readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | undefined;
     readonly suite: {
       readonly tasks: readonly {
         readonly id: string;
@@ -55,6 +57,7 @@ export interface EffectiveHarnessStoredEvaluation {
                   | "agent-skill-resource"
                   | "agent-skill-package"
                   | "model-routing"
+                  | "phase-routing"
                   | "child-specialist"
                   | "supplemental-memory";
                 readonly candidateDigest: string;
@@ -81,6 +84,12 @@ export interface EffectiveHarnessStoredEvaluation {
             },
           ]
         | undefined;
+      readonly phaseRoutingProfiles?:
+        | readonly [
+            { readonly profileId: string; readonly profileDigest: string },
+            { readonly profileId: string; readonly profileDigest: string },
+          ]
+        | undefined;
     };
     readonly comparison: EvaluationReportInput["comparison"];
     readonly schedule: readonly EvaluationTrialScheduleItem[];
@@ -100,6 +109,7 @@ export interface PreparedEffectiveHarnessActivation {
 
 export type EffectiveHarnessActivationAdmissionErrorCode =
   | "evaluation_incomplete"
+  | "evaluation_not_qualified"
   | "evaluation_not_superior"
   | "identity_mismatch"
   | "invalid_evaluation";
@@ -126,21 +136,34 @@ export function prepareEffectiveHarnessActivation(input: {
       "effective harness evaluation is incomplete",
     );
   }
-  const report = aggregateStoredEvaluation(input.stored);
-  if (
-    report.comparison.verdict !== "superior" ||
-    report.comparison.pairedSuccessDelta === null ||
-    report.comparison.confidenceInterval === null ||
-    report.comparison.constraints.falseCompletionRate !== true ||
-    report.comparison.constraints.policyViolations !== true ||
-    report.comparison.constraints.verifiedSuccessRegression !== true
-  ) {
-    throw new EffectiveHarnessActivationAdmissionError(
-      "evaluation_not_superior",
-      "effective harness evaluation is not superior",
-    );
-  }
   assertEvaluationProfiles(artifact, input.stored);
+  const report = aggregateStoredEvaluation(input.stored);
+  if (artifact.surface === "phase-routing") {
+    if (
+      input.stored.header.purpose !== "phase-routing-v1" ||
+      report.qualification?.purpose !== "phase-routing-v1" ||
+      report.qualification.verdict !== "qualified"
+    ) {
+      throw new EffectiveHarnessActivationAdmissionError(
+        "evaluation_not_qualified",
+        "phase-routing evaluation is not qualified",
+      );
+    }
+  } else {
+    if (
+      report.comparison.verdict !== "superior" ||
+      report.comparison.pairedSuccessDelta === null ||
+      report.comparison.confidenceInterval === null ||
+      report.comparison.constraints.falseCompletionRate !== true ||
+      report.comparison.constraints.policyViolations !== true ||
+      report.comparison.constraints.verifiedSuccessRegression !== true
+    ) {
+      throw new EffectiveHarnessActivationAdmissionError(
+        "evaluation_not_superior",
+        "effective harness evaluation is not superior",
+      );
+    }
+  }
   const terminalRecord = input.stored.records.at(-1);
   if (terminalRecord === undefined) {
     throw new EffectiveHarnessActivationAdmissionError(
@@ -173,6 +196,14 @@ function assertEvaluationProfiles(
     baseline?.adapter === "flow-workflow-v1" ? baseline.effectiveHarness : undefined;
   const candidateBinding =
     candidate?.adapter === "flow-workflow-v1" ? candidate.effectiveHarness : undefined;
+  const baselineState =
+    artifact.surface === "phase-routing"
+      ? projectPhaseRoutingEvaluationState(artifact, "baseline")
+      : artifact.baselineState;
+  const candidateState =
+    artifact.surface === "phase-routing"
+      ? projectPhaseRoutingEvaluationState(artifact, "candidate")
+      : artifact.candidateState;
   const workflowIdsMatch =
     artifact.surface === "model-routing"
       ? baselineBinding?.workflowId === artifact.workflowId &&
@@ -182,6 +213,7 @@ function assertEvaluationProfiles(
         : baselineBinding?.workflowId === artifact.workflowId &&
           candidateBinding?.workflowId === artifact.workflowId;
   assertEvaluationModelRoutes(artifact, stored, baseline?.id, candidate?.id);
+  assertEvaluationPhaseRoutingProfiles(artifact, stored, baseline?.id, candidate?.id);
   if (
     baseline?.adapter !== "flow-workflow-v1" ||
     candidate?.adapter !== "flow-workflow-v1" ||
@@ -193,8 +225,8 @@ function assertEvaluationProfiles(
     candidateBinding?.selection !== "candidate" ||
     baselineBinding.artifactDigest !== artifact.artifactDigest ||
     candidateBinding.artifactDigest !== artifact.artifactDigest ||
-    baselineBinding.stateDigest !== artifact.baselineState.stateDigest ||
-    candidateBinding.stateDigest !== artifact.candidateState.stateDigest ||
+    baselineBinding.stateDigest !== baselineState.stateDigest ||
+    candidateBinding.stateDigest !== candidateState.stateDigest ||
     baselineBinding.baselineHeadDigest !== artifact.baselineHead.headDigest ||
     candidateBinding.baselineHeadDigest !== artifact.baselineHead.headDigest ||
     baselineBinding.surface !== artifact.surface ||
@@ -202,17 +234,17 @@ function assertEvaluationProfiles(
     baselineBinding.candidateDigest !== artifact.candidate.candidateDigest ||
     candidateBinding.candidateDigest !== artifact.candidate.candidateDigest ||
     !workflowIdsMatch ||
-    baselineBinding.workflowSha256 !== artifact.baselineState.workflow.sha256 ||
-    baselineBinding.workflowDigest !== artifact.baselineState.workflow.workflowDigest ||
-    candidateBinding.workflowSha256 !== artifact.candidateState.workflow.sha256 ||
-    candidateBinding.workflowDigest !== artifact.candidateState.workflow.workflowDigest ||
+    baselineBinding.workflowSha256 !== baselineState.workflow.sha256 ||
+    baselineBinding.workflowDigest !== baselineState.workflow.workflowDigest ||
+    candidateBinding.workflowSha256 !== candidateState.workflow.sha256 ||
+    candidateBinding.workflowDigest !== candidateState.workflow.workflowDigest ||
     !isDeepStrictEqual(
       baselineBinding.packageDigests,
-      artifact.baselineState.packages.map((item) => item.digest),
+      baselineState.packages.map((item) => item.digest),
     ) ||
     !isDeepStrictEqual(
       candidateBinding.packageDigests,
-      artifact.candidateState.packages.map((item) => item.digest),
+      candidateState.packages.map((item) => item.digest),
     ) ||
     canonicalize(candidate.candidate.identity) !== canonicalize(artifact.candidate)
   ) {
@@ -220,6 +252,31 @@ function assertEvaluationProfiles(
       "identity_mismatch",
       "effective harness evaluation does not match its candidate artifact",
     );
+  }
+}
+
+function assertEvaluationPhaseRoutingProfiles(
+  artifact: EffectiveHarnessCandidateArtifact,
+  stored: EffectiveHarnessStoredEvaluation,
+  baselineProfileId: string | undefined,
+  candidateProfileId: string | undefined,
+): void {
+  const profiles = stored.header.controls.phaseRoutingProfiles;
+  if (artifact.surface !== "phase-routing") {
+    if (profiles !== undefined) throwIdentityMismatch();
+    return;
+  }
+  const identity = artifact.candidate;
+  if (
+    !("kind" in identity) ||
+    identity.kind !== "phase-routing-candidate" ||
+    profiles === undefined ||
+    profiles[0].profileId !== baselineProfileId ||
+    profiles[1].profileId !== candidateProfileId ||
+    profiles[0].profileDigest !== identity.profiles.before.profileDigest ||
+    profiles[1].profileDigest !== identity.profiles.after.profileDigest
+  ) {
+    throwIdentityMismatch();
   }
 }
 
@@ -288,6 +345,19 @@ function aggregateStoredEvaluation(stored: EffectiveHarnessStoredEvaluation) {
           assertionCount: task.verifier.assertionCount,
         })),
         comparison: stored.header.comparison,
+        ...(stored.header.purpose === undefined ? {} : { purpose: stored.header.purpose }),
+        ...(stored.header.controls.phaseRoutingProfiles === undefined
+          ? {}
+          : {
+              profilePhaseRoutingDigests: Object.freeze(
+                Object.fromEntries(
+                  stored.header.controls.phaseRoutingProfiles.map((profile) => [
+                    profile.profileId,
+                    profile.profileDigest,
+                  ]),
+                ),
+              ),
+            }),
       },
       stored.records,
     );

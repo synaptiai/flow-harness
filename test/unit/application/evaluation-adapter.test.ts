@@ -5,16 +5,23 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
+import { phaseRoutingEffectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
 import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import {
   FlowWorkflowEvaluationAdapter,
   type HarnessEvaluationRequest,
 } from "../../../src/application/evaluation-adapter.js";
 import type { NodeExecutor } from "../../../src/application/ports.js";
+import { projectPhaseRoutingEvaluationState } from "../../../src/domain/adaptation/effective-harness-candidate.js";
+import {
+  createEffectiveHarnessHeadIdentity,
+  effectiveHarnessWorkflowSource,
+} from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   type CapabilitySnapshot,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
+  createEffectiveHarnessCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ModelUsageObservation } from "../../../src/domain/run/budget.js";
 import {
@@ -159,6 +166,91 @@ describe("Flow workflow evaluation adapter", () => {
         cacheReadTokens: 2,
         cacheWriteTokens: 1,
         outputTokens: 4,
+      },
+    });
+  });
+
+  it("reconstructs exact phase-routing evidence from the durable model session", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const artifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture();
+    const state = projectPhaseRoutingEvaluationState(artifact, "baseline");
+    const workflow = compileWorkflowText(effectiveHarnessWorkflowSource(state));
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: state.scopeDigest,
+      workflowId: state.workflowId,
+      generation: artifact.baselineHead.generation + 1,
+      activationDigest: artifact.artifactDigest,
+      transitionDigest: artifact.candidate.candidateDigest,
+      stateDigest: state.stateDigest,
+    });
+    const capabilitySnapshot = createEffectiveHarnessCapabilitySnapshot(state, head);
+    const modelSessionStore = new JsonlModelSessionStore(join(root, "model-sessions"));
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+        capabilitySnapshot,
+      },
+      {
+        executor: routedSuccessfulExecutor(),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        modelSessionStore,
+        now: () => new Date("2026-08-23T00:00:00.000Z"),
+      },
+    );
+
+    const result = await adapter.run(publicRequest(root));
+
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: { costUsdMicros: 17 },
+      phaseRouting: {
+        version: 1,
+        profileDigest: state.phaseRoutingProfile?.profileDigest,
+        requestCount: 1,
+        settledRequestCount: 1,
+        decisionDigests: [expect.stringMatching(/^[a-f0-9]{64}$/)],
+        costUsdMicros: 17,
+        latencyMs: 0,
+      },
+    });
+  });
+
+  it("refuses phase-routing evaluation without a durable model-session store", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const artifact = phaseRoutingEffectiveHarnessCandidateArtifactFixture();
+    const state = projectPhaseRoutingEvaluationState(artifact, "candidate");
+    const workflow = compileWorkflowText(effectiveHarnessWorkflowSource(state));
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: state.scopeDigest,
+      workflowId: state.workflowId,
+      generation: artifact.baselineHead.generation + 1,
+      activationDigest: artifact.artifactDigest,
+      transitionDigest: artifact.candidate.candidateDigest,
+      stateDigest: state.stateDigest,
+    });
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+        capabilitySnapshot: createEffectiveHarnessCapabilitySnapshot(state, head),
+      },
+      {
+        executor: successfulExecutor(),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root))).resolves.toMatchObject({
+      harness: {
+        outcome: "crashed",
+        reason: expect.stringMatching(/durable model-session store/i),
       },
     });
   });
@@ -826,6 +918,65 @@ function successfulExecutor(
             : { capabilities: createAgentCapabilityEvidence(capabilitySnapshot, ["review"]) }),
         },
       };
+    },
+  };
+}
+
+function routedSuccessfulExecutor(): NodeExecutor {
+  const delegate = successfulExecutor();
+  return {
+    async execute(node, context) {
+      const journal = context.modelSession;
+      const routing = context.phaseRouting;
+      if (journal === undefined || routing === undefined) {
+        throw new Error("phase-routing test requires durable request context");
+      }
+      await journal.append({
+        type: "model_request_prepared",
+        attempt: context.attempt,
+        turn: 1,
+        request: 1,
+        identity: {
+          version: 1,
+          provider: routing.route.provider,
+          model: routing.route.id,
+          apiAdapter: "messages-v1",
+          thinking: routing.route.thinking,
+          runtimeVersion: "test-runtime",
+          system: { sha256: "1".repeat(64), bytes: 100 },
+          toolCatalog: { sha256: "2".repeat(64), bytes: 100, count: 0 },
+          authority: { sha256: "3".repeat(64) },
+          portableHistory: calculatePortableHistoryIdentity(journal.state),
+          runtimeSurface: { sha256: "4".repeat(64), bytes: 400 },
+          routing,
+          attempt: context.attempt,
+          turn: 1,
+          request: 1,
+        },
+      });
+      await journal.append({
+        type: "model_message_committed",
+        attempt: context.attempt,
+        turn: 1,
+        request: 1,
+        text: '"complete"',
+        stopReason: "stop",
+        usage: {
+          inputTokens: 3,
+          cacheReadTokens: 1,
+          cacheWriteTokens: 2,
+          outputTokens: 5,
+          costUsdMicros: 17,
+        },
+      });
+      await journal.append({
+        type: "model_request_settled",
+        attempt: context.attempt,
+        turn: 1,
+        request: 1,
+        outcome: "completed",
+      });
+      return await delegate.execute(node, context);
     },
   };
 }
