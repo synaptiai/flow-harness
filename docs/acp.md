@@ -4,6 +4,10 @@ Flow implements one local Agent Client Protocol version 1 bridge. ACP is an inte
 transport for editor clients. Flow still owns workflow admission, policy, packages, sandboxes,
 approvals, cancellation, durable state, replay, and public projection.
 
+This bridge presents Flow as an ACP agent to an editor. A separate
+[executor-admission foundation](#local-executor-admission-foundation) prepares Flow to use another
+ACP agent for bounded work. The current source doesn't expose or launch that executor yet.
+
 ## Start the bridge
 
 Build Flow and start the bridge from the selected project:
@@ -86,9 +90,47 @@ candidate, package, registry, credential, or network sources.
 An empty session can be listed and loaded before `/flow-run`. It has no run events to replay. After
 submission, the descriptor, supervisor command, and run ledger form the complete identity chain.
 
+## Local executor admission foundation
+
+Current source builds can validate one internal `AcpAgent` manifest for a future local executor.
+There is no public executor-selection option and no production ACP subprocess launch in this
+slice.
+
+The strict manifest declares:
+
+- ACP v1 and the `prompt-only-v1` compatibility profile.
+- One exact executable or one exact Node package closure and Node runtime.
+- Fixed model mappings and provider domains.
+- Credential environment-variable names, but never credential values.
+- Independent support for complete model-token and reported-cost evidence.
+
+Admission uses bounded, no-follow local reads. It doesn't search PATH, a package registry, a package
+manager, or a home directory. It doesn't contact a network service or start a subprocess. Flow
+checks the exact hashes, byte counts, file identities, package closure, entry point, and Node
+version before it returns an immutable runtime snapshot.
+
+The executor identity belongs to the run capability snapshot, not workflow YAML. Changing it
+changes the capability digest without changing the workflow digest. The same digest crosses
+attached runs, detached supervisor records, workers, child runs, and recovery. A missing or changed
+identity fails recovery before executor invocation.
+
+Token and cost availability are independent. A complete observation contributes its measured
+value. An unavailable observation remains unavailable in durable state, public presentation, and
+evaluation metrics. Flow doesn't display or score it as zero. A workflow that sets
+`maxModelTokens` or `maxCostUsd` fails before its first event when the selected runtime can't
+report that dimension completely.
+
+Public output includes safe cryptographic identity and compatibility fields. It excludes launch
+paths, arguments, file-system identities, manifest contents, configuration, provider authority,
+and credential environment-variable names.
+
+Read [Architecture](architecture.md#acp-executor-admission-foundation) for ownership and dependency
+direction. Read [Slice 10.1](roadmap.md#slice-101-run-a-local-acp-executor) for the remaining process,
+containment, protocol, and interoperability work.
+
 ## Transport limits and cleanup
 
-Flow uses the official `@agentclientprotocol/sdk` version 1.3.0 for ACP types, routing, and the
+Flow uses the official `@agentclientprotocol/sdk` version 1.4.0 for ACP types, routing, and the
 independent compatibility peer. A Flow-owned stream enforces stricter local limits:
 
 - one JSON-RPC object per newline-delimited frame.

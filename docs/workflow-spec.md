@@ -596,6 +596,19 @@ therefore exceed its remaining allowance. This contract is deterministic run adm
 a prepaid or invoice-authoritative billing cap. Flow does not infer pricing, convert currencies, or
 reconcile provider invoices.
 
+An operator-selected ACP executor is a run capability, not a workflow field. Its immutable runtime
+snapshot declares model-token and reported-cost support independently. If the workflow budget
+contains `maxModelTokens`, Flow admits the run only when the selected runtime declares complete
+token accounting. If the budget contains `maxCostUsd`, Flow requires complete reported-cost
+accounting. The same rule applies when a parent budget covers an embedded child workflow. An
+unsupported dimension fails before `run_started` or executor invocation.
+
+Durable model evidence records each dimension as complete or unavailable. Complete tokens contain
+a total and can include an exact input, output, cache-read, and cache-write breakdown. Evaluation
+reports that breakdown only when every attempted model node supplies it. An unavailable token or
+cost dimension contributes no synthetic zero. Public run presentation labels the dimension
+`Unavailable`. Existing complete Pi usage retains its prior values and replay behavior.
+
 ## Command node
 
 ```yaml
