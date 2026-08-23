@@ -60,6 +60,7 @@ const effectiveHarnessRuntimeSchema = z
       .max(MAX_SUPPLEMENTAL_MEMORY_ENTRIES)
       .optional(),
     supplementalMemoryRelationships: supplementalMemoryRelationshipStateSchema.optional(),
+    phaseRoutingProfile: z.unknown().optional(),
     runtimeDigest: sha256Schema,
   })
   .strict();
@@ -75,6 +76,7 @@ export interface EffectiveHarnessRuntimeSnapshot {
   readonly packageDigests: readonly string[];
   readonly supplementalMemory?: EffectiveHarnessState["supplementalMemory"];
   readonly supplementalMemoryRelationships?: EffectiveHarnessState["supplementalMemoryRelationships"];
+  readonly phaseRoutingProfile?: EffectiveHarnessState["phaseRoutingProfile"];
   readonly runtimeDigest: string;
 }
 
@@ -130,6 +132,9 @@ export function createEffectiveHarnessRuntimeSnapshot(
     ...(state.supplementalMemoryRelationships === undefined
       ? {}
       : { supplementalMemoryRelationships: state.supplementalMemoryRelationships }),
+    ...(state.phaseRoutingProfile === undefined
+      ? {}
+      : { phaseRoutingProfile: state.phaseRoutingProfile }),
   };
   return parseEffectiveHarnessRuntimeSnapshot(
     { ...content, runtimeDigest: calculateEffectiveHarnessRuntimeDigest(content) },
@@ -190,6 +195,9 @@ export function calculateEffectiveHarnessRuntimeDigest(
               assessmentDigest: runtime.supplementalMemoryRelationships.assessment.digest,
             },
           }),
+      ...(runtime.phaseRoutingProfile === undefined
+        ? {}
+        : { phaseRoutingProfileDigest: runtime.phaseRoutingProfile.profileDigest }),
     }),
   );
 }
@@ -249,6 +257,12 @@ function parseAndRestore(
       : {
           supplementalMemoryRelationships: parsed.data.supplementalMemoryRelationships,
         }),
+    ...(parsed.data.phaseRoutingProfile === undefined
+      ? {}
+      : {
+          phaseRoutingProfile: parsed.data
+            .phaseRoutingProfile as EffectiveHarnessState["phaseRoutingProfile"],
+        }),
     runtimeDigest: parsed.data.runtimeDigest,
   };
   if (
@@ -280,6 +294,9 @@ function parseAndRestore(
           : {
               supplementalMemoryRelationships: runtime.supplementalMemoryRelationships,
             }),
+        ...(runtime.phaseRoutingProfile === undefined
+          ? {}
+          : { phaseRoutingProfile: runtime.phaseRoutingProfile }),
         stateDigest: head.stateDigest,
       },
       { scopeDigest: runtime.scopeDigest },

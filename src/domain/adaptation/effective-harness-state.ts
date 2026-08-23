@@ -23,6 +23,11 @@ import { calculateWorkflowDigest } from "../workflow/digest.js";
 import type { CompiledWorkflowPackageReference } from "../workflow/types.js";
 import { MAX_PROMPT_ACTIVATION_SOURCE_BYTES } from "./prompt-activation.js";
 import {
+  type PhaseRoutingProfile,
+  parsePhaseRoutingProfile,
+  validatePhaseRoutingProfileForWorkflow,
+} from "./phase-routing-candidate.js";
+import {
   createSupplementalMemoryRelationshipState,
   parseSupplementalMemoryRelationshipState,
   type SupplementalMemoryRelationshipInput,
@@ -79,6 +84,7 @@ const effectiveHarnessStateSchema = z
     packages: z.array(z.unknown()).max(MAX_AGENT_SKILL_PACKAGES),
     supplementalMemory: z.array(z.unknown()).optional(),
     supplementalMemoryRelationships: z.unknown().optional(),
+    phaseRoutingProfile: z.unknown().optional(),
     stateDigest: sha256Schema,
   })
   .strict();
@@ -112,6 +118,7 @@ export interface EffectiveHarnessState {
   readonly packages: readonly CapabilityPackageSnapshot[];
   readonly supplementalMemory?: readonly SupplementalMemoryEntry[] | undefined;
   readonly supplementalMemoryRelationships?: SupplementalMemoryRelationshipState | undefined;
+  readonly phaseRoutingProfile?: PhaseRoutingProfile | undefined;
   readonly stateDigest: string;
 }
 
@@ -136,6 +143,7 @@ export interface CreateEffectiveHarnessStateInput {
   readonly supplementalMemoryRelationships?:
     | readonly SupplementalMemoryRelationshipInput[]
     | undefined;
+  readonly phaseRoutingProfile?: PhaseRoutingProfile | undefined;
 }
 
 export interface CreateEffectiveHarnessHeadIdentityInput {
@@ -195,6 +203,7 @@ export function createEffectiveHarnessState(
     input.supplementalMemoryRelationships,
     supplementalMemory,
   );
+  const phaseRoutingProfile = parsePhaseProfile(input.phaseRoutingProfile, compiled);
   const content = {
     version: 1 as const,
     kind: "effective-harness-state" as const,
@@ -210,6 +219,7 @@ export function createEffectiveHarnessState(
     packages,
     ...(supplementalMemory.length === 0 ? {} : { supplementalMemory }),
     ...(supplementalMemoryRelationships === undefined ? {} : { supplementalMemoryRelationships }),
+    ...(phaseRoutingProfile === undefined ? {} : { phaseRoutingProfile }),
   };
   return parseEffectiveHarnessState(
     { ...content, stateDigest: calculateEffectiveHarnessStateDigest(content) },
@@ -253,6 +263,7 @@ export function parseEffectiveHarnessState(
     parsed.data.supplementalMemoryRelationships,
     supplementalMemory,
   );
+  const phaseRoutingProfile = parsePhaseProfile(parsed.data.phaseRoutingProfile, compiled);
   if (
     compiled.id !== parsed.data.workflowId ||
     calculateWorkflowDigest(compiled) !== parsed.data.workflow.workflowDigest
@@ -272,6 +283,7 @@ export function parseEffectiveHarnessState(
     packages,
     ...(supplementalMemory.length === 0 ? {} : { supplementalMemory }),
     ...(supplementalMemoryRelationships === undefined ? {} : { supplementalMemoryRelationships }),
+    ...(phaseRoutingProfile === undefined ? {} : { phaseRoutingProfile }),
     stateDigest: parsed.data.stateDigest,
   };
   if (calculateEffectiveHarnessStateDigest(state) !== state.stateDigest) {
@@ -319,6 +331,9 @@ export function calculateEffectiveHarnessStateDigest(
               assessmentDigest: state.supplementalMemoryRelationships.assessment.digest,
             },
           }),
+      ...(state.phaseRoutingProfile === undefined
+        ? {}
+        : { phaseRoutingProfileDigest: state.phaseRoutingProfile.profileDigest }),
     }),
   );
 }
@@ -467,6 +482,21 @@ function parseMemoryRelationshipState(
     return parseSupplementalMemoryRelationshipState(input, entries);
   } catch (error) {
     throw mapSupplementalMemoryRelationshipError(error);
+  }
+}
+
+function parsePhaseProfile(
+  input: unknown,
+  workflow: ReturnType<typeof compileWorkflowText>,
+): PhaseRoutingProfile | undefined {
+  if (input === undefined) return undefined;
+  try {
+    return validatePhaseRoutingProfileForWorkflow(parsePhaseRoutingProfile(input), workflow);
+  } catch {
+    throw new EffectiveHarnessStateError(
+      "identity_mismatch",
+      "effective harness phase-routing profile does not match its workflow",
+    );
   }
 }
 

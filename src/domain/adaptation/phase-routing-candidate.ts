@@ -454,6 +454,98 @@ export function phaseRoutingTargetKey(target: PhaseRoutingTarget): string {
   return `${target.workflowId}\0${target.childPath.join("\0")}\0${target.nodeId}`;
 }
 
+export function validatePhaseRoutingProfileForWorkflow(
+  input: PhaseRoutingProfile,
+  workflow: CompiledWorkflow,
+): PhaseRoutingProfile {
+  const profile = parsePhaseRoutingProfile(input);
+  const assignments = assignmentMap(profile.assignments);
+  const visited = new Set<string>();
+  visitCompiledModelTargets(workflow, workflow.id, [], (target, route) => {
+    const key = phaseRoutingTargetKey(target);
+    const assignment = assignments.get(key);
+    if (assignment === undefined || !isDeepStrictEqual(assignment.route, route)) {
+      throw new PhaseRoutingCandidateError(
+        "identity_mismatch",
+        "phase-routing profile does not match the compiled workflow model routes",
+      );
+    }
+    visited.add(key);
+  });
+  if (visited.size !== profile.assignments.length) {
+    throw new PhaseRoutingCandidateError(
+      "invalid_target",
+      "phase-routing profile contains an unknown or duplicate workflow target",
+    );
+  }
+  return profile;
+}
+
+export function resolvePhaseRoutingAssignment(
+  profile: PhaseRoutingProfile,
+  target: PhaseRoutingTarget,
+): PhaseRoutingAssignment {
+  const parsed = parsePhaseRoutingProfile(profile);
+  const assignment = parsed.assignments.find(
+    (item) => phaseRoutingTargetKey(item.target) === phaseRoutingTargetKey(target),
+  );
+  if (assignment === undefined) {
+    throw new PhaseRoutingCandidateError(
+      "invalid_target",
+      "phase-routing profile has no assignment for the provider call",
+    );
+  }
+  return assignment;
+}
+
+export function applyPhaseRoutingProfile(input: {
+  readonly workflowId: string;
+  readonly source: WorkflowSource;
+  readonly compiled: CompiledWorkflow;
+  readonly before: PhaseRoutingProfile;
+  readonly after: PhaseRoutingProfile;
+  readonly sourceName: string;
+}): PhaseRoutingWorkflowProjection {
+  const before = validatePhaseRoutingProfileForWorkflow(input.before, input.compiled);
+  const after = parsePhaseRoutingProfile(input.after);
+  const { profileDigest: _beforeDigest, ...beforeSource } = before;
+  const { profileDigest: _afterDigest, ...afterSource } = after;
+  const pair = sourceSchema.shape.profiles.safeParse({
+    before: beforeSource,
+    after: afterSource,
+  });
+  if (!pair.success) {
+    throw new PhaseRoutingCandidateError(
+      "invalid_projection",
+      `phase-routing profiles cannot be applied: ${boundedIssues(pair.error.issues)}`,
+    );
+  }
+  const visited = new Set<string>();
+  const projectedSource = projectSourceWorkflow({
+    source: structuredClone(input.source),
+    compiled: input.compiled,
+    childPath: [],
+    workflowId: input.workflowId,
+    before: assignmentMap(before.assignments),
+    after: assignmentMap(after.assignments),
+    visited,
+    sourceName: input.sourceName,
+  });
+  if (visited.size !== before.assignments.length) {
+    throw new PhaseRoutingCandidateError(
+      "invalid_target",
+      "phase-routing profile contains a target outside the workflow source",
+    );
+  }
+  const source = JSON.stringify(projectedSource);
+  if (Buffer.byteLength(source, "utf8") > MAX_PHASE_ROUTING_PROJECTED_WORKFLOW_BYTES) {
+    throw new PhaseRoutingCandidateError("limit_exceeded", "projected workflow exceeds its limit");
+  }
+  const compiled = compileWorkflowText(source, input.sourceName);
+  assertOnlyDeclaredRoutesChanged(input.compiled, compiled, before, after);
+  return workflowProjection(source, compiled);
+}
+
 function projectSourceWorkflow(input: {
   readonly source: WorkflowSource;
   readonly compiled: CompiledWorkflow;
@@ -575,6 +667,22 @@ function validateCompiledPackageTargets(input: {
         compiled: node.child.workflow,
         childPath: [...input.childPath, node.id],
       });
+    }
+  }
+}
+
+function visitCompiledModelTargets(
+  workflow: CompiledWorkflow,
+  workflowId: string,
+  childPath: readonly string[],
+  visit: (target: PhaseRoutingTarget, route: ModelRoute) => void,
+): void {
+  for (const node of workflow.nodes) {
+    const route = compiledNodeRoute(node);
+    if (route !== undefined) {
+      visit({ workflowId, childPath, nodeId: node.id }, route);
+    } else if (node.type === "child") {
+      visitCompiledModelTargets(node.child.workflow, workflowId, [...childPath, node.id], visit);
     }
   }
 }
