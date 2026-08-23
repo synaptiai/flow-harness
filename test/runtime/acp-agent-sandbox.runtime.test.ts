@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AcpAgentSandbox } from "../../src/application/acp-agent-sandbox.js";
 import type { CompiledAgentNode } from "../../src/domain/workflow/types.js";
@@ -24,6 +24,7 @@ const fixturePath = resolve(
 );
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   );
@@ -42,15 +43,13 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
     await writeFile(join(privateHome, "private.txt"), "PRIVATE_HOME_STATE", "utf8");
     const protectedFile = join(protectedRoot, "private.txt");
     await writeFile(protectedFile, "PRIVATE_PROTECTED_STATE", "utf8");
-    const environment = {
-      ...process.env,
-      OPENAI_API_KEY: "PRIVATE_SELECTED_CREDENTIAL",
-      FLOW_AMBIENT_PRIVATE: "PRIVATE_AMBIENT_CREDENTIAL",
-    };
+    const projectWrite = join(projectRoot, "written.txt");
+    const homeWrite = join(privateHome, "written.txt");
+    vi.stubEnv("OPENAI_API_KEY", "PRIVATE_SELECTED_CREDENTIAL");
+    vi.stubEnv("FLOW_AMBIENT_PRIVATE", "PRIVATE_AMBIENT_CREDENTIAL");
     const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
     const srt = new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
       backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
-      environment,
       homeDirectory: privateHome,
       ...(seccompApplyPath === undefined ? {} : { seccompApplyPath }),
     });
@@ -62,9 +61,9 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
     const containmentOptions = Buffer.from(
       JSON.stringify({
         projectFile: join(projectRoot, "source.txt"),
-        projectWrite: join(projectRoot, "written.txt"),
+        projectWrite,
         homeFile: join(privateHome, "private.txt"),
-        homeWrite: join(privateHome, "written.txt"),
+        homeWrite,
         protectedFile,
       }),
       "utf8",
@@ -106,9 +105,7 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
       JSON.parse(await readFile(join(attemptDirectory, "containment-probe.json"), "utf8")),
     ).toEqual({
       projectReadDenied: true,
-      projectWriteDenied: true,
       homeReadDenied: true,
-      homeWriteDenied: true,
       protectedReadDenied: true,
       protectedWriteDenied: true,
       selectedCredentialMasked: true,
@@ -116,7 +113,18 @@ describe.skipIf(!linuxX64)("ACP agent SRT runtime", () => {
       networkDenied: true,
       privateWriteSucceeded: true,
       resistantChildAlive: true,
+      projectWriteCallSucceeded: expect.any(Boolean),
+      homeWriteCallSucceeded: expect.any(Boolean),
     });
+    await expect(access(projectWrite)).rejects.toThrow();
+    await expect(access(homeWrite)).rejects.toThrow();
+    await expect(readFile(join(projectRoot, "source.txt"), "utf8")).resolves.toBe(
+      "PRIVATE_PROJECT_STATE",
+    );
+    await expect(readFile(join(privateHome, "private.txt"), "utf8")).resolves.toBe(
+      "PRIVATE_HOME_STATE",
+    );
+    await expect(readFile(protectedFile, "utf8")).resolves.toBe("PRIVATE_PROTECTED_STATE");
     expect(outcome).toMatchObject({
       status: "succeeded",
       evidence: {

@@ -122,9 +122,11 @@ function parseContainmentOptions(encoded) {
 
 async function runContainmentProbe(options) {
   const projectReadDenied = await rejects(() => readFile(options.projectFile, "utf8"));
-  const projectWriteDenied = await rejects(() => writeFile(options.projectWrite, "blocked"));
+  const projectWriteCallSucceeded = !(await rejects(() =>
+    writeFile(options.projectWrite, "blocked"),
+  ));
   const homeReadDenied = await rejects(() => readFile(options.homeFile, "utf8"));
-  const homeWriteDenied = await rejects(() => writeFile(options.homeWrite, "blocked"));
+  const homeWriteCallSucceeded = !(await rejects(() => writeFile(options.homeWrite, "blocked")));
   const protectedReadDenied = await rejects(() => readFile(options.protectedFile, "utf8"));
   const protectedWriteDenied = await rejects(() =>
     writeFile(options.protectedFile, "blocked", "utf8"),
@@ -145,11 +147,9 @@ async function runContainmentProbe(options) {
   );
   await once(child, "spawn");
   const resistantChildAlive = child.exitCode === null && child.signalCode === null;
-  const result = {
+  const requiredResult = {
     projectReadDenied,
-    projectWriteDenied,
     homeReadDenied,
-    homeWriteDenied,
     protectedReadDenied,
     protectedWriteDenied,
     selectedCredentialMasked,
@@ -158,8 +158,13 @@ async function runContainmentProbe(options) {
     privateWriteSucceeded,
     resistantChildAlive,
   };
+  const result = {
+    ...requiredResult,
+    projectWriteCallSucceeded,
+    homeWriteCallSucceeded,
+  };
   await writeFile(join(process.cwd(), "containment-probe.json"), JSON.stringify(result), "utf8");
-  if (Object.values(result).some((value) => value !== true)) {
+  if (Object.values(requiredResult).some((value) => value !== true)) {
     throw new Error("containment probe failed");
   }
 }
