@@ -259,6 +259,10 @@ describe("public repository contracts", () => {
     expect(workflow.on.pull_request).toBeDefined();
     expect(workflow.on.push).toEqual({ branches: ["main"] });
     expect(workflow.on.workflow_dispatch).toBeDefined();
+    expect(workflow.concurrency).toEqual({
+      group: "ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+      "cancel-in-progress": true,
+    });
     expect(Object.keys(workflow.jobs).sort()).toEqual([
       "dependency-audit",
       "proof-runtime",
@@ -1224,6 +1228,10 @@ interface WorkflowDefinition {
     readonly pull_request?: unknown;
     readonly push?: { readonly branches?: readonly string[] };
     readonly workflow_dispatch?: unknown;
+  };
+  readonly concurrency?: {
+    readonly group?: string;
+    readonly "cancel-in-progress"?: boolean;
   };
   readonly jobs: Readonly<Record<string, unknown>>;
 }
