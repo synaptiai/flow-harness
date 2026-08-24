@@ -78,10 +78,12 @@ describe("Lean proof runtime package boundary", () => {
     const patchCheck = `test "$(sha256sum /tmp/safe-verify-lean-4.33.1.patch | cut -d ' ' -f 1)" = ${inputs.safeVerify.compatibilityPatch.sha256}`;
     const patchApply = "git apply --check --unidiff-zero /tmp/safe-verify-lean-4.33.1.patch";
     const safeVerifyBuild = "lake build safe_verify";
+    const normalizedRuntimeReads = "chmod --recursive a+rX /opt/lean /opt/flow/mathlib";
     expect(dockerfile).toContain(patchCopy);
     expect(dockerfile).toContain(patchCheck);
     expect(dockerfile).toContain(patchApply);
     expect(dockerfile.indexOf(patchApply)).toBeLessThan(dockerfile.indexOf(safeVerifyBuild));
+    expect(dockerfile).toContain(normalizedRuntimeReads);
   });
 
   it("seeds TLS trust from a pinned stage before reading Debian snapshots", async () => {

@@ -100,6 +100,10 @@ func TestCompilerRejectionReasonUsesOnlyStableDiagnosticCategories(t *testing.T)
 		expected   string
 	}{
 		{"error: unknown module prefix 'Mathlib'", "target_compiler_module_unavailable"},
+		{"permission denied: /opt/flow/mathlib/.lake/build/lib/lean/Mathlib.olean", "target_compiler_dependency_tree_denied"},
+		{"permission denied: /opt/lean/lib/lean/Init.olean", "target_compiler_toolchain_denied"},
+		{"permission denied: /workspace/target/Challenge.lean", "target_compiler_workspace_source_denied"},
+		{"permission denied: /workspace/target/.lake/build/lib/lean/Challenge.olean", "target_compiler_workspace_output_denied"},
 		{"error: permission denied: /private/source", "target_compiler_filesystem_denied"},
 		{"error while loading shared libraries: libLean.so", "target_compiler_shared_library_unavailable"},
 		{"failed to create thread: resource temporarily unavailable", "target_compiler_resource_unavailable"},

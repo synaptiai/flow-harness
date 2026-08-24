@@ -110,6 +110,7 @@ RUN mkdir -p /src/mathlib-expected /opt/flow/lean-lib /opt/flow/shared-lib \
          ln -s "$entry" "/opt/flow/shared-lib/$name"; \
        done < /tmp/lean-shared-library-entries \
     && find /opt/flow/mathlib -type d -name .git -prune -exec rm -rf {} + \
+    && chmod --recursive a+rX /opt/lean /opt/flow/mathlib \
     && touch --date="@${SOURCE_DATE_EPOCH}" /opt/flow/bin/safe_verify /opt/flow/bin/lean4export
 
 FROM ${DEBIAN_IMAGE} AS runtime

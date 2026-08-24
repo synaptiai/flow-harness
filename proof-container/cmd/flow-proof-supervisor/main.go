@@ -185,7 +185,7 @@ func compilerRejectionReason(phase string, command commandResult) string {
 		return phase + "_compiler_shared_library_unavailable"
 	case strings.Contains(diagnostic, "permission denied") ||
 		strings.Contains(diagnostic, "operation not permitted"):
-		return phase + "_compiler_filesystem_denied"
+		return compilerFilesystemDenialReason(phase, diagnostic)
 	case strings.Contains(diagnostic, "failed to create thread") ||
 		strings.Contains(diagnostic, "resource temporarily unavailable") ||
 		strings.Contains(diagnostic, "cannot allocate memory"):
@@ -194,6 +194,25 @@ func compilerRejectionReason(phase string, command commandResult) string {
 		return phase + "_compiler_execution_unavailable"
 	default:
 		return phase + "_compilation_rejected"
+	}
+}
+
+func compilerFilesystemDenialReason(phase string, diagnostic string) string {
+	switch {
+	case strings.Contains(diagnostic, "/opt/flow/mathlib/") ||
+		strings.Contains(diagnostic, "/opt/flow/lean-lib/") ||
+		strings.Contains(diagnostic, "/opt/flow/shared-lib/"):
+		return phase + "_compiler_dependency_tree_denied"
+	case strings.Contains(diagnostic, "/opt/lean/"):
+		return phase + "_compiler_toolchain_denied"
+	case strings.Contains(diagnostic, "/workspace/"+phase+"/.lake/"):
+		return phase + "_compiler_workspace_output_denied"
+	case strings.Contains(diagnostic, "/workspace/"+phase+"/home/"):
+		return phase + "_compiler_workspace_home_denied"
+	case strings.Contains(diagnostic, "/workspace/"+phase+"/"):
+		return phase + "_compiler_workspace_source_denied"
+	default:
+		return phase + "_compiler_filesystem_denied"
 	}
 }
 
