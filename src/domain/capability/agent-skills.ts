@@ -10,6 +10,10 @@ import {
   parseAgentSkillPackageActivationSnapshot,
 } from "../adaptation/agent-skill-package-activation.js";
 import {
+  type DelegationEvaluationSnapshot,
+  parseDelegationEvaluationSnapshot,
+} from "../adaptation/delegation-evaluation.js";
+import {
   createEffectiveHarnessRuntimeSnapshot,
   type EffectiveHarnessRuntimeSnapshot,
   parseEffectiveHarnessRuntimeSnapshot,
@@ -23,8 +27,8 @@ import {
   parsePromptActivationSnapshot,
 } from "../adaptation/prompt-activation.js";
 import { type GoalWorkspaceRevision, parseGoalWorkspaceRevision } from "../goal/workspace.js";
-import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
 import { type AcpAgentRuntimeSnapshot, validateAcpAgentRuntimeSnapshot } from "./acp-agent.js";
+import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
 import { type LanguageServerSnapshot, validateLanguageServerSnapshot } from "./language-server.js";
 import {
   createPolicyPackageSnapshot,
@@ -130,6 +134,7 @@ export interface CapabilitySnapshot {
   readonly languageServer?: LanguageServerSnapshot;
   readonly goalWorkspace?: GoalWorkspaceRevision;
   readonly acpAgent?: AcpAgentRuntimeSnapshot;
+  readonly delegation?: DelegationEvaluationSnapshot;
   readonly digest: string;
 }
 
@@ -232,6 +237,7 @@ const capabilitySnapshotSchema = z
     languageServer: z.unknown().optional(),
     goalWorkspace: z.unknown().optional(),
     acpAgent: z.unknown().optional(),
+    delegation: z.unknown().optional(),
     digest: sha256Schema,
   })
   .strict()
@@ -242,7 +248,8 @@ const capabilitySnapshotSchema = z
       snapshot.effectiveHarness === undefined &&
       snapshot.languageServer === undefined &&
       snapshot.goalWorkspace === undefined &&
-      snapshot.acpAgent === undefined
+      snapshot.acpAgent === undefined &&
+      snapshot.delegation === undefined
     ) {
       context.addIssue({ code: "custom", message: "capability snapshot cannot be empty" });
     }
@@ -491,6 +498,28 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
       : parseGoalWorkspaceRevision(parsed.goalWorkspace);
   const acpAgent =
     parsed.acpAgent === undefined ? undefined : validateAcpAgentRuntimeSnapshot(parsed.acpAgent);
+  const delegation =
+    parsed.delegation === undefined
+      ? undefined
+      : parseDelegationEvaluationSnapshot(parsed.delegation);
+  if (
+    delegation !== undefined &&
+    (activations.length > 0 ||
+      effectiveHarness !== undefined ||
+      languageServer !== undefined ||
+      goalWorkspace !== undefined ||
+      acpAgent !== undefined)
+  ) {
+    throw new Error(
+      "delegation evaluation cannot combine with activation, effective-harness, language-server, goal-workspace, or ACP authority",
+    );
+  }
+  if (
+    delegation !== undefined &&
+    delegation.child.packageClosureDigest !== calculateCapabilitySnapshotDigest(parsed.packages)
+  ) {
+    throw new Error("delegation evaluation package closure digest does not match");
+  }
   if (
     calculateCapabilitySnapshotDigest(
       parsed.packages,
@@ -499,6 +528,7 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
       languageServer,
       goalWorkspace,
       acpAgent,
+      delegation,
     ) !== parsed.digest
   ) {
     throw new Error("capability snapshot digest does not match");
@@ -532,6 +562,7 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     ...(languageServer === undefined ? {} : { languageServer }),
     ...(goalWorkspace === undefined ? {} : { goalWorkspace }),
     ...(acpAgent === undefined ? {} : { acpAgent }),
+    ...(delegation === undefined ? {} : { delegation }),
     digest: parsed.digest,
   });
 }
@@ -590,6 +621,7 @@ export function calculateCapabilitySnapshotDigest(
   languageServer?: LanguageServerSnapshot,
   goalWorkspace?: GoalWorkspaceRevision,
   acpAgent?: AcpAgentRuntimeSnapshot,
+  delegation?: DelegationEvaluationSnapshot,
 ): string {
   return sha256(
     JSON.stringify({
@@ -624,6 +656,14 @@ export function calculateCapabilitySnapshotDigest(
             },
           }),
       ...(acpAgent === undefined ? {} : { acpAgent: { digest: acpAgent.digest } }),
+      ...(delegation === undefined
+        ? {}
+        : {
+            delegation: {
+              candidateDigest: delegation.candidateDigest,
+              snapshotDigest: delegation.snapshotDigest,
+            },
+          }),
     }),
   );
 }
@@ -687,6 +727,13 @@ export function combineCapabilitySnapshots(
   if (acpAgents.some((item) => item.digest !== acpAgent?.digest)) {
     throw new Error("capability snapshots contain conflicting ACP agent selections");
   }
+  const delegations = snapshots
+    .map((snapshot) => snapshot.delegation)
+    .filter((item): item is DelegationEvaluationSnapshot => item !== undefined);
+  const delegation = delegations[0];
+  if (delegations.some((item) => item.snapshotDigest !== delegation?.snapshotDigest)) {
+    throw new Error("capability snapshots contain conflicting delegation evaluations");
+  }
   return validateCapabilitySnapshot({
     version: 1,
     packages,
@@ -695,6 +742,7 @@ export function combineCapabilitySnapshots(
     ...(languageServer === undefined ? {} : { languageServer }),
     ...(goalWorkspace === undefined ? {} : { goalWorkspace }),
     ...(acpAgent === undefined ? {} : { acpAgent }),
+    ...(delegation === undefined ? {} : { delegation }),
     digest: calculateCapabilitySnapshotDigest(
       packages,
       activations,
@@ -702,6 +750,7 @@ export function combineCapabilitySnapshots(
       languageServer,
       goalWorkspace,
       acpAgent,
+      delegation,
     ),
   });
 }
