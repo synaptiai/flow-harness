@@ -81,7 +81,7 @@ Read [Project status](docs/project-status.md) for the current feature and platfo
 
 ## Quick start
 
-The guided command is available in the current source tree. It creates a minimal Flow project and
+The `0.1.0-alpha.2` checkpoint provides the guided command. It creates a minimal Flow project and
 completes one credential-free workflow through the production command sandbox.
 
 ### Prerequisites
@@ -111,9 +111,9 @@ The result contains the run status, the project-relative evidence path, and toke
 
 Read [Getting started](docs/getting-started.md) for provider selection, output details, and failure
 recovery. Use the [coding quick start](docs/guides/coding-quickstart.md) when you are ready to prove
-one real provider-backed read, hash-bound edit, and deterministic verification. The immutable
-`0.1.0-alpha.1` archive predates `flow quickstart`. Follow
-[Install the Flow preview](docs/guides/install-preview.md) for that release's verified manual path.
+one real provider-backed read, hash-bound edit, and deterministic verification. Follow
+[Install the Flow preview](docs/guides/install-preview.md) to verify and install the versioned
+archive.
 
 ## Security
 

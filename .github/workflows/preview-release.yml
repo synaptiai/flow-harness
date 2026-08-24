@@ -20,6 +20,15 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      package-name: ${{ steps.release_identity.outputs.package-name }}
+      package-version: ${{ steps.release_identity.outputs.package-version }}
+      release-tag: ${{ steps.release_identity.outputs.release-tag }}
+      archive-name: ${{ steps.release_identity.outputs.archive-name }}
+      attestation-name: ${{ steps.release_identity.outputs.attestation-name }}
+      release-title: ${{ steps.release_identity.outputs.release-title }}
+      release-notes-path: ${{ steps.release_identity.outputs.release-notes-path }}
+      npm-dist-tag: ${{ steps.release_identity.outputs.npm-dist-tag }}
     permissions:
       actions: read
       contents: read
@@ -34,6 +43,10 @@ jobs:
         with:
           node-version: 26.7.0
           cache: npm
+
+      - name: Resolve the preview release identity
+        id: release_identity
+        run: node scripts/resolve-preview-release-identity.mjs --github-output >> "$GITHUB_OUTPUT"
 
       - name: Require successful CI for the revision
         env:
@@ -63,10 +76,15 @@ jobs:
             test/unit/infrastructure/release/package-release-verifier.test.ts \
             test/scaffold/package.test.ts \
             test/scaffold/community-files.test.ts \
+            test/scaffold/preview-release-identity.test.ts \
             test/scaffold/preview-release-workflow.test.ts
 
       - name: Prepare the exact preview artifact
-        run: npm run release:prepare
+        env:
+          ARCHIVE_NAME: ${{ steps.release_identity.outputs.archive-name }}
+        run: |
+          npm run release:prepare
+          test -f "release/package/${ARCHIVE_NAME}"
 
       - name: Upload the exact preview artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -147,16 +165,18 @@ jobs:
           subject-path: release/package/*
 
       - name: Name the attestation bundle
+        env:
+          ATTESTATION_NAME: ${{ needs.prepare.outputs.attestation-name }}
         run: |
           mkdir --parents release/attestation
           cp -- "${{ steps.provenance.outputs.bundle-path }}" \
-            release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl
+            "release/attestation/${ATTESTATION_NAME}"
 
       - name: Upload the attestation bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: flow-preview-attestation
-          path: release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl
+          path: release/attestation/${{ needs.prepare.outputs.attestation-name }}
           if-no-files-found: error
           compression-level: 0
           overwrite: false
@@ -173,9 +193,24 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+      REPOSITORY_NAME: ${{ github.event.repository.name }}
+      PACKAGE_NAME: ${{ needs.prepare.outputs.package-name }}
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.package-version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+      ARCHIVE_NAME: ${{ needs.prepare.outputs.archive-name }}
+      ATTESTATION_NAME: ${{ needs.prepare.outputs.attestation-name }}
+      RELEASE_TITLE: ${{ needs.prepare.outputs.release-title }}
+      RELEASE_NOTES_PATH: ${{ needs.prepare.outputs.release-notes-path }}
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
 
       - name: Download the exact preview artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -193,36 +228,63 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=v0.1.0-alpha.1
-          if gh release view "$tag" > /dev/null 2>&1; then
+          release_id="$(gh api graphql \
+            --field owner="$REPOSITORY_OWNER" \
+            --field name="$REPOSITORY_NAME" \
+            --field tag="$RELEASE_TAG" \
+            --raw-field query='query($owner: String!, $name: String!, $tag: String!) {
+              repository(owner: $owner, name: $name) { release(tagName: $tag) { id } }
+            }' \
+            --jq '.data.repository.release.id // ""')"
+          if test -n "$release_id"; then
             printf 'Preview release identity already exists.\n' >&2
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" > /dev/null 2>&1; then
+          remote_tag="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}")"
+          if test -n "$remote_tag"; then
             printf 'Preview release tag already exists.\n' >&2
             exit 1
           fi
+          npm_result="$(mktemp)"
+          trap 'rm -f "$npm_result"' EXIT
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --json > "$npm_result"; then
+            printf 'Preview npm version already exists.\n' >&2
+            exit 1
+          fi
+          NPM_RESULT="$npm_result" node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            let error;
+            try {
+              error = JSON.parse(readFileSync(process.env.NPM_RESULT, "utf8")).error;
+            } catch {
+              error = undefined;
+            }
+            if (error?.code !== "E404") {
+              console.error("Preview npm identity could not be verified as unused.");
+              process.exit(1);
+            }
+          '
 
       - name: Create the complete draft prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create v0.1.0-alpha.1 \
-            release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz \
+          gh release create "$RELEASE_TAG" \
+            "release/package/${ARCHIVE_NAME}" \
             release/package/package-release-evidence.json \
-            release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl \
+            "release/attestation/${ATTESTATION_NAME}" \
             --draft \
             --prerelease \
             --latest=false \
             --target "$GITHUB_SHA" \
-            --title 'Flow 0.1.0-alpha.1' \
-            --notes-file docs/releases/0.1.0-alpha.1.md
+            --title "$RELEASE_TITLE" \
+            --notes-file "$RELEASE_NOTES_PATH"
 
       - name: Publish the immutable prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release edit v0.1.0-alpha.1 \
+          gh release edit "$RELEASE_TAG" \
             --draft=false \
             --prerelease \
             --latest=false

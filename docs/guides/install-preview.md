@@ -3,7 +3,7 @@
 This guide installs the public Flow preview and verifies the release before you execute it. Use
 this path when you want to evaluate Flow without building the repository.
 
-Flow `0.1.0-alpha.1` is a prerelease. Its workflow and storage contracts can change before the
+Flow `0.1.0-alpha.2` is a prerelease. Its workflow and storage contracts can change before the
 first stable version. Don't use it as a security boundary for hostile or multi-tenant workloads.
 Read the [security policy](../../SECURITY.md) before unattended use.
 
@@ -43,27 +43,27 @@ Create a private temporary directory and download the three release assets:
 
 ```sh
 release_dir="$(mktemp -d)"
-gh release download v0.1.0-alpha.1 \
+gh release download v0.1.0-alpha.2 \
   --repo synaptiai/flow-harness \
   --dir "$release_dir" \
-  --pattern 'synaptiai-flow-harness-0.1.0-alpha.1.tgz' \
+  --pattern 'synaptiai-flow-harness-0.1.0-alpha.2.tgz' \
   --pattern 'package-release-evidence.json' \
-  --pattern 'flow-harness-0.1.0-alpha.1.intoto.jsonl'
+  --pattern 'flow-harness-0.1.0-alpha.2.intoto.jsonl'
 ```
 
 Verify the immutable release and each downloaded asset:
 
 ```sh
-gh release verify v0.1.0-alpha.1 \
+gh release verify v0.1.0-alpha.2 \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.1 \
-  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.1.tgz" \
+gh release verify-asset v0.1.0-alpha.2 \
+  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz" \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.1 \
+gh release verify-asset v0.1.0-alpha.2 \
   "$release_dir/package-release-evidence.json" \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.1 \
-  "$release_dir/flow-harness-0.1.0-alpha.1.intoto.jsonl" \
+gh release verify-asset v0.1.0-alpha.2 \
+  "$release_dir/flow-harness-0.1.0-alpha.2.intoto.jsonl" \
   --repo synaptiai/flow-harness
 ```
 
@@ -71,8 +71,8 @@ Verify the archive's build provenance and require the reviewed release workflow:
 
 ```sh
 gh attestation verify \
-  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.1.tgz" \
-  --bundle "$release_dir/flow-harness-0.1.0-alpha.1.intoto.jsonl" \
+  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz" \
+  --bundle "$release_dir/flow-harness-0.1.0-alpha.2.intoto.jsonl" \
   --repo synaptiai/flow-harness \
   --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml
 ```
@@ -92,7 +92,7 @@ package lifecycle script:
 
 ```sh
 npm install --global --ignore-scripts \
-  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.1.tgz"
+  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz"
 flow --help
 ```
 
@@ -112,40 +112,40 @@ selects the reviewed version:
 npm view @synaptiai/flow-harness@preview version
 ```
 
-The expected output for this release is `0.1.0-alpha.1`.
+The expected output for this release is `0.1.0-alpha.2`.
 
 ## Complete a credential-free run
 
-The immutable `0.1.0-alpha.1` package does not contain `flow quickstart`. Use the manual commands in
-this section for that release. The current source-build procedure is in
-[Getting started](../getting-started.md).
-
-Create an empty project directory and initialize it:
+Create an empty project directory, then complete the package-owned guided workflow:
 
 ```sh
 mkdir flow-preview-project
 cd flow-preview-project
-flow init .
-flow config show
+flow quickstart .
 ```
 
-Locate the example inside the installed package, then validate and run it:
+The command creates `.flow/config.yaml` without replacing an existing Flow project. It runs the
+installed credential-free workflow through the production command sandbox and returns the run
+identity, project-relative evidence path, and explicit `inspect` and `web` follow-up commands. It
+doesn't need a model provider, Docker Engine, Bun, or the Prime runtime, and it never opens a
+browser automatically.
+
+Use the returned run identity to inspect durable evidence. The default identity is
+`quickstart-foundation`:
 
 ```sh
-flow_package_root="$(npm root --global)/@synaptiai/flow-harness"
-flow validate "$flow_package_root/examples/verify-installation.workflow.yaml"
-flow run "$flow_package_root/examples/verify-installation.workflow.yaml" \
-  --run-id first-run
-flow inspect first-run
+flow inspect quickstart-foundation
 ```
 
-The workflow runs two deterministic Node.js commands. It doesn't need a model provider, Docker,
-Bun, or the Prime runtime.
+Check the current project and native sandbox without changing either one:
 
-The immutable `0.1.0-alpha.1` package doesn't contain `flow doctor` or `flow quickstart`. Both
-commands are implemented in the current source tree and will enter a later preview only after
-release qualification. Read
-[Diagnose the Flow environment](diagnose-environment.md) for the current source-build contract.
+```sh
+flow doctor
+```
+
+The diagnostic must report `"ok": true` before you rely on the selected path. Optional provider,
+coding, browser, and failure-recovery guidance is in [Getting started](../getting-started.md). The
+complete diagnostic contract is in [Diagnose the Flow environment](diagnose-environment.md).
 
 ## Remove or replace the preview
 

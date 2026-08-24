@@ -37,12 +37,12 @@ describe("public repository contracts", () => {
     const [readme, installGuide, releaseNotes] = await Promise.all([
       readPublicDocumentation(),
       readText("docs/guides/install-preview.md"),
-      readText("docs/releases/0.1.0-alpha.1.md"),
+      readText("docs/releases/0.1.0-alpha.2.md"),
     ]);
 
     expect(readme).toMatch(/alpha preview/i);
-    expect(readme).toContain("0.1.0-alpha.1");
-    expect(installGuide).toContain("gh release download v0.1.0-alpha.1");
+    expect(readme).toContain("0.1.0-alpha.2");
+    expect(installGuide).toContain("gh release download v0.1.0-alpha.2");
     expect(readme).toContain("npm install --global --ignore-scripts");
     expect(readme).toContain("bubblewrap");
     expect(readme).toContain("flow run");
@@ -52,10 +52,10 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security policy](SECURITY.md)");
 
     expect(installGuide).toContain("gh release verify-asset");
-    expect(installGuide).toContain("gh release verify v0.1.0-alpha.1");
+    expect(installGuide).toContain("gh release verify v0.1.0-alpha.2");
     expect(installGuide).toContain("gh attestation verify");
     expect(installGuide).toContain(
-      '--bundle "$release_dir/flow-harness-0.1.0-alpha.1.intoto.jsonl"',
+      '--bundle "$release_dir/flow-harness-0.1.0-alpha.2.intoto.jsonl"',
     );
     expect(installGuide).toContain("GitHub CLI 2.93.0 or newer");
     expect(installGuide).toContain("npm prefix --global");
@@ -66,7 +66,7 @@ describe("public repository contracts", () => {
     expect(releaseNotes).toContain("macOS 15 Intel");
     expect(releaseNotes).toContain("doesn't assign `latest`");
     expect(releaseNotes).toContain(
-      "https://github.com/synaptiai/flow-harness/blob/v0.1.0-alpha.1/docs/guides/install-preview.md",
+      "https://github.com/synaptiai/flow-harness/blob/v0.1.0-alpha.2/docs/guides/install-preview.md",
     );
     expect(releaseNotes).not.toMatch(/\]\(\.\.\//);
   });

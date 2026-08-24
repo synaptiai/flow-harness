@@ -1,6 +1,6 @@
 # Getting started
 
-This guide completes one credential-free run with the current Flow source. It also explains the
+This guide completes one credential-free run with Flow `0.1.0-alpha.2`. It also explains the
 optional provider path and each safe recovery action.
 
 ## Before you begin
@@ -16,8 +16,9 @@ The default path does not need model credentials, Docker, Bun, or the Prime runt
 Flow is a public alpha preview. Do not use it as a security boundary for hostile or multi-tenant
 workloads. Read the [security policy](../SECURITY.md) before unattended use.
 
-The immutable `0.1.0-alpha.1` release predates `flow quickstart`. Follow
-[Install the Flow preview](guides/install-preview.md) when you evaluate that release.
+Follow [Install the Flow preview](guides/install-preview.md) to install and verify the versioned
+archive. Contributors can use the source-build procedure in
+[Build the current source](#build-the-current-source).
 
 ### Ubuntu 24.04 sandbox prerequisite
 

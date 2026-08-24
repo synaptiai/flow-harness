@@ -7,15 +7,14 @@ provider, create a container, change project files, or publish durable Flow stat
 Run this command after installation, after a configuration change, or before you report an
 environment problem.
 
-The immutable `0.1.0-alpha.1` package doesn't contain this command. Use a current source build until
-a later preview passes release qualification. Follow the versioned installation guide for the
-features that each published archive contains.
+Flow `0.1.0-alpha.2` and the current source tree contain this command. Follow the
+[versioned installation guide](install-preview.md) for the current package boundary.
 
 ## Before you begin
 
-Build the current source tree on a supported host. If you want to check a workflow, make the
-workflow and its selected capability packages available to the current project. If you want to
-check Prime, prepare the Prime runtime first by following
+Install Flow `0.1.0-alpha.2`, or build the current source tree on a supported host. If you want to
+check a workflow, make the workflow and its selected capability packages available to the current
+project. If you want to check Prime, prepare the Prime runtime first by following
 [Prime runtime operations](../operations/prime-runtime.md).
 
 `flow doctor` prints a versioned JSON report. The report contains fixed categories and remediation

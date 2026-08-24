@@ -4,9 +4,9 @@ Flow is a public alpha preview. Its executable format is
 `flow.synapti.ai/v1alpha1`. There is no compatibility or migration promise before the first stable
 release.
 
-Version `0.1.0-alpha.1` is the first installable preview. GitHub-hosted Ubuntu 24.04 x64 and macOS
-15 Intel runners verify the same npm archive before publication. The `preview` npm distribution
-tag is the registry channel after its initial two-factor-authenticated bootstrap.
+Version `0.1.0-alpha.2` is the current usability checkpoint. GitHub-hosted Ubuntu 24.04 x64 and
+macOS 15 Intel runners verify the same npm archive before publication. The `preview` npm
+distribution tag is the registry channel after its initial two-factor-authenticated bootstrap.
 
 ## Status terms
 
@@ -24,8 +24,8 @@ on it.
 | Capability | Linux | macOS | Notes |
 | --- | --- | --- | --- |
 | Workflow validation and inspection | Implemented | Implemented | No provider is needed for credential-free examples. |
-| Guided quick start | Implemented | Implemented | Current source builds provide credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
-| Read-only environment diagnostics | Implemented | Implemented | Available in current source builds; optional checks run only for the selected workflow, sandbox, or Prime path. |
+| Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
+| Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
 | Agent `read`, `ls`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
 | Read-only semantic code queries | Linux x64 runtime proof | Limited | Current source supports an exact local LSP 3.18 server under the native sandbox. The hosted containment proof covers Linux x64. |
