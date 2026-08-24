@@ -1,4 +1,5 @@
 import type {
+  CompiledAgentNode,
   CompiledBranchGuard,
   CompiledChildNode,
   CompiledLoopGuard,
@@ -28,6 +29,7 @@ type ProjectedControlGraphNode =
   | (ProjectedNodeBase & {
       readonly type: "agent";
       readonly when?: CompiledBranchGuard;
+      readonly model?: CompiledAgentNode["agent"]["model"];
       readonly commandTools?: {
         readonly rawExec: boolean;
         readonly packages: readonly CompiledToolPackageReference[];
@@ -144,6 +146,13 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
 }
 
 export function projectCompiledControlGraph(workflow: CompiledWorkflow): ProjectedControlGraph {
+  const proofModelSourceNodeIds = new Set(
+    workflow.nodes.flatMap((node) =>
+      node.type === "verifier" && node.verifier.kind === "lean-proof"
+        ? [node.verifier.proof.nodeId]
+        : [],
+    ),
+  );
   const nodes = workflow.nodes.map<ProjectedControlGraphNode>((node) => {
     const common: ProjectedNodeBase = {
       nodeId: node.id,
@@ -217,6 +226,7 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         ...common,
         type: node.type,
         ...(node.when === undefined ? {} : { when: node.when }),
+        ...(proofModelSourceNodeIds.has(node.id) ? { model: node.agent.model } : {}),
         ...(node.agent.toolPackages.length === 0
           ? {}
           : {

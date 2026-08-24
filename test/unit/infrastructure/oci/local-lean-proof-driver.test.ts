@@ -301,6 +301,24 @@ describe("local Lean proof driver", () => {
       cleanup: "unconfirmed",
     });
   });
+
+  it("reports the invalid checker component without disclosing container output", async () => {
+    const request = proofRequest();
+    const result = acceptedContainerResult(request);
+    const driver = new LocalLeanProofDriver({
+      api: dockerApi([], {
+        ...result,
+        safeVerify: { status: "rejected", observedAxioms: null },
+      }),
+      seccompProfile: { defaultAction: "SCMP_ACT_ERRNO" },
+      admitRuntime: async () => undefined,
+      leaseStore: memoryLeaseStore(),
+    });
+
+    await expect(driver.execute(request, executionContext())).rejects.toThrow(
+      /closed evidence schema: safe_verify_evidence_invalid/i,
+    );
+  });
 });
 
 function dockerApi(order: string[], result: object) {

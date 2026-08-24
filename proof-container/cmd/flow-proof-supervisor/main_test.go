@@ -137,6 +137,40 @@ func TestParseObservedAxiomsUsesLastTargetReplay(t *testing.T) {
 	}
 }
 
+func TestSafeVerifyFailureWithoutTargetEvidenceIsUnavailable(t *testing.T) {
+	req := request{TargetDeclaration: "Flow.Proof.safe", StatementDigest: strings.Repeat("a", 64)}
+	evidence := safeVerifyEvidence(req, strings.Repeat("b", 64), commandResult{
+		ExitCode: 1, Diagnostic: []byte("replay failed before target evidence"), DurationMS: 7,
+	})
+	if evidence["status"] != "unavailable" || evidence["reasonCode"] != "kernel_replay_failed_before_evidence" {
+		t.Fatalf("unexpected incomplete replay evidence: %#v", evidence)
+	}
+	if _, present := evidence["observedAxioms"]; present {
+		t.Fatalf("incomplete replay evidence must not synthesize observed axioms: %#v", evidence)
+	}
+}
+
+func TestSafeVerifyUnavailableReasonUsesOnlyStableDiagnosticCategories(t *testing.T) {
+	tests := []struct {
+		diagnostic string
+		expected   string
+	}{
+		{"could not find lakefile for '/private/input.olean'", "kernel_replay_artifact_layout_invalid"},
+		{"object file '/private/Mathlib.olean' does not exist", "kernel_replay_module_unavailable"},
+		{"error while loading shared libraries: libLean.so", "kernel_replay_shared_library_unavailable"},
+		{"permission denied: /private/input.olean", "kernel_replay_filesystem_denied"},
+	}
+	for _, test := range tests {
+		reason := safeVerifyUnavailableReason(commandResult{ExitCode: 1, Diagnostic: []byte(test.diagnostic)})
+		if reason != test.expected {
+			t.Fatalf("unexpected reason for %q: %s", test.diagnostic, reason)
+		}
+		if strings.Contains(reason, "private") || strings.Contains(reason, "Mathlib") {
+			t.Fatalf("reason disclosed diagnostic content: %s", reason)
+		}
+	}
+}
+
 func TestRunCommandRemovesBackgroundDescendants(t *testing.T) {
 	result := runCommand(commandSpec{
 		path: "/bin/sh",

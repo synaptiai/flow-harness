@@ -351,9 +351,13 @@ func linkLibraryEntries(targetDirectory string) error {
 
 func runSafeVerify(req request, paths workspacePaths, environmentDigest string) map[string]any {
 	command := runCommand(safeVerifyCommandSpec(paths))
+	return safeVerifyEvidence(req, environmentDigest, command)
+}
+
+func safeVerifyEvidence(req request, environmentDigest string, command commandResult) map[string]any {
 	axioms, foundAxioms := parseObservedAxioms(command.Diagnostic, req.TargetDeclaration)
-	if command.ExitCode == 0 && !foundAxioms {
-		return unavailable("kernel_replay_output_unavailable", command.DurationMS)
+	if !foundAxioms {
+		return unavailable(safeVerifyUnavailableReason(command), command.DurationMS)
 	}
 	status := "accepted"
 	reason := "accepted"
@@ -365,6 +369,29 @@ func runSafeVerify(req request, paths workspacePaths, environmentDigest string) 
 		"status": status, "targetDeclaration": req.TargetDeclaration,
 		"statementDigest": req.StatementDigest, "environmentDigest": environmentDigest,
 		"observedAxioms": axioms, "reasonCode": reason, "durationMs": command.DurationMS,
+	}
+}
+
+func safeVerifyUnavailableReason(command commandResult) string {
+	diagnostic := strings.ToLower(string(command.Diagnostic))
+	switch {
+	case command.ExitCode == 0:
+		return "kernel_replay_output_unavailable"
+	case strings.Contains(diagnostic, "could not find lakefile"):
+		return "kernel_replay_artifact_layout_invalid"
+	case strings.Contains(diagnostic, "unknown module") ||
+		strings.Contains(diagnostic, "object file") && strings.Contains(diagnostic, "does not exist"):
+		return "kernel_replay_module_unavailable"
+	case strings.Contains(diagnostic, "error while loading shared libraries") ||
+		strings.Contains(diagnostic, "cannot open shared object file"):
+		return "kernel_replay_shared_library_unavailable"
+	case strings.Contains(diagnostic, "permission denied") ||
+		strings.Contains(diagnostic, "operation not permitted"):
+		return "kernel_replay_filesystem_denied"
+	case len(command.Diagnostic) == 0:
+		return "kernel_replay_execution_unavailable"
+	default:
+		return "kernel_replay_failed_before_evidence"
 	}
 }
 

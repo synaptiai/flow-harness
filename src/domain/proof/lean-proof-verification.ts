@@ -154,6 +154,13 @@ export interface LeanProofExecutionEvidence {
   readonly cleanup: "confirmed" | "unconfirmed";
 }
 
+export type LeanProofExecutionEvidenceValidationCode =
+  | "valid"
+  | "execution_identity_invalid"
+  | "compiler_evidence_invalid"
+  | "safe_verify_evidence_invalid"
+  | "nanoda_evidence_invalid";
+
 export interface LeanProofDecision {
   readonly verdict: "accepted" | "rejected" | "inconclusive";
   readonly reason: string;
@@ -274,6 +281,12 @@ export function isLeanProofRequest(value: unknown): value is LeanProofRequest {
 }
 
 export function isLeanProofExecutionEvidence(value: unknown): value is LeanProofExecutionEvidence {
+  return leanProofExecutionEvidenceValidationCode(value) === "valid";
+}
+
+export function leanProofExecutionEvidenceValidationCode(
+  value: unknown,
+): LeanProofExecutionEvidenceValidationCode {
   if (
     !hasExactKeys(value, [
       "version",
@@ -290,13 +303,12 @@ export function isLeanProofExecutionEvidence(value: unknown): value is LeanProof
     !isRuntimeIdentity(value.runtimeIdentity) ||
     (value.cleanup !== "confirmed" && value.cleanup !== "unconfirmed")
   ) {
-    return false;
+    return "execution_identity_invalid";
   }
-  return (
-    isCompilerEvidence(value.compiler) &&
-    isSafeVerifyEvidence(value.safeVerify) &&
-    isNanodaEvidence(value.nanoda)
-  );
+  if (!isCompilerEvidence(value.compiler)) return "compiler_evidence_invalid";
+  if (!isSafeVerifyEvidence(value.safeVerify)) return "safe_verify_evidence_invalid";
+  if (!isNanodaEvidence(value.nanoda)) return "nanoda_evidence_invalid";
+  return "valid";
 }
 
 export function decideLeanProofVerification(

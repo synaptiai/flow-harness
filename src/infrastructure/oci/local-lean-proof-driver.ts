@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { LeanProofDriver, LeanProofDriverContext } from "../../application/ports.js";
 import {
   isLeanProofExecutionEvidence,
+  leanProofExecutionEvidenceValidationCode,
   type LeanProofExecutionEvidence,
   type LeanProofRequest,
   type LeanProofRuntimeIdentity,
@@ -662,13 +663,17 @@ function parseContainerResult(output: Buffer, request: LeanProofRequest): LeanPr
     nanoda: (parsed as Record<string, unknown>).nanoda,
     cleanup: "confirmed" as const,
   };
+  const evidenceValidation = leanProofExecutionEvidenceValidationCode(candidate);
   if (
     Object.keys(parsed).length !== 5 ||
     (parsed as Record<string, unknown>).version !== 1 ||
     (parsed as Record<string, unknown>).requestDigest !== request.requestDigest ||
+    evidenceValidation !== "valid" ||
     !isLeanProofExecutionEvidence(candidate)
   ) {
-    throw new Error("Lean proof container output violates the closed evidence schema");
+    throw new Error(
+      `Lean proof container output violates the closed evidence schema: ${evidenceValidation}`,
+    );
   }
   return Object.freeze({
     version: 1,

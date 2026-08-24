@@ -10,8 +10,15 @@ import type {
   RecoverableRunEventStore,
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
-import type { LeanProofRequest } from "../../../src/domain/proof/lean-proof-verification.js";
-import type { CommandEvidence, RunEvent } from "../../../src/domain/run/events.js";
+import {
+  createLeanProofRequest,
+  type LeanProofRequest,
+} from "../../../src/domain/proof/lean-proof-verification.js";
+import {
+  reduceRunEvents,
+  type CommandEvidence,
+  type RunEvent,
+} from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow Lean proof verifier", () => {
@@ -75,6 +82,13 @@ describe("runWorkflow Lean proof verifier", () => {
           specificationDigest: sha256(specification),
           statementDigest: sha256(statement),
         },
+        proofModel: {
+          selectionRule: "exact-model-v1",
+          fallback: "deny",
+          provider: "test",
+          model: "proof-model",
+          thinking: "high",
+        },
       }),
       expect.objectContaining({ nodeId: "verify-proof" }),
     );
@@ -87,6 +101,92 @@ describe("runWorkflow Lean proof verifier", () => {
         },
       },
     });
+  });
+
+  it("rejects replay when proof-model thinking provenance changes", async () => {
+    const store = new MemoryStore();
+    const executor = new NodeExecutorRouter(commandExecutor(), agentExecutor(), proofDriver());
+
+    await runWorkflow(workflow(), {
+      runId: "run-proof-provenance",
+      store,
+      executor,
+      cwd: "/private/workspace",
+      protectedPaths: [],
+      now: clock("2026-08-24T11:00:00.000Z"),
+    });
+    const approval = store.events.find((event) => event.type === "workflow_approval_requested");
+    if (approval?.type !== "workflow_approval_requested") {
+      throw new Error("approval request is unavailable");
+    }
+    await decideApproval({
+      runId: "run-proof-provenance",
+      requestId: approval.requestId,
+      decision: "approve",
+      actor: "operator:daniel",
+      store,
+      now: () => new Date("2026-08-24T11:01:00.000Z"),
+    });
+    await resumeWorkflow(workflow(), {
+      runId: "run-proof-provenance",
+      store,
+      executor,
+      cwd: "/private/workspace",
+      protectedPaths: [],
+      now: clock("2026-08-24T11:02:00.000Z"),
+    });
+
+    const events = structuredClone(store.events);
+    const proofEventIndex = events.findIndex(
+      (event) => event.type === "node_succeeded" && event.nodeId === "verify-proof",
+    );
+    const proofEvent = events[proofEventIndex];
+    if (
+      proofEvent?.type !== "node_succeeded" ||
+      proofEvent.evidence.kind !== "verifier" ||
+      proofEvent.evidence.driver !== "lean-proof" ||
+      proofEvent.evidence.request === null ||
+      proofEvent.evidence.request.proofModel === undefined ||
+      proofEvent.evidence.execution === null
+    ) {
+      throw new Error("completed proof evidence is unavailable");
+    }
+    const request = proofEvent.evidence.request;
+    const proofModel = request.proofModel;
+    const execution = proofEvent.evidence.execution;
+    if (proofModel === undefined) throw new Error("proof model provenance is unavailable");
+    const tamperedRequest = createLeanProofRequest({
+      specification: request.specification,
+      statement: request.statement,
+      proof: request.proof,
+      targetDeclaration: request.targetDeclaration,
+      runtime: request.runtime,
+      faithfulness: request.faithfulness,
+      proofModel: {
+        selectionRule: proofModel.selectionRule,
+        fallback: proofModel.fallback,
+        provider: proofModel.provider,
+        model: proofModel.model,
+        thinking: "low",
+      },
+    });
+    const tamperedEvents = events.map((event, index) =>
+      index === proofEventIndex
+        ? {
+            ...proofEvent,
+            evidence: {
+              ...proofEvent.evidence,
+              request: tamperedRequest,
+              execution: {
+                ...execution,
+                requestDigest: tamperedRequest.requestDigest,
+              },
+            },
+          }
+        : event,
+    );
+
+    expect(() => reduceRunEvents(tamperedEvents)).toThrow(/model provenance is inconsistent/i);
   });
 });
 
@@ -108,9 +208,11 @@ nodes:
     dependsOn: [specification]
     command: { executable: read-statement }
   - id: proof
-    type: command
+    type: agent
     dependsOn: [statement]
-    command: { executable: read-proof }
+    agent:
+      prompt: Propose only the proof term.
+      model: { provider: test, id: proof-model, thinking: high }
   - id: approve-statement
     type: approval
     dependsOn: [specification, statement]
@@ -127,7 +229,7 @@ nodes:
       targetDeclaration: Flow.Proof.add_zero
       specification: { nodeId: specification, field: command.stdout }
       statement: { nodeId: statement, field: command.stdout }
-      proof: { nodeId: proof, field: command.stdout }
+      proof: { nodeId: proof, field: agent.text }
       faithfulnessApprovalNodeId: approve-statement
       runtime:
         version: 1
@@ -147,8 +249,7 @@ nodes:
 function commandExecutor(): CommandExecutor {
   return {
     execute: vi.fn(async (node) => {
-      const value =
-        node.id === "specification" ? specification : node.id === "statement" ? statement : proof;
+      const value = node.id === "specification" ? specification : statement;
       return {
         status: "succeeded" as const,
         evidence: commandEvidence(node.command.executable, value),
@@ -158,7 +259,22 @@ function commandExecutor(): CommandExecutor {
 }
 
 function agentExecutor(): AgentExecutor {
-  return { execute: vi.fn() };
+  return {
+    execute: vi.fn(async (node) => ({
+      status: "succeeded" as const,
+      evidence: {
+        kind: "agent" as const,
+        provider: node.agent.model.provider,
+        model: node.agent.model.id,
+        text: proof,
+        textHash: sha256(proof),
+        textTruncated: false,
+        durationMs: 1,
+        policyDecisions: [],
+        effectReceipts: [],
+      },
+    })),
+  };
 }
 
 function proofDriver(): LeanProofDriver & { execute: ReturnType<typeof vi.fn> } {

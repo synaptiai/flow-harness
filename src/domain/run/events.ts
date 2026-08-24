@@ -479,6 +479,11 @@ export interface ControlGraphCommandNode extends ControlGraphNodeBase {
 export interface ControlGraphAgentNode extends ControlGraphNodeBase {
   readonly type: "agent";
   readonly when?: ControlBranchGuard;
+  readonly model?: {
+    readonly provider: string;
+    readonly id: string;
+    readonly thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  };
   readonly commandTools?: {
     readonly rawExec: boolean;
     readonly packages: readonly { readonly name: string; readonly version: string }[];
@@ -2495,6 +2500,14 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
       ...controlNodeBaseShape,
       type: z.literal("agent"),
       when: controlBranchGuardSchema.optional(),
+      model: z
+        .object({
+          provider: z.string().min(1).max(96),
+          id: z.string().min(1).max(256),
+          thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+        })
+        .strict()
+        .optional(),
       commandTools: z
         .object({
           rawExec: z.boolean(),
@@ -7336,6 +7349,7 @@ function serializeLoopTemplateStructure(
               case: node.when.case,
             },
           }),
+      ...(node.type === "agent" && node.model !== undefined ? { model: node.model } : {}),
     });
   }
   if (node.type === "child") {
@@ -8827,7 +8841,7 @@ function validateVerifierEvidenceProjection(
   }
 
   if (evidence.driver === "lean-proof") {
-    validateLeanProofVerifierEvidence(verifier, nodes, event, evidence, eventIndex);
+    validateLeanProofVerifierEvidence(verifier, graph, nodes, event, evidence, eventIndex);
     return;
   }
 
@@ -8902,6 +8916,7 @@ function validateVerifierEvidenceProjection(
 
 function validateLeanProofVerifierEvidence(
   verifier: InlineVerifierRequirement,
+  graph: ControlGraph | null,
   nodes: Readonly<Record<string, NodeRunState>>,
   event: NodeSucceededEvent | NodeFailedEvent,
   evidence: LeanProofVerifierEvidence,
@@ -8942,13 +8957,20 @@ function validateLeanProofVerifierEvidence(
         "failed Lean proof execution must be an inconclusive zero-duration result",
       );
     }
-    validateOptionalLeanProofRequest(verifier, nodes, evidence, eventIndex);
+    validateOptionalLeanProofRequest(verifier, graph, nodes, evidence, eventIndex);
     return;
   }
   if (evidence.request === null || evidence.execution === null) {
     throw new RunReplayError(eventIndex, "completed Lean proof evidence is incomplete");
   }
-  validateLeanProofRequestProjection(verifier, nodes, evidence, evidence.request, eventIndex);
+  validateLeanProofRequestProjection(
+    verifier,
+    graph,
+    nodes,
+    evidence,
+    evidence.request,
+    eventIndex,
+  );
   if (
     evidence.execution.requestDigest !== evidence.request.requestDigest ||
     JSON.stringify(evidence.execution.runtimeIdentity) !== JSON.stringify(verifier.runtime)
@@ -8977,17 +8999,26 @@ function validateLeanProofVerifierEvidence(
 
 function validateOptionalLeanProofRequest(
   verifier: Extract<InlineVerifierRequirement, { readonly kind: "lean-proof" }>,
+  graph: ControlGraph | null,
   nodes: Readonly<Record<string, NodeRunState>>,
   evidence: LeanProofVerifierEvidence,
   eventIndex: number,
 ): void {
   if (evidence.request !== null) {
-    validateLeanProofRequestProjection(verifier, nodes, evidence, evidence.request, eventIndex);
+    validateLeanProofRequestProjection(
+      verifier,
+      graph,
+      nodes,
+      evidence,
+      evidence.request,
+      eventIndex,
+    );
   }
 }
 
 function validateLeanProofRequestProjection(
   verifier: Extract<InlineVerifierRequirement, { readonly kind: "lean-proof" }>,
+  graph: ControlGraph | null,
   nodes: Readonly<Record<string, NodeRunState>>,
   evidence: LeanProofVerifierEvidence,
   request: LeanProofRequest,
@@ -9021,11 +9052,17 @@ function validateLeanProofRequestProjection(
     );
   }
   const proofSource = nodes[verifier.proof.nodeId]?.evidence;
+  const proofSourceRequirement = graph?.nodes.find((node) => node.nodeId === verifier.proof.nodeId);
   if (proofSource?.kind === "agent") {
     if (
+      proofSourceRequirement?.type !== "agent" ||
       request.proofModel === undefined ||
       request.proofModel.provider !== proofSource.provider ||
       request.proofModel.model !== proofSource.model ||
+      proofSourceRequirement.model === undefined ||
+      request.proofModel.provider !== proofSourceRequirement.model.provider ||
+      request.proofModel.model !== proofSourceRequirement.model.id ||
+      request.proofModel.thinking !== proofSourceRequirement.model.thinking ||
       request.proofModel.selectionRule !== "exact-model-v1" ||
       request.proofModel.fallback !== "deny"
     ) {
