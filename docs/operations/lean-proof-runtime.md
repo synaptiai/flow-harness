@@ -119,20 +119,26 @@ the effective Linux state before it reads a proof request.
 | Filesystem | Read-only image root; no host bind mounts; sensitive kernel paths masked; `/proc/sys` and other standard system paths readable but read-only; disposable root-owned `/workspace` tmpfs with `nosuid`, `nodev`, and `noexec` |
 | Credentials | Fixed environment, separate compiler homes, root-only checker home, and rejection of credential-like environment names |
 | Namespaces | Private PID, interprocess communication, and cgroup namespaces |
-| Privileges | `no-new-privileges`, seccomp filtering, all capabilities dropped except supervisor `CAP_SETUID` |
+| Privileges | `no-new-privileges`, seccomp filtering, all capabilities dropped except supervisor `CAP_KILL` and `CAP_SETUID` |
 | Memory | 4,294,967,296 bytes; no additional swap |
 | CPU | Two CPUs through a 200,000/100,000 microsecond quota and period |
 | Processes | 128 cgroup processes and 128 user processes |
 | Files | 512 open files, 268,435,456-byte file limit, no core dumps, and a 536,870,912-byte workspace |
 
-The supervisor starts as UID 0 and GID 10001. It retains only `CAP_SETUID`, then starts each compiler
-as UID and GID 10001. The workspace root permits group traversal but not group writes. At first,
-only the target tree exists. The supervisor compiles and locks that tree, then copies the target
-artifact into a root-only verifier directory.
+The supervisor starts as UID 0 and GID 10001. It retains only `CAP_SETUID`, to enter the unprivileged
+proof identity, and `CAP_KILL`, to terminate that identity's process group. It starts each compiler as
+UID and GID 10001. The workspace root permits group traversal but not group writes. At first, only the
+target tree exists. The supervisor compiles and locks that tree, then copies the target artifact into
+a root-only verifier directory.
 
 Only then does it create the separate submission tree and home. It locks and freezes that tree
 after compilation. SafeVerify and Nanoda read only the frozen artifacts. The proof phase can't
 change the frozen target. Neither compiler receives a project mount or the source specification.
+
+The image assembles fixed, read-only module and shared-library search trees from the admitted
+Mathlib dependency graph. At runtime, the supervisor calls the pinned Lean, SafeVerify, and
+lean4export executables directly with explicit `LEAN_PATH` and `LD_LIBRARY_PATH` values. It doesn't
+ask Lake to load or rebuild a project while it verifies a proof.
 
 Every compiler and checker command gets a new process group. The supervisor kills the complete
 group and reaps exited descendants before it freezes artifacts or starts the next checker. An

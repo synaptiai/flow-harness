@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	expectedEffectiveCapabilities = uint64(1 << 7) // CAP_SETUID
+	expectedEffectiveCapabilities = uint64(1<<5 | 1<<7) // CAP_KILL | CAP_SETUID
 	expectedMemoryMaxBytes        = "4294967296"
 	expectedMemorySwapMaxBytes    = "0"
 	expectedPidsMax               = "128"
@@ -72,7 +72,7 @@ func verifyProcessStatus() error {
 	}
 	capabilities, err := strconv.ParseUint(status["CapEff"], 16, 64)
 	if err != nil || capabilities != expectedEffectiveCapabilities {
-		return errors.New("effective capability set is not exactly CAP_SETUID")
+		return errors.New("effective capability set is not exactly CAP_KILL and CAP_SETUID")
 	}
 	uidFields := strings.Fields(status["Uid"])
 	gidFields := strings.Fields(status["Gid"])

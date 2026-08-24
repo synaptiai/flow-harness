@@ -382,7 +382,7 @@ export class LocalLeanProofDriver implements LeanProofDriver {
         CpuPeriod: policy.cpuPeriodMicros,
         CpuQuota: policy.cpuQuotaMicros,
         CapDrop: ["ALL"],
-        CapAdd: ["SETUID"],
+        CapAdd: ["KILL", "SETUID"],
         SecurityOpt: ["no-new-privileges", `seccomp=${this.#seccompJson}`],
         Binds: [],
         MaskedPaths: [...LEAN_PROOF_OCI_MASKED_PATHS],
@@ -508,7 +508,7 @@ function assertContainerInspection(
     host.CpuPeriod !== policy.cpuPeriodMicros ||
     host.CpuQuota !== policy.cpuQuotaMicros ||
     !sameStrings(host.CapDrop, ["ALL"]) ||
-    !sameStrings(host.CapAdd, ["SETUID"]) ||
+    !sameStrings(host.CapAdd, ["KILL", "SETUID"]) ||
     !sameStrings(host.SecurityOpt, ["no-new-privileges", `seccomp=${seccompJson}`]) ||
     !sameStrings(host.MaskedPaths, LEAN_PROOF_OCI_MASKED_PATHS) ||
     !sameStrings(host.ReadonlyPaths, LEAN_PROOF_OCI_READONLY_PATHS) ||

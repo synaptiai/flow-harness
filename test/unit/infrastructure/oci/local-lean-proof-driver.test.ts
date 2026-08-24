@@ -37,7 +37,7 @@ describe("local Lean proof driver", () => {
       stopGraceSeconds: LEAN_PROOF_OCI_POLICY.stopGraceSeconds,
       maskedPaths: LEAN_PROOF_OCI_MASKED_PATHS,
       readonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,
-      supervisorCapabilities: ["SETUID"],
+      supervisorCapabilities: ["KILL", "SETUID"],
     });
     expect(LEAN_PROOF_OCI_MASKED_PATHS).toEqual([
       "/proc/acpi",
@@ -122,7 +122,7 @@ describe("local Lean proof driver", () => {
           MemorySwap: LEAN_PROOF_OCI_POLICY.memoryMaxBytes,
           PidsLimit: LEAN_PROOF_OCI_POLICY.pidsMax,
           CapDrop: ["ALL"],
-          CapAdd: ["SETUID"],
+          CapAdd: ["KILL", "SETUID"],
           MaskedPaths: LEAN_PROOF_OCI_MASKED_PATHS,
           ReadonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,
           SecurityOpt: expect.arrayContaining(["no-new-privileges"]),
@@ -427,7 +427,7 @@ function expectedConfiguration(lease: LeanProofContainerLease) {
       CpuPeriod: LEAN_PROOF_OCI_POLICY.cpuPeriodMicros,
       CpuQuota: LEAN_PROOF_OCI_POLICY.cpuQuotaMicros,
       CapDrop: ["ALL"],
-      CapAdd: ["SETUID"],
+      CapAdd: ["KILL", "SETUID"],
       SecurityOpt: ["no-new-privileges", 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'],
       MaskedPaths: LEAN_PROOF_OCI_MASKED_PATHS,
       ReadonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,

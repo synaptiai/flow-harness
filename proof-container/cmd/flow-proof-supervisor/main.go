@@ -248,14 +248,19 @@ func lockCompilerTree(root string) error {
 }
 
 func runLean(source string, olean string, home string, uid uint32, gid uint32) commandResult {
-	return runCommand(commandSpec{
-		path: "/opt/lean/bin/lake",
-		args: []string{"env", "/opt/lean/bin/lean", source, "-o", olean},
-		dir:  "/opt/flow/mathlib",
+	return runCommand(leanCommandSpec(source, olean, home, uid, gid))
+}
+
+func leanCommandSpec(source string, olean string, home string, uid uint32, gid uint32) commandSpec {
+	return commandSpec{
+		path: "/opt/lean/bin/lean",
+		args: []string{source, "-o", olean},
+		dir:  filepath.Dir(source),
+		env:  runtimeLeanEnvironment(),
 		home: home,
 		uid:  uid,
 		gid:  gid,
-	})
+	}
 }
 
 func freezeTargetArtifact(paths workspacePaths) error {
@@ -299,14 +304,7 @@ func linkLibraryEntries(targetDirectory string) error {
 }
 
 func runSafeVerify(req request, paths workspacePaths, environmentDigest string) map[string]any {
-	command := runCommand(commandSpec{
-		path: "/opt/lean/bin/lake",
-		args: []string{
-			"env", "/opt/flow/bin/safe_verify", paths.frozenTarget, paths.frozenSubmission,
-		},
-		dir: "/opt/flow/mathlib",
-		env: []string{"LEAN_PATH=" + filepath.Dir(paths.frozenTarget)},
-	})
+	command := runCommand(safeVerifyCommandSpec(paths))
 	axioms, foundAxioms := parseObservedAxioms(command.Diagnostic, req.TargetDeclaration)
 	if command.ExitCode == 0 && !foundAxioms {
 		return unavailable("kernel_replay_output_unavailable", command.DurationMS)
@@ -324,16 +322,22 @@ func runSafeVerify(req request, paths workspacePaths, environmentDigest string) 
 	}
 }
 
+func safeVerifyCommandSpec(paths workspacePaths) commandSpec {
+	return commandSpec{
+		path: "/opt/flow/bin/safe_verify",
+		args: []string{paths.frozenTarget, paths.frozenSubmission},
+		dir:  "/workspace/frozen",
+		env:  runtimeLeanEnvironment(filepath.Dir(paths.frozenTarget)),
+	}
+}
+
 func runNanoda(req request, paths workspacePaths, environmentDigest string) map[string]any {
 	targets := append(append([]string{}, exportTargets...), req.TargetDeclaration)
 	targets = append(targets, allowedAxioms...)
-	exportArgs := []string{"env", "/opt/flow/bin/lean4export", "Submission", "--"}
-	exportArgs = append(exportArgs, targets...)
 	exportStarted := time.Now()
-	exportDiagnostic, exportExit := runCommandToFile(commandSpec{
-		path: "/opt/lean/bin/lake", args: exportArgs, dir: "/opt/flow/mathlib",
-		env: []string{"LEAN_PATH=" + filepath.Dir(paths.frozenSubmission)},
-	}, paths.exportFile)
+	exportDiagnostic, exportExit := runCommandToFile(
+		lean4ExportCommandSpec(paths, targets), paths.exportFile,
+	)
 	_ = exportDiagnostic
 	if exportExit != 0 {
 		return unavailable("export_unavailable", elapsedMS(exportStarted))
@@ -373,6 +377,24 @@ func runNanoda(req request, paths workspacePaths, environmentDigest string) map[
 	return map[string]any{
 		"status": status, "environmentDigest": environmentDigest,
 		"reasonCode": reason, "durationMs": elapsedMS(exportStarted),
+	}
+}
+
+func lean4ExportCommandSpec(paths workspacePaths, targets []string) commandSpec {
+	args := []string{"Submission", "--"}
+	args = append(args, targets...)
+	return commandSpec{
+		path: "/opt/flow/bin/lean4export",
+		args: args,
+		dir:  "/workspace/frozen",
+		env:  runtimeLeanEnvironment(filepath.Dir(paths.frozenSubmission)),
+	}
+}
+
+func runtimeLeanEnvironment(extraLeanPath ...string) []string {
+	return []string{
+		"LEAN_PATH=" + strings.Join(append(extraLeanPath, "/opt/flow/lean-lib"), ":"),
+		"LD_LIBRARY_PATH=/opt/lean/lib/lean:/opt/flow/shared-lib",
 	}
 }
 

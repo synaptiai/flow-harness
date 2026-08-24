@@ -55,6 +55,45 @@ func TestSourcePolicyRejectsIncompleteAndExecutableMetaprogramConstructs(t *test
 	}
 }
 
+func TestRuntimeToolsUsePinnedBinariesAndExplicitLeanPath(t *testing.T) {
+	paths := workspacePaths{
+		targetRoot:       "/workspace/target",
+		targetHome:       "/workspace/target/home",
+		targetSource:     "/workspace/target/Challenge.lean",
+		targetOlean:      "/workspace/target/.lake/build/lib/lean/Challenge.olean",
+		submissionRoot:   "/workspace/submission",
+		submissionHome:   "/workspace/submission/home",
+		submissionSource: "/workspace/submission/Submission.lean",
+		submissionOlean:  "/workspace/submission/.lake/build/lib/lean/Submission.olean",
+		frozenTarget:     "/workspace/frozen/.lake/build/lib/lean/Challenge.olean",
+		frozenSubmission: "/workspace/frozen/.lake/build/lib/lean/Submission.olean",
+	}
+
+	target := leanCommandSpec(paths.targetSource, paths.targetOlean, paths.targetHome, proofUID, proofGID)
+	assertCommandSpec(t, target, "/opt/lean/bin/lean", "/workspace/target",
+		[]string{paths.targetSource, "-o", paths.targetOlean},
+		[]string{
+			"LEAN_PATH=/opt/flow/lean-lib",
+			"LD_LIBRARY_PATH=/opt/lean/lib/lean:/opt/flow/shared-lib",
+		})
+
+	safeVerify := safeVerifyCommandSpec(paths)
+	assertCommandSpec(t, safeVerify, "/opt/flow/bin/safe_verify", "/workspace/frozen",
+		[]string{paths.frozenTarget, paths.frozenSubmission},
+		[]string{
+			"LEAN_PATH=/workspace/frozen/.lake/build/lib/lean:/opt/flow/lean-lib",
+			"LD_LIBRARY_PATH=/opt/lean/lib/lean:/opt/flow/shared-lib",
+		})
+
+	export := lean4ExportCommandSpec(paths, []string{"Flow.Proof.safe"})
+	assertCommandSpec(t, export, "/opt/flow/bin/lean4export", "/workspace/frozen",
+		[]string{"Submission", "--", "Flow.Proof.safe"},
+		[]string{
+			"LEAN_PATH=/workspace/frozen/.lake/build/lib/lean:/opt/flow/lean-lib",
+			"LD_LIBRARY_PATH=/opt/lean/lib/lean:/opt/flow/shared-lib",
+		})
+}
+
 func TestParseObservedAxiomsUsesLastTargetReplay(t *testing.T) {
 	output := strings.Join([]string{
 		"Flow.Proof.safe", "True", "#[sorryAx]", "---", "theorem",
@@ -93,4 +132,19 @@ func quote(value string) string {
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	value = strings.ReplaceAll(value, "\n", `\n`)
 	return `"` + value + `"`
+}
+
+func assertCommandSpec(
+	t *testing.T,
+	spec commandSpec,
+	path string,
+	dir string,
+	args []string,
+	env []string,
+) {
+	t.Helper()
+	if spec.path != path || spec.dir != dir || strings.Join(spec.args, "\x00") != strings.Join(args, "\x00") ||
+		strings.Join(spec.env, "\x00") != strings.Join(env, "\x00") {
+		t.Fatalf("unexpected command spec: %#v", spec)
+	}
 }

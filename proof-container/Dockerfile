@@ -80,7 +80,7 @@ RUN mkdir -p /src/lean4export \
     && cd /src/lean4export \
     && lake build lean4export \
     && cp .lake/build/bin/lean4export /opt/flow/bin/lean4export
-RUN mkdir -p /src/mathlib-expected /opt/flow/lean-lib \
+RUN mkdir -p /src/mathlib-expected /opt/flow/lean-lib /opt/flow/shared-lib \
     && tar -xzf /tmp/mathlib.tar.gz --strip-components=1 -C /src/mathlib-expected \
     && test "$(sha256sum /src/mathlib-expected/lake-manifest.json | cut -d ' ' -f 1)" = 1009a101f52a9d5d8ca57666f0256bae91abdb693e0f27b5a4622cffcc38cf03 \
     && git clone --filter=blob:none https://github.com/leanprover-community/mathlib4.git /opt/flow/mathlib \
@@ -99,6 +99,16 @@ RUN mkdir -p /src/mathlib-expected /opt/flow/lean-lib \
          if [ -e "/opt/flow/lean-lib/$name" ]; then exit 1; fi; \
          ln -s "$entry" "/opt/flow/lean-lib/$name"; \
        done < /tmp/lean-library-entries \
+    && for library in /opt/flow/mathlib/.lake/build/lib /opt/flow/mathlib/.lake/packages/*/.lake/build/lib; do \
+         if [ -d "$library" ]; then \
+           find "$library" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -name '*.so*' -print; \
+         fi; \
+       done | sort -u > /tmp/lean-shared-library-entries \
+    && while IFS= read -r entry; do \
+         name="$(basename "$entry")"; \
+         if [ -e "/opt/flow/shared-lib/$name" ]; then exit 1; fi; \
+         ln -s "$entry" "/opt/flow/shared-lib/$name"; \
+       done < /tmp/lean-shared-library-entries \
     && find /opt/flow/mathlib -type d -name .git -prune -exec rm -rf {} + \
     && touch --date="@${SOURCE_DATE_EPOCH}" /opt/flow/bin/safe_verify /opt/flow/bin/lean4export
 

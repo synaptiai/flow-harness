@@ -22,7 +22,7 @@
     "cgroupNamespace": "private",
     "rootFilesystem": "read-only",
     "noNewPrivileges": true,
-    "supervisorCapabilities": ["SETUID"],
+    "supervisorCapabilities": ["KILL", "SETUID"],
     "maskedPaths": [
       "/proc/acpi",
       "/proc/asound",
