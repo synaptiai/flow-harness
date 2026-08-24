@@ -1079,6 +1079,15 @@ export function createPublicEvaluationHeader(
 
 export function evaluationReportInput(header: PublicEvaluationHeader): EvaluationReportInput {
   const profileIds = header.profiles.map((profile) => profile.id) as [string, string];
+  const delegationIdentity = header.profiles.flatMap((profile) => {
+    const identity =
+      profile.adapter === "flow-workflow-v1" ? profile.candidate?.identity : undefined;
+    return identity !== undefined &&
+      "kind" in identity &&
+      identity.kind === "delegation-evaluation-candidate"
+      ? [identity]
+      : [];
+  })[0];
   return Object.freeze({
     planDigest: header.planDigest,
     ...(header.purpose === undefined ? {} : { purpose: header.purpose }),
@@ -1123,6 +1132,51 @@ export function evaluationReportInput(header: PublicEvaluationHeader): Evaluatio
                 profile.profileId,
                 profile.profileDigest,
               ]),
+            ),
+          ),
+        }),
+    ...(header.purpose !== "delegation-v1" || delegationIdentity === undefined
+      ? {}
+      : {
+          profileDelegationManagerNodeIds: Object.freeze(
+            Object.fromEntries(
+              header.profiles.map((profile) => [
+                profile.id,
+                delegationIdentity.scope.managerNodeId,
+              ]),
+            ),
+          ),
+          profileDelegationPackageClosureDigests: Object.freeze(
+            Object.fromEntries(
+              header.profiles.map((profile) => [
+                profile.id,
+                delegationIdentity.baseline.packageClosureDigest,
+              ]),
+            ),
+          ),
+          profileDelegationAuthorities: Object.freeze(
+            Object.fromEntries(
+              header.profiles.map((profile) => {
+                const identity =
+                  profile.adapter === "flow-workflow-v1" ? profile.candidate?.identity : undefined;
+                if (
+                  identity !== undefined &&
+                  "kind" in identity &&
+                  identity.kind === "delegation-evaluation-candidate"
+                ) {
+                  return [
+                    profile.id,
+                    Object.freeze({
+                      candidateDigest: identity.candidateDigest,
+                      snapshotDigest: identity.snapshotDigest,
+                      executorIdentityDigest: identity.delegation.executor.identityDigest,
+                      maxDepth: identity.delegation.maxDepth,
+                      maxCalls: identity.delegation.maxCalls,
+                    }),
+                  ] as const;
+                }
+                return [profile.id, null] as const;
+              }),
             ),
           ),
         }),

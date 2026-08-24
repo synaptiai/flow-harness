@@ -147,6 +147,7 @@ export interface AdmittedFlowEvaluationProfile {
     readonly selectionProvenance: string;
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
+  readonly delegationManagerNodeId?: string;
   readonly baselineCapabilitySnapshot?: CapabilitySnapshot;
   readonly effectiveHarness?: {
     readonly selection: "baseline" | "candidate";
@@ -1166,8 +1167,9 @@ function bindCandidateComparison(
         "the delegation candidate must preserve one exact root and package closure with delegation only on the candidate profile",
       );
     }
-    return profiles.map((profile) =>
-      profile === baseline
+    const delegationManagerNodeId = candidate.candidate.scope.managerNodeId;
+    return profiles.map((profile) => {
+      return profile === baseline
         ? Object.freeze({
             ...profile,
             workflow: Object.freeze({
@@ -1177,9 +1179,10 @@ function bindCandidateComparison(
             ...(candidate.baselineCapabilitySnapshot === undefined
               ? {}
               : { capabilitySnapshot: candidate.baselineCapabilitySnapshot }),
+            delegationManagerNodeId,
           })
-        : profile,
-    ) as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
+        : Object.freeze({ ...profile, delegationManagerNodeId });
+    }) as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
   }
   if (candidate.candidate.kind === "agent-skill-package-candidate") {
     if (

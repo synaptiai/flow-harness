@@ -725,6 +725,143 @@ describe("evaluation aggregation", () => {
       );
     },
   );
+
+  it("reports delegation outcomes and child resource deltas by task class", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["delegation-fit-task", "sequential-control-task"],
+      ["baseline", "candidate"],
+      [11],
+    );
+    const records = chain(
+      schedule.map((item) =>
+        delegationTrial(
+          item,
+          item.profileId === "candidate" && item.taskId === "delegation-fit-task",
+        ),
+      ),
+    );
+
+    const report = aggregateEvaluation(delegationReportInput(schedule), records);
+
+    expect(report.comparison).toMatchObject({
+      verdict: "not_superior",
+      constraints: { delegationEvidence: true },
+    });
+    expect(report.delegation).toMatchObject({
+      purpose: "delegation-v1",
+      scheduledPairs: 2,
+      completePairs: 2,
+      completeObservations: 4,
+      missingObservations: 0,
+      constraintViolations: 0,
+      classes: {
+        "delegation-fit": {
+          scheduledPairs: 1,
+          completePairs: 1,
+          baseline: { invocations: 0, skipped: 1, successfulChildren: 0 },
+          candidate: {
+            invocations: 1,
+            skipped: 0,
+            successfulChildren: 1,
+            childResources: { nodeStarts: 2, modelTokens: 100, executionMs: 25 },
+          },
+          childResourceDelta: { nodeStarts: 2, modelTokens: 100, executionMs: 25 },
+        },
+        "sequential-control": {
+          scheduledPairs: 1,
+          completePairs: 1,
+          candidate: { invocations: 0, skipped: 1, successfulChildren: 0 },
+          childResourceDelta: {
+            nodeStarts: 0,
+            modelTokens: 0,
+            modelCostUsdMicros: 0,
+            executionMs: 0,
+            artifactBytes: 0,
+          },
+        },
+      },
+      limitations: [],
+    });
+  });
+
+  it("keeps a delegation verdict insufficient when an observation is missing", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["delegation-fit-task", "sequential-control-task"],
+      ["baseline", "candidate"],
+      [11],
+    );
+    const records = chain(
+      schedule.map((item, index) => delegationTrial(item, false, [], index === 3)),
+    );
+
+    const report = aggregateEvaluation(delegationReportInput(schedule), records);
+
+    expect(report.comparison).toMatchObject({
+      verdict: "insufficient_evidence",
+      constraints: { delegationEvidence: null },
+    });
+    expect(report.delegation).toMatchObject({
+      missingObservations: 1,
+      limitations: expect.arrayContaining([expect.stringMatching(/missing/i)]),
+    });
+  });
+
+  it("turns a complete delegation constraint breach into constraint_failed", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["delegation-fit-task", "sequential-control-task"],
+      ["baseline", "candidate"],
+      [11],
+    );
+    const records = chain(
+      schedule.map((item) =>
+        delegationTrial(item, false, item.profileId === "candidate" ? ["workspace_cleanup"] : []),
+      ),
+    );
+
+    const report = aggregateEvaluation(delegationReportInput(schedule), records);
+
+    expect(report.comparison).toMatchObject({
+      verdict: "constraint_failed",
+      constraints: { delegationEvidence: false },
+    });
+    expect(report.delegation).toMatchObject({ constraintViolations: 2 });
+  });
+
+  it("rejects delegation observations attributed to another manager or package closure", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["delegation-fit-task", "sequential-control-task"],
+      ["baseline", "candidate"],
+      [11],
+    );
+    const records = chain(schedule.map((item) => delegationTrial(item, false)));
+    const admitted = delegationReportInput(schedule);
+    const contradictoryInputs = [
+      {
+        ...admitted,
+        profileDelegationManagerNodeIds: {
+          baseline: "another-manager",
+          candidate: "another-manager",
+        },
+      },
+      {
+        ...admitted,
+        profileDelegationPackageClosureDigests: {
+          baseline: "a".repeat(64),
+          candidate: "a".repeat(64),
+        },
+      },
+    ];
+
+    for (const input of contradictoryInputs) {
+      expect(() => aggregateEvaluation(input, records)).toThrow(
+        /contradicts its admitted delegation identity/i,
+      );
+    }
+  });
 });
 
 function trial(
@@ -896,6 +1033,87 @@ function phaseRoutingTrial(
   });
 }
 
+function delegationTrial(
+  schedule: ReturnType<typeof createEvaluationSchedule>[number] | undefined,
+  invoked: boolean,
+  violations: NonNullable<EvaluationTrialRecord["delegation"]>["constraints"]["violations"] = [],
+  omitObservation = false,
+): EvaluationTrialRecord {
+  if (schedule === undefined) throw new Error("test schedule is incomplete");
+  const baseline = schedule.profileId === "baseline";
+  const child = invoked
+    ? {
+        runId: `child-${schedule.trialId.slice(6, 30)}`,
+        workflowId: "review-specialist",
+        workflowDigest: "4".repeat(64),
+        resultNodeId: "publish-review",
+        resultSchemaDigest: "5".repeat(64),
+        resultValueHash: "6".repeat(64),
+        terminalSequence: 7,
+        outcome: "succeeded" as const,
+        resources: {
+          nodeStarts: 2,
+          modelTokens: 100,
+          modelCostUsdMicros: 20,
+          executionMs: 25,
+          artifactBytes: 4,
+        },
+        durationMs: 20,
+        workspaceDisposition: "discarded" as const,
+      }
+    : null;
+  return createEvaluationTrialRecord({
+    schedule,
+    planDigest,
+    previousDigest: null,
+    startedAt: "2026-08-09T00:00:00.000Z",
+    completedAt: "2026-08-09T00:00:01.000Z",
+    environment: {
+      platform: "linux",
+      architecture: "x64",
+      nodeVersion: "27.0.0",
+      flowVersion: "0.1.0-alpha.1",
+      workspaceBackend: "reflink-copy-v1",
+      workspaceSnapshotDigest: "b".repeat(64),
+    },
+    harness: { outcome: "completed", runId: `run-${schedule.trialId.slice(6, 18)}`, reason: null },
+    verification: {
+      outcome: "accepted",
+      verifierDigest: "c".repeat(64),
+      assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+    },
+    metrics: { ...unavailableEvaluationMetrics(), policyViolations: 0 },
+    ...(omitObservation
+      ? {}
+      : {
+          delegation: {
+            version: 1,
+            mode: baseline ? ("baseline" as const) : ("candidate" as const),
+            workflowDigest: "1".repeat(64),
+            packageClosureDigest: "2".repeat(64),
+            manager: { nodeId: "manager", attempt: 1, outcome: "succeeded" as const },
+            authority: baseline
+              ? null
+              : {
+                  candidateDigest: "7".repeat(64),
+                  snapshotDigest: "8".repeat(64),
+                  executorIdentityDigest: "9".repeat(64),
+                  maxDepth: 1 as const,
+                  maxCalls: 1 as const,
+                },
+            invocation: {
+              count: invoked ? (1 as const) : (0 as const),
+              prepared: invoked,
+              settled: invoked,
+              receipt: invoked,
+              child,
+            },
+            constraints: { complete: true, violations },
+          },
+        }),
+  });
+}
+
 function chain(records: readonly EvaluationTrialRecord[]): readonly EvaluationTrialRecord[] {
   let previousDigest: string | null = null;
   return records.map((record) => {
@@ -919,6 +1137,7 @@ function chain(records: readonly EvaluationTrialRecord[]): readonly EvaluationTr
       metrics: record.metrics,
       ...(record.qualification === undefined ? {} : { qualification: record.qualification }),
       ...(record.phaseRouting === undefined ? {} : { phaseRouting: record.phaseRouting }),
+      ...(record.delegation === undefined ? {} : { delegation: record.delegation }),
     });
     previousDigest = chained.recordDigest;
     return chained;
@@ -984,5 +1203,50 @@ function phaseRoutingReportInput(schedule: ReturnType<typeof createEvaluationSch
       minimumCostReductionRate: 0.1,
       minimumLatencyReductionRate: 0.1,
     },
+  };
+}
+
+function delegationReportInput(schedule: ReturnType<typeof createEvaluationSchedule>) {
+  return {
+    ...reportInput(schedule, 2),
+    purpose: "delegation-v1" as const,
+    profileWorkflowDigests: {
+      baseline: "1".repeat(64),
+      candidate: "1".repeat(64),
+    },
+    profileDelegationAuthorities: {
+      baseline: null,
+      candidate: {
+        candidateDigest: "7".repeat(64),
+        snapshotDigest: "8".repeat(64),
+        executorIdentityDigest: "9".repeat(64),
+        maxDepth: 1 as const,
+        maxCalls: 1 as const,
+      },
+    },
+    profileDelegationManagerNodeIds: {
+      baseline: "manager",
+      candidate: "manager",
+    },
+    profileDelegationPackageClosureDigests: {
+      baseline: "2".repeat(64),
+      candidate: "2".repeat(64),
+    },
+    tasks: [
+      {
+        id: "delegation-fit-task",
+        partition: "holdout" as const,
+        delegationClass: "delegation-fit" as const,
+        verifierDigest: "c".repeat(64),
+        assertionCount: 1,
+      },
+      {
+        id: "sequential-control-task",
+        partition: "holdout" as const,
+        delegationClass: "sequential-control" as const,
+        verifierDigest: "c".repeat(64),
+        assertionCount: 1,
+      },
+    ],
   };
 }

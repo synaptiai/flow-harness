@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
 import { phaseRoutingEffectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
+import { delegationEvaluationCandidateFixture } from "../../fixtures/delegation-evaluation-candidate.js";
 import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import {
   FlowWorkflowEvaluationAdapter,
@@ -19,9 +20,11 @@ import {
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
   createEffectiveHarnessCapabilitySnapshot,
+  validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ModelUsageObservation } from "../../../src/domain/run/budget.js";
 import {
@@ -95,6 +98,154 @@ describe("Flow workflow evaluation adapter", () => {
     ).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "run_succeeded" })]),
     );
+  });
+
+  it("projects zero-invocation baseline evidence for a delegation trial", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-delegation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Complete the task without delegation.\n");
+    const workflow = compiledDelegationBaselineWorkflow();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "baseline",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+        delegationManagerNodeId: "implement",
+      },
+      {
+        executor: successfulExecutor(),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    const request = publicRequest(root);
+    const result = await adapter.run({
+      ...request,
+      purpose: "delegation-v1",
+      trial: { ...request.trial, profileId: "baseline" },
+    } as HarnessEvaluationRequest);
+
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      delegation: {
+        version: 1,
+        mode: "baseline",
+        workflowDigest: calculateWorkflowDigest(workflow),
+        manager: { nodeId: "implement", attempt: 1, outcome: "succeeded" },
+        authority: null,
+        invocation: { count: 0, prepared: false, settled: false, receipt: false, child: null },
+        constraints: { complete: true, violations: [] },
+      },
+    });
+  });
+
+  it("projects complete candidate invocation and child lifecycle evidence", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-delegation-candidate-")));
+    const stateRoot = await realpath(await mkdtemp(join(tmpdir(), "flow-delegation-state-")));
+    temporaryDirectories.push(root, stateRoot);
+    await writeFile(join(root, "TASK.md"), "Complete the task with optional delegation.\n");
+    const fixture = delegationEvaluationCandidateFixture();
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      delegation: fixture.projected.snapshot,
+      digest: calculateCapabilitySnapshotDigest(
+        [],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        fixture.projected.snapshot,
+      ),
+    });
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent") throw new Error(`unexpected node "${node.type}"`);
+        if (node.id === "review") {
+          const text = JSON.stringify("approved");
+          return {
+            status: "succeeded",
+            evidence: {
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text,
+              textHash: sha256(text),
+              textTruncated: false,
+              durationMs: 3,
+              policyDecisions: [],
+              effectReceipts: [],
+            },
+          };
+        }
+        if (context.delegationSession === undefined) throw new Error("missing delegation session");
+        await context.delegationSession.delegate(context.signal);
+        const text = JSON.stringify("completed");
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text,
+            textHash: sha256(text),
+            textTruncated: false,
+            durationMs: 7,
+            policyDecisions: [],
+            effectReceipts: [],
+            delegationReceipts: context.delegationSession.receipts(),
+          },
+        };
+      },
+    };
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: {
+          compiled: compileWorkflowText(fixture.baselineText),
+          workflowDigest: fixture.projected.identity.baseline.workflow.workflowDigest,
+        },
+        capabilitySnapshot,
+      },
+      {
+        executor,
+        createStore: () => new JsonlRunStore(join(stateRoot, "runs")),
+        workspaceIsolator: new ReflinkCopyWorkspaceIsolator(join(stateRoot, "workspaces")),
+      },
+    );
+
+    const result = await adapter.run({
+      ...publicRequest(root),
+      purpose: "delegation-v1",
+    });
+
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      delegation: {
+        mode: "candidate",
+        manager: { nodeId: "manager", outcome: "succeeded" },
+        authority: {
+          candidateDigest: fixture.projected.identity.candidateDigest,
+          snapshotDigest: fixture.projected.snapshot.snapshotDigest,
+          executorIdentityDigest: fixture.executor.identityDigest,
+        },
+        invocation: {
+          count: 1,
+          prepared: true,
+          settled: true,
+          receipt: true,
+          child: {
+            workflowId: "review-specialist",
+            outcome: "succeeded",
+            resultValueHash: sha256(JSON.stringify("approved")),
+            workspaceDisposition: "discarded",
+          },
+        },
+        constraints: { complete: true, violations: [] },
+      },
+    });
   });
 
   it("keeps independently unavailable ACP usage dimensions out of evaluation metrics", async () => {
@@ -733,6 +884,39 @@ budget:
 nodes:
   - id: implement
     type: agent
+    agent:
+      prompt: Follow TASK.md.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
+function compiledDelegationBaselineWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: evaluated-profile }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: decoy
+    type: agent
+    agent:
+      prompt: Perform unrelated preparation.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+  - id: implement
+    type: agent
+    dependsOn: [decoy]
     agent:
       prompt: Follow TASK.md.
       model: { provider: test, id: deterministic }

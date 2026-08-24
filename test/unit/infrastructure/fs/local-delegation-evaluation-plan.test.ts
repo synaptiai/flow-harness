@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { admitLocalEvaluationPlan } from "../../../../src/infrastructure/fs/local-evaluation-plan.js";
 import {
   createPublicEvaluationHeader,
+  evaluationReportInput,
   LocalEvaluationStore,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
 import { delegationEvaluationCandidateFixture } from "../../../fixtures/delegation-evaluation-candidate.js";
@@ -73,7 +74,8 @@ describe("local delegation evaluation plan", () => {
     await store.create(
       createPublicEvaluationHeader(admitted, "bounded-delegation", "2026-08-24T12:00:00.000Z"),
     );
-    await expect(store.read("bounded-delegation")).resolves.toMatchObject({
+    const stored = await store.read("bounded-delegation");
+    expect(stored).toMatchObject({
       header: {
         purpose: "delegation-v1",
         suite: {
@@ -83,6 +85,27 @@ describe("local delegation evaluation plan", () => {
           { workflow: { sourceKind: "delegation-evaluation-baseline" } },
           { workflow: { sourceKind: "delegation-evaluation-candidate" } },
         ],
+      },
+    });
+    expect(evaluationReportInput(stored.header).profileDelegationAuthorities).toEqual({
+      baseline: null,
+      candidate: {
+        candidateDigest: project.fixture.projected.identity.candidateDigest,
+        snapshotDigest: project.fixture.projected.identity.snapshotDigest,
+        executorIdentityDigest:
+          project.fixture.projected.identity.delegation.executor.identityDigest,
+        maxDepth: 1,
+        maxCalls: 1,
+      },
+    });
+    expect(evaluationReportInput(stored.header)).toMatchObject({
+      profileDelegationManagerNodeIds: {
+        baseline: "manager",
+        candidate: "manager",
+      },
+      profileDelegationPackageClosureDigests: {
+        baseline: project.fixture.projected.identity.baseline.packageClosureDigest,
+        candidate: project.fixture.projected.identity.baseline.packageClosureDigest,
       },
     });
   });

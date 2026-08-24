@@ -521,6 +521,120 @@ const phaseRoutingObservationSchema = z
     }
   });
 
+const delegationResourceSchema = z
+  .object({
+    nodeStarts: nonNegativeMetricSchema(),
+    modelTokens: nonNegativeMetricSchema(),
+    modelCostUsdMicros: nonNegativeMetricSchema(),
+    executionMs: nonNegativeMetricSchema(),
+    artifactBytes: nonNegativeMetricSchema(),
+  })
+  .strict();
+
+const delegationObservationSchema = z
+  .object({
+    version: z.literal(1),
+    mode: z.enum(["baseline", "candidate"]),
+    workflowDigest: sha256Schema,
+    packageClosureDigest: sha256Schema,
+    manager: z
+      .object({
+        nodeId: identifierSchema,
+        attempt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        outcome: z.enum(["pending", "running", "succeeded", "failed", "omitted"]),
+      })
+      .strict(),
+    authority: z
+      .object({
+        candidateDigest: sha256Schema,
+        snapshotDigest: sha256Schema,
+        executorIdentityDigest: sha256Schema,
+        maxDepth: z.literal(1),
+        maxCalls: z.literal(1),
+      })
+      .strict()
+      .nullable(),
+    invocation: z
+      .object({
+        count: z.union([z.literal(0), z.literal(1)]),
+        prepared: z.boolean(),
+        settled: z.boolean(),
+        receipt: z.boolean(),
+        child: z
+          .object({
+            runId: identifierSchema,
+            workflowId: identifierSchema,
+            workflowDigest: sha256Schema,
+            resultNodeId: identifierSchema.nullable(),
+            resultSchemaDigest: sha256Schema.nullable(),
+            resultValueHash: sha256Schema.nullable(),
+            terminalSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+            outcome: z.enum(["succeeded", "failed", "cancelled", "resource_exhausted"]),
+            resources: delegationResourceSchema,
+            resourceAvailability: z
+              .object({
+                modelTokens: z.enum(["complete", "unavailable"]),
+                modelCostUsdMicros: z.enum(["complete", "unavailable"]),
+              })
+              .strict()
+              .optional(),
+            durationMs: nonNegativeMetricSchema(),
+            workspaceDisposition: z.enum(["discarded", "retained"]),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
+    constraints: z
+      .object({
+        complete: z.boolean(),
+        violations: z
+          .array(
+            z.enum([
+              "manager_target",
+              "call_limit",
+              "settlement",
+              "receipt",
+              "child_identity",
+              "child_outcome",
+              "typed_result",
+              "workspace_cleanup",
+              "resource_accounting",
+              "authority_attenuation",
+            ]),
+          )
+          .max(10)
+          .refine((items) => new Set(items).size === items.length),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((observation, context) => {
+    const invoked = observation.invocation.count === 1;
+    if (
+      invoked !== observation.invocation.prepared ||
+      observation.invocation.settled !== (observation.invocation.child !== null) ||
+      observation.invocation.receipt !== observation.invocation.settled ||
+      (!invoked &&
+        (observation.invocation.settled ||
+          observation.invocation.receipt ||
+          observation.invocation.child !== null))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["invocation"],
+        message: "delegation lifecycle observation is contradictory",
+      });
+    }
+    if ((observation.mode === "baseline") !== (observation.authority === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["authority"],
+        message: "delegation authority contradicts the evaluation mode",
+      });
+    }
+  });
+
 const trialRecordSchema = z
   .object({
     version: z.literal(1),
@@ -555,6 +669,7 @@ const trialRecordSchema = z
     metrics: metricsSchema,
     qualification: acpQualificationObservationSchema.optional(),
     phaseRouting: phaseRoutingObservationSchema.optional(),
+    delegation: delegationObservationSchema.optional(),
     previousDigest: sha256Schema.nullable(),
     recordDigest: sha256Schema,
   })
@@ -566,6 +681,7 @@ export type EvaluationVerificationOutcome = EvaluationTrialRecord["verification"
 export type EvaluationEnvironment = EvaluationTrialRecord["environment"];
 export type AcpQualificationObservation = z.infer<typeof acpQualificationObservationSchema>;
 export type PhaseRoutingObservation = z.infer<typeof phaseRoutingObservationSchema>;
+export type DelegationEvaluationObservation = z.infer<typeof delegationObservationSchema>;
 
 export interface CreateEvaluationTrialRecordInput {
   readonly schedule: EvaluationTrialScheduleItem;
@@ -579,6 +695,7 @@ export interface CreateEvaluationTrialRecordInput {
   readonly metrics: EvaluationMetrics;
   readonly qualification?: AcpQualificationObservation;
   readonly phaseRouting?: PhaseRoutingObservation;
+  readonly delegation?: DelegationEvaluationObservation;
 }
 
 export class EvaluationRecordError extends Error {
@@ -624,6 +741,12 @@ export function parsePhaseRoutingObservation(input: unknown): PhaseRoutingObserv
   return parseEvidence(phaseRoutingObservationSchema, input, "phase-routing observation");
 }
 
+export function parseDelegationEvaluationObservation(
+  input: unknown,
+): DelegationEvaluationObservation {
+  return parseEvidence(delegationObservationSchema, input, "delegation observation");
+}
+
 export function createEvaluationTrialRecord(
   input: CreateEvaluationTrialRecordInput,
 ): EvaluationTrialRecord {
@@ -647,6 +770,7 @@ export function createEvaluationTrialRecord(
     metrics: input.metrics,
     ...(input.qualification === undefined ? {} : { qualification: input.qualification }),
     ...(input.phaseRouting === undefined ? {} : { phaseRouting: input.phaseRouting }),
+    ...(input.delegation === undefined ? {} : { delegation: input.delegation }),
     previousDigest: input.previousDigest,
   };
   const record = {
