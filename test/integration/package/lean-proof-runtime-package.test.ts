@@ -63,6 +63,22 @@ describe("Lean proof runtime package boundary", () => {
     expect(preparation).toContain("SOURCE_DATE_EPOCH: String(buildInputs.sourceDateEpoch)");
   });
 
+  it("seeds TLS trust from a pinned stage before reading Debian snapshots", async () => {
+    const dockerfile = await readFile(
+      resolve(repositoryRoot, "proof-container/Dockerfile"),
+      "utf8",
+    );
+    const trustSeed = dockerfile.indexOf(
+      "COPY --from=supervisor-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
+    );
+    const snapshotRead = dockerfile.indexOf(
+      "https://snapshot.debian.org/archive/debian/20260823T000000Z",
+    );
+
+    expect(trustSeed).toBeGreaterThanOrEqual(0);
+    expect(snapshotRead).toBeGreaterThan(trustSeed);
+  });
+
   it("durably publishes an owner-private attestation", async () => {
     const preparation = await readFile(
       resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"),

@@ -44,6 +44,7 @@ ENV PATH=/opt/lean/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/
     LEAN_ABORT_ON_PANIC=1 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
+COPY --from=supervisor-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' \
       'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260823T000000Z bookworm main' \
       'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20260823T000000Z bookworm-security main' \
