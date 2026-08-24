@@ -281,6 +281,9 @@ describe("public repository contracts", () => {
     const commands = proofRuntime?.steps
       .map((step) => (typeof step.run === "string" ? step.run : ""))
       .join("\n");
+    expect(commands).toContain('test "$(uname -s)" = Linux');
+    expect(commands).toContain('test "$(uname -m)" = x86_64');
+    expect(commands).not.toContain("uname --system");
     expect(commands).toContain("npm run proof:prepare");
     expect(commands).toContain("FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify");
     expect(commands).toContain("docker system df");

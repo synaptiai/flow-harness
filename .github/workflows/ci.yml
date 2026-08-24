@@ -257,8 +257,8 @@ jobs:
 
       - name: Verify hosted Linux x64
         run: |
-          test "$(uname --system)" = Linux
-          test "$(uname --machine)" = x86_64
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
 
       - name: Install the exact Docker Engine
         run: |
