@@ -14,7 +14,9 @@ import type { ContextCompactionPolicy } from "../domain/run/context-compaction.j
 import type {
   AgentCommandApprovalReference,
   AgentCommandSettlementOutcome,
+  AgentDelegationReceipt,
   AgentEffectReceipt,
+  ChildResultEvidence,
   FilesystemEditEffectDescriptor,
   NodeEffectReconciliationInput,
   NodeEffectSettlementInput,
@@ -183,6 +185,7 @@ export interface NodeExecutionContext {
   readonly agentCommandJournal?: NodeAgentCommandJournal;
   readonly agentCommandApprovalGate?: NodeAgentCommandApprovalGate;
   readonly agentCommandExecutor?: AgentCommandExecutor;
+  readonly delegationSession?: NodeDelegationSession;
   readonly verifierSources?: readonly VerifierSourceInput[];
   readonly proofFaithfulnessApproval?: LeanProofFaithfulnessApprovalContext;
   readonly verifierPackage?: VerifierPackageUseEvidence;
@@ -199,6 +202,11 @@ export interface NodeExecutionContext {
   readonly artifactStore?: ArtifactStore;
   readonly agentCommandArtifactProducer?: Omit<ArtifactProducer, "stream">;
   readonly signal?: AbortSignal;
+}
+
+export interface NodeDelegationSession {
+  delegate(signal?: AbortSignal): Promise<ChildResultEvidence>;
+  receipts(): readonly AgentDelegationReceipt[];
 }
 
 export interface VerifierSourceInput {

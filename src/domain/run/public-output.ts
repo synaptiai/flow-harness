@@ -162,9 +162,45 @@ function projectCapabilitySnapshot(
       if (key === "goalWorkspace") {
         return [key, projectGoalWorkspace(item)];
       }
+      if (key === "delegation") {
+        return [key, projectDelegation(item)];
+      }
       return [key, item];
     }),
   );
+}
+
+function projectDelegation(value: unknown): unknown {
+  if (!isRecord(value) || value.kind !== "delegation-evaluation-v1") {
+    return null;
+  }
+  const projected = pick(value, [
+    "version",
+    "kind",
+    "target",
+    "maxDepth",
+    "maxCalls",
+    "candidateDigest",
+    "snapshotDigest",
+  ]);
+  projected.objective = isRecord(value.objective)
+    ? pick(value.objective, ["bytes", "sha256"])
+    : null;
+  projected.child = isRecord(value.child)
+    ? pick(value.child, [
+        "workflowId",
+        "sourceSha256",
+        "workflowDigest",
+        "resultNodeId",
+        "resultSchemaDigest",
+        "budget",
+        "packageClosureDigest",
+      ])
+    : null;
+  projected.executor = isRecord(value.executor)
+    ? pick(value.executor, ["version", "kind", "adapterContractVersion", "identityDigest"])
+    : null;
+  return projected;
 }
 
 function projectAcpAgent(value: unknown): unknown {

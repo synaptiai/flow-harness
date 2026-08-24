@@ -564,6 +564,88 @@ describe("public run output", () => {
     expect(value.evidence.semanticReceipts[0]).toBe(receipt);
   });
 
+  it("projects delegation authority without private objective or child source text", () => {
+    const value = {
+      capabilitySnapshot: {
+        version: 1,
+        packages: [],
+        delegation: {
+          version: 1,
+          kind: "delegation-evaluation-v1",
+          target: { workflowId: "delegation-harness", managerNodeId: "manager" },
+          objective: {
+            text: "PRIVATE_REVIEW_OBJECTIVE",
+            bytes: 24,
+            sha256: "a".repeat(64),
+          },
+          child: {
+            workflowId: "review-specialist",
+            sourceText: "PRIVATE_CHILD_WORKFLOW_SOURCE",
+            sourceSha256: "b".repeat(64),
+            workflowDigest: "c".repeat(64),
+            resultNodeId: "publish-review",
+            resultSchemaDigest: "d".repeat(64),
+            budget: {
+              maxNodeStarts: 2,
+              maxModelTokens: 10_000,
+              maxCostUsdMicros: 1_000_000,
+              maxExecutionMs: 300_000,
+              maxArtifactBytes: 1_048_576,
+            },
+            packageClosureDigest: "e".repeat(64),
+          },
+          executor: {
+            version: 1,
+            kind: "embedded-pi-v1",
+            adapterContractVersion: "1.0.0",
+            node: { version: "27.0.0", executableSha256: "f".repeat(64) },
+            harness: { private: "PRIVATE_HARNESS_CLOSURE" },
+            inference: { private: "PRIVATE_INFERENCE_CLOSURE" },
+            dependencyClosureSha256: "0".repeat(64),
+            identityDigest: "1".repeat(64),
+          },
+          maxDepth: 1,
+          maxCalls: 1,
+          candidateDigest: "2".repeat(64),
+          snapshotDigest: "3".repeat(64),
+        },
+        digest: "4".repeat(64),
+      },
+    };
+
+    const projected = projectPublicRunOutput(value) as typeof value;
+
+    expect(projected.capabilitySnapshot.delegation).toEqual({
+      version: 1,
+      kind: "delegation-evaluation-v1",
+      target: { workflowId: "delegation-harness", managerNodeId: "manager" },
+      objective: { bytes: 24, sha256: "a".repeat(64) },
+      child: {
+        workflowId: "review-specialist",
+        sourceSha256: "b".repeat(64),
+        workflowDigest: "c".repeat(64),
+        resultNodeId: "publish-review",
+        resultSchemaDigest: "d".repeat(64),
+        budget: value.capabilitySnapshot.delegation.child.budget,
+        packageClosureDigest: "e".repeat(64),
+      },
+      executor: {
+        version: 1,
+        kind: "embedded-pi-v1",
+        adapterContractVersion: "1.0.0",
+        identityDigest: "1".repeat(64),
+      },
+      maxDepth: 1,
+      maxCalls: 1,
+      candidateDigest: "2".repeat(64),
+      snapshotDigest: "3".repeat(64),
+    });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE");
+    expect(value.capabilitySnapshot.delegation.child.sourceText).toBe(
+      "PRIVATE_CHILD_WORKFLOW_SOURCE",
+    );
+  });
+
   it("projects goal workspace review fields without copying unknown private data", () => {
     const goalWorkspace = {
       version: 1,

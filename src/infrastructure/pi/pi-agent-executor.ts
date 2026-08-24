@@ -24,6 +24,7 @@ import {
 import type {
   AgentExecutor,
   ModelSessionJournal,
+  NodeDelegationSession,
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
@@ -56,6 +57,7 @@ import {
 } from "../../domain/run/context-compaction.js";
 import type {
   AgentActivity,
+  AgentDelegationReceipt,
   AgentEffectReceipt,
   AgentEvidence,
   NodeFailure,
@@ -109,6 +111,7 @@ export interface PiAgentRunRequest {
   };
   readonly semanticSession?: SemanticToolSession;
   readonly artifactStore?: ArtifactStore;
+  readonly delegationSession?: NodeDelegationSession;
   readonly contextCompactionMode?: ContextCompactionMode;
   readonly contextSummary?: PiContextSummaryOptions;
   readonly authorityDigest?: string;
@@ -363,10 +366,13 @@ export class PiAgentExecutor implements AgentExecutor {
       return closedSemanticReceipts;
     };
     const closeCommands = () => commandRecorder.close();
+    const closeDelegations = (): readonly AgentDelegationReceipt[] =>
+      context.delegationSession?.receipts() ?? [];
     const policyFailureEvidence = (): AgentEvidence | null => {
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
       const semanticReceipts = closeSemanticEvidence();
+      const delegationReceipts = closeDelegations();
       closeCommands();
       if (
         policyDecisions.length === 0 &&
@@ -374,7 +380,8 @@ export class PiAgentExecutor implements AgentExecutor {
         semanticReceipts.length === 0 &&
         observedUsage === undefined &&
         observedActivity === undefined &&
-        capabilityEvidence === undefined
+        capabilityEvidence === undefined &&
+        delegationReceipts.length === 0
       ) {
         return null;
       }
@@ -388,6 +395,7 @@ export class PiAgentExecutor implements AgentExecutor {
         observedUsage,
         observedActivity,
         observedCapabilityEvidence,
+        delegationReceipts,
       );
     };
     const currentSideEffectStatus = (forceUncertain = false) =>
@@ -440,6 +448,9 @@ export class PiAgentExecutor implements AgentExecutor {
           effectRecorder,
           commandRecorder,
           ...(context.artifactStore === undefined ? {} : { artifactStore: context.artifactStore }),
+          ...(context.delegationSession === undefined
+            ? {}
+            : { delegationSession: context.delegationSession }),
           authorityDigest: calculateModelSessionDigest({
             version: 1,
             attribution: policyBroker.attribution,
@@ -653,6 +664,7 @@ export class PiAgentExecutor implements AgentExecutor {
       closeCommands();
       const completedCapabilityEvidence =
         capabilityEvidence === undefined ? undefined : observedCapabilityEvidence;
+      const delegationReceipts = closeDelegations();
       const evidence: AgentEvidence = {
         kind: "agent",
         provider: node.agent.model.provider,
@@ -669,6 +681,7 @@ export class PiAgentExecutor implements AgentExecutor {
         ...(completedCapabilityEvidence === undefined
           ? {}
           : { capabilities: completedCapabilityEvidence }),
+        ...(delegationReceipts.length === 0 ? {} : { delegationReceipts }),
       };
       if (effectReceipts.some((receipt) => receipt.outcome === "uncertain")) {
         return agentFailure(
@@ -705,7 +718,8 @@ export class PiAgentExecutor implements AgentExecutor {
             semanticReceipts.length === 0 &&
             result.usage === undefined &&
             observedActivity === undefined &&
-            completedCapabilityEvidence === undefined
+            completedCapabilityEvidence === undefined &&
+            delegationReceipts.length === 0
             ? null
             : emptyAgentEvidence(
                 node.agent.model.provider,
@@ -717,6 +731,7 @@ export class PiAgentExecutor implements AgentExecutor {
                 result.usage,
                 observedActivity,
                 completedCapabilityEvidence,
+                delegationReceipts,
               ),
         );
       }
@@ -967,6 +982,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
           ? {}
           : { semanticSession: request.semanticSession }),
         ...(request.artifactStore === undefined ? {} : { artifactStore: request.artifactStore }),
+        ...(request.delegationSession === undefined
+          ? {}
+          : { delegationSession: request.delegationSession }),
         ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
@@ -1884,6 +1902,7 @@ function emptyAgentEvidence(
   usage?: AgentModelUsage,
   activity?: AgentActivity,
   capabilities?: AgentCapabilityEvidence,
+  delegationReceipts: readonly AgentDelegationReceipt[] = [],
 ): AgentEvidence {
   return {
     kind: "agent",
@@ -1899,6 +1918,7 @@ function emptyAgentEvidence(
     effectReceipts,
     ...(semanticReceipts.length === 0 ? {} : { semanticReceipts }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(delegationReceipts.length === 0 ? {} : { delegationReceipts }),
   };
 }
 
