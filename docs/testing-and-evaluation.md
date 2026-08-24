@@ -2,7 +2,7 @@
 
 ## Quality gate
 
-Run the complete local gate with:
+Run the fast platform-local gate with:
 
 ```sh
 npm run check
@@ -11,6 +11,18 @@ npm run check
 It verifies formatting, lint rules, strict TypeScript contracts, all default tests, a clean
 production build, and compiled-process tests. The build removes the previous `dist/` tree first so
 deleted modules cannot survive into a release artifact.
+
+On a host that meets the Prime Docker prerequisites, run the same complete release-gate sequence
+as the primary CI job:
+
+```sh
+npm run ci:local
+```
+
+This sequence also checks documentation, the generated capability reference, Go proof-supervisor
+tests, coverage, browser behavior, runtime suites, the installed package, and production dependency
+audits. It prepares the Prime image before Docker-backed runtime tests. The separate hosted proof
+job remains Linux x64 only because a macOS-emulated image isn't acceptance evidence.
 
 ## Keep the capability reference current
 
@@ -88,6 +100,9 @@ For publication authority and recovery, read
 | Browser presentation | Fragment removal, tab-scoped capability retention for reload, terminal capability removal, capability authentication, fixed-resource policy, complete-document streaming and reload, keyboard steering, storage denial, text-only DOM insertion, attributed package notes, responsive layout, focus visibility, and console/network closure | Pinned Playwright Chromium, explicit loopback listener, and 1280×720, 768×1024, and 375×812 viewports |
 | ACP executor and qualification contract | Exact runtime admission and revalidation, model and reasoning selection, strict inverse protocol order, zero client authority, fixed violation categories, fresh session binding, output and timeout bounds, complete process-tree settlement, recovery capsules, usage provenance, detached snapshots, verifier projection, unchanged Pi fallback, paired distinct-agent admission, canonical result verification, complete accounting, and qualification verdicts | Temporary runtimes, local processes, deterministic ACP peers, injected SRT seam, private run ledgers, and evaluation stores |
 | Hosted ACP containment | Project, home, Flow-state, protected-path, and source-credential denial; one-domain network policy; private-state writes; selected masked credential delivery; cancellation; and resistant-descendant termination | Real SRT and Linux PID namespaces on hosted Linux x64; skipped on other hosts |
+| Lean proof contract and qualification | Exact bounded request, human statement approval, runtime identity, compiler and checker agreement, content-free projection, one-trial-per-task denominator, ordinary tests, cost, latency, policy, cleanup, and explicit missingness | Pure TypeScript domain tests, application ports, temporary owner-private files, and no provider credentials |
+| Lean proof supervisor | Strict request and source policy, bounded artifacts and diagnostics, compiler and checker process setup, and effective Linux containment checks | Go unit tests on supported contributor hosts; no proof image or provider credential |
+| Hosted Lean proof appliance | Three clean builds, matching final image identities, exact image labels and probe, effective seccomp, capability, mount, cgroup, environment, network, accepted and negative proofs, checker authority, recovery, cancellation, and confirmed cleanup | Real Docker Engine and cgroup v2 on hosted Linux x64; separate required CI job |
 | Pi adapter contract | Exact model/tool request translation, fixed bounded work-profile rendering, explicit zero turn/provider retries, versioned workspace and immutable `skill://` reads, selected package/read receipts, edit receipts, argv-only command authorization/journaling and shared sandbox delegation, bounded approval-denial propagation, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, production tool-error conversion back into the next model turn, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
@@ -383,6 +398,27 @@ the ownership oracle.
 
 A missing Docker prerequisite fails the dedicated runner. The gate does not skip or weaken the
 production policy.
+
+The Lean proof appliance has a separate `proof-runtime` CI job. It installs the exact hosted
+Docker stack, runs `flow runtime prepare lean-proof` through the preparation implementation, and
+requires two clean final builds to produce one image ID. It then verifies the installed image and
+runs `test/runtime/lean-proof-oci.runtime.test.ts` with `FLOW_PROOF_RUNTIME_TEST=1`.
+
+The runtime test accepts a complete `omega` proof, rejects incomplete source before compilation,
+and refuses `native_decide` as accepted closed-policy authority. Every proof invocation first
+checks effective Linux containment inside the appliance. The suite also reconciles a durable prior
+intent, blocks automatic retry, cancels an attempt, confirms lease removal, and confirms exact
+container absence. The job requires no paid-provider credential.
+
+Run Go proof-supervisor tests without building the image:
+
+```sh
+cd proof-container
+go test ./...
+```
+
+Don't run the full proof image build on macOS as substitute acceptance evidence. Use the hosted
+Linux x64 job or a matching native Linux x64 host.
 
 ## Live Pi test policy
 

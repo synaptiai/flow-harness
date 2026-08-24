@@ -62,6 +62,22 @@ describe("package release evidence", () => {
     );
   });
 
+  it("admits the packaged proof runtime without admitting unrelated scripts", () => {
+    const withProofRuntime = withAdditionalFile(
+      withAdditionalFile(evidenceFixture(), "proof-container/Dockerfile"),
+      "scripts/prepare-proof-runtime.mjs",
+    );
+
+    expect(parsePackageReleaseEvidence(encodePackageReleaseEvidence(withProofRuntime))).toEqual(
+      withProofRuntime,
+    );
+    expectReleaseError(() =>
+      encodePackageReleaseEvidence(
+        withAdditionalFile(withProofRuntime, "scripts/unowned-release-helper.mjs"),
+      ),
+    );
+  });
+
   it.each([
     "/absolute",
     "../escape",

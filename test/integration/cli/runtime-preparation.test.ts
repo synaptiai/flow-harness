@@ -31,6 +31,32 @@ describe("runtime preparation CLI", () => {
     });
   });
 
+  it("prepares the reproducible Lean proof runtime in the selected project", async () => {
+    const stdout: string[] = [];
+    const prepareLeanProofRuntime = vi.fn(async () => ({
+      descriptorPath: "/project/.flow/proof-runtime/attestation.json",
+      imageDigest: `sha256:${"d".repeat(64)}`,
+      buildAttestationDigest: "e".repeat(64),
+      dependencyManifestDigest: "f".repeat(64),
+      profileDigest: "1".repeat(64),
+      canonicalTag: `flow-lean-proof:sha256-${"d".repeat(64)}`,
+    }));
+
+    const exitCode = await main(
+      ["runtime", "prepare", "lean-proof"],
+      { stdout: (text) => stdout.push(text), stderr: () => undefined },
+      { cwd: "/project", prepareLeanProofRuntime },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(prepareLeanProofRuntime).toHaveBeenCalledWith({ cwd: "/project", signal: undefined });
+    expect(JSON.parse(stdout.join("\n"))).toMatchObject({
+      prepared: true,
+      descriptorPath: "/project/.flow/proof-runtime/attestation.json",
+      imageDigest: `sha256:${"d".repeat(64)}`,
+    });
+  });
+
   it("rejects every other runtime command", async () => {
     const stderr: string[] = [];
 
@@ -41,6 +67,6 @@ describe("runtime preparation CLI", () => {
     );
 
     expect(exitCode).toBe(2);
-    expect(stderr.join("\n")).toMatch(/runtime prepare requires prime-agent/i);
+    expect(stderr.join("\n")).toMatch(/runtime prepare requires prime-agent or lean-proof/i);
   });
 });

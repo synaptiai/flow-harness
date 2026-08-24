@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { NodeExecutorRouter } from "../../../../src/application/node-executor-router.js";
 import type { AgentExecutor } from "../../../../src/application/ports.js";
-import { LocalContainerCommandSandbox } from "../../../../src/infrastructure/oci/local-container-command-sandbox.js";
 import { AcpAgentExecutor } from "../../../../src/infrastructure/acp/acp-agent-executor.js";
+import { LocalContainerCommandSandbox } from "../../../../src/infrastructure/oci/local-container-command-sandbox.js";
+import { LocalLeanProofDriver } from "../../../../src/infrastructure/oci/local-lean-proof-driver.js";
 import { PiAgentExecutor } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
 import {
   createProductionAcpAgentSandbox,
@@ -20,6 +21,7 @@ describe("production node executor composition", () => {
     const executor = createProductionNodeExecutor();
     expect(executor).toBeInstanceOf(NodeExecutorRouter);
     expect((executor as NodeExecutorRouter).agentExecutor).toBeInstanceOf(ProductionAgentExecutor);
+    expect((executor as NodeExecutorRouter).leanProofDriver).toBeInstanceOf(LocalLeanProofDriver);
     const agentExecutor = (executor as NodeExecutorRouter).agentExecutor as ProductionAgentExecutor;
     expect(agentExecutor.piExecutor).toBeInstanceOf(PiAgentExecutor);
     expect(agentExecutor.acpExecutor).toBeInstanceOf(AcpAgentExecutor);

@@ -20,7 +20,14 @@ const ROOT_PACKAGE_FILES = new Set([
   "npm-shrinkwrap.json",
   "package.json",
 ]);
-const PACKAGE_DIRECTORY_PREFIXES = ["dist/", "docs/", "examples/", "prime-container/"] as const;
+const PACKAGE_FILE_PATHS = new Set([...ROOT_PACKAGE_FILES, "scripts/prepare-proof-runtime.mjs"]);
+const PACKAGE_DIRECTORY_PREFIXES = [
+  "dist/",
+  "docs/",
+  "examples/",
+  "prime-container/",
+  "proof-container/",
+] as const;
 const REQUIRED_PACKAGE_FILES = [
   ...ROOT_PACKAGE_FILES,
   "dist/cli/launcher.js",
@@ -253,7 +260,7 @@ function isAdmittedPackagePath(path: string): boolean {
     return false;
   }
   return (
-    ROOT_PACKAGE_FILES.has(path) ||
+    PACKAGE_FILE_PATHS.has(path) ||
     PACKAGE_DIRECTORY_PREFIXES.some((prefix) => path.startsWith(prefix))
   );
 }

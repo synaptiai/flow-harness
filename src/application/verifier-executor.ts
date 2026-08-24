@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
+import {
+  createLeanProofRequest,
+  decideLeanProofVerification,
+  isLeanProofExecutionEvidence,
+  type LeanProofExecutionEvidence,
+  type LeanProofRequest,
+} from "../domain/proof/lean-proof-verification.js";
 import type {
   AgentEvidence,
   CommandEvidence,
+  LeanProofVerifierEvidence,
   ModelVerifierEvidence,
   NodeFailure,
   VerifierEvidence,
@@ -17,6 +25,7 @@ import type {
 import type {
   AgentExecutor,
   CommandExecutor,
+  LeanProofDriver,
   NodeExecutionContext,
   NodeExecutionOutcome,
   VerifierExecutor,
@@ -42,6 +51,7 @@ export class VerifierNodeExecutor implements VerifierExecutor {
   constructor(
     readonly commandExecutor: CommandExecutor,
     readonly agentExecutor: AgentExecutor,
+    readonly leanProofDriver?: LeanProofDriver,
   ) {}
 
   async execute(
@@ -54,8 +64,120 @@ export class VerifierNodeExecutor implements VerifierExecutor {
     const outcome =
       node.verifier.kind === "command"
         ? await this.executeCommand(node, node.verifier, context)
-        : await this.executeModel(node, node.verifier, context);
+        : node.verifier.kind === "model"
+          ? await this.executeModel(node, node.verifier, context)
+          : await this.executeLeanProof(node, node.verifier, context);
     return bindVerifierPackageEvidence(outcome, context);
+  }
+
+  private async executeLeanProof(
+    node: CompiledVerifierNode,
+    verifier: Extract<CompiledVerifierNode["verifier"], { readonly kind: "lean-proof" }>,
+    context: NodeExecutionContext,
+  ): Promise<NodeExecutionOutcome> {
+    const sources = context.verifierSources ?? [];
+    const preflightError = validateLeanProofPreflight(verifier, sources, context);
+    if (preflightError !== null) {
+      const evidence = leanProofEvidence(
+        sources,
+        "execution_failed",
+        "inconclusive",
+        preflightError,
+        null,
+        null,
+      );
+      return verifierFailure("inconclusive", preflightError, "none", evidence);
+    }
+    const [specification, statement, proof] = sources;
+    const approval = context.proofFaithfulnessApproval;
+    if (
+      specification === undefined ||
+      statement === undefined ||
+      proof === undefined ||
+      approval === undefined
+    ) {
+      throw new Error("validated proof verifier input is incomplete");
+    }
+    const request = createLeanProofRequest({
+      specification: specification.value,
+      statement: statement.value,
+      proof: proof.value,
+      targetDeclaration: verifier.targetDeclaration,
+      runtime: verifier.runtime,
+      faithfulness: {
+        version: 1,
+        authority: "human",
+        approverIdentityHash: sha256(approval.actor),
+        approvedAt: approval.approvedAt,
+        specificationDigest: specification.sourceHash,
+        statementDigest: statement.sourceHash,
+      },
+      ...(proof.proofModel === undefined ? {} : { proofModel: proof.proofModel }),
+    });
+    if (this.leanProofDriver === undefined) {
+      const reason = "the selected Lean proof runtime is unavailable";
+      const evidence = leanProofEvidence(
+        sources,
+        "execution_failed",
+        "inconclusive",
+        reason,
+        request,
+        null,
+      );
+      return verifierFailure("inconclusive", reason, "none", evidence);
+    }
+
+    let execution: LeanProofExecutionEvidence;
+    try {
+      execution = await this.leanProofDriver.execute(request, {
+        runId: context.runId,
+        workflowId: context.workflowId,
+        nodeId: context.nodeId ?? node.id,
+        attempt: context.attempt,
+        cwd: context.cwd,
+        timeoutMs: verifier.timeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      });
+    } catch (error) {
+      const reason = boundedReason(error instanceof Error ? error.message : String(error));
+      const evidence = leanProofEvidence(
+        sources,
+        "execution_failed",
+        "inconclusive",
+        reason,
+        request,
+        null,
+      );
+      return verifierFailure("inconclusive", reason, "uncertain", evidence);
+    }
+    if (!isLeanProofExecutionEvidence(execution)) {
+      const reason = "Lean proof runtime returned invalid execution evidence";
+      const evidence = leanProofEvidence(
+        sources,
+        "execution_failed",
+        "inconclusive",
+        reason,
+        request,
+        null,
+      );
+      return verifierFailure("inconclusive", reason, "uncertain", evidence);
+    }
+    const decision = decideLeanProofVerification(request, execution);
+    const evidence = leanProofEvidence(
+      sources,
+      "completed",
+      decision.verdict,
+      decision.reason,
+      request,
+      execution,
+    );
+    if (decision.verdict === "accepted") return { status: "succeeded", evidence };
+    return verifierFailure(
+      decision.verdict,
+      decision.reason,
+      execution.cleanup === "confirmed" ? "none" : "uncertain",
+      evidence,
+    );
   }
 
   private async executeCommand(
@@ -388,6 +510,100 @@ function modelEvidence(
       ),
     ),
   };
+}
+
+function validateLeanProofPreflight(
+  verifier: Extract<CompiledVerifierNode["verifier"], { readonly kind: "lean-proof" }>,
+  sources: readonly VerifierSourceInput[],
+  context: NodeExecutionContext,
+): string | null {
+  const declarations = [verifier.specification, verifier.statement, verifier.proof];
+  if (sources.length !== declarations.length) {
+    return "Lean proof verifier requires exact specification, statement, and proof sources";
+  }
+  for (const [index, declaration] of declarations.entries()) {
+    const source = sources[index];
+    if (
+      source === undefined ||
+      source.sourceNodeId !== declaration.nodeId ||
+      source.sourceField !== declaration.field ||
+      source.truncated ||
+      source.sourceHash !== sha256(source.value)
+    ) {
+      return "Lean proof verifier source evidence is missing, truncated, or identity-mismatched";
+    }
+  }
+  const approval = context.proofFaithfulnessApproval;
+  if (
+    approval === undefined ||
+    approval.nodeId !== verifier.faithfulnessApprovalNodeId ||
+    approval.actor.length === 0 ||
+    approval.actor.length > 512 ||
+    approval.actor !== approval.actor.trim() ||
+    !/^[a-f0-9]{64}$/.test(approval.requestDigest) ||
+    !isCanonicalInstant(approval.approvedAt) ||
+    approval.evidence.length !== 2
+  ) {
+    return "Lean proof verifier requires current exact human statement-faithfulness approval";
+  }
+  for (const [index, declaration] of declarations.slice(0, 2).entries()) {
+    const source = sources[index];
+    const approved = approval.evidence[index];
+    if (
+      source === undefined ||
+      approved === undefined ||
+      approved.sourceNodeId !== declaration.nodeId ||
+      approved.sourceAttempt !== source.sourceAttempt ||
+      approved.sourceField !== declaration.field ||
+      approved.sourceHash !== source.sourceHash
+    ) {
+      return "human statement-faithfulness approval does not bind the exact proof sources";
+    }
+  }
+  return null;
+}
+
+function leanProofEvidence(
+  sources: readonly VerifierSourceInput[],
+  result: LeanProofVerifierEvidence["result"],
+  verdict: VerifierVerdict,
+  reason: string,
+  request: LeanProofRequest | null,
+  execution: LeanProofVerifierEvidence["execution"],
+): LeanProofVerifierEvidence {
+  return {
+    kind: "verifier",
+    driver: "lean-proof",
+    result,
+    verdict,
+    reason,
+    reasonHash: sha256(reason),
+    durationMs: proofDurationMs(execution),
+    sources: Object.freeze(
+      sources.map((source) =>
+        Object.freeze({
+          sourceNodeId: source.sourceNodeId,
+          sourceAttempt: source.sourceAttempt,
+          sourceField: source.sourceField,
+          sourceHash: source.sourceHash,
+        }),
+      ),
+    ),
+    request,
+    execution,
+  };
+}
+
+function proofDurationMs(execution: LeanProofVerifierEvidence["execution"]): number {
+  if (execution === null) return 0;
+  return (
+    execution.compiler.durationMs + execution.safeVerify.durationMs + execution.nanoda.durationMs
+  );
+}
+
+function isCanonicalInstant(value: string): boolean {
+  const instant = new Date(value);
+  return !Number.isNaN(instant.valueOf()) && instant.toISOString() === value;
 }
 
 function boundedRaw(evidence: AgentEvidence | null): {

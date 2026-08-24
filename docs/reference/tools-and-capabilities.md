@@ -327,6 +327,10 @@ Schema `default` annotations alone don't insert a value.
 | `ls-output-bytes` | 51200 bytes | — | Maximum UTF-8 bytes returned by one directory listing. |
 | `policy-decisions-per-attempt` | 64 items | — | Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none. |
 | `policy-target-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one policy authorization target. |
+| `proof-qualification-input-bytes` | 1048576 bytes | — | Maximum UTF-8 bytes in one Lean proof qualification input document. |
+| `proof-specification-bytes` | 65536 bytes | — | Maximum UTF-8 bytes in one private Lean proof source specification. |
+| `proof-statement-bytes` | 131072 bytes | — | Maximum UTF-8 bytes in one exact Lean theorem or lemma header. |
+| `proof-term-bytes` | 262144 bytes | — | Maximum UTF-8 bytes in one separate Lean proof term. |
 | `read-distinct-skill-resources-per-attempt` | 128 items | — | Maximum distinct skill:// resource receipts retained in one agent attempt. |
 | `read-output-bytes` | 51200 bytes | 51200 bytes | Maximum text bytes returned by one underlying Pi read window. |
 | `read-output-lines` | 2000 lines | 2000 lines | Maximum lines returned by one underlying Pi read window. |
@@ -364,6 +368,7 @@ operator-installed instances.
 
 | Seam | Implementation | Openness | Summary |
 | --- | --- | --- | --- |
+| `lean-proof-verifier` | `lean-proof-oci-v1` | open | One exact human-approved statement runs through the admitted Linux x64 compiler, SafeVerify, Nanoda, and durable cleanup boundary. |
 | `model-provider` | `pi-acp` | open | Provider and model identifiers resolve through embedded Pi or an exactly admitted prompt-only ACP agent at runtime. |
 
 Provider and model identifiers are runtime inputs. This reference doesn't promise that a

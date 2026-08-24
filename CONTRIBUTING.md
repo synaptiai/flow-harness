@@ -7,6 +7,7 @@ Flow welcomes focused issues and pull requests that preserve the harness boundar
 Requirements:
 
 - Node.js 26.7 or newer
+- Go 1.26 or newer for the proof-supervisor unit tests
 - npm with lockfile support
 - Git
 - Linux or macOS with the native sandbox prerequisites listed in

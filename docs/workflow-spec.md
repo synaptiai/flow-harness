@@ -772,7 +772,7 @@ operation using the exact workflow.
 ## Verifier node
 
 A first-class verifier makes evaluation intent and authority explicit. It is a guarded executable
-node, may appear inside a bounded loop body, and uses one strict driver:
+node, may appear inside a bounded loop body, and declares one strict driver:
 
 ```yaml
 - id: verify-tests
@@ -821,6 +821,80 @@ The separate zero-tool session and delimiters reduce accidental instruction foll
 make a probabilistic verifier prompt-injection-proof or equivalent to hidden deterministic tests.
 Command-verifier approval, remediation edges, fallback, and automatic retry of an interrupted
 verifier are not part of this contract.
+
+### Lean proof verifier
+
+The optional `lean-proof` driver verifies one exact namespaced Lean theorem or lemma on a prepared
+Linux x64 OCI proof appliance. It is deterministic proof evidence for the submitted formal
+statement. It isn't evidence that the statement faithfully represents the source specification or
+that non-proof product requirements are satisfied.
+
+```yaml
+- id: approve-statement
+  type: approval
+  dependsOn: [specification, statement]
+  approval:
+    prompt: Confirm that the formal statement represents the source specification.
+    evidence:
+      - { nodeId: specification, field: command.stdout }
+      - { nodeId: statement, field: command.stdout }
+
+- id: verify-proof
+  type: verifier
+  dependsOn: [specification, statement, proof, approve-statement, ordinary-tests]
+  verifier:
+    kind: lean-proof
+    targetDeclaration: Flow.Proof.add_zero
+    specification: { nodeId: specification, field: command.stdout }
+    statement: { nodeId: statement, field: command.stdout }
+    proof: { nodeId: proof, field: command.stdout }
+    faithfulnessApprovalNodeId: approve-statement
+    timeoutMs: 300000
+    runtime:
+      version: 1
+      platform: linux
+      architecture: x64
+      imageDigest: sha256:<64 lowercase hexadecimal characters>
+      buildAttestationDigest: <64 lowercase hexadecimal characters>
+      dependencyManifestDigest: <64 lowercase hexadecimal characters>
+      leanVersion: 4.33.1
+      mathlibRevision: <40 lowercase hexadecimal characters>
+      safeVerifyRevision: <40 lowercase hexadecimal characters>
+      nanodaRevision: <40 lowercase hexadecimal characters>
+      profileDigest: <64 lowercase hexadecimal characters>
+```
+
+The specification, statement, and proof each name a unique evidence field on a direct dependency.
+Flow accepts the same field kinds as other verifier sources. The statement must be one exact
+namespaced theorem or lemma header without `:=`. The proof must be a separate term that begins with
+`by`. The approval node must also be a direct dependency, and its complete evidence declaration
+must match the verifier's specification and statement sources. A changed source attempt or hash
+invalidates the approval.
+
+The `runtime` object is a closed exact identity. It binds the immutable image, build attestation,
+dependency manifest, Lean version, Mathlib revision, SafeVerify revision, Nanoda revision, and
+containment profile. Flow refuses unsupported platforms, missing fields, live-image drift,
+attestation drift, or effective-policy drift before it sends the private request to the appliance.
+Revision fields contain full 40-character Git commit IDs. Digest fields contain 64-character
+SHA-256 values. An OCI image digest also includes the `sha256:` prefix.
+
+If the proof source is an agent node, Flow records that node's exact provider, model, and thinking
+level with an `exact-model-v1` selection rule and `deny` fallback. A command or result proof source
+records no model route. The generating model can't change the runtime, approve statement
+faithfulness, select a fallback model, or authorize the verifier verdict.
+
+The appliance compiles the exact declaration, replays it with SafeVerify under the fixed axiom
+allowlist, and independently checks the complete exported environment with Nanoda. Acceptance
+requires matching identities, all three accepted component states, the exact human approval, and
+confirmed container removal. Rejection requires complete evidence of a proof or authority failure.
+Missing, inconsistent, unavailable, disagreeing, or cleanup-uncertain evidence is inconclusive.
+
+Private durable evidence retains the bounded proof request and component results. Public replay,
+inspection, events, and export replace the specification, statement, proof, target declaration,
+and diagnostics with identities and byte counts. An interrupted proof verifier is never retried
+automatically. Read [Verify an exact Lean statement](guides/lean-proof-verification.md) for the
+operator flow and [Operate the Lean proof runtime](operations/lean-proof-runtime.md) for the exact
+preparation, containment, and recovery contract.
 
 ## Installed capability bundles
 

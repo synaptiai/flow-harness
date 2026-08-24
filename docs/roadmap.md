@@ -542,14 +542,25 @@ Read [Evaluate and activate phase-aware model routing](guides/phase-routing.md).
 
 ### Slice 10.3: Add an optional proof verification profile
 
-- Run an exact Lean toolchain and optional proof-specialized model behind existing executor and
-  verifier ports.
-- Retain the source specification, generated statement, proof, compiler and kernel results, tool
-  versions, and dependency identity as bounded evidence.
-- Treat kernel acceptance as proof of the declared formal statement, not proof that the statement
-  matches the user's intent. Require separate specification-faithfulness evidence or human review.
-- Measure proof coverage, statement faithfulness, cost, latency, and ordinary test results. Formal
-  verification complements deterministic builds and tests and does not replace them.
+**Implemented on hosted Linux x64.**
+
+- Prepare one reproducible OCI appliance from fixed Lean, Mathlib, SafeVerify, lean4export, Nanoda,
+  image, BuildKit, seccomp, and profile inputs. Require two clean builds with the same image ID.
+- Admit the exact attestation and image before every proof attempt. Run without network,
+  credentials, a project mount, or an ambient home. Verify the kernel policy before reading input.
+- Accept a bounded specification, one exact formal statement, and one separate proof. An optional
+  proof-generating agent uses one exact provider and model route with deny fallback.
+- Require exact human approval that binds the specification and statement identities. Compiler,
+  SafeVerify, Nanoda, closed-axiom, identity, and confirmed-cleanup evidence must agree before proof
+  acceptance.
+- Preserve bounded private proof material and content-free public inspection. Attached, detached,
+  cancellation, recovery, replay, and export retain the same identities and block automatic retry
+  after an uncertain prior effect.
+- Qualify one exact profile only from complete declared evidence. Keep proof, human faithfulness,
+  ordinary tests, cost, latency, policy, and cleanup separate from every other required criterion.
+
+Read [Verify an exact Lean statement](guides/lean-proof-verification.md) and
+[Operate the Lean proof runtime](operations/lean-proof-runtime.md).
 
 ### Slice 10.4: Bound later delegation experiments
 

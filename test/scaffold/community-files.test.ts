@@ -93,6 +93,30 @@ describe("public repository contracts", () => {
     expect(testing).toContain("npm run release:verify");
   });
 
+  it("routes exact Lean proof guidance to maintained canonical owners", async () => {
+    const [readme, hub, guide, operations, architecture, roadmap, status, capabilities] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/README.md"),
+        readText("docs/guides/lean-proof-verification.md"),
+        readText("docs/operations/lean-proof-runtime.md"),
+        readText("docs/architecture.md"),
+        readText("docs/roadmap.md"),
+        readText("docs/project-status.md"),
+        readText("docs/reference/tools-and-capabilities.md"),
+      ]);
+
+    expect(readme).toContain("[Verify an exact Lean statement]");
+    expect(hub).toContain("[Verify an exact Lean statement](guides/lean-proof-verification.md)");
+    expect(hub).toContain("[Lean proof runtime operations](operations/lean-proof-runtime.md)");
+    expect(guide).toContain("flow eval proof qualify");
+    expect(operations).toContain("flow runtime prepare lean-proof");
+    expect(architecture).toContain("proof-container/");
+    expect(roadmap).toMatch(/Slice 10\.3:[\s\S]*Implemented on hosted Linux x64/);
+    expect(status).toContain("Exact Lean proof verification");
+    expect(capabilities).toContain("lean-proof-verifier");
+  });
+
   it("reports policy and attributed presentation packages as implemented", async () => {
     const corpus = await readPublicDocumentation();
     const roadmap = await readText("docs/roadmap.md");
@@ -235,7 +259,38 @@ describe("public repository contracts", () => {
     expect(workflow.on.pull_request).toBeDefined();
     expect(workflow.on.push).toEqual({ branches: ["main"] });
     expect(workflow.on.workflow_dispatch).toBeDefined();
-    expect(Object.keys(workflow.jobs).sort()).toEqual(["dependency-audit", "quality"]);
+    expect(workflow.concurrency).toEqual({
+      group: `ci-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}`,
+      "cancel-in-progress": true,
+    });
+    expect(Object.keys(workflow.jobs).sort()).toEqual([
+      "dependency-audit",
+      "proof-runtime",
+      "quality",
+    ]);
+  });
+
+  it("runs the exact proof appliance acceptance suite on hosted Linux x64", async () => {
+    const workflow = parse(await readText(".github/workflows/ci.yml")) as WorkflowDefinition;
+    const proofRuntime = workflow.jobs["proof-runtime"] as
+      | {
+          readonly "runs-on"?: unknown;
+          readonly "timeout-minutes"?: unknown;
+          readonly steps: readonly { readonly run?: unknown }[];
+        }
+      | undefined;
+
+    expect(proofRuntime?.["runs-on"]).toBe("ubuntu-24.04");
+    expect(proofRuntime?.["timeout-minutes"]).toBe(120);
+    const commands = proofRuntime?.steps
+      .map((step) => (typeof step.run === "string" ? step.run : ""))
+      .join("\n");
+    expect(commands).toContain('test "$(uname -s)" = Linux');
+    expect(commands).toContain('test "$(uname -m)" = x86_64');
+    expect(commands).not.toContain("uname --system");
+    expect(commands).toContain("npm run proof:prepare");
+    expect(commands).toContain("FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify");
+    expect(commands).toContain("docker system df");
   });
 
   it("audits the repository and Prime runtime dependency locks", async () => {
@@ -1173,6 +1228,10 @@ interface WorkflowDefinition {
     readonly pull_request?: unknown;
     readonly push?: { readonly branches?: readonly string[] };
     readonly workflow_dispatch?: unknown;
+  };
+  readonly concurrency?: {
+    readonly group?: string;
+    readonly "cancel-in-progress"?: boolean;
   };
   readonly jobs: Readonly<Record<string, unknown>>;
 }

@@ -16,6 +16,7 @@ import {
 import {
   PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR,
   PRODUCTION_COMMAND_EXECUTOR_DESCRIPTOR,
+  PRODUCTION_LEAN_PROOF_VERIFIER_DESCRIPTOR,
 } from "../../../src/infrastructure/runtime/production-node-executor.js";
 import { createProductionPublicCapabilityCatalog } from "../../../src/infrastructure/runtime/production-public-capability-reference.js";
 
@@ -55,6 +56,11 @@ describe("production workspace-agent tool reference", () => {
     ]);
     expect(catalog.executionSeams).toEqual([
       expect.objectContaining({
+        id: "lean-proof-verifier",
+        openness: "open",
+        implementation: "lean-proof-oci-v1",
+      }),
+      expect.objectContaining({
         id: "model-provider",
         openness: "open",
         implementation: "pi-acp",
@@ -68,7 +74,10 @@ describe("production workspace-agent tool reference", () => {
     expect(catalog.tools.map((tool) => tool.selector).sort()).toEqual([...AGENT_TOOL_NAMES].sort());
     expect(catalog.capabilityFamilies).toEqual(CAPABILITY_PACKAGE_FAMILY_REFERENCES);
     expect(catalog.evaluationAdapters).toEqual(EVALUATION_ADAPTER_REFERENCES);
-    expect(catalog.executionSeams).toEqual([PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR.reference]);
+    expect(catalog.executionSeams).toEqual([
+      PRODUCTION_LEAN_PROOF_VERIFIER_DESCRIPTOR.reference,
+      PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR.reference,
+    ]);
   });
 
   it("derives the exec sandbox prerequisite from production command composition", () => {

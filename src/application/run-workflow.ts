@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { renderSupplementalMemoryRelationshipBlock } from "../domain/adaptation/supplemental-memory-relationships.js";
-import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
 import {
   createPhaseRoutingDecision,
   type PhaseRoutingDecision,
 } from "../domain/adaptation/phase-routing-candidate.js";
+import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
+import { renderSupplementalMemoryRelationshipBlock } from "../domain/adaptation/supplemental-memory-relationships.js";
 import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
   agentCommandApprovalRequestId,
@@ -119,6 +119,7 @@ import type {
   CandidatePromotionSettlement,
   CandidateWorkspaceManager,
   IsolatedWorkspace,
+  LeanProofFaithfulnessApprovalContext,
   ModelSessionJournal,
   ModelSessionStore,
   NodeAgentCommandApprovalGate,
@@ -438,6 +439,7 @@ async function continueWorkflow(
       readonly agentCommandApprovalGate?: NodeAgentCommandApprovalGate;
       readonly modelSessionJournal?: ModelSessionJournal;
       readonly verifierSources?: readonly VerifierSourceInput[];
+      readonly proofFaithfulnessApproval?: LeanProofFaithfulnessApprovalContext;
       readonly verifierPackage?: VerifierPackageUseEvidence;
       readonly preflightOutcome?: NodeExecutionOutcome;
     }> = [];
@@ -524,7 +526,8 @@ async function continueWorkflow(
               options.signal,
             )
           : undefined;
-      const verifierSources = verifierExecutionSources(executionNode, state);
+      const verifierSources = verifierExecutionSources(executionNode, state, workflow.nodes);
+      const proofFaithfulnessApproval = proofFaithfulnessApprovalForNode(executionNode, state);
       const preflightOutcome =
         executionNode.type === "child"
           ? childBudgetPreflight(executionNode, state, childBudgetReservations)
@@ -641,6 +644,7 @@ async function continueWorkflow(
         ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
         ...(modelSessionJournal === undefined ? {} : { modelSessionJournal }),
         ...(verifierSources === undefined ? {} : { verifierSources }),
+        ...(proofFaithfulnessApproval === undefined ? {} : { proofFaithfulnessApproval }),
         ...(verifierResolution?.package === undefined
           ? {}
           : { verifierPackage: verifierResolution.package }),
@@ -668,6 +672,7 @@ async function continueWorkflow(
           agentCommandApprovalGate,
           modelSessionJournal,
           verifierSources,
+          proofFaithfulnessApproval,
           verifierPackage,
           preflightOutcome,
         }) => {
@@ -724,6 +729,9 @@ async function continueWorkflow(
                       ? {}
                       : { modelSession: modelSessionJournal }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
+                    ...(proofFaithfulnessApproval === undefined
+                      ? {}
+                      : { proofFaithfulnessApproval }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
@@ -3672,13 +3680,36 @@ function controlSource(
 function verifierExecutionSources(
   node: ExecutableNode,
   state: RunState,
+  workflowNodes: readonly CompiledNode[],
 ): readonly VerifierSourceInput[] | undefined {
-  if (node.type !== "verifier" || node.verifier.kind !== "model") {
+  if (
+    node.type !== "verifier" ||
+    (node.verifier.kind !== "model" && node.verifier.kind !== "lean-proof")
+  ) {
     return undefined;
   }
+  const declarations =
+    node.verifier.kind === "model"
+      ? node.verifier.evidence
+      : [node.verifier.specification, node.verifier.statement, node.verifier.proof];
   return Object.freeze(
-    node.verifier.evidence.map((declaration) => {
+    declarations.map((declaration, index) => {
       const source = verifierSource(node.id, declaration, state);
+      const compiledSource = workflowNodes.find((candidate) => candidate.id === declaration.nodeId);
+      const durableSource = state.nodes[declaration.nodeId]?.evidence;
+      const proofModel =
+        node.verifier.kind === "lean-proof" &&
+        index === 2 &&
+        compiledSource?.type === "agent" &&
+        durableSource?.kind === "agent"
+          ? {
+              selectionRule: "exact-model-v1" as const,
+              fallback: "deny" as const,
+              provider: durableSource.provider,
+              model: durableSource.model,
+              thinking: compiledSource.agent.model.thinking,
+            }
+          : undefined;
       return Object.freeze({
         sourceNodeId: declaration.nodeId,
         sourceAttempt: source.attempt,
@@ -3686,9 +3717,30 @@ function verifierExecutionSources(
         sourceHash: source.hash,
         value: source.value,
         truncated: source.truncated,
+        ...(proofModel === undefined ? {} : { proofModel: Object.freeze(proofModel) }),
       });
     }),
   );
+}
+
+function proofFaithfulnessApprovalForNode(
+  node: ExecutableNode,
+  state: RunState,
+): LeanProofFaithfulnessApprovalContext | undefined {
+  if (node.type !== "verifier" || node.verifier.kind !== "lean-proof") return undefined;
+  const approval = state.nodes[node.verifier.faithfulnessApprovalNodeId]?.workflowApproval;
+  if (approval?.status !== "approved" || approval.actor === null || approval.decidedAt === null) {
+    return undefined;
+  }
+  return Object.freeze({
+    nodeId: node.verifier.faithfulnessApprovalNodeId,
+    actor: approval.actor,
+    approvedAt: approval.decidedAt,
+    requestDigest: approval.requestDigest,
+    evidence: Object.freeze(
+      approval.request.evidence.map((observation) => Object.freeze({ ...observation })),
+    ),
+  });
 }
 
 function verifierSource(

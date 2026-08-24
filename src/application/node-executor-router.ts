@@ -3,6 +3,7 @@ import type {
   AgentCommandExecutor,
   AgentExecutor,
   CommandExecutor,
+  LeanProofDriver,
   NodeExecutionContext,
   NodeExecutionOutcome,
   NodeExecutor,
@@ -13,6 +14,7 @@ export class NodeExecutorRouter implements NodeExecutor {
   constructor(
     readonly commandExecutor: CommandExecutor,
     readonly agentExecutor: AgentExecutor,
+    readonly leanProofDriver?: LeanProofDriver,
   ) {}
 
   execute(node: CompiledNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome> {
@@ -27,10 +29,11 @@ export class NodeExecutorRouter implements NodeExecutor {
             : {}),
         });
       case "verifier":
-        return new VerifierNodeExecutor(this.commandExecutor, this.agentExecutor).execute(
-          node,
-          context,
-        );
+        return new VerifierNodeExecutor(
+          this.commandExecutor,
+          this.agentExecutor,
+          this.leanProofDriver,
+        ).execute(node, context);
       case "approval":
       case "child":
       case "result":

@@ -107,3 +107,54 @@ distribution that bundles these packages must preserve all applicable notices.
 
 The OCI image keeps the package license metadata. A distribution that ships the image must preserve
 all applicable Prime Agent and transitive dependency notices.
+
+## Lean
+
+- Project: [leanprover/lean4](https://github.com/leanprover/lean4).
+- Release: 4.33.1 Linux x64 archive.
+- License: Apache-2.0.
+- Use: compiler and kernel runtime in the optional locally prepared proof appliance.
+- Copied source: none.
+
+## Mathlib
+
+- Project: [leanprover-community/mathlib4](https://github.com/leanprover-community/mathlib4).
+- Revision: `0df444a360eaa60ab8c11dca51a86af692955474`.
+- License: Apache-2.0.
+- Use: exact admitted Lean library and dependency closure in the optional proof appliance.
+- Copied source: none.
+
+## Leanstral SafeVerify
+
+- Project: [mistralai/LeanstralSafeVerify](https://github.com/mistralai/LeanstralSafeVerify).
+- Revision: `fb9c583eb0ea96426d94625f89b7842c9dc1c313`.
+- License: Apache-2.0.
+- Use: kernel replay and observed-axiom reporting in the optional proof appliance.
+- Copied source: the compatibility patch at
+  `proof-container/patches/leanstral-safe-verify-lean-4.33.1.patch` modifies `Main.lean` for Lean
+  4.33.1 without changing the axiom or statement-name skip policies.
+
+Flow verifies the exact upstream archive, applies the digest-pinned compatibility patch, and builds
+the result against the appliance's fixed Lean release. The archive, patch, and resulting executable
+have separate SHA-256 identities.
+
+## lean4export
+
+- Project: [leanprover/lean4export](https://github.com/leanprover/lean4export).
+- Revision: `15f6055e299ad5b89345e533cc2192f4cc00f659`.
+- License: Apache-2.0.
+- Use: complete Lean environment export for independent proof checking.
+- Copied source: none.
+
+## Nanoda
+
+- Project: [robsimmons/nanoda_lib](https://github.com/robsimmons/nanoda_lib).
+- Revision: `68d5ca9db226849b41a6fff59d796ff19d0a8840`.
+- License: Apache-2.0.
+- Use: independent checking of the exported Lean environment in the optional proof appliance.
+- Copied source: none.
+
+The proof appliance is built locally from the exact source identities in
+`proof-container/build-inputs.json`. A distribution that ships the resulting image must preserve
+the applicable Lean, Mathlib, SafeVerify, lean4export, Nanoda, Debian, and transitive dependency
+licenses and notices.

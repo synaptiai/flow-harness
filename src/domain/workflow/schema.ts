@@ -14,8 +14,8 @@ import {
 } from "../capability/workflow-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
 import {
-  type CompiledResultSchema,
   AGENT_TOOL_NAMES,
+  type CompiledResultSchema,
   FLOW_WORKFLOW_API_VERSION,
   MAX_CHILD_WORKFLOW_SOURCE_BYTES,
   MAX_CONCURRENT_NODES,
@@ -135,6 +135,31 @@ const evidenceSourceFieldSchema = z.enum([
   "verifier.reason",
   "result.value",
 ]);
+
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/, "must be a SHA-256 digest");
+const gitCommitSchema = z
+  .string()
+  .regex(/^[a-f0-9]{40}$/, "must be a full lowercase hexadecimal Git commit ID");
+const proofRuntimeSchema = z
+  .object({
+    version: z.literal(1),
+    platform: z.literal("linux"),
+    architecture: z.literal("x64"),
+    imageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/, "must be an exact OCI SHA-256 digest"),
+    buildAttestationDigest: sha256Schema,
+    dependencyManifestDigest: sha256Schema,
+    leanVersion: z
+      .string()
+      .regex(
+        /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/,
+        "must be an exact stable Lean version",
+      ),
+    mathlibRevision: gitCommitSchema,
+    safeVerifyRevision: gitCommitSchema,
+    nanodaRevision: gitCommitSchema,
+    profileDigest: sha256Schema,
+  })
+  .strict();
 
 const evidenceSourceSchema = z
   .object({
@@ -310,6 +335,34 @@ const verifierNodeSchema = z
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })
         .strict(),
+      z
+        .object({
+          kind: z.literal("lean-proof"),
+          targetDeclaration: z
+            .string()
+            .min(3)
+            .max(512)
+            .regex(
+              /^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)+$/,
+              "must be an exact namespaced Lean declaration",
+            ),
+          specification: evidenceSourceSchema,
+          statement: evidenceSourceSchema,
+          proof: evidenceSourceSchema,
+          faithfulnessApprovalNodeId: identifierSchema,
+          runtime: proofRuntimeSchema,
+          timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
+        })
+        .strict()
+        .refine(
+          (verifier) =>
+            new Set(
+              [verifier.specification, verifier.statement, verifier.proof].map(
+                (source) => `${source.nodeId}\0${source.field}`,
+              ),
+            ).size === 3,
+          "proof verifier source declarations must be unique",
+        ),
       z
         .object({
           kind: z.literal("packaged-command"),

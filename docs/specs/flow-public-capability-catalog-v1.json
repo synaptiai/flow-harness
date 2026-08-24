@@ -463,6 +463,30 @@
       "scope": "Maximum UTF-8 bytes in one policy authorization target."
     },
     {
+      "id": "proof-qualification-input-bytes",
+      "value": 1048576,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one Lean proof qualification input document."
+    },
+    {
+      "id": "proof-specification-bytes",
+      "value": 65536,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one private Lean proof source specification."
+    },
+    {
+      "id": "proof-statement-bytes",
+      "value": 131072,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one exact Lean theorem or lemma header."
+    },
+    {
+      "id": "proof-term-bytes",
+      "value": 262144,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one separate Lean proof term."
+    },
+    {
       "id": "read-distinct-skill-resources-per-attempt",
       "value": 128,
       "unit": "items",
@@ -594,6 +618,13 @@
     }
   ],
   "executionSeams": [
+    {
+      "id": "lean-proof-verifier",
+      "title": "Lean proof verifier",
+      "summary": "One exact human-approved statement runs through the admitted Linux x64 compiler, SafeVerify, Nanoda, and durable cleanup boundary.",
+      "openness": "open",
+      "implementation": "lean-proof-oci-v1"
+    },
     {
       "id": "model-provider",
       "title": "Model provider",

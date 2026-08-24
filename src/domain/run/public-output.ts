@@ -1,3 +1,10 @@
+import {
+  isLeanProofExecutionEvidence,
+  isLeanProofRequest,
+  projectPublicLeanProofExecutionEvidence,
+  projectPublicLeanProofRequest,
+} from "../proof/lean-proof-verification.js";
+
 export function projectPublicRunOutput(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => projectPublicRunOutput(item));
@@ -32,9 +39,37 @@ function projectNodeEvidenceOwner(
       key,
       key === "evidence" && isRecord(item) && item.kind === "agent"
         ? projectAgentEvidence(item)
-        : projectPublicRunOutput(item),
+        : key === "evidence" && isLeanProofVerifierEvidence(item)
+          ? projectLeanProofVerifierEvidence(item)
+          : projectPublicRunOutput(item),
     ]),
   );
+}
+
+function projectLeanProofVerifierEvidence(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const projected = pick(value, [
+    "kind",
+    "driver",
+    "result",
+    "verdict",
+    "reasonHash",
+    "durationMs",
+    "sources",
+    "package",
+  ]);
+  projected.request = isLeanProofRequest(value.request)
+    ? projectPublicLeanProofRequest(value.request)
+    : null;
+  projected.execution = isLeanProofExecutionEvidence(value.execution)
+    ? projectPublicLeanProofExecutionEvidence(value.execution)
+    : null;
+  return projected;
+}
+
+function isLeanProofVerifierEvidence(value: unknown): value is Readonly<Record<string, unknown>> {
+  return isRecord(value) && value.kind === "verifier" && value.driver === "lean-proof";
 }
 
 function projectRunState(

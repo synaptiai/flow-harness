@@ -4,8 +4,28 @@ Flow can resume an interrupted run when its durable ledger proves that execution
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
 attempt applied no effects. Recovery remains conservative: ambiguous work is reported to the
 operator and is never repeated automatically. Agent attempts that select `exec` never opt into
-fresh recovery. Command attempts and model verifier attempts also remain ineligible. An open
-verifier start is refused as uncertain.
+fresh recovery. Command attempts, model verifier attempts, and Lean proof verifier attempts also
+remain ineligible. An open verifier start is refused as uncertain.
+
+## Lean proof appliance attempts
+
+Before Docker creates a Lean proof container, Flow syncs an owner-private write-ahead lease. The
+lease binds the run, workflow, node, attempt, proof request, image, profile, deterministic container
+name, and full container ID when known. A process restart reopens that exact lease without following
+symbolic links and reconciles the container by full ID or deterministic name.
+
+Recovery validates the image, labels, request, profile, and effective Docker policy before it stops
+and removes the container. Flow removes the lease only after Docker confirms that the exact
+container is absent. Reconciliation doesn't grant retry authority: the original proof attempt
+remains uncertain because the appliance might have observed or checked the proof before the
+interruption. Resume records the verifier as non-success and doesn't start a replacement container.
+
+An unknown container, changed identity or policy, failed stop, failed removal, or unconfirmed
+absence remains blocked. Don't delete a lease or rename a container to force progress. Preserve the
+run and lease evidence, reconcile the named container, and start a separately reviewed workflow
+attempt only after absence is confirmed. Read
+[Operate the Lean proof runtime](operations/lean-proof-runtime.md#recover-an-interrupted-attempt)
+for the operator procedure.
 
 ## Preview release interruption
 
@@ -413,7 +433,8 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | `workflow_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
 | One or more opted-in agent `node_started` events are below their attempt caps, have accountable start capacity, and have no effects or only effects proven not applied | Reconcile every open typed edit and append each `node_attempt_interrupted` in declaration order; append one `run_resumed`, then admit fresh attempts under the persisted concurrency limit |
 | An opted-in agent `node_started` has an applied, committed, unknown, open, legacy writable, attempt-exhausted, or unaccountable budget state | Preserve any reconciliation prefix, refuse with `recovery_retry_ineligible`, and invoke no executor |
-| A verifier `node_started` has no matching outcome | Refuse with `uncertain_operation`; do not repeat its command or model invocation |
+| A command or model verifier `node_started` has no matching outcome | Refuse with `uncertain_operation`; don't repeat its command or model invocation |
+| A Lean proof verifier `node_started` has no matching outcome or a prior proof-container lease | Reconcile only the exact leased container, require confirmed absence, refuse with `uncertain_operation`, and don't repeat the proof attempt |
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, work profile, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |

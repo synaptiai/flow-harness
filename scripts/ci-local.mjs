@@ -12,6 +12,7 @@ const preliminaryGates = [
   ["npm", ["run", "typecheck"]],
   ["npm", ["run", "build"]],
   ["node", ["dist/cli/public-capability-reference.js", "--check"]],
+  ["go", ["test", "./..."], join(process.cwd(), "proof-container")],
 ];
 const verifiedGates = [
   ["node", ["scripts/audit-prime-dependencies.mjs"]],
@@ -27,8 +28,8 @@ delete baseEnvironment.FLOW_PRIME_PREPARED_ATTESTATION;
 delete baseEnvironment.FLOW_PRIME_TEST_IMAGE_ID;
 delete baseEnvironment.FLOW_PRIME_TEST_IMAGE_RESULT;
 
-for (const [command, args] of preliminaryGates) {
-  await run(command, args, baseEnvironment);
+for (const [command, args, cwd] of preliminaryGates) {
+  await run(command, args, baseEnvironment, cwd);
 }
 
 const temporaryRoot = await mkdtemp(join(tmpdir(), "flow-prime-ci-"));
