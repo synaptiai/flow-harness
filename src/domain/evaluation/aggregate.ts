@@ -1034,7 +1034,7 @@ function delegationReport(
       record,
     ): record is EvaluationTrialRecord & {
       readonly delegation: NonNullable<EvaluationTrialRecord["delegation"]>;
-    } => record.delegation !== undefined && record.delegation.constraints.complete,
+    } => record.delegation?.constraints.complete === true,
   );
   const missingObservations = input.schedule.length - observations.length;
   const constraintViolations = observations.reduce(
@@ -1179,9 +1179,7 @@ function delegationComparisonReport(
   const delegationEvidence =
     delegation.missingObservations > 0 || delegation.completePairs < delegation.scheduledPairs
       ? null
-      : delegation.constraintViolations > 0
-        ? false
-        : true;
+      : delegation.constraintViolations === 0;
   const verdict =
     delegationEvidence === null
       ? "insufficient_evidence"
