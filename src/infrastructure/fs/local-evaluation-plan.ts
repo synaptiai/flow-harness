@@ -148,6 +148,7 @@ export interface AdmittedFlowEvaluationProfile {
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly delegationManagerNodeId?: string;
+  readonly assertDelegationExecutorCurrent?: () => Promise<void>;
   readonly baselineCapabilitySnapshot?: CapabilitySnapshot;
   readonly effectiveHarness?: {
     readonly selection: "baseline" | "candidate";
@@ -539,6 +540,7 @@ export async function admitLocalEvaluationPlan(
             selectionProvenance: profile.candidate,
           }),
           capabilitySnapshot: delegationCandidate.candidateCapabilitySnapshot,
+          assertDelegationExecutorCurrent: () => delegationCandidate.assertExecutorCurrent(),
           ...(delegationCandidate.baselineCapabilitySnapshot === undefined
             ? {}
             : {

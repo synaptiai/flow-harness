@@ -633,6 +633,28 @@ const delegationObservationSchema = z
         message: "delegation authority contradicts the evaluation mode",
       });
     }
+    if (observation.mode === "baseline" && invoked) {
+      context.addIssue({
+        code: "custom",
+        path: ["invocation"],
+        message: "baseline delegation observation cannot report an invocation",
+      });
+    }
+    const availability = observation.invocation.child?.resourceAvailability;
+    const resourceAccountingComplete =
+      availability === undefined ||
+      (availability.modelTokens === "complete" && availability.modelCostUsdMicros === "complete");
+    if (
+      observation.constraints.complete &&
+      ((invoked && !observation.invocation.settled) || !resourceAccountingComplete)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["constraints", "complete"],
+        message:
+          "delegation evidence cannot be complete with an open lifecycle or unavailable resource accounting",
+      });
+    }
   });
 
 const trialRecordSchema = z

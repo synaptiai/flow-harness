@@ -254,6 +254,77 @@ describe("bounded delegation runtime", () => {
     });
   });
 
+  it("propagates cancellation through the child boundary and cleans before manager settlement", async () => {
+    const fixture = delegationEvaluationCandidateFixture();
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      delegation: fixture.projected.snapshot,
+      digest: calculateCapabilitySnapshotDigest(
+        [],
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        fixture.projected.snapshot,
+      ),
+    });
+    const store = new MemoryRunStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const controller = new AbortController();
+    const runId = "delegation-cancelled";
+    const childRunId = calculateChildRunId(runId, "manager", 1);
+    let releaseChildStart: () => void = () => undefined;
+    const childStarted = new Promise<void>((resolve) => {
+      releaseChildStart = resolve;
+    });
+    let managerObservedCleanup = false;
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent") throw new Error(`unexpected executor node "${node.type}"`);
+        if (node.id === "review") {
+          releaseChildStart();
+          await aborted(context.signal);
+          return agentFailure("delegated child was cancelled");
+        }
+        if (context.delegationSession === undefined) throw new Error("missing delegation session");
+        try {
+          await context.delegationSession.delegate(context.signal);
+          throw new Error("cancelled delegation unexpectedly succeeded");
+        } catch {
+          managerObservedCleanup = !isolator.workspaces.has(childRunId);
+          return agentFailure("delegation was cancelled", context.delegationSession.receipts());
+        }
+      },
+    };
+
+    const execution = runWorkflow(compileWorkflowText(fixture.baselineText), {
+      runId,
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      capabilitySnapshot,
+      signal: controller.signal,
+      now: clock(),
+    });
+    await childStarted;
+    controller.abort(new Error("operator cancelled delegation evaluation"));
+
+    const state = await execution;
+
+    expect(state.status).toBe("cancelled");
+    expect(managerObservedCleanup).toBe(true);
+    expect(isolator.workspaces.has(childRunId)).toBe(false);
+    const parentEventTypes = store.events.get(runId)?.map((event) => event.type) ?? [];
+    expect(parentEventTypes.indexOf("node_delegation_settled")).toBeGreaterThan(
+      parentEventTypes.indexOf("node_delegation_prepared"),
+    );
+    expect(parentEventTypes.at(-1)).toBe("run_cancelled");
+  });
+
   it("cleans a prepared delegation with no child ledger and leaves it uncertain", async () => {
     const fixture = delegationEvaluationCandidateFixture();
     const capabilitySnapshot = validateCapabilitySnapshot({
@@ -337,6 +408,42 @@ function agentSuccess(
       ...(delegationReceipts === undefined ? {} : { delegationReceipts }),
     },
   };
+}
+
+function agentFailure(
+  message: string,
+  delegationReceipts?: readonly AgentDelegationReceipt[],
+): NodeExecutionOutcome {
+  const text = JSON.stringify(message);
+  return {
+    status: "failed",
+    error: {
+      code: "test_cancelled",
+      message,
+      retryable: false,
+      sideEffectStatus: "none",
+    },
+    evidence: {
+      kind: "agent",
+      provider: "test",
+      model: "deterministic",
+      text,
+      textHash: sha256(text),
+      textTruncated: false,
+      durationMs: 1,
+      policyDecisions: [],
+      effectReceipts: [],
+      ...(delegationReceipts === undefined ? {} : { delegationReceipts }),
+    },
+  };
+}
+
+async function aborted(signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) throw new Error("delegated child received no cancellation signal");
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) =>
+    signal.addEventListener("abort", () => resolve(), { once: true }),
+  );
 }
 
 class MemoryRunStore implements RecoverableRunEventStore {

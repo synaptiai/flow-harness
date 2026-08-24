@@ -125,6 +125,10 @@ Start or resume the evaluation with an explicit durable identifier:
 node dist/cli/main.js eval run <plan.yaml> --evaluation-id <evaluation-id>
 ```
 
+Flow revalidates the sealed embedded Pi executor before it creates each candidate trial attempt.
+It revalidates the executor again immediately before the candidate workflow starts. Executor drift
+stops the evaluation without granting the sealed tool.
+
 Flow alternates baseline and candidate trials for each task and seed. The baseline manager has no
 delegation tool. The candidate manager can skip the tool or call the sealed child once. When it
 calls the tool, Flow performs these steps:
@@ -175,7 +179,8 @@ For `delegation-v1`, `report.delegation` contains these fields:
 
 Each class reports observed invocations, skips, successful and unsuccessful children, total child
 resources, and the candidate-minus-baseline child resource delta. A `null` delta means at least one
-scheduled pair in that class is incomplete.
+scheduled pair in that class is incomplete. Unavailable child token or cost accounting makes its
+delegation observation incomplete. The report doesn't interpret an unavailable value as zero.
 
 `report.comparison.constraints.delegationEvidence` has three states:
 

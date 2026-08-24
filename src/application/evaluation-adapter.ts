@@ -96,6 +96,7 @@ export class HarnessUnsafeStateError extends Error {
 
 export interface HarnessEvaluationAdapter {
   readonly kind: string;
+  assertCurrent?(): Promise<void>;
   run(request: HarnessEvaluationRequest): Promise<HarnessEvaluationResult>;
 }
 
@@ -108,6 +109,7 @@ export interface FlowWorkflowEvaluationProfile {
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly delegationManagerNodeId?: string;
+  readonly assertDelegationExecutorCurrent?: () => Promise<void>;
 }
 
 export interface FlowWorkflowEvaluationAdapterDependencies {
@@ -130,6 +132,17 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
     private readonly dependencies: FlowWorkflowEvaluationAdapterDependencies,
   ) {}
 
+  async assertCurrent(): Promise<void> {
+    try {
+      await this.profile.assertDelegationExecutorCurrent?.();
+    } catch (error) {
+      throw new HarnessUnsafeStateError(
+        "delegation executor identity changed after evaluation plan admission",
+        { cause: error },
+      );
+    }
+  }
+
   async run(request: HarnessEvaluationRequest): Promise<HarnessEvaluationResult> {
     const runId = `eval-${request.trial.trialId}`;
     const clock = this.dependencies.clockMs ?? Date.now;
@@ -140,6 +153,7 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         elapsed(started, clock()),
       );
     }
+    await this.assertCurrent();
     if (
       this.dependencies.contextCompaction !== undefined &&
       this.dependencies.contextCompaction.mode !== this.profile.id
@@ -680,6 +694,12 @@ async function delegationEvaluationObservation(
     }
   }
   const violationList = Object.freeze([...violations].sort());
+  const resourceAvailability = settlement?.resourceAvailability;
+  const complete =
+    (delegation === undefined || settlement !== undefined) &&
+    (resourceAvailability === undefined ||
+      (resourceAvailability.modelTokens === "complete" &&
+        resourceAvailability.modelCostUsdMicros === "complete"));
   return parseDelegationEvaluationObservation({
     version: 1,
     mode: snapshot === undefined ? "baseline" : "candidate",
@@ -705,7 +725,7 @@ async function delegationEvaluationObservation(
       receipt: settlement !== undefined && receipts.length === 1,
       child,
     },
-    constraints: { complete: true, violations: violationList },
+    constraints: { complete, violations: violationList },
   });
 }
 

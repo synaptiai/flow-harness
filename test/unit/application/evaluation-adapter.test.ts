@@ -174,6 +174,13 @@ describe("Flow workflow evaluation adapter", () => {
               textHash: sha256(text),
               textTruncated: false,
               durationMs: 3,
+              usage: {
+                inputTokens: 6,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                outputTokens: 2,
+                costUsdMicros: 4,
+              },
               policyDecisions: [],
               effectReceipts: [],
             },
@@ -246,6 +253,42 @@ describe("Flow workflow evaluation adapter", () => {
         constraints: { complete: true, violations: [] },
       },
     });
+  });
+
+  it("rejects a stale delegation executor before a candidate trial starts", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-delegation-stale-executor-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Complete the task with optional delegation.\n");
+    const workflow = compiledDelegationBaselineWorkflow();
+    const executor = successfulExecutor();
+    const execute = vi.spyOn(executor, "execute");
+    const assertDelegationExecutorCurrent = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValue(new Error("executor closure changed"));
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+        assertDelegationExecutorCurrent,
+      },
+      {
+        executor,
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    await expect(
+      adapter.run({
+        ...publicRequest(root),
+        purpose: "delegation-v1",
+      }),
+    ).rejects.toMatchObject({
+      name: "HarnessUnsafeStateError",
+      message: "delegation executor identity changed after evaluation plan admission",
+    });
+    expect(assertDelegationExecutorCurrent).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("keeps independently unavailable ACP usage dimensions out of evaluation metrics", async () => {

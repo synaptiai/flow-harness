@@ -4,6 +4,7 @@ import { createEvaluationSchedule } from "../../../src/domain/evaluation/plan.js
 import {
   createEvaluationTrialRecord,
   parseAcpQualificationObservation,
+  parseDelegationEvaluationObservation,
   parseEvaluationTrialRecord,
   unavailableEvaluationMetrics,
 } from "../../../src/domain/evaluation/records.js";
@@ -53,6 +54,34 @@ describe("evaluation trial records", () => {
         sandbox: { ...observation.sandbox, profile: "other-profile" },
       }),
     ).toThrow(/prompt-only sandbox/i);
+  });
+
+  it("rejects contradictory or falsely complete delegation observations", () => {
+    const observation = delegationObservation();
+
+    expect(parseDelegationEvaluationObservation(observation)).toEqual(observation);
+    expect(() =>
+      parseDelegationEvaluationObservation({
+        ...observation,
+        mode: "baseline",
+        authority: null,
+      }),
+    ).toThrow(/baseline.*invocation/i);
+    expect(() =>
+      parseDelegationEvaluationObservation({
+        ...observation,
+        invocation: {
+          ...observation.invocation,
+          child: {
+            ...observation.invocation.child,
+            resourceAvailability: {
+              modelTokens: "unavailable",
+              modelCostUsdMicros: "complete",
+            },
+          },
+        },
+      }),
+    ).toThrow(/resource.*complete|complete.*resource/i);
   });
 
   it("classifies every terminal harness and verifier outcome without dropping failures", () => {
@@ -355,5 +384,48 @@ function recordInput() {
       workspaceSnapshotDigest: "d".repeat(64),
     },
     metrics: unavailableEvaluationMetrics(),
+  };
+}
+
+function delegationObservation() {
+  return {
+    version: 1 as const,
+    mode: "candidate" as const,
+    workflowDigest: "1".repeat(64),
+    packageClosureDigest: "2".repeat(64),
+    manager: { nodeId: "manager", attempt: 1, outcome: "succeeded" as const },
+    authority: {
+      candidateDigest: "3".repeat(64),
+      snapshotDigest: "4".repeat(64),
+      executorIdentityDigest: "5".repeat(64),
+      maxDepth: 1 as const,
+      maxCalls: 1 as const,
+    },
+    invocation: {
+      count: 1 as const,
+      prepared: true,
+      settled: true,
+      receipt: true,
+      child: {
+        runId: "child-run",
+        workflowId: "child-workflow",
+        workflowDigest: "6".repeat(64),
+        resultNodeId: "result",
+        resultSchemaDigest: "7".repeat(64),
+        resultValueHash: "8".repeat(64),
+        terminalSequence: 4,
+        outcome: "succeeded" as const,
+        resources: {
+          nodeStarts: 2,
+          modelTokens: 20,
+          modelCostUsdMicros: 10,
+          executionMs: 30,
+          artifactBytes: 4,
+        },
+        durationMs: 25,
+        workspaceDisposition: "discarded" as const,
+      },
+    },
+    constraints: { complete: true, violations: [] },
   };
 }

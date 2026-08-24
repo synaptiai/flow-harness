@@ -124,6 +124,25 @@ describe("evaluation plan", () => {
         validDelegationPlan().replace("partition: holdout", "partition: tuning"),
       ),
     ).toThrow(/delegation.*holdout|holdout.*delegation/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace(
+          "  budget:",
+          `  phaseRoutingProfiles:
+    - { profileId: baseline, profileDigest: "${"1".repeat(64)}" }
+    - { profileId: candidate, profileDigest: "${"2".repeat(64)}" }
+  budget:`,
+        ),
+      ),
+    ).toThrow(/phase-routing.*purpose/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace(
+          "  maxVerifiedSuccessRegression: 0",
+          "  maxVerifiedSuccessRegression: 0\n  minimumCostReductionRate: 0.1",
+        ),
+      ),
+    ).toThrow(/phase-routing.*purpose/i);
   });
 
   it("rejects ACP qualification sources that weaken the paired contract", () => {

@@ -210,6 +210,7 @@ export async function runEvaluationTrials(
           `adapter "${adapter.kind}" cannot execute profile adapter "${profile.adapter}"`,
         );
       }
+      await adapter.assertCurrent?.();
       attempt = parseEvaluationTrialAttempt({
         version: 1,
         planDigest: input.plan.planDigest,
