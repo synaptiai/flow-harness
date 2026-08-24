@@ -118,6 +118,20 @@ describe("Lean proof runtime package boundary", () => {
     expect(preparation).toContain(".slice(-maximumFailureDiagnosticBytes)");
   });
 
+  it("runs exact containment acceptance after discovery instead of waiting for three builds", async () => {
+    const preparation = await readFile(
+      resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"),
+      "utf8",
+    );
+    const discovery = preparation.indexOf('buildImage("discovery"');
+    const smoke = preparation.indexOf("verifyDiscoveryRuntime(discovery.imageDigest)");
+    const firstReproducibilityBuild = preparation.indexOf('buildImage("1"');
+
+    expect(discovery).toBeGreaterThanOrEqual(0);
+    expect(smoke).toBeGreaterThan(discovery);
+    expect(firstReproducibilityBuild).toBeGreaterThan(smoke);
+  });
+
   it("durably publishes an owner-private attestation", async () => {
     const preparation = await readFile(
       resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"),

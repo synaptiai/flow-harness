@@ -26,7 +26,8 @@ describe.skipIf(!enabled)("Lean proof OCI runtime", () => {
     const driver = createProductionLeanProofDriver(repositoryRoot);
     const request = proofRequest(runtime, "by\n  omega\n", "accepted");
 
-    await expect(driver.execute(request, context("accepted"))).resolves.toMatchObject({
+    const evidence = await driver.execute(request, context("accepted"));
+    expect(evidence, proofEvidenceSummary(evidence)).toMatchObject({
       requestDigest: request.requestDigest,
       compiler: { status: "accepted" },
       safeVerify: { status: "accepted" },
@@ -54,7 +55,7 @@ describe.skipIf(!enabled)("Lean proof OCI runtime", () => {
     const request = proofRequest(runtime, "by\n  native_decide\n", "native-decide");
     const evidence = await driver.execute(request, context("native-decide"));
 
-    expect(evidence.compiler.status).toBe("accepted");
+    expect(evidence.compiler.status, proofEvidenceSummary(evidence)).toBe("accepted");
     expect(evidence.safeVerify.status).not.toBe("accepted");
     expect(evidence.cleanup).toBe("confirmed");
   }, 300_000);
@@ -152,4 +153,15 @@ function context(suffix: string) {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function proofEvidenceSummary(evidence: {
+  readonly compiler: { readonly status: string; readonly reasonCode?: string };
+  readonly safeVerify: { readonly status: string; readonly reasonCode?: string };
+  readonly nanoda: { readonly status: string; readonly reasonCode?: string };
+  readonly cleanup: string;
+}): string {
+  const state = (value: { readonly status: string; readonly reasonCode?: string }) =>
+    `${value.status}${value.reasonCode === undefined ? "" : `:${value.reasonCode}`}`;
+  return `compiler=${state(evidence.compiler)},safeVerify=${state(evidence.safeVerify)},nanoda=${state(evidence.nanoda)},cleanup=${evidence.cleanup}`;
 }

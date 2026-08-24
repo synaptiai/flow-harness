@@ -9,6 +9,9 @@ import {
   createLeanProofOciAttestation,
   parseLeanProofOciAttestation,
 } from "../dist/infrastructure/oci/local-lean-proof-runtime-admission.js";
+import { createLeanProofRequest } from "../dist/domain/proof/lean-proof-verification.js";
+import { DockerUnixApiClient } from "../dist/infrastructure/oci/docker-unix-api-client.js";
+import { LocalLeanProofDriver } from "../dist/infrastructure/oci/local-lean-proof-driver.js";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = join(repositoryRoot, "proof-container");
@@ -53,6 +56,7 @@ const discovery = await buildImage("discovery", zeroArtifacts);
 let artifacts;
 try {
   artifacts = (await probeImage(discovery.imageDigest, "discovery")).artifacts;
+  await verifyDiscoveryRuntime(discovery.imageDigest);
 } finally {
   await cleanupBuild(discovery);
 }
@@ -169,6 +173,82 @@ async function cleanupBuild(build) {
     );
   }
   if (errors.length > 0) throw new AggregateError(errors, "Lean proof build cleanup failed");
+}
+
+async function verifyDiscoveryRuntime(imageDigest) {
+  const specification = "For every natural number n, n plus zero is n (discovery).";
+  const statement = "theorem Flow.Proof.add_zero_discovery (n : Nat) : n + 0 = n";
+  const runtime = {
+    version: 1,
+    platform: "linux",
+    architecture: "x64",
+    imageDigest,
+    buildAttestationDigest: "0".repeat(64),
+    dependencyManifestDigest,
+    leanVersion: buildInputs.lean.version,
+    mathlibRevision: buildInputs.mathlib.revision,
+    safeVerifyRevision: buildInputs.safeVerify.revision,
+    nanodaRevision: buildInputs.nanoda.revision,
+    profileDigest,
+  };
+  const request = createLeanProofRequest({
+    specification,
+    statement,
+    proof: "by\n  omega\n",
+    targetDeclaration: "Flow.Proof.add_zero_discovery",
+    runtime,
+    faithfulness: {
+      version: 1,
+      authority: "human",
+      approverIdentityHash: "0".repeat(64),
+      approvedAt: "2026-08-24T00:00:00.000Z",
+      specificationDigest: sha256(specification),
+      statementDigest: sha256(statement),
+    },
+  });
+  const leases = new Map();
+  const driver = new LocalLeanProofDriver({
+    api: new DockerUnixApiClient({ socketPath: "/var/run/docker.sock", apiVersion: "1.51" }),
+    leaseStore: {
+      read: async (key) => leases.get(key) ?? null,
+      write: async (key, lease) => {
+        leases.set(key, lease);
+      },
+      remove: async (key) => {
+        leases.delete(key);
+      },
+    },
+    seccompProfile: JSON.parse(
+      await readFile(join(repositoryRoot, buildInputs.seccomp.source), "utf8"),
+    ),
+    admitRuntime: async () => undefined,
+  });
+  const evidence = await driver.execute(request, {
+    runId: "proof-discovery-smoke",
+    workflowId: "proof-discovery-smoke",
+    nodeId: "verify-proof",
+    attempt: 1,
+    cwd: repositoryRoot,
+    timeoutMs: 240_000,
+  });
+  if (
+    evidence.compiler.status !== "accepted" ||
+    evidence.safeVerify.status !== "accepted" ||
+    evidence.nanoda.status !== "accepted" ||
+    evidence.cleanup !== "confirmed"
+  ) {
+    throw new Error(`Lean proof discovery runtime failed: ${proofEvidenceSummary(evidence)}`);
+  }
+}
+
+function proofEvidenceSummary(evidence) {
+  const state = (value) => `${value.status}${"reasonCode" in value ? `:${value.reasonCode}` : ""}`;
+  return [
+    `compiler=${state(evidence.compiler)}`,
+    `safeVerify=${state(evidence.safeVerify)}`,
+    `nanoda=${state(evidence.nanoda)}`,
+    `cleanup=${evidence.cleanup}`,
+  ].join(",");
 }
 
 async function probeImage(reference, label) {

@@ -112,7 +112,7 @@ func executeProof(req request) result {
 
 	targetCompile := runLean(paths.targetSource, paths.targetOlean, paths.targetHome, proofUID, proofGID)
 	if targetCompile.ExitCode != 0 {
-		base.Compiler = rejected("target_compilation_rejected", targetCompile.DurationMS)
+		base.Compiler = rejected(compilerRejectionReason("target", targetCompile), targetCompile.DurationMS)
 		base.SafeVerify = notRun("compiler_rejected")
 		base.Nanoda = notRun("compiler_rejected")
 		return base
@@ -139,7 +139,9 @@ func executeProof(req request) result {
 		paths.submissionSource, paths.submissionOlean, paths.submissionHome, proofUID, proofGID,
 	)
 	if submissionCompile.ExitCode != 0 {
-		base.Compiler = rejected("submission_compilation_rejected", submissionCompile.DurationMS)
+		base.Compiler = rejected(
+			compilerRejectionReason("submission", submissionCompile), submissionCompile.DurationMS,
+		)
 		base.SafeVerify = notRun("compiler_rejected")
 		base.Nanoda = notRun("compiler_rejected")
 		return base
@@ -168,6 +170,31 @@ func executeProof(req request) result {
 	base.SafeVerify = safe
 	base.Nanoda = runNanoda(req, paths, environmentDigest)
 	return base
+}
+
+func compilerRejectionReason(phase string, command commandResult) string {
+	diagnostic := strings.ToLower(string(command.Diagnostic))
+	switch {
+	case strings.Contains(diagnostic, "unknown module") ||
+		strings.Contains(diagnostic, "unknown package") ||
+		strings.Contains(diagnostic, "object file") && strings.Contains(diagnostic, "does not exist"):
+		return phase + "_compiler_module_unavailable"
+	case strings.Contains(diagnostic, "error while loading shared libraries") ||
+		strings.Contains(diagnostic, "cannot open shared object file") ||
+		strings.Contains(diagnostic, "error loading library"):
+		return phase + "_compiler_shared_library_unavailable"
+	case strings.Contains(diagnostic, "permission denied") ||
+		strings.Contains(diagnostic, "operation not permitted"):
+		return phase + "_compiler_filesystem_denied"
+	case strings.Contains(diagnostic, "failed to create thread") ||
+		strings.Contains(diagnostic, "resource temporarily unavailable") ||
+		strings.Contains(diagnostic, "cannot allocate memory"):
+		return phase + "_compiler_resource_unavailable"
+	case len(command.Diagnostic) == 0:
+		return phase + "_compiler_execution_unavailable"
+	default:
+		return phase + "_compilation_rejected"
+	}
 }
 
 type workspacePaths struct {

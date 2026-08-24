@@ -66,7 +66,8 @@ Preparation performs these actions:
 2. It rejects a Docker host that isn't Linux x64.
 
 3. It creates a digest-pinned BuildKit builder and makes a clean discovery build. The discovery
-   build measures the actual proof-tool artifact hashes.
+   build measures the actual proof-tool artifact hashes. Flow then runs one fixed theorem through
+   the exact production containment, compiler, SafeVerify, Nanoda, and cleanup path.
 
 4. It removes the discovery builder and image. It then makes two clean final builds with the
    measured artifact hashes in their labels.
@@ -178,6 +179,7 @@ Use this table to select the next action.
 | Two clean image IDs differ | The build isn't reproducible under the fixed inputs | Keep the prior attestation. Inspect timestamps, downloaded inputs, and BuildKit output; don't publish the new image. |
 | Image labels contradict build inputs | A measured artifact or manifest changed | Remove the candidate image and review every changed input before updating the manifest. |
 | Image probe contradicts the runtime | A tool, dependency, axiom policy, or artifact differs | Reject the image and rebuild from reviewed inputs. |
+| Discovery runtime fails with a compiler category | The first clean image can't compile the fixed theorem under production containment | Use the content-free category to inspect module paths, shared libraries, filesystem access, or resources. Raw compiler output and proof text remain private. |
 | Container inspection contradicts identity or policy | Docker didn't preserve the admitted lease or policy | Don't start proof work. Inspect the exact container, Docker daemon, and lease. |
 | Supervisor fails closed | An effective kernel, source, compiler, or checker precondition failed | Inspect the private run evidence and hosted-runtime diagnostics. Don't infer proof rejection from an unstructured exit. |
 | Cleanup is unconfirmed | Flow can't prove that the proof container is absent | Stop automatic retry. Reconcile the exact full container ID and retain the lease until absence is confirmed. |

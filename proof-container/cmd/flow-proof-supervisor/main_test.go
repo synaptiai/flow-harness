@@ -94,6 +94,30 @@ func TestRuntimeToolsUsePinnedBinariesAndExplicitLeanPath(t *testing.T) {
 		})
 }
 
+func TestCompilerRejectionReasonUsesOnlyStableDiagnosticCategories(t *testing.T) {
+	tests := []struct {
+		diagnostic string
+		expected   string
+	}{
+		{"error: unknown module prefix 'Mathlib'", "target_compiler_module_unavailable"},
+		{"error: permission denied: /private/source", "target_compiler_filesystem_denied"},
+		{"error while loading shared libraries: libLean.so", "target_compiler_shared_library_unavailable"},
+		{"failed to create thread: resource temporarily unavailable", "target_compiler_resource_unavailable"},
+		{"proof term has type False but is expected to have type True", "target_compilation_rejected"},
+	}
+	for _, test := range tests {
+		reason := compilerRejectionReason("target", commandResult{
+			ExitCode: 1, Diagnostic: []byte(test.diagnostic),
+		})
+		if reason != test.expected {
+			t.Fatalf("unexpected reason for %q: %s", test.diagnostic, reason)
+		}
+		if strings.Contains(reason, "private") || strings.Contains(reason, "Mathlib") {
+			t.Fatalf("reason disclosed diagnostic content: %s", reason)
+		}
+	}
+}
+
 func TestParseObservedAxiomsUsesLastTargetReplay(t *testing.T) {
 	output := strings.Join([]string{
 		"Flow.Proof.safe", "True", "#[sorryAx]", "---", "theorem",
