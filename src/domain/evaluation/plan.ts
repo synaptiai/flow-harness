@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { AgentSkillCandidateIdentity } from "../adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../adaptation/agent-skill-package-candidate.js";
 import type { ChildSpecialistCandidateIdentity } from "../adaptation/child-specialist-candidate.js";
+import type { DelegationEvaluationCandidateIdentity } from "../adaptation/delegation-evaluation-candidate.js";
 import type { ModelRoutingCandidateIdentity } from "../adaptation/model-routing-candidate.js";
 import type { PhaseRoutingCandidateIdentity } from "../adaptation/phase-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
@@ -127,6 +128,7 @@ const taskSchema = z
   .object({
     id: identifierSchema,
     partition: z.enum(["tuning", "regression", "holdout"]),
+    delegationClass: z.enum(["delegation-fit", "sequential-control"]).optional(),
     fixture: canonicalRelativePathSchema,
     instruction: canonicalRelativePathSchema,
     verifier: z.discriminatedUnion("kind", [filesystemVerifierSchema, agentResultVerifierSchema]),
@@ -201,7 +203,7 @@ const evaluationPlanSourceSchema = z
   .object({
     apiVersion: z.literal(EVALUATION_PLAN_API_VERSION),
     kind: z.literal("EvaluationPlan"),
-    purpose: z.enum(["acp-interoperability-v1", "phase-routing-v1"]).optional(),
+    purpose: z.enum(["acp-interoperability-v1", "phase-routing-v1", "delegation-v1"]).optional(),
     metadata: z.object({ id: identifierSchema }).strict(),
     suite: z
       .object({
@@ -317,6 +319,66 @@ const evaluationPlanSourceSchema = z
           message: "agent-result-v1 verification requires the acp-interoperability-v1 purpose",
         });
       }
+    }
+    const delegatedTasks = plan.suite.tasks.filter((task) => task.delegationClass !== undefined);
+    if (plan.purpose === "delegation-v1") {
+      const baselineProfile = plan.profiles.find(
+        (profile) => profile.id === plan.comparison.baselineProfileId,
+      );
+      const candidateProfile = plan.profiles.find(
+        (profile) => profile.id === plan.comparison.candidateProfileId,
+      );
+      const classes = new Set(delegatedTasks.map((task) => task.delegationClass));
+      if (
+        delegatedTasks.length !== plan.suite.tasks.length ||
+        classes.size !== 2 ||
+        !classes.has("delegation-fit") ||
+        !classes.has("sequential-control")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["suite", "tasks"],
+          message:
+            "delegation qualification requires both delegation-fit and sequential-control task classes",
+        });
+      }
+      if (
+        plan.suite.tasks.some(
+          (task) => task.partition !== "holdout" || task.verifier.kind !== "filesystem-v1",
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["suite", "tasks"],
+          message: "delegation qualification requires filesystem-verified holdout tasks only",
+        });
+      }
+      if (
+        baselineProfile?.adapter !== "flow-workflow-v1" ||
+        candidateProfile?.adapter !== "flow-workflow-v1" ||
+        !("workflow" in baselineProfile) ||
+        !("candidate" in candidateProfile)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message:
+            "delegation qualification requires one direct Flow baseline and one candidate profile",
+        });
+      }
+      if (plan.controls.modelRoutes !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "delegation qualification uses one shared root model control",
+        });
+      }
+    } else if (delegatedTasks.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["suite", "tasks"],
+        message: "delegation task classes require the delegation-v1 purpose",
+      });
     }
     if (plan.purpose === "phase-routing-v1") {
       const phaseProfiles = plan.controls.phaseRoutingProfiles;
@@ -511,13 +573,14 @@ export interface EvaluationPlanIdentity {
   readonly version: 1;
   readonly apiVersion: typeof EVALUATION_PLAN_API_VERSION;
   readonly id: string;
-  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1";
   readonly suite: {
     readonly id: string;
     readonly version: string;
     readonly tasks: readonly {
       readonly id: string;
       readonly partition: EvaluationTaskSource["partition"];
+      readonly delegationClass?: "delegation-fit" | "sequential-control" | undefined;
       readonly fixture: {
         readonly provenance: string;
         readonly digest: string;
@@ -557,6 +620,8 @@ export type EvaluationProfileIdentity =
           | "prompt-candidate-projection"
           | "agent-skill-candidate-projection"
           | "agent-skill-package-candidate-projection"
+          | "delegation-evaluation-baseline"
+          | "delegation-evaluation-candidate"
           | "effective-harness-baseline"
           | "effective-harness-candidate-projection";
         readonly provenance: string;
@@ -578,6 +643,7 @@ export type EvaluationProfileIdentity =
           | ModelRoutingCandidateIdentity
           | PhaseRoutingCandidateIdentity
           | ChildSpecialistCandidateIdentity
+          | DelegationEvaluationCandidateIdentity
           | SupplementalMemoryCandidateIdentity;
       };
       readonly effectiveHarness?: {

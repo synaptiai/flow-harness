@@ -188,6 +188,7 @@ export function bindWorkflowCapabilities(
         boundSnapshot.languageServer === undefined &&
         boundSnapshot.goalWorkspace === undefined &&
         boundSnapshot.acpAgent === undefined &&
+        boundSnapshot.delegation === undefined &&
         !boundSnapshot.packages.some((item) => item.kind === "policy-package")
       ) {
         throw new WorkflowCapabilityError(

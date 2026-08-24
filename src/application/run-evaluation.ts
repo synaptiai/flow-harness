@@ -38,11 +38,12 @@ import type { WorkspaceIsolator } from "./ports.js";
 
 export interface EvaluationExecutionPlan {
   readonly planDigest: string;
-  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1";
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly controls: EvaluationPlanSource["controls"];
   readonly tasks: readonly {
     readonly id: string;
+    readonly delegationClass?: "delegation-fit" | "sequential-control";
     readonly fixture: {
       readonly sourceCwd: string;
       readonly digest: string;

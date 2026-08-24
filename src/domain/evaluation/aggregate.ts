@@ -10,7 +10,7 @@ const BOOTSTRAP_SAMPLES = 2_000;
 
 export interface EvaluationReportInput {
   readonly planDigest: string;
-  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | undefined;
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1" | undefined;
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly profileIds: readonly [string, string];
   readonly profileAdapters: Readonly<Record<string, EvaluationProfileIdentity["adapter"]>>;
@@ -23,6 +23,7 @@ export interface EvaluationReportInput {
   readonly tasks: readonly {
     readonly id: string;
     readonly partition: "tuning" | "regression" | "holdout";
+    readonly delegationClass?: "delegation-fit" | "sequential-control";
     readonly verifierDigest: string;
     readonly assertionCount: number;
   }[];
