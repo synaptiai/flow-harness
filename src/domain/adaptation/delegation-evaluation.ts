@@ -203,7 +203,8 @@ function sameCompleteBudget(
   expected: CompiledRunBudget,
 ): boolean {
   return (
-    actual?.maxNodeStarts === expected.maxNodeStarts &&
+    actual !== undefined &&
+    actual.maxNodeStarts === expected.maxNodeStarts &&
     actual.maxModelTokens === expected.maxModelTokens &&
     actual.maxCostUsdMicros === expected.maxCostUsdMicros &&
     actual.maxExecutionMs === expected.maxExecutionMs &&

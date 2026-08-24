@@ -271,7 +271,9 @@ describe("delegation evaluation candidates", () => {
 
   it("rejects a modified durable identity digest", () => {
     const projected = projectDelegationEvaluationCandidate(projectionInput());
-    const modified = structuredClone(projected.identity);
+    const modified = structuredClone(projected.identity) as {
+      delegation: { child: { resultNodeId: string } };
+    };
     modified.delegation.child.resultNodeId = "other-result";
 
     expect(() => parseDelegationEvaluationCandidateIdentity(modified)).toThrowError(
