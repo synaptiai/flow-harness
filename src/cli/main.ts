@@ -472,6 +472,7 @@ import {
   collectWorkflowEnvironmentRequirements,
   inspectPiProviderConfiguration,
 } from "../infrastructure/pi/pi-environment-doctor.js";
+import { EmbeddedPiExecutorRegistry } from "../infrastructure/pi/embedded-pi-executor-registry.js";
 import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
@@ -3316,8 +3317,24 @@ async function evaluationCommand(
     const cwd = overrides.cwd ?? process.cwd();
     const registry =
       overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry({ cwd });
+    const delegationRegistry = new EmbeddedPiExecutorRegistry();
+    const configDependencies = configDependenciesFrom(overrides);
     const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
+      resolveDelegationPackages: async (source) => {
+        if (source.baseline.packageClosureDigest === calculateCapabilitySnapshotDigest([])) {
+          return [];
+        }
+        const config = await configDependencies.loadConfig({ cwd });
+        return (
+          await loadCurrentEffectiveHarnessBaseline(
+            source.scope.workflowId,
+            config,
+            overrides.signal,
+          )
+        ).state.packages;
+      },
+      resolveDelegationExecutor: () => delegationRegistry.resolve(),
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     });
     io.stdout(
@@ -3330,6 +3347,9 @@ async function evaluationCommand(
           suite: { id: admitted.suite.id, version: admitted.suite.version },
           tasks: admitted.suite.tasks.map((task) => ({
             id: task.id,
+            ...(task.delegationClass === undefined
+              ? {}
+              : { delegationClass: task.delegationClass }),
             partition: task.partition,
           })),
           profiles: admitted.profiles.map((profile) =>
@@ -3407,9 +3427,24 @@ async function evaluationCommand(
       "eval run requires one evaluation plan path",
     );
     const dependencies = dependenciesFrom(overrides);
+    const delegationRegistry = new EmbeddedPiExecutorRegistry();
     const admitted = await admitLocalEvaluationPlan(resolve(dependencies.cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) =>
         dependencies.externalHarnessRegistry.resolveIdentity(profile),
+      resolveDelegationPackages: async (source) => {
+        if (source.baseline.packageClosureDigest === calculateCapabilitySnapshotDigest([])) {
+          return [];
+        }
+        const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+        return (
+          await loadCurrentEffectiveHarnessBaseline(
+            source.scope.workflowId,
+            config,
+            dependencies.signal,
+          )
+        ).state.packages;
+      },
+      resolveDelegationExecutor: () => delegationRegistry.resolve(),
       ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     });
     dependencies.signal?.throwIfAborted();
@@ -4516,6 +4551,12 @@ async function candidateCommand(
         "effective harness composition requires one ordinary adaptation candidate",
       );
     }
+    if (admitted.kind === "delegation-evaluation-candidate") {
+      throw new EffectiveHarnessStoreError(
+        "invalid_input",
+        "delegation evaluation candidates cannot be composed or activated",
+      );
+    }
     const baseline = await loadCurrentEffectiveHarnessBaseline(
       admitted.candidate.identity.scope.workflowId,
       config,
@@ -4629,6 +4670,9 @@ async function candidateCommand(
       throw new CliUsageError(
         "supplemental-memory candidate activation requires a composed effective harness candidate",
       );
+    }
+    if (admitted.kind === "delegation-evaluation-candidate") {
+      throw new CliUsageError("delegation evaluation candidates cannot be activated");
     }
     const evaluationsDirectory = await awaitWithCancellationPrecedence(
       () => resolveEvaluationsDirectory(dependencies, values["evaluations-dir"]),
@@ -5022,6 +5066,8 @@ function effectiveHarnessProjection(
   >,
 ): EffectiveHarnessCandidateProjection {
   switch (admitted.kind) {
+    case "delegation-evaluation-candidate":
+      throw new CliUsageError("delegation evaluation candidates cannot be composed or activated");
     case "prompt-candidate":
       return {
         kind: "prompt",

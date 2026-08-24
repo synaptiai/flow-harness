@@ -252,6 +252,49 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it.each([
+    ["stop" as const, "succeeded" as const],
+    ["error" as const, "failed" as const],
+  ])(
+    "preserves a settled delegation receipt for a %s provider result",
+    async (stopReason, status) => {
+      const receipt = {
+        version: 1 as const,
+        sequence: 1 as const,
+        candidateDigest: "a".repeat(64),
+        snapshotDigest: "b".repeat(64),
+        childRunId: "child-delegation",
+        terminalSequence: 7,
+        outcome: "succeeded" as const,
+        resultValueHash: "c".repeat(64),
+      };
+      const delegationSession = {
+        async delegate() {
+          throw new Error("runner fixture does not invoke tools");
+        },
+        receipts: () => [receipt],
+      };
+      let request: PiAgentRunRequest | undefined;
+      const runner: PiAgentRunner = {
+        async run(input) {
+          request = input;
+          return { text: "Delegation observed.", stopReason };
+        },
+      };
+
+      const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), {
+        ...context,
+        delegationSession,
+      });
+
+      expect(request?.delegationSession).toBe(delegationSession);
+      expect(outcome).toMatchObject({
+        status,
+        evidence: { kind: "agent", delegationReceipts: [receipt] },
+      });
+    },
+  );
+
   it("translates the provider-neutral compaction policy into one Pi request", async () => {
     let request: PiAgentRunRequest | undefined;
     const runner: PiAgentRunner = {

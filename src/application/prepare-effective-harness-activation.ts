@@ -19,7 +19,7 @@ export interface EffectiveHarnessStoredEvaluation {
   readonly header: {
     readonly evaluationId: string;
     readonly planDigest: string;
-    readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | undefined;
+    readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1" | undefined;
     readonly suite: {
       readonly tasks: readonly {
         readonly id: string;

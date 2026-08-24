@@ -35,6 +35,7 @@ on it.
 | Prompt-only local ACP executor | Linux x64 runtime proof | Limited | Current source supports operator selection, attached and detached execution, fresh recovery, and provider-neutral evidence. Hosted process-containment proof covers Linux x64; macOS has source and contract coverage. |
 | Paired ACP interoperability qualification | Linux x64 runtime proof | Limited | Current source supports two distinct exact local agents, one shared prompt-only workflow, private result verification, complete accounting gates, offline reports, and an opt-in production-agent proof path. No agent pair is claimed compatible without its own `qualified` report. |
 | Phase-aware model routing | Implemented | Implemented | Current source supports exact root and embedded-child profiles, durable per-request decisions, held-out quality and efficiency qualification, and exact-artifact activation. ACP and learned production routing remain unavailable. |
+| Bounded delegation evaluation | Implemented | Implemented | Current source supports one sealed no-argument local specialist call, durable child settlement and recovery, paired task-class reports, content-free inspection, and no activation path. Remote, recursive, parallel, and background delegation remain unavailable. |
 | Exact Lean proof verification | Linux x64 only | Unavailable | Current source prepares one reproducible OCI appliance, requires exact human statement approval plus compiler, SafeVerify, Nanoda, and cleanup agreement, and provides complete profile qualification. Hosted CI builds and exercises the real appliance without provider credentials. |
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
@@ -161,6 +162,9 @@ Read [Tools and capabilities](reference/tools-and-capabilities.md),
 - Paired Flow, native Pi, native OMP, and Prime Agent evaluation profiles.
 - Exact phase-aware routing candidates with immutable `before` and `after` profiles, durable
   request decisions, held-out qualification, and purpose-specific activation.
+- One bounded delegation experiment that compares the same manager with and without a sealed local
+  specialist. It limits depth and calls to one, reuses isolated child ledgers, reports task classes
+  and child resources, and cannot activate.
 - Balanced no-compaction, reference-only, and reference-plus-summary evaluation with deterministic
   protected-constraint evidence.
 - Private deterministic verification and constrained comparison reports.
@@ -174,6 +178,7 @@ Read [Tools and capabilities](reference/tools-and-capabilities.md),
 
 Read [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md),
 [Evaluate and activate phase-aware model routing](guides/phase-routing.md),
+[Evaluate bounded one-shot delegation](guides/evaluate-bounded-delegation.md),
 [Reproducible harness evaluation](evaluation.md), and
 [Testing and evaluation](testing-and-evaluation.md).
 

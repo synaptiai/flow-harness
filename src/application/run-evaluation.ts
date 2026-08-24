@@ -14,6 +14,7 @@ import type {
 import {
   type AcpQualificationObservation,
   createEvaluationTrialRecord,
+  type DelegationEvaluationObservation,
   type EvaluationEnvironment,
   type EvaluationHarnessOutcome,
   type EvaluationMetrics,
@@ -21,6 +22,7 @@ import {
   type EvaluationTrialRecord,
   type EvaluationVerificationOutcome,
   parseAcpQualificationObservation,
+  parseDelegationEvaluationObservation,
   parseEvaluationHarnessOutcome,
   parseEvaluationMetrics,
   parsePhaseRoutingObservation,
@@ -38,11 +40,12 @@ import type { WorkspaceIsolator } from "./ports.js";
 
 export interface EvaluationExecutionPlan {
   readonly planDigest: string;
-  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1";
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly controls: EvaluationPlanSource["controls"];
   readonly tasks: readonly {
     readonly id: string;
+    readonly delegationClass?: "delegation-fit" | "sequential-control";
     readonly fixture: {
       readonly sourceCwd: string;
       readonly digest: string;
@@ -169,6 +172,7 @@ export async function runEvaluationTrials(
     let verification: EvaluationVerificationOutcome = notRun(task.verifier.digest);
     let qualification: AcpQualificationObservation | undefined;
     let phaseRouting: PhaseRoutingObservation | undefined;
+    let delegation: DelegationEvaluationObservation | undefined;
     let attempt: EvaluationTrialAttempt | undefined;
 
     try {
@@ -206,6 +210,7 @@ export async function runEvaluationTrials(
           `adapter "${adapter.kind}" cannot execute profile adapter "${profile.adapter}"`,
         );
       }
+      await adapter.assertCurrent?.();
       attempt = parseEvaluationTrialAttempt({
         version: 1,
         planDigest: input.plan.planDigest,
@@ -241,6 +246,7 @@ export async function runEvaluationTrials(
             : undefined;
         result = await adapter.run({
           planDigest: input.plan.planDigest,
+          ...(input.plan.purpose === undefined ? {} : { purpose: input.plan.purpose }),
           trial: Object.freeze({
             trialId: schedule.trialId,
             position: schedule.position,
@@ -280,6 +286,12 @@ export async function runEvaluationTrials(
             }
             phaseRouting = parsePhaseRoutingObservation(result.phaseRouting);
           }
+          if (result.delegation !== undefined) {
+            if (input.plan.purpose !== "delegation-v1") {
+              throw new Error("adapter returned delegation evidence for an ordinary trial");
+            }
+            delegation = parseDelegationEvaluationObservation(result.delegation);
+          }
         } catch (error) {
           harness = {
             outcome: "malformed_output",
@@ -289,6 +301,7 @@ export async function runEvaluationTrials(
           metrics = unavailableEvaluationMetrics();
           qualification = undefined;
           phaseRouting = undefined;
+          delegation = undefined;
         }
       }
       if (harness.outcome === "completed") {
@@ -327,6 +340,7 @@ export async function runEvaluationTrials(
       metrics = unavailableEvaluationMetrics();
       qualification = undefined;
       phaseRouting = undefined;
+      delegation = undefined;
     }
 
     if (isSignalAborted(input.signal)) {
@@ -340,6 +354,7 @@ export async function runEvaluationTrials(
       verification = notRun(task.verifier.digest);
       qualification = undefined;
       phaseRouting = undefined;
+      delegation = undefined;
     }
 
     const completedAt = now().toISOString();
@@ -361,6 +376,7 @@ export async function runEvaluationTrials(
         metrics,
         ...(qualification === undefined ? {} : { qualification }),
         ...(phaseRouting === undefined ? {} : { phaseRouting }),
+        ...(delegation === undefined ? {} : { delegation }),
       });
     } catch (error) {
       record = createEvaluationTrialRecord({

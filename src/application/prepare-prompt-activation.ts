@@ -58,6 +58,8 @@ export interface PromptActivationStoredEvaluation {
               | "prompt-candidate-projection"
               | "agent-skill-candidate-projection"
               | "agent-skill-package-candidate-projection"
+              | "delegation-evaluation-baseline"
+              | "delegation-evaluation-candidate"
               | "effective-harness-baseline"
               | "effective-harness-candidate-projection"
               | undefined;

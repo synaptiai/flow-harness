@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import type { ArtifactStore } from "../../application/artifact-store.js";
+import type { NodeDelegationSession } from "../../application/ports.js";
 import {
   calculateAgentCommandDigest,
   DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
@@ -221,6 +222,8 @@ const semanticSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const delegationSchema = Type.Object({}, { additionalProperties: false });
+
 export interface FlowAgentTools {
   readonly names: readonly string[];
   readonly definitions: readonly ToolDefinition[];
@@ -235,6 +238,7 @@ export interface FlowAgentToolOptions {
   readonly toolPackages?: readonly ToolPackageSnapshot[];
   readonly semanticSession?: SemanticToolSession;
   readonly artifactStore?: ArtifactStore;
+  readonly delegationSession?: NodeDelegationSession;
 }
 
 export interface SemanticToolSession {
@@ -648,11 +652,43 @@ export async function createWorkspaceAgentTools(
     definitions.push(definition);
     names.push(definition.name);
   }
+  if (options.delegationSession !== undefined) {
+    const definition = createDelegationDefinition(options.delegationSession);
+    if (names.includes(definition.name)) {
+      throw new Error(`agent tool name "${definition.name}" is selected more than once`);
+    }
+    definitions.push(definition);
+    names.push(definition.name);
+  }
 
   return {
     names: Object.freeze(names),
     definitions: Object.freeze(definitions),
   };
+}
+
+function createDelegationDefinition(session: NodeDelegationSession): ToolDefinition {
+  return defineTool({
+    name: "flow_delegate",
+    label: "Flow delegate",
+    description: "Run the one sealed child workflow and return its typed result.",
+    promptSnippet: "Delegate once to the sealed child workflow when independent work is useful",
+    promptGuidelines: [
+      "Call without arguments; the objective, workflow, executor, and budget are already sealed.",
+      "Call at most once and wait for the typed child result before continuing.",
+      "Treat a tool error as child-run evidence, not successful completion.",
+    ],
+    parameters: delegationSchema,
+    executionMode: "sequential",
+    async execute(_toolCallId, _input, signal) {
+      throwIfToolAborted(signal);
+      const result = await session.delegate(signal);
+      return {
+        content: [{ type: "text" as const, text: result.canonicalValue }],
+        details: result,
+      };
+    },
+  }) as ToolDefinition;
 }
 
 function createArtifactDefinition(

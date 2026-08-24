@@ -30,6 +30,10 @@ import {
   parseChildSpecialistCandidateIdentity,
 } from "../../domain/adaptation/child-specialist-candidate.js";
 import {
+  type DelegationEvaluationCandidateIdentity,
+  parseDelegationEvaluationCandidateIdentity,
+} from "../../domain/adaptation/delegation-evaluation-candidate.js";
+import {
   type ModelRoutingCandidateIdentity,
   parseModelRoutingCandidateIdentity,
 } from "../../domain/adaptation/model-routing-candidate.js";
@@ -149,6 +153,7 @@ const taskSchema = z
   .object({
     id: identifierSchema,
     partition: z.enum(["tuning", "regression", "holdout"]),
+    delegationClass: z.enum(["delegation-fit", "sequential-control"]).optional(),
     fixture: z
       .object({
         provenance: relativePathSchema,
@@ -188,8 +193,22 @@ const candidateIdentitySchema = z
       | ModelRoutingCandidateIdentity
       | PhaseRoutingCandidateIdentity
       | ChildSpecialistCandidateIdentity
+      | DelegationEvaluationCandidateIdentity
       | SupplementalMemoryCandidateIdentity
     >((value) => {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "delegation-evaluation-candidate"
+      ) {
+        try {
+          parseDelegationEvaluationCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       if (
         typeof value === "object" &&
         value !== null &&
@@ -273,6 +292,8 @@ const flowProfileSchema = z
             "prompt-candidate-projection",
             "agent-skill-candidate-projection",
             "agent-skill-package-candidate-projection",
+            "delegation-evaluation-baseline",
+            "delegation-evaluation-candidate",
             "effective-harness-baseline",
             "effective-harness-candidate-projection",
           ])
@@ -401,7 +422,7 @@ const publicHeaderSchema = z
     planDigest: sha256Schema,
     apiVersion: z.literal(EVALUATION_PLAN_API_VERSION),
     planId: identifierSchema,
-    purpose: z.enum(["acp-interoperability-v1", "phase-routing-v1"]).optional(),
+    purpose: z.enum(["acp-interoperability-v1", "phase-routing-v1", "delegation-v1"]).optional(),
     suite: z
       .object({
         id: identifierSchema,
@@ -494,6 +515,14 @@ const publicHeaderSchema = z
     const agentResultTasks = header.suite.tasks.filter(
       (task) => task.verifier.kind === "agent-result-v1",
     );
+    const delegationTasks = header.suite.tasks.filter((task) => task.delegationClass !== undefined);
+    if (header.purpose !== "delegation-v1" && delegationTasks.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["suite", "tasks"],
+        message: "delegation task classes require the delegation-v1 purpose",
+      });
+    }
     for (const [index, profile] of flowProfiles.entries()) {
       if (
         (profile.capabilitySnapshotDigest === undefined) !==
@@ -560,6 +589,60 @@ const publicHeaderSchema = z
           path: ["profiles"],
           message:
             "ACP qualification requires one workflow, two distinct capability snapshots, and agent-result verification",
+        });
+      }
+    } else if (header.purpose === "delegation-v1") {
+      const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
+      const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
+      const identity = flowCandidate?.candidate?.identity;
+      const classes = new Set(delegationTasks.map((task) => task.delegationClass));
+      const baselinePackageDigests = flowBaseline?.capabilityPackageDigests ?? [];
+      const candidatePackageDigests = flowCandidate?.capabilityPackageDigests ?? [];
+      const baselinePackageClosureDigest =
+        flowBaseline?.capabilitySnapshotDigest ?? calculateCapabilitySnapshotDigest([]);
+      if (
+        flowProfiles.length !== 2 ||
+        flowBaseline === undefined ||
+        flowCandidate === undefined ||
+        candidateProfiles.length !== 1 ||
+        projectionProfiles.length !== 2 ||
+        flowBaseline.workflow.sourceKind !== "delegation-evaluation-baseline" ||
+        flowCandidate.workflow.sourceKind !== "delegation-evaluation-candidate" ||
+        flowBaseline.candidate !== undefined ||
+        identity === undefined ||
+        !("kind" in identity) ||
+        identity.kind !== "delegation-evaluation-candidate" ||
+        flowCandidate.capabilitySnapshotDigest === undefined ||
+        flowCandidate.capabilitySnapshotDigest === baselinePackageClosureDigest ||
+        flowCandidate.capabilityPackageDigests === undefined ||
+        flowBaseline.workflow.sourceSha256 !== flowCandidate.workflow.sourceSha256 ||
+        flowBaseline.workflow.workflowDigest !== flowCandidate.workflow.workflowDigest ||
+        identity.baseline.workflow.sourceSha256 !== flowBaseline.workflow.sourceSha256 ||
+        identity.baseline.workflow.workflowDigest !== flowBaseline.workflow.workflowDigest ||
+        identity.baseline.packageClosureDigest !== baselinePackageClosureDigest ||
+        !isDeepStrictEqual(baselinePackageDigests, candidatePackageDigests) ||
+        identity.manifest.provenance !== basename(flowCandidate.candidate?.provenance ?? "") ||
+        flowCandidate.candidate?.provenance !== flowCandidate.workflow.provenance ||
+        flowProfiles.some(
+          (profile) => profile.acpAgent !== undefined || profile.effectiveHarness !== undefined,
+        ) ||
+        delegationTasks.length !== header.suite.tasks.length ||
+        classes.size !== 2 ||
+        !classes.has("delegation-fit") ||
+        !classes.has("sequential-control") ||
+        header.suite.tasks.some(
+          (task) => task.partition !== "holdout" || task.verifier.kind !== "filesystem-v1",
+        ) ||
+        header.controls.modelRoutes !== undefined ||
+        header.controls.phaseRoutingProfiles !== undefined ||
+        header.comparison.minimumCostReductionRate !== undefined ||
+        header.comparison.minimumLatencyReductionRate !== undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message:
+            "delegation qualification must preserve one root and package closure with delegation only on the candidate profile",
         });
       }
     } else if (
@@ -794,6 +877,9 @@ const publicHeaderSchema = z
         if ("kind" in identity && identity.kind === "phase-routing-candidate") {
           return false;
         }
+        if ("kind" in identity && identity.kind === "delegation-evaluation-candidate") {
+          return false;
+        }
         return (
           identity.baseline.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
           identity.baseline.workflowDigest === flowBaseline?.workflow.workflowDigest &&
@@ -919,6 +1005,7 @@ export function createPublicEvaluationHeader(
       tasks: admitted.suite.tasks.map((task) => ({
         id: task.id,
         partition: task.partition,
+        ...(task.delegationClass === undefined ? {} : { delegationClass: task.delegationClass }),
         fixture: {
           provenance: task.fixture.provenance,
           digest: task.fixture.digest,
@@ -992,6 +1079,15 @@ export function createPublicEvaluationHeader(
 
 export function evaluationReportInput(header: PublicEvaluationHeader): EvaluationReportInput {
   const profileIds = header.profiles.map((profile) => profile.id) as [string, string];
+  const delegationIdentity = header.profiles.flatMap((profile) => {
+    const identity =
+      profile.adapter === "flow-workflow-v1" ? profile.candidate?.identity : undefined;
+    return identity !== undefined &&
+      "kind" in identity &&
+      identity.kind === "delegation-evaluation-candidate"
+      ? [identity]
+      : [];
+  })[0];
   return Object.freeze({
     planDigest: header.planDigest,
     ...(header.purpose === undefined ? {} : { purpose: header.purpose }),
@@ -1039,11 +1135,57 @@ export function evaluationReportInput(header: PublicEvaluationHeader): Evaluatio
             ),
           ),
         }),
+    ...(header.purpose !== "delegation-v1" || delegationIdentity === undefined
+      ? {}
+      : {
+          profileDelegationManagerNodeIds: Object.freeze(
+            Object.fromEntries(
+              header.profiles.map((profile) => [
+                profile.id,
+                delegationIdentity.scope.managerNodeId,
+              ]),
+            ),
+          ),
+          profileDelegationPackageClosureDigests: Object.freeze(
+            Object.fromEntries(
+              header.profiles.map((profile) => [
+                profile.id,
+                delegationIdentity.baseline.packageClosureDigest,
+              ]),
+            ),
+          ),
+          profileDelegationAuthorities: Object.freeze(
+            Object.fromEntries(
+              header.profiles.map((profile) => {
+                const identity =
+                  profile.adapter === "flow-workflow-v1" ? profile.candidate?.identity : undefined;
+                if (
+                  identity !== undefined &&
+                  "kind" in identity &&
+                  identity.kind === "delegation-evaluation-candidate"
+                ) {
+                  return [
+                    profile.id,
+                    Object.freeze({
+                      candidateDigest: identity.candidateDigest,
+                      snapshotDigest: identity.snapshotDigest,
+                      executorIdentityDigest: identity.delegation.executor.identityDigest,
+                      maxDepth: identity.delegation.maxDepth,
+                      maxCalls: identity.delegation.maxCalls,
+                    }),
+                  ] as const;
+                }
+                return [profile.id, null] as const;
+              }),
+            ),
+          ),
+        }),
     tasks: Object.freeze(
       header.suite.tasks.map((task) =>
         Object.freeze({
           id: task.id,
           partition: task.partition,
+          ...(task.delegationClass === undefined ? {} : { delegationClass: task.delegationClass }),
           verifierDigest: task.verifier.digest,
           assertionCount: task.verifier.assertionCount,
         }),

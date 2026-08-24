@@ -99,6 +99,7 @@ For publication authority and recovery, read
 | Compiled-process integration | Direct-entry signal handling, Linux x64 pseudo-terminal startup and restoration, local browser presentation delivery, process-group termination, edit crashes before rename, after rename, after directory sync, on settlement rejection, and after settlement persistence, cross-process run claiming, live agent-command denial from a separate CLI process, detached client exit with exact work-profile replay, bounded concurrent admission, queued cancellation without execution, policy mismatch/rebinding, supervisor restart/adoption, and real sandbox boundaries | Built CLI, temporary run ledgers, pseudo-terminals, local process groups, native sandbox primitives, Unix sockets, and loopback networking |
 | Browser presentation | Fragment removal, tab-scoped capability retention for reload, terminal capability removal, capability authentication, fixed-resource policy, complete-document streaming and reload, keyboard steering, storage denial, text-only DOM insertion, attributed package notes, responsive layout, focus visibility, and console/network closure | Pinned Playwright Chromium, explicit loopback listener, and 1280×720, 768×1024, and 375×812 viewports |
 | ACP executor and qualification contract | Exact runtime admission and revalidation, model and reasoning selection, strict inverse protocol order, zero client authority, fixed violation categories, fresh session binding, output and timeout bounds, complete process-tree settlement, recovery capsules, usage provenance, detached snapshots, verifier projection, unchanged Pi fallback, paired distinct-agent admission, canonical result verification, complete accounting, and qualification verdicts | Temporary runtimes, local processes, deterministic ACP peers, injected SRT seam, private run ledgers, and evaluation stores |
+| Bounded delegation contract | Exact candidate and embedded Pi identity, one empty-input call, authority attenuation, isolated child lifecycle, typed result, write-ahead preparation, settlement, replay, recovery without manager retry, resource accounting, task-class aggregation, content-free output, and activation refusal | Temporary workspaces, in-memory and JSON Lines run ledgers, deterministic Pi sessions, and evaluation stores; no remote agent or provider credential |
 | Hosted ACP containment | Project, home, Flow-state, protected-path, and source-credential denial; one-domain network policy; private-state writes; selected masked credential delivery; cancellation; and resistant-descendant termination | Real SRT and Linux PID namespaces on hosted Linux x64; skipped on other hosts |
 | Lean proof contract and qualification | Exact bounded request, human statement approval, runtime identity, compiler and checker agreement, content-free projection, one-trial-per-task denominator, ordinary tests, cost, latency, policy, cleanup, and explicit missingness | Pure TypeScript domain tests, application ports, temporary owner-private files, and no provider credentials |
 | Lean proof supervisor | Strict request and source policy, bounded artifacts and diagnostics, compiler and checker process setup, and effective Linux containment checks | Go unit tests on supported contributor hosts; no proof image or provider credential |
@@ -578,6 +579,21 @@ latency observations, explicit efficiency thresholds, and safety limits. Activat
 only the exact composed artifact with a complete `qualified` phase-routing report. They reject
 ordinary superiority, missing evidence, profile drift, opaque ACP routing, and provider-generated
 summary routing.
+
+Bounded-delegation tests bind one exact root manager, literal objective, local child, typed result,
+package closure, five-dimensional budget, and embedded Pi executor. Admission tests reject linked or
+drifting sources, nested children, mismatched roots, incomplete task-class coverage, and changed
+executor closures. Pi tests expose one strict empty-input sequential tool only to the manager,
+reject name collisions and second calls, and omit delegation authority from the child.
+
+Runtime tests cover write-ahead preparation, terminal settlement, exact result receipts, one-time
+child resource accounting, cancellation, and cleanup. Replay and recovery tests cover failed-child
+success rejection, terminal-child reconciliation, pre-ledger cleanup, and blocked manager retry.
+Evaluation tests derive content-free observations from real parent and child ledgers. They bind the
+observations to public header authority, aggregate both task classes, and enforce
+`insufficient_evidence` or `constraint_failed`. Public-output tests exclude objectives, workflow
+sources, child result values, and executor closure details. Composition and activation remain
+explicitly rejected.
 
 Child-specialist tests bind one embedded child node and one child agent. They also bind the complete
 parent and child workflow identities and the immutable package-closure digest. The tests cover exact

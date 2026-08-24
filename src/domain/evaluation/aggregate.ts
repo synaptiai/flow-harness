@@ -10,7 +10,7 @@ const BOOTSTRAP_SAMPLES = 2_000;
 
 export interface EvaluationReportInput {
   readonly planDigest: string;
-  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | undefined;
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1" | undefined;
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly profileIds: readonly [string, string];
   readonly profileAdapters: Readonly<Record<string, EvaluationProfileIdentity["adapter"]>>;
@@ -20,9 +20,24 @@ export interface EvaluationReportInput {
     Record<string, { readonly name: string; readonly digest: string }>
   >;
   readonly profilePhaseRoutingDigests?: Readonly<Record<string, string>> | undefined;
+  readonly profileDelegationAuthorities?: Readonly<
+    Record<
+      string,
+      {
+        readonly candidateDigest: string;
+        readonly snapshotDigest: string;
+        readonly executorIdentityDigest: string;
+        readonly maxDepth: 1;
+        readonly maxCalls: 1;
+      } | null
+    >
+  >;
+  readonly profileDelegationManagerNodeIds?: Readonly<Record<string, string>>;
+  readonly profileDelegationPackageClosureDigests?: Readonly<Record<string, string>>;
   readonly tasks: readonly {
     readonly id: string;
     readonly partition: "tuning" | "regression" | "holdout";
+    readonly delegationClass?: "delegation-fit" | "sequential-control";
     readonly verifierDigest: string;
     readonly assertionCount: number;
   }[];
@@ -98,11 +113,51 @@ export interface EvaluationReport {
       readonly falseCompletionRate: boolean | null;
       readonly policyViolations: boolean | null;
       readonly verifiedSuccessRegression: boolean | null;
+      readonly delegationEvidence?: boolean | null;
     };
   };
   readonly qualification?:
     | EvaluationAcpQualificationReport
     | EvaluationPhaseRoutingQualificationReport;
+  readonly delegation?: EvaluationDelegationReport;
+}
+
+export interface EvaluationDelegationReport {
+  readonly purpose: "delegation-v1";
+  readonly scheduledPairs: number;
+  readonly completePairs: number;
+  readonly completeObservations: number;
+  readonly missingObservations: number;
+  readonly constraintViolations: number;
+  readonly classes: Readonly<
+    Record<"delegation-fit" | "sequential-control", EvaluationDelegationClassReport>
+  >;
+  readonly limitations: readonly string[];
+}
+
+export interface EvaluationDelegationClassReport {
+  readonly scheduledPairs: number;
+  readonly completePairs: number;
+  readonly baseline: EvaluationDelegationProfileClassReport;
+  readonly candidate: EvaluationDelegationProfileClassReport;
+  readonly childResourceDelta: DelegationResourceVector | null;
+}
+
+export interface EvaluationDelegationProfileClassReport {
+  readonly observations: number;
+  readonly invocations: number;
+  readonly skipped: number;
+  readonly successfulChildren: number;
+  readonly failedChildren: number;
+  readonly childResources: DelegationResourceVector;
+}
+
+export interface DelegationResourceVector {
+  readonly nodeStarts: number;
+  readonly modelTokens: number;
+  readonly modelCostUsdMicros: number;
+  readonly executionMs: number;
+  readonly artifactBytes: number;
 }
 
 export interface EvaluationPhaseRoutingQualificationReport {
@@ -207,18 +262,23 @@ export function aggregateEvaluation(
   if (baseline === undefined || candidate === undefined) {
     throw new EvaluationAggregationError("comparison profiles are missing from the report input");
   }
+  const delegation =
+    input.purpose === "delegation-v1" ? delegationReport(input, records) : undefined;
+  const comparison = comparisonReport(input, records, candidate);
   return deepFreeze({
     version: 1,
     planDigest: input.planDigest,
     scheduledTrials: input.schedule.length,
     committedTrials: records.length,
     profiles,
-    comparison: comparisonReport(input, records, candidate),
+    comparison:
+      delegation === undefined ? comparison : delegationComparisonReport(comparison, delegation),
     ...(input.purpose === "acp-interoperability-v1"
       ? { qualification: acpQualificationReport(input, records) }
       : input.purpose === "phase-routing-v1"
         ? { qualification: phaseRoutingQualificationReport(input, records) }
         : {}),
+    ...(delegation === undefined ? {} : { delegation }),
   });
 }
 
@@ -306,6 +366,40 @@ function validateQualificationRecordIdentity(
   record: EvaluationTrialRecord,
   index: number,
 ): void {
+  if (input.purpose === "delegation-v1") {
+    if (record.qualification !== undefined || record.phaseRouting !== undefined) {
+      throw new EvaluationAggregationError(
+        `evaluation trial record ${index + 1} contains unrelated qualification evidence`,
+      );
+    }
+    const observation = record.delegation;
+    if (observation === undefined) return;
+    const expectedWorkflow = input.profileWorkflowDigests?.[record.profileId];
+    const expectedAuthority = input.profileDelegationAuthorities?.[record.profileId];
+    const expectedManagerNodeId = input.profileDelegationManagerNodeIds?.[record.profileId];
+    const expectedPackageClosureDigest =
+      input.profileDelegationPackageClosureDigests?.[record.profileId];
+    const expectedMode =
+      record.profileId === input.comparison.baselineProfileId ? "baseline" : "candidate";
+    if (
+      expectedWorkflow === undefined ||
+      observation.workflowDigest !== expectedWorkflow ||
+      observation.manager.nodeId !== expectedManagerNodeId ||
+      observation.packageClosureDigest !== expectedPackageClosureDigest ||
+      observation.mode !== expectedMode ||
+      JSON.stringify(observation.authority) !== JSON.stringify(expectedAuthority)
+    ) {
+      throw new EvaluationAggregationError(
+        `evaluation trial record ${index + 1} contradicts its admitted delegation identity`,
+      );
+    }
+    return;
+  }
+  if (record.delegation !== undefined) {
+    throw new EvaluationAggregationError(
+      `evaluation trial record ${index + 1} contains undeclared delegation evidence`,
+    );
+  }
   if (input.purpose === "phase-routing-v1") {
     if (record.qualification !== undefined) {
       throw new EvaluationAggregationError(
@@ -929,6 +1023,174 @@ function safeMetricTotal(values: readonly number[], label: string): number {
     throw new EvaluationAggregationError(`ACP qualification ${label} evidence overflowed`);
   }
   return total;
+}
+
+function delegationReport(
+  input: EvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+): EvaluationDelegationReport {
+  const observations = records.filter(
+    (
+      record,
+    ): record is EvaluationTrialRecord & {
+      readonly delegation: NonNullable<EvaluationTrialRecord["delegation"]>;
+    } => record.delegation?.constraints.complete === true,
+  );
+  const missingObservations = input.schedule.length - observations.length;
+  const constraintViolations = observations.reduce(
+    (total, record) => total + record.delegation.constraints.violations.length,
+    0,
+  );
+  const pairs = pairedSchedule(input);
+  const byTrialId = new Map(records.map((record) => [record.trialId, record]));
+  const completePairs = completePairRecords(pairs, byTrialId).filter(
+    ({ baseline, candidate }) =>
+      baseline.delegation?.constraints.complete === true &&
+      candidate.delegation?.constraints.complete === true,
+  );
+  const classes = Object.fromEntries(
+    (["delegation-fit", "sequential-control"] as const).map((delegationClass) => [
+      delegationClass,
+      delegationClassReport(input, records, delegationClass),
+    ]),
+  ) as Record<"delegation-fit" | "sequential-control", EvaluationDelegationClassReport>;
+  const limitations: string[] = [];
+  if (missingObservations > 0) {
+    limitations.push(`${missingObservations} scheduled delegation observation(s) are missing.`);
+  }
+  if (completePairs.length < pairs.length) {
+    limitations.push(`${pairs.length - completePairs.length} delegation pair(s) are incomplete.`);
+  }
+  if (constraintViolations > 0) {
+    limitations.push(`${constraintViolations} delegation constraint violation(s) were observed.`);
+  }
+  return Object.freeze({
+    purpose: "delegation-v1",
+    scheduledPairs: pairs.length,
+    completePairs: completePairs.length,
+    completeObservations: observations.length,
+    missingObservations,
+    constraintViolations,
+    classes: Object.freeze(classes),
+    limitations: Object.freeze(limitations),
+  });
+}
+
+function delegationClassReport(
+  input: EvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+  delegationClass: "delegation-fit" | "sequential-control",
+): EvaluationDelegationClassReport {
+  const taskIds = new Set(
+    input.tasks.filter((task) => task.delegationClass === delegationClass).map((task) => task.id),
+  );
+  const pairs = pairedSchedule(input).filter((pair) => taskIds.has(pair.baseline.taskId));
+  const byTrialId = new Map(records.map((record) => [record.trialId, record]));
+  const complete = completePairRecords(pairs, byTrialId).filter(
+    ({ baseline, candidate }) =>
+      baseline.delegation?.constraints.complete === true &&
+      candidate.delegation?.constraints.complete === true,
+  );
+  const baseline = delegationProfileClassReport(complete.map((pair) => pair.baseline));
+  const candidate = delegationProfileClassReport(complete.map((pair) => pair.candidate));
+  return Object.freeze({
+    scheduledPairs: pairs.length,
+    completePairs: complete.length,
+    baseline,
+    candidate,
+    childResourceDelta:
+      complete.length !== pairs.length
+        ? null
+        : subtractDelegationResources(candidate.childResources, baseline.childResources),
+  });
+}
+
+function delegationProfileClassReport(
+  records: readonly EvaluationTrialRecord[],
+): EvaluationDelegationProfileClassReport {
+  const observations = records.flatMap((record) =>
+    record.delegation === undefined ? [] : [record.delegation],
+  );
+  const children = observations.flatMap((observation) =>
+    observation.invocation.child === null ? [] : [observation.invocation.child],
+  );
+  return Object.freeze({
+    observations: observations.length,
+    invocations: observations.filter((observation) => observation.invocation.count === 1).length,
+    skipped: observations.filter((observation) => observation.invocation.count === 0).length,
+    successfulChildren: children.filter((child) => child.outcome === "succeeded").length,
+    failedChildren: children.filter((child) => child.outcome !== "succeeded").length,
+    childResources: children.reduce(
+      (total, child) => addDelegationResources(total, child.resources),
+      zeroDelegationResources(),
+    ),
+  });
+}
+
+function zeroDelegationResources(): DelegationResourceVector {
+  return Object.freeze({
+    nodeStarts: 0,
+    modelTokens: 0,
+    modelCostUsdMicros: 0,
+    executionMs: 0,
+    artifactBytes: 0,
+  });
+}
+
+function addDelegationResources(
+  left: DelegationResourceVector,
+  right: DelegationResourceVector,
+): DelegationResourceVector {
+  return Object.freeze({
+    nodeStarts: safeDelegationNumber(left.nodeStarts + right.nodeStarts),
+    modelTokens: safeDelegationNumber(left.modelTokens + right.modelTokens),
+    modelCostUsdMicros: safeDelegationNumber(left.modelCostUsdMicros + right.modelCostUsdMicros),
+    executionMs: safeDelegationNumber(left.executionMs + right.executionMs),
+    artifactBytes: safeDelegationNumber(left.artifactBytes + right.artifactBytes),
+  });
+}
+
+function subtractDelegationResources(
+  candidate: DelegationResourceVector,
+  baseline: DelegationResourceVector,
+): DelegationResourceVector {
+  return Object.freeze({
+    nodeStarts: safeDelegationNumber(candidate.nodeStarts - baseline.nodeStarts),
+    modelTokens: safeDelegationNumber(candidate.modelTokens - baseline.modelTokens),
+    modelCostUsdMicros: safeDelegationNumber(
+      candidate.modelCostUsdMicros - baseline.modelCostUsdMicros,
+    ),
+    executionMs: safeDelegationNumber(candidate.executionMs - baseline.executionMs),
+    artifactBytes: safeDelegationNumber(candidate.artifactBytes - baseline.artifactBytes),
+  });
+}
+
+function safeDelegationNumber(value: number): number {
+  if (!Number.isSafeInteger(value)) {
+    throw new EvaluationAggregationError("delegation resource evidence overflowed a safe integer");
+  }
+  return value;
+}
+
+function delegationComparisonReport(
+  comparison: EvaluationReport["comparison"],
+  delegation: EvaluationDelegationReport,
+): EvaluationReport["comparison"] {
+  const delegationEvidence =
+    delegation.missingObservations > 0 || delegation.completePairs < delegation.scheduledPairs
+      ? null
+      : delegation.constraintViolations === 0;
+  const verdict =
+    delegationEvidence === null
+      ? "insufficient_evidence"
+      : delegationEvidence === false
+        ? "constraint_failed"
+        : comparison.verdict;
+  return Object.freeze({
+    ...comparison,
+    verdict,
+    constraints: Object.freeze({ ...comparison.constraints, delegationEvidence }),
+  });
 }
 
 function comparisonReport(

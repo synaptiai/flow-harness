@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import type { DelegationEvaluationSnapshot } from "../domain/adaptation/delegation-evaluation.js";
 import {
   createPhaseRoutingDecision,
   type PhaseRoutingDecision,
@@ -22,8 +23,10 @@ import {
   workflowApprovalRequestId,
 } from "../domain/approval/workflow-approval.js";
 import {
+  calculateCapabilitySnapshotDigest,
   type CapabilitySnapshot,
   createAgentCapabilityEvidence,
+  validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import {
@@ -45,11 +48,13 @@ import {
 } from "../domain/result/typed-result.js";
 import {
   type AgentCapabilityRequirement,
+  type AgentDelegationReceipt,
   type AgentCommandSettlementOutcome,
   type AgentEffectReceipt,
   type AgentRecoveryRequirement,
   appendRunEvent,
   type ChildEvidence,
+  type ChildResultEvidence,
   type ChildRunLink,
   type ControlGraph,
   calculateChildRunId,
@@ -61,6 +66,7 @@ import {
   type NodeEffectReconciledEvent,
   type NodeEffectSettlementInput,
   type NodeFailure,
+  nodeDelegationId,
   type NodeOptimizationEvaluatedEvent,
   nodeAgentCommandId,
   nodeEffectId,
@@ -91,6 +97,7 @@ import {
   workflowRequiresControlGraph,
 } from "../domain/workflow/control-graph.js";
 import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
+import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import type {
   CompiledAgentNode,
   CompiledApprovalNode,
@@ -126,6 +133,7 @@ import type {
   NodeAgentCommandJournal,
   NodeEffectJournal,
   NodeEffectReconciler,
+  NodeDelegationSession,
   NodeExecutionOutcome,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -160,11 +168,14 @@ export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" 
 }
 
 const effectiveHarnessChildPath = Symbol("effective-harness-child-path");
+const delegationObjective = Symbol("delegation-objective");
 type InternalRunWorkflowOptions = RunWorkflowOptions & {
   readonly [effectiveHarnessChildPath]?: readonly string[];
+  readonly [delegationObjective]?: string;
 };
 type InternalResumeWorkflowOptions = ResumeWorkflowOptions & {
   readonly [effectiveHarnessChildPath]?: readonly string[];
+  readonly [delegationObjective]?: string;
 };
 
 export async function runWorkflow(
@@ -180,7 +191,9 @@ async function runWorkflowInternal(
 ): Promise<RunState> {
   assertNotAborted(options.signal);
   const capabilitySnapshot = bindWorkflowCapabilities(workflow, options.capabilitySnapshot, {
-    allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
+    allowUnexpected:
+      options.executionWorkspace?.parentRunId !== undefined ||
+      options.capabilitySnapshot?.delegation !== undefined,
   });
   assertWorkflowSatisfiesPolicyPackages(workflow, capabilitySnapshot);
   assertPhaseRoutingRuntimeSupported(capabilitySnapshot);
@@ -259,7 +272,9 @@ async function resumeWorkflowWithRelocation(
   assertNotAborted(options.signal);
   if (options.capabilitySnapshot !== undefined) {
     const preflightSnapshot = bindWorkflowCapabilities(workflow, options.capabilitySnapshot, {
-      allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
+      allowUnexpected:
+        options.executionWorkspace?.parentRunId !== undefined ||
+        options.capabilitySnapshot.delegation !== undefined,
     });
     assertWorkflowSatisfiesPolicyPackages(workflow, preflightSnapshot);
     assertPhaseRoutingRuntimeSupported(preflightSnapshot);
@@ -277,7 +292,8 @@ async function resumeWorkflowWithRelocation(
         {
           allowUnexpected:
             options.executionWorkspace?.parentRunId !== undefined ||
-            state.executionWorkspace?.parentRunId !== undefined,
+            state.executionWorkspace?.parentRunId !== undefined ||
+            state.capabilitySnapshot?.delegation !== undefined,
         },
       );
       assertWorkflowSatisfiesPolicyPackages(workflow, persistedCapabilitySnapshot);
@@ -335,6 +351,7 @@ async function resumeWorkflowWithRelocation(
     assertNotAborted(options.signal);
     state = await disposeProofSafeInterruptedAttempt(workflow, effectiveOptions, state, now);
     state = await recoverOpenChildAttempts(workflow, effectiveOptions, state, now);
+    state = await recoverOpenDelegationAttempts(workflow, effectiveOptions, state, now);
     rejectOpenAttempt(options.runId, state);
     const resumed: RunResumedEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
@@ -441,6 +458,7 @@ async function continueWorkflow(
       readonly verifierSources?: readonly VerifierSourceInput[];
       readonly proofFaithfulnessApproval?: LeanProofFaithfulnessApprovalContext;
       readonly verifierPackage?: VerifierPackageUseEvidence;
+      readonly delegationChild?: CompiledChildNode;
       readonly preflightOutcome?: NodeExecutionOutcome;
     }> = [];
     const childBudgetReservations = {
@@ -528,10 +546,17 @@ async function continueWorkflow(
           : undefined;
       const verifierSources = verifierExecutionSources(executionNode, state, workflow.nodes);
       const proofFaithfulnessApproval = proofFaithfulnessApprovalForNode(executionNode, state);
+      const delegationChild = delegationChildForNode(
+        options.capabilitySnapshot,
+        workflow.id,
+        executionNode,
+      );
       const preflightOutcome =
         executionNode.type === "child"
           ? childBudgetPreflight(executionNode, state, childBudgetReservations)
-          : undefined;
+          : delegationChild === undefined
+            ? undefined
+            : childBudgetPreflight(delegationChild, state, childBudgetReservations);
       let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
       let startTime: Date | undefined;
       if (node.type === "command" && node.approval !== undefined) {
@@ -648,10 +673,15 @@ async function continueWorkflow(
         ...(verifierResolution?.package === undefined
           ? {}
           : { verifierPackage: verifierResolution.package }),
+        ...(delegationChild === undefined ? {} : { delegationChild }),
         ...(preflightOutcome === undefined ? {} : { preflightOutcome }),
       });
-      if (executionNode.type === "child" && preflightOutcome === undefined) {
-        reserveChildBudget(executionNode, childBudgetReservations);
+      if (preflightOutcome === undefined) {
+        if (executionNode.type === "child") {
+          reserveChildBudget(executionNode, childBudgetReservations);
+        } else if (delegationChild !== undefined) {
+          reserveChildBudget(delegationChild, childBudgetReservations);
+        }
       }
       if (preflightOutcome !== undefined) {
         break;
@@ -674,6 +704,7 @@ async function continueWorkflow(
           verifierSources,
           proofFaithfulnessApproval,
           verifierPackage,
+          delegationChild,
           preflightOutcome,
         }) => {
           const abortedBeforeExecution = isAborted(options.signal);
@@ -689,6 +720,10 @@ async function continueWorkflow(
             executionNode.type === "agent"
               ? goalWorkspaceForAgent(options.capabilitySnapshot)
               : undefined;
+          const agentDelegationObjective =
+            executionNode.type === "agent"
+              ? delegationObjectiveSystemPrompt(options[delegationObjective])
+              : undefined;
           const modelBacked = isModelBackedNode(executionNode);
           const phaseRouting = modelBacked
             ? phaseRoutingForNode(
@@ -697,6 +732,67 @@ async function continueWorkflow(
                 executionNode,
               )
             : undefined;
+          const delegationSnapshot = options.capabilitySnapshot?.delegation;
+          const delegationSession =
+            delegationChild === undefined
+              ? undefined
+              : delegationSnapshot === undefined
+                ? (() => {
+                    throw new Error("delegation child has no capability snapshot");
+                  })()
+                : createNodeDelegationSession({
+                    snapshot: delegationSnapshot,
+                    ...(options.signal === undefined ? {} : { signal: options.signal }),
+                    execute: async (signal) =>
+                      await executeChildNode(
+                        delegationChild,
+                        {
+                          runId,
+                          workflowId: workflow.id,
+                          nodeId: executionNode.id,
+                          attempt,
+                          cwd: options.cwd,
+                          ...(options.projectRoot === undefined
+                            ? {}
+                            : { projectRoot: options.projectRoot }),
+                          protectedPaths: options.protectedPaths,
+                          ...(signal === undefined ? {} : { signal }),
+                        },
+                        options,
+                        now,
+                        capabilitySnapshotWithoutDelegation(options.capabilitySnapshot),
+                        delegationSnapshot.objective.text,
+                      ),
+                    prepare: async () => {
+                      const sequence = nextSequence();
+                      const delegationId = nodeDelegationId(sequence);
+                      await record({
+                        ...base(sequence),
+                        type: "node_delegation_prepared",
+                        nodeId: executionNode.id,
+                        attempt,
+                        delegationSequence: 1,
+                        delegationId,
+                        candidateDigest: delegationSnapshot.candidateDigest,
+                        snapshotDigest: delegationSnapshot.snapshotDigest,
+                        child: createChildRunLink(runId, delegationChild, attempt),
+                      });
+                      return delegationId;
+                    },
+                    settle: async (delegationId, evidence) => {
+                      await record({
+                        ...base(nextSequence()),
+                        type: "node_delegation_settled",
+                        nodeId: executionNode.id,
+                        attempt,
+                        delegationSequence: 1,
+                        delegationId,
+                        candidateDigest: delegationSnapshot.candidateDigest,
+                        snapshotDigest: delegationSnapshot.snapshotDigest,
+                        evidence,
+                      });
+                    },
+                  });
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -725,6 +821,7 @@ async function continueWorkflow(
                     ...(effectJournal === undefined ? {} : { effectJournal }),
                     ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
                     ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
+                    ...(delegationSession === undefined ? {} : { delegationSession }),
                     ...(modelSessionJournal === undefined
                       ? {}
                       : { modelSession: modelSessionJournal }),
@@ -734,6 +831,9 @@ async function continueWorkflow(
                       : { proofFaithfulnessApproval }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
+                    ...(agentDelegationObjective === undefined
+                      ? {}
+                      : { agentSystemPrompt: agentDelegationObjective }),
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
                     ...(modelBacked ? { modelWorkProfile } : {}),
                     ...(phaseRouting === undefined ? {} : { phaseRouting }),
@@ -1471,6 +1571,116 @@ function createChildRunLink(
   });
 }
 
+function delegationChildForNode(
+  snapshot: CapabilitySnapshot | undefined,
+  workflowId: string,
+  node: CompiledNode,
+): CompiledChildNode | undefined {
+  const delegation = snapshot?.delegation;
+  if (
+    delegation === undefined ||
+    delegation.target.workflowId !== workflowId ||
+    delegation.target.managerNodeId !== node.id
+  ) {
+    return undefined;
+  }
+  if (node.type !== "agent") {
+    throw new Error(`delegation target node "${node.id}" is not an agent`);
+  }
+  const workflow = compileWorkflowText(
+    delegation.child.sourceText,
+    `delegation child for ${workflowId}/${node.id}`,
+  );
+  const result = workflow.nodes.find((candidate) => candidate.id === delegation.child.resultNodeId);
+  if (result?.type !== "result") {
+    throw new Error(`delegation child result node "${delegation.child.resultNodeId}" is missing`);
+  }
+  return Object.freeze({
+    id: node.id,
+    type: "child",
+    dependsOn: Object.freeze([]),
+    child: Object.freeze({
+      workflow,
+      workflowDigest: delegation.child.workflowDigest,
+      resultNodeId: result.id,
+      resultSchema: result.result.schema,
+      resultSchemaDigest: result.result.schemaDigest,
+    }),
+  });
+}
+
+function capabilitySnapshotWithoutDelegation(
+  snapshot: CapabilitySnapshot | undefined,
+): CapabilitySnapshot | undefined {
+  if (snapshot === undefined || snapshot.packages.length === 0) {
+    return undefined;
+  }
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: snapshot.packages,
+    digest: calculateCapabilitySnapshotDigest(snapshot.packages),
+  });
+}
+
+function createNodeDelegationSession(input: {
+  readonly snapshot: DelegationEvaluationSnapshot;
+  readonly signal?: AbortSignal;
+  readonly execute: (signal?: AbortSignal) => Promise<NodeExecutionOutcome>;
+  readonly prepare: () => Promise<string>;
+  readonly settle: (delegationId: string, evidence: ChildEvidence) => Promise<void>;
+}): NodeDelegationSession {
+  let invoked = false;
+  const receipts: AgentDelegationReceipt[] = [];
+  return Object.freeze({
+    async delegate(signal?: AbortSignal): Promise<ChildResultEvidence> {
+      if (invoked) {
+        throw new Error("flow_delegate was already invoked for this manager attempt");
+      }
+      invoked = true;
+      const effectiveSignal = combinedAbortSignal(input.signal, signal);
+      assertNotAborted(effectiveSignal);
+      const delegationId = await input.prepare();
+      const outcome = await input.execute(effectiveSignal);
+      if (outcome.evidence?.kind !== "child") {
+        throw new Error(`delegation "${delegationId}" has no terminal child evidence`);
+      }
+      const evidence = outcome.evidence;
+      await input.settle(delegationId, evidence);
+      receipts.push(
+        Object.freeze({
+          version: 1,
+          sequence: 1,
+          candidateDigest: input.snapshot.candidateDigest,
+          snapshotDigest: input.snapshot.snapshotDigest,
+          childRunId: evidence.childRunId,
+          terminalSequence: evidence.terminalSequence,
+          outcome: evidence.outcome,
+          resultValueHash: evidence.result?.valueHash ?? null,
+        }),
+      );
+      if (outcome.status === "failed") {
+        throw new Error(outcome.error.message);
+      }
+      if (evidence.result === null) {
+        throw new Error(`delegation "${delegationId}" succeeded without its typed result`);
+      }
+      return evidence.result;
+    },
+    receipts(): readonly AgentDelegationReceipt[] {
+      return Object.freeze([...receipts]);
+    },
+  });
+}
+
+function combinedAbortSignal(
+  primary: AbortSignal | undefined,
+  secondary: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (primary === undefined || primary === secondary) return secondary;
+  if (secondary === undefined) return primary;
+  return AbortSignal.any([primary, secondary]);
+}
+
 interface ChildBudgetReservation {
   nodeStarts: number;
   modelTokens: number;
@@ -2164,6 +2374,74 @@ async function recoverOpenChildAttempts(
   return state;
 }
 
+async function recoverOpenDelegationAttempts(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+  initialState: RunState,
+  now: () => Date,
+): Promise<RunState> {
+  let state = initialState;
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
+    if (nodeState.status !== "running") continue;
+    const open = nodeState.delegations.find((delegation) => delegation.settlement === null);
+    if (open === undefined) continue;
+    const node = nodeById.get(nodeId);
+    const child =
+      node === undefined
+        ? undefined
+        : delegationChildForNode(options.capabilitySnapshot, workflow.id, node);
+    const store = childRunStore(options.store);
+    if (child === undefined || store === null || options.workspaceIsolator === undefined) {
+      throw new RunRecoveryError(
+        "child_recovery_ineligible",
+        `run "${options.runId}" cannot reconstruct delegation "${open.delegationId}"`,
+      );
+    }
+    if (!(await store.exists(open.child.runId))) {
+      await options.workspaceIsolator.cleanup(open.child.runId);
+      continue;
+    }
+    let outcome: NodeExecutionOutcome;
+    try {
+      outcome = await recoverChildNode(
+        child,
+        nodeState.attempt,
+        options,
+        now,
+        capabilitySnapshotWithoutDelegation(options.capabilitySnapshot),
+        options.capabilitySnapshot?.delegation?.objective.text,
+      );
+    } catch (error) {
+      throw new RunRecoveryError(
+        "child_recovery_ineligible",
+        `run "${options.runId}" cannot recover delegation "${open.delegationId}": ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+    if (outcome.evidence?.kind !== "child") {
+      throw new RunRecoveryError(
+        "child_recovery_ineligible",
+        `run "${options.runId}" delegation "${open.delegationId}" has no terminal child evidence`,
+      );
+    }
+    const event: RunEvent = {
+      ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+      type: "node_delegation_settled",
+      nodeId,
+      attempt: nodeState.attempt,
+      delegationSequence: open.sequence,
+      delegationId: open.delegationId,
+      candidateDigest: open.candidateDigest,
+      snapshotDigest: open.snapshotDigest,
+      evidence: outcome.evidence,
+    };
+    const nextState = appendRunEvent(state, event);
+    await options.store.append(event);
+    state = nextState;
+  }
+  return state;
+}
+
 async function validateRecoveredChildTrees(
   workflow: CompiledWorkflow,
   options: ResumeWorkflowOptions,
@@ -2188,31 +2466,64 @@ async function validateRecoveredChildTree(
   for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
     const node = nodeById.get(nodeId);
     const evidence = nodeState.evidence;
-    if (node?.type !== "child" || evidence?.kind !== "child") {
-      continue;
+    if (node?.type === "child" && evidence?.kind === "child") {
+      const link = nodeState.childRun;
+      if (link === null) {
+        throw new Error(`settled child node "${nodeId}" has no durable child link`);
+      }
+      await validateRecoveredChildEvidence(node, link, evidence, state, nodeState.attempt, store);
     }
-    const link = nodeState.childRun;
-    if (link === null) {
-      throw new Error(`settled child node "${nodeId}" has no durable child link`);
+    for (const delegation of nodeState.delegations) {
+      const delegatedEvidence = delegation.settlement?.evidence;
+      if (delegatedEvidence === undefined) continue;
+      if (node === undefined) {
+        throw new Error(`delegation manager node "${nodeId}" is missing`);
+      }
+      const child = delegationChildForNode(
+        state.capabilitySnapshot ?? undefined,
+        state.workflowId,
+        node,
+      );
+      if (child === undefined) {
+        throw new Error(`settled delegation for "${nodeId}" has no admitted child`);
+      }
+      await validateRecoveredChildEvidence(
+        child,
+        delegation.child,
+        delegatedEvidence,
+        state,
+        nodeState.attempt,
+        store,
+      );
     }
-    const childState = reduceRunEvents(await store.read(evidence.childRunId));
-    validateRecoveredChildIdentity(
-      link,
-      node,
-      state.runId,
-      nodeState.attempt,
-      state.workProfile,
-      childState,
-    );
-    if (!runStateIsTerminal(childState)) {
-      throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
-    }
-    const expected = childEvidence(node, childState, evidence.workspace.disposition);
-    if (!sameChildEvidenceProjection(evidence, expected)) {
-      throw new Error(`settled child evidence for "${nodeId}" diverges from its child ledger`);
-    }
-    await validateRecoveredChildTree(node.child.workflow, store, childState);
   }
+}
+
+async function validateRecoveredChildEvidence(
+  node: CompiledChildNode,
+  link: ChildRunLink,
+  evidence: ChildEvidence,
+  parentState: RunState,
+  attempt: number,
+  store: RecoverableRunEventStore,
+): Promise<void> {
+  const childState = reduceRunEvents(await store.read(evidence.childRunId));
+  validateRecoveredChildIdentity(
+    link,
+    node,
+    parentState.runId,
+    attempt,
+    parentState.workProfile,
+    childState,
+  );
+  if (!runStateIsTerminal(childState)) {
+    throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
+  }
+  const expected = childEvidence(node, childState, evidence.workspace.disposition);
+  if (!sameChildEvidenceProjection(evidence, expected)) {
+    throw new Error(`settled child evidence for "${node.id}" diverges from its child ledger`);
+  }
+  await validateRecoveredChildTree(node.child.workflow, store, childState);
 }
 
 function rejectOpenAttempt(runId: string, state: RunState): void {
@@ -4036,6 +4347,8 @@ async function executeChildNode(
   context: Parameters<NodeExecutor["execute"]>[1],
   options: Omit<InternalRunWorkflowOptions, "runId">,
   now: () => Date,
+  childCapabilitySnapshot: CapabilitySnapshot | undefined = context.capabilitySnapshot,
+  childDelegationObjective?: string,
 ): Promise<NodeExecutionOutcome> {
   const store = childRunStore(options.store);
   if (store === null || options.workspaceIsolator === undefined) {
@@ -4084,9 +4397,9 @@ async function executeChildNode(
       ? {}
       : { workspaceIsolator: options.workspaceIsolator }),
     executionWorkspace,
-    ...(context.capabilitySnapshot === undefined
+    ...(childCapabilitySnapshot === undefined
       ? {}
-      : { capabilitySnapshot: context.capabilitySnapshot }),
+      : { capabilitySnapshot: childCapabilitySnapshot }),
     workProfile: options.workProfile ?? "standard",
     now,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
@@ -4098,6 +4411,9 @@ async function executeChildNode(
       ? {}
       : { modelSessionStore: options.modelSessionStore }),
     [effectiveHarnessChildPath]: [...(options[effectiveHarnessChildPath] ?? []), node.id],
+    ...(childDelegationObjective === undefined
+      ? {}
+      : { [delegationObjective]: childDelegationObjective }),
   });
   return await settleChildState(node, childState, options.workspaceIsolator);
 }
@@ -4107,6 +4423,8 @@ async function recoverChildNode(
   attempt: number,
   options: InternalResumeWorkflowOptions,
   now: () => Date,
+  childCapabilitySnapshot: CapabilitySnapshot | undefined = options.capabilitySnapshot,
+  childDelegationObjective?: string,
 ): Promise<NodeExecutionOutcome> {
   const store = childRunStore(options.store);
   if (store === null || options.workspaceIsolator === undefined) {
@@ -4127,13 +4445,15 @@ async function recoverChildNode(
         cwd: resolve(options.cwd),
         ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
         protectedPaths: options.protectedPaths,
-        ...(options.capabilitySnapshot === undefined
+        ...(childCapabilitySnapshot === undefined
           ? {}
-          : { capabilitySnapshot: options.capabilitySnapshot }),
+          : { capabilitySnapshot: childCapabilitySnapshot }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
       options,
       now,
+      childCapabilitySnapshot,
+      childDelegationObjective,
     );
   }
 
@@ -4171,9 +4491,9 @@ async function recoverChildNode(
         executor: options.executor,
         workspaceIsolator: options.workspaceIsolator,
         executionWorkspace: provenance,
-        ...(options.capabilitySnapshot === undefined
+        ...(childCapabilitySnapshot === undefined
           ? {}
-          : { capabilitySnapshot: options.capabilitySnapshot }),
+          : { capabilitySnapshot: childCapabilitySnapshot }),
         workProfile: options.workProfile ?? "standard",
         ...(options.effectReconciler === undefined
           ? {}
@@ -4184,6 +4504,9 @@ async function recoverChildNode(
           ? {}
           : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
         [effectiveHarnessChildPath]: [...(options[effectiveHarnessChildPath] ?? []), node.id],
+        ...(childDelegationObjective === undefined
+          ? {}
+          : { [delegationObjective]: childDelegationObjective }),
       },
       workspace.relocatedFromCwd === undefined
         ? undefined
@@ -4258,6 +4581,17 @@ function assertPhaseRoutingRuntimeSupported(snapshot: CapabilitySnapshot | undef
 function goalWorkspaceForAgent(snapshot: CapabilitySnapshot | undefined): string | undefined {
   const goalWorkspace = snapshot?.goalWorkspace;
   return goalWorkspace === undefined ? undefined : renderGoalWorkspaceContext(goalWorkspace);
+}
+
+function delegationObjectiveSystemPrompt(objective: string | undefined): string | undefined {
+  if (objective === undefined) return undefined;
+  return [
+    "You are executing a sealed Flow child workflow.",
+    "Complete only this admitted delegation objective:",
+    objective,
+    "Return evidence through the child workflow's declared typed result.",
+    "Do not delegate, request approval, or expand the admitted authority.",
+  ].join("\n\n");
 }
 
 function validateRecoveredChildIdentity(

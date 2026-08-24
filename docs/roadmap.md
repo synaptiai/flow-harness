@@ -564,14 +564,26 @@ Read [Verify an exact Lean statement](guides/lean-proof-verification.md) and
 
 ### Slice 10.4: Bound later delegation experiments
 
-- Define dynamic delegation as a reviewed evaluation candidate with an exact child objective and
-  package closure.
-- Bind its budget, depth, executor, result schema, and cancellation boundary.
-- Reuse existing child-run and detached-job evidence instead of creating an untracked background
-  task system.
+**Implemented as a local evaluation-only experiment.**
+
+- Define dynamic delegation as a reviewed evaluation candidate with an exact manager, objective,
+  child workflow, and typed result. Bind the exact package closure, embedded Pi executor, and
+  complete five-dimensional child budget.
+- Give only the exact candidate manager one empty-input `flow_delegate` tool. Limit depth and calls
+  to one, run the child in the foreground, and remove delegation authority from the child snapshot.
+- Reuse isolated child-run identity, workspace, ledger, cancellation, cleanup, result, and resource
+  evidence. Add durable parent preparation and settlement so recovery can reconcile the exact child
+  without rerunning the manager.
+- Require paired `delegation-fit` and `sequential-control` holdouts under identical root workflow,
+  package, model, budget, network, retry, task, verifier, seed, and ordering controls.
+- Report complete observations, invocations, skips, child outcomes, resource changes, constraint
+  failures, and missingness by task class. Keep public output content-free and reject composition or
+  activation for every verdict.
 - Keep remote Agent2Agent (A2A) execution blocked until Flow defines remote identity and
   authenticated authority propagation.
 - Require multi-host settlement, tenant isolation, and operator remediation before enabling A2A.
+
+Read [Evaluate bounded one-shot delegation](guides/evaluate-bounded-delegation.md).
 
 ### Gate 10 failure behavior and non-goals
 

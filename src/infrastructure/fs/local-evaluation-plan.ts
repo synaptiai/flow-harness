@@ -6,6 +6,10 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import type { ChildSpecialistCandidateIdentity } from "../../domain/adaptation/child-specialist-candidate.js";
+import type {
+  DelegationEvaluationCandidateIdentity,
+  DelegationEvaluationCandidateSource,
+} from "../../domain/adaptation/delegation-evaluation-candidate.js";
 import {
   type EffectiveHarnessCandidateArtifact,
   type EffectiveHarnessCandidateSurface,
@@ -22,7 +26,7 @@ import type { PhaseRoutingCandidateIdentity } from "../../domain/adaptation/phas
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import type { SupplementalMemoryCandidateIdentity } from "../../domain/adaptation/supplemental-memory-candidate.js";
 import type {
-  AgentSkillCapabilitySnapshot,
+  CapabilityPackageSnapshot,
   CapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
 import {
@@ -53,6 +57,7 @@ import type { CompiledRunBudget, CompiledWorkflow } from "../../domain/workflow/
 import { admitLocalAdaptationCandidate } from "./local-adaptation-candidate.js";
 import { admitLocalAcpAgentRuntime } from "./local-acp-agent.js";
 import { admitLocalEffectiveHarnessCandidate } from "./local-effective-harness-candidate.js";
+import type { DelegationExecutorAdmission } from "./local-delegation-evaluation-candidate.js";
 
 export const MAX_EVALUATION_FIXTURE_ENTRIES = 4_096;
 export const MAX_EVALUATION_FIXTURE_BYTES = 256 * 1024 * 1024;
@@ -90,6 +95,7 @@ export interface EvaluationFixtureSnapshot {
 export interface AdmittedEvaluationTask {
   readonly id: string;
   readonly partition: "tuning" | "regression" | "holdout";
+  readonly delegationClass?: "delegation-fit" | "sequential-control";
   readonly fixture: EvaluationFixtureSnapshot & {
     readonly sourceCwd: string;
     readonly provenance: string;
@@ -117,6 +123,8 @@ export interface AdmittedFlowEvaluationProfile {
       | "prompt-candidate-projection"
       | "agent-skill-candidate-projection"
       | "agent-skill-package-candidate-projection"
+      | "delegation-evaluation-baseline"
+      | "delegation-evaluation-candidate"
       | "effective-harness-baseline"
       | "effective-harness-candidate-projection";
     readonly sourcePath: string | null;
@@ -133,12 +141,15 @@ export interface AdmittedFlowEvaluationProfile {
     | ModelRoutingCandidateIdentity
     | PhaseRoutingCandidateIdentity
     | ChildSpecialistCandidateIdentity
+    | DelegationEvaluationCandidateIdentity
     | SupplementalMemoryCandidateIdentity
   ) & {
     readonly selectionProvenance: string;
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
-  readonly baselineCapabilitySnapshot?: AgentSkillCapabilitySnapshot;
+  readonly delegationManagerNodeId?: string;
+  readonly assertDelegationExecutorCurrent?: () => Promise<void>;
+  readonly baselineCapabilitySnapshot?: CapabilitySnapshot;
   readonly effectiveHarness?: {
     readonly selection: "baseline" | "candidate";
     readonly artifactDigest: string;
@@ -168,7 +179,7 @@ export type AdmittedEvaluationProfile =
 export interface AdmittedEvaluationPlan {
   readonly apiVersion: EvaluationPlanSource["apiVersion"];
   readonly id: string;
-  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1";
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1";
   readonly planDigest: string;
   readonly sourcePath: string;
   readonly suite: {
@@ -195,6 +206,7 @@ export function projectEvaluationCandidateIdentity(
     | ModelRoutingCandidateIdentity
     | PhaseRoutingCandidateIdentity
     | ChildSpecialistCandidateIdentity
+    | DelegationEvaluationCandidateIdentity
     | SupplementalMemoryCandidateIdentity;
 } {
   const { selectionProvenance, ...identity } = candidate;
@@ -222,6 +234,12 @@ export interface LocalEvaluationPlanDependencies {
   readonly resolveExternalHarnessIdentity: (
     profile: ExternalProfileSource,
   ) => Promise<ExternalHarnessIdentity>;
+  readonly resolveDelegationPackages: (
+    source: DelegationEvaluationCandidateSource,
+  ) => Promise<readonly CapabilityPackageSnapshot[]>;
+  readonly resolveDelegationExecutor: (
+    source: DelegationEvaluationCandidateSource,
+  ) => Promise<DelegationExecutorAdmission>;
   readonly signal?: AbortSignal;
   /** @internal Deterministic nested-candidate cancellation seam. */
   readonly afterCandidatePathValidation?: (provenance: string) => void | Promise<void>;
@@ -258,6 +276,7 @@ export async function admitLocalEvaluationPlan(
       return Object.freeze({
         id: task.id,
         partition: task.partition,
+        ...(task.delegationClass === undefined ? {} : { delegationClass: task.delegationClass }),
         fixture: Object.freeze({
           sourceCwd: fixturePath,
           provenance: task.fixture,
@@ -452,6 +471,12 @@ export async function admitLocalEvaluationPlan(
       try {
         admittedCandidate = await admitLocalAdaptationCandidate(candidatePath, {
           ...(dependencies?.signal === undefined ? {} : { signal: dependencies.signal }),
+          ...(dependencies?.resolveDelegationPackages === undefined
+            ? {}
+            : { resolveDelegationPackages: dependencies.resolveDelegationPackages }),
+          ...(dependencies?.resolveDelegationExecutor === undefined
+            ? {}
+            : { resolveDelegationExecutor: dependencies.resolveDelegationExecutor }),
           ...(dependencies?.afterCandidatePathValidation === undefined
             ? {}
             : {
@@ -484,6 +509,44 @@ export async function admitLocalEvaluationPlan(
           "invalid_workflow",
           `profile "${profile.id}" phase-routing candidate requires the effectiveCandidate field`,
         );
+      }
+      if (admittedCandidate.kind === "delegation-evaluation-candidate") {
+        if (source.purpose !== "delegation-v1") {
+          throw new EvaluationAdmissionError(
+            "invalid_workflow",
+            `profile "${profile.id}" delegation candidate requires a delegation evaluation plan`,
+          );
+        }
+        const delegationCandidate = admittedCandidate.candidate;
+        assertEvaluationWorkflowControls(
+          profile.id,
+          delegationCandidate.baseline.compiled,
+          source.controls,
+        );
+        return Object.freeze({
+          id: profile.id,
+          adapter: profile.adapter,
+          workflow: Object.freeze({
+            sourceKind: "delegation-evaluation-candidate" as const,
+            sourcePath: null,
+            provenance: profile.candidate,
+            source: delegationCandidate.baseline.sourceText,
+            sourceSha256: delegationCandidate.baseline.sourceSha256,
+            workflowDigest: delegationCandidate.baseline.workflowDigest,
+            compiled: delegationCandidate.baseline.compiled,
+          }),
+          candidate: Object.freeze({
+            ...delegationCandidate.identity,
+            selectionProvenance: profile.candidate,
+          }),
+          capabilitySnapshot: delegationCandidate.candidateCapabilitySnapshot,
+          assertDelegationExecutorCurrent: () => delegationCandidate.assertExecutorCurrent(),
+          ...(delegationCandidate.baselineCapabilitySnapshot === undefined
+            ? {}
+            : {
+                baselineCapabilitySnapshot: delegationCandidate.baselineCapabilitySnapshot,
+              }),
+        });
       }
       if (admittedCandidate.kind === "agent-skill-candidate") {
         const skillCandidate = admittedCandidate.candidate;
@@ -571,6 +634,8 @@ export async function admitLocalEvaluationPlan(
   );
   if (source.purpose === "acp-interoperability-v1") {
     assertAcpQualificationProfiles(profiles);
+  } else if (source.purpose === "delegation-v1") {
+    assertDelegationQualificationProfiles(profiles, source.comparison);
   }
   for (const profile of profiles) {
     if (profile.adapter === "flow-workflow-v1") {
@@ -593,6 +658,7 @@ export async function admitLocalEvaluationPlan(
       tasks: tasks.map((task) => ({
         id: task.id,
         partition: task.partition,
+        ...(task.delegationClass === undefined ? {} : { delegationClass: task.delegationClass }),
         fixture: {
           provenance: task.fixture.provenance,
           digest: task.fixture.digest,
@@ -687,6 +753,30 @@ export async function admitLocalEvaluationPlan(
     comparison: source.comparison,
     schedule,
   });
+}
+
+function assertDelegationQualificationProfiles(
+  profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
+  comparison: EvaluationPlanSource["comparison"],
+): void {
+  const baseline = profiles.find((profile) => profile.id === comparison.baselineProfileId);
+  const candidate = profiles.find((profile) => profile.id === comparison.candidateProfileId);
+  if (
+    baseline?.adapter !== "flow-workflow-v1" ||
+    candidate?.adapter !== "flow-workflow-v1" ||
+    baseline.workflow.sourceKind !== "delegation-evaluation-baseline" ||
+    candidate.workflow.sourceKind !== "delegation-evaluation-candidate" ||
+    candidate.candidate === undefined ||
+    !("kind" in candidate.candidate) ||
+    candidate.candidate.kind !== "delegation-evaluation-candidate" ||
+    baseline.capabilitySnapshot?.delegation !== undefined ||
+    candidate.capabilitySnapshot?.delegation === undefined
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "delegation qualification requires one exact baseline and delegation-only candidate pair",
+    );
+  }
 }
 
 async function admitEvaluationAcpAgent(
@@ -1047,6 +1137,55 @@ function bindCandidateComparison(
     }
     return [...profiles];
   }
+  if (candidate.candidate.kind === "delegation-evaluation-candidate") {
+    const delegation = candidate.capabilitySnapshot?.delegation;
+    const baselinePackageClosureDigest =
+      candidate.baselineCapabilitySnapshot?.digest ?? calculateCapabilitySnapshotDigest([]);
+    const candidatePackageClosureDigest = calculateCapabilitySnapshotDigest(
+      candidate.capabilitySnapshot?.packages ?? [],
+    );
+    if (
+      baseline.workflow.sourceKind !== "file" ||
+      candidate.workflow.sourceKind !== "delegation-evaluation-candidate" ||
+      baseline.workflow.provenance !== candidate.candidate.baseline.workflow.provenance ||
+      baseline.workflow.sourceSha256 !== candidate.candidate.baseline.workflow.sourceSha256 ||
+      baseline.workflow.workflowDigest !== candidate.candidate.baseline.workflow.workflowDigest ||
+      candidate.workflow.sourceSha256 !== baseline.workflow.sourceSha256 ||
+      candidate.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
+      baseline.capabilitySnapshot !== undefined ||
+      candidate.capabilitySnapshot === undefined ||
+      candidate.candidate.baseline.packageClosureDigest !== baselinePackageClosureDigest ||
+      candidatePackageClosureDigest !== baselinePackageClosureDigest ||
+      delegation === undefined ||
+      delegation.candidateDigest !== candidate.candidate.candidateDigest ||
+      delegation.snapshotDigest !== candidate.candidate.snapshotDigest ||
+      delegation.target.workflowId !== candidate.candidate.scope.workflowId ||
+      delegation.target.managerNodeId !== candidate.candidate.scope.managerNodeId ||
+      delegation.child.packageClosureDigest !== baselinePackageClosureDigest ||
+      delegation.executor.identityDigest !== candidate.candidate.delegation.executor.identityDigest
+    ) {
+      throw new EvaluationAdmissionError(
+        "invalid_workflow",
+        "the delegation candidate must preserve one exact root and package closure with delegation only on the candidate profile",
+      );
+    }
+    const delegationManagerNodeId = candidate.candidate.scope.managerNodeId;
+    return profiles.map((profile) => {
+      return profile === baseline
+        ? Object.freeze({
+            ...profile,
+            workflow: Object.freeze({
+              ...baseline.workflow,
+              sourceKind: "delegation-evaluation-baseline" as const,
+            }),
+            ...(candidate.baselineCapabilitySnapshot === undefined
+              ? {}
+              : { capabilitySnapshot: candidate.baselineCapabilitySnapshot }),
+            delegationManagerNodeId,
+          })
+        : Object.freeze({ ...profile, delegationManagerNodeId });
+    }) as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
+  }
   if (candidate.candidate.kind === "agent-skill-package-candidate") {
     if (
       candidate.candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sourceSha256 ||
@@ -1255,13 +1394,20 @@ export function assertClosedEvaluationWorkflowCapabilities(
   workflow: CompiledWorkflow,
   capabilitySnapshot?: CapabilitySnapshot,
 ): void {
+  const delegation = capabilitySnapshot?.delegation;
+  const delegationManager =
+    delegation === undefined
+      ? undefined
+      : workflow.nodes.find((node) => node.id === delegation.target.managerNodeId);
   if (
     capabilitySnapshot?.packages.some((item) => item.kind !== "agent-skill") === true ||
-    (capabilitySnapshot?.activations?.length ?? 0) > 0
+    (capabilitySnapshot?.activations?.length ?? 0) > 0 ||
+    (delegation !== undefined &&
+      (delegation.target.workflowId !== workflow.id || delegationManager?.type !== "agent"))
   ) {
     throw new EvaluationAdmissionError(
       "invalid_workflow",
-      `profile "${profileId}" contains capability types not admitted by Agent Skill evaluation`,
+      `profile "${profileId}" contains capabilities not admitted by its closed evaluation workflow`,
     );
   }
   assertClosedWorkflowStructure(profileId, workflow, capabilitySnapshot !== undefined);

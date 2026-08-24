@@ -551,6 +551,42 @@ describe("evaluation trial runner", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
+  it("rejects stale runtime identity before creating a durable trial attempt", async () => {
+    const root = await temporaryDirectory();
+    const begin = vi.fn(async () => undefined);
+    const append = vi.fn();
+    const run = vi.fn();
+
+    await expect(
+      runEvaluationTrials({
+        plan: executionPlan(root),
+        committedRecords: [],
+        attempts: {
+          active: null,
+          begin,
+          complete: vi.fn(async () => undefined),
+        },
+        append,
+        workspaceIsolator: isolator(root),
+        observeFixture: async () => fixtureSnapshot(),
+        resolveAdapter: () => ({
+          kind: "flow-workflow-v1",
+          assertCurrent: async () => {
+            throw new HarnessUnsafeStateError("delegation executor identity changed");
+          },
+          run,
+        }),
+        verifyWorkspace: vi.fn(),
+        now: monotonicDates(),
+        environment: testEnvironment(),
+      }),
+    ).rejects.toThrow(/executor identity changed/i);
+
+    expect(begin).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
   it("converts an unresolved durable start into failure without a second adapter call", async () => {
     const root = await temporaryDirectory();
     const plan = executionPlan(root);

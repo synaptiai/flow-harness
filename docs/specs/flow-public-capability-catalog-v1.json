@@ -371,6 +371,30 @@
       "default": 32768
     },
     {
+      "id": "delegation-calls-per-manager",
+      "value": 1,
+      "unit": "items",
+      "scope": "Maximum sealed delegation calls by one admitted manager attempt."
+    },
+    {
+      "id": "delegation-depth",
+      "value": 1,
+      "unit": "items",
+      "scope": "Maximum child delegation depth in one bounded delegation evaluation."
+    },
+    {
+      "id": "delegation-evaluation-candidate-bytes",
+      "value": 1048576,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one bounded delegation evaluation candidate."
+    },
+    {
+      "id": "delegation-objective-bytes",
+      "value": 262144,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one sealed delegation objective."
+    },
+    {
       "id": "edit-file-bytes",
       "value": 8388608,
       "unit": "bytes",

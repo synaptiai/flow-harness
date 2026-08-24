@@ -1,14 +1,19 @@
 import { join } from "node:path";
-import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
+import {
+  calculateCapabilitySnapshotDigest,
+  type CapabilitySnapshot,
+} from "../domain/capability/agent-skills.js";
 import type { EvaluationOciLease } from "../domain/evaluation/attempt.js";
 import type {
   AcpQualificationObservation,
   ContextCompactionEvaluationMetrics,
+  DelegationEvaluationObservation,
   EvaluationHarnessOutcome,
   EvaluationMetrics,
   PhaseRoutingObservation,
 } from "../domain/evaluation/records.js";
 import {
+  parseDelegationEvaluationObservation,
   parseAcpQualificationObservation,
   unavailableEvaluationMetrics,
 } from "../domain/evaluation/records.js";
@@ -37,6 +42,7 @@ import { runWorkflow } from "./run-workflow.js";
 
 export interface HarnessEvaluationRequest {
   readonly planDigest: string;
+  readonly purpose?: "acp-interoperability-v1" | "phase-routing-v1" | "delegation-v1";
   readonly trial: {
     readonly trialId: string;
     readonly position: number;
@@ -81,6 +87,7 @@ export interface HarnessEvaluationResult {
   readonly metrics: EvaluationMetrics;
   readonly qualification?: AcpQualificationObservation;
   readonly phaseRouting?: PhaseRoutingObservation;
+  readonly delegation?: DelegationEvaluationObservation;
 }
 
 export class HarnessUnsafeStateError extends Error {
@@ -89,6 +96,7 @@ export class HarnessUnsafeStateError extends Error {
 
 export interface HarnessEvaluationAdapter {
   readonly kind: string;
+  assertCurrent?(): Promise<void>;
   run(request: HarnessEvaluationRequest): Promise<HarnessEvaluationResult>;
 }
 
@@ -100,6 +108,8 @@ export interface FlowWorkflowEvaluationProfile {
     readonly workflowDigest: string;
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
+  readonly delegationManagerNodeId?: string;
+  readonly assertDelegationExecutorCurrent?: () => Promise<void>;
 }
 
 export interface FlowWorkflowEvaluationAdapterDependencies {
@@ -122,6 +132,17 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
     private readonly dependencies: FlowWorkflowEvaluationAdapterDependencies,
   ) {}
 
+  async assertCurrent(): Promise<void> {
+    try {
+      await this.profile.assertDelegationExecutorCurrent?.();
+    } catch (error) {
+      throw new HarnessUnsafeStateError(
+        "delegation executor identity changed after evaluation plan admission",
+        { cause: error },
+      );
+    }
+  }
+
   async run(request: HarnessEvaluationRequest): Promise<HarnessEvaluationResult> {
     const runId = `eval-${request.trial.trialId}`;
     const clock = this.dependencies.clockMs ?? Date.now;
@@ -132,6 +153,7 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         elapsed(started, clock()),
       );
     }
+    await this.assertCurrent();
     if (
       this.dependencies.contextCompaction !== undefined &&
       this.dependencies.contextCompaction.mode !== this.profile.id
@@ -226,6 +248,10 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
               requireModelSessionStore(this.dependencies.modelSessionStore),
               phaseRoutingProfile.profileDigest,
             );
+      const delegation =
+        request.purpose === "delegation-v1"
+          ? await delegationEvaluationObservation(this.profile, state, runStore)
+          : undefined;
       return Object.freeze({
         harness: harnessOutcome(state),
         metrics:
@@ -234,6 +260,7 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
             : metricsWithContextCompaction(metrics, contextCompaction),
         ...(qualification === undefined ? {} : { qualification }),
         ...(phaseRouting === undefined ? {} : { phaseRouting }),
+        ...(delegation === undefined ? {} : { delegation }),
       });
     } catch (error) {
       return crashedResult(boundedReason(error), elapsed(started, clock()));
@@ -563,6 +590,143 @@ function requireModelSessionStore(store: ModelSessionStore | undefined): ModelSe
 
 function sumMetrics(values: readonly number[]): number {
   return values.reduce((total, value) => safeMetricSum(total, value), 0);
+}
+
+async function delegationEvaluationObservation(
+  profile: FlowWorkflowEvaluationProfile,
+  state: RunState,
+  store: RunEventStore,
+): Promise<DelegationEvaluationObservation> {
+  const snapshot = profile.capabilitySnapshot?.delegation;
+  const managerId = profile.delegationManagerNodeId ?? snapshot?.target.managerNodeId;
+  if (managerId === undefined) {
+    throw new Error("delegation evaluation profile has no admitted manager target");
+  }
+  const manager = state.nodes[managerId];
+  if (manager === undefined) {
+    throw new Error(`delegation evaluation manager "${managerId}" is missing from run state`);
+  }
+  const violations = new Set<
+    DelegationEvaluationObservation["constraints"]["violations"][number]
+  >();
+  if (
+    snapshot !== undefined &&
+    (snapshot.target.workflowId !== state.workflowId || snapshot.target.managerNodeId !== managerId)
+  ) {
+    violations.add("manager_target");
+  }
+  if (manager.delegations.length > 1) violations.add("call_limit");
+  if (snapshot === undefined && manager.delegations.length > 0) violations.add("call_limit");
+  const delegation = manager.delegations[0];
+  const settlement = delegation?.settlement?.evidence;
+  const receipts =
+    manager.evidence?.kind === "agent" ? (manager.evidence.delegationReceipts ?? []) : [];
+  if (delegation !== undefined && settlement === undefined) violations.add("settlement");
+  if (receipts.length !== manager.delegations.length) violations.add("receipt");
+  if (
+    delegation !== undefined &&
+    (delegation.candidateDigest !== snapshot?.candidateDigest ||
+      delegation.snapshotDigest !== snapshot.snapshotDigest)
+  ) {
+    violations.add("child_identity");
+  }
+  let child: DelegationEvaluationObservation["invocation"]["child"] = null;
+  if (settlement !== undefined) {
+    const result = settlement.result;
+    child = Object.freeze({
+      runId: settlement.childRunId,
+      workflowId: settlement.workflowId,
+      workflowDigest: settlement.workflowDigest,
+      resultNodeId: result?.nodeId ?? null,
+      resultSchemaDigest: result?.schemaDigest ?? null,
+      resultValueHash: result?.valueHash ?? null,
+      terminalSequence: settlement.terminalSequence,
+      outcome: settlement.outcome,
+      resources: settlement.resources,
+      ...(settlement.resourceAvailability === undefined
+        ? {}
+        : { resourceAvailability: settlement.resourceAvailability }),
+      durationMs: settlement.durationMs,
+      workspaceDisposition: settlement.workspace.disposition,
+    });
+    if (
+      snapshot === undefined ||
+      settlement.childRunId !== delegation?.child.runId ||
+      settlement.workflowId !== snapshot.child.workflowId ||
+      settlement.workflowDigest !== snapshot.child.workflowDigest
+    ) {
+      violations.add("child_identity");
+    }
+    if (settlement.outcome !== "succeeded") violations.add("child_outcome");
+    if (
+      result === null ||
+      snapshot === undefined ||
+      result.nodeId !== snapshot.child.resultNodeId ||
+      result.schemaDigest !== snapshot.child.resultSchemaDigest
+    ) {
+      violations.add("typed_result");
+    }
+    if (settlement.workspace.disposition !== "discarded") {
+      violations.add("workspace_cleanup");
+    }
+    if (
+      state.resources.nodeStarts < settlement.resources.nodeStarts ||
+      state.resources.modelTokens < settlement.resources.modelTokens ||
+      state.resources.modelCostUsdMicros < settlement.resources.modelCostUsdMicros ||
+      state.resources.executionMs < settlement.resources.executionMs ||
+      state.resources.artifactBytes < settlement.resources.artifactBytes
+    ) {
+      violations.add("resource_accounting");
+    }
+    try {
+      const childState = reduceRunEvents(await store.read(settlement.childRunId));
+      const childPackageClosureDigest =
+        childState.capabilitySnapshot?.digest ?? calculateCapabilitySnapshotDigest([]);
+      if (
+        childState.capabilitySnapshot?.delegation !== undefined ||
+        snapshot === undefined ||
+        childPackageClosureDigest !== snapshot.child.packageClosureDigest
+      ) {
+        violations.add("authority_attenuation");
+      }
+    } catch {
+      violations.add("authority_attenuation");
+    }
+  }
+  const violationList = Object.freeze([...violations].sort());
+  const resourceAvailability = settlement?.resourceAvailability;
+  const complete =
+    (delegation === undefined || settlement !== undefined) &&
+    (resourceAvailability === undefined ||
+      (resourceAvailability.modelTokens === "complete" &&
+        resourceAvailability.modelCostUsdMicros === "complete"));
+  return parseDelegationEvaluationObservation({
+    version: 1,
+    mode: snapshot === undefined ? "baseline" : "candidate",
+    workflowDigest: profile.workflow.workflowDigest,
+    packageClosureDigest: calculateCapabilitySnapshotDigest(
+      profile.capabilitySnapshot?.packages ?? [],
+    ),
+    manager: { nodeId: managerId, attempt: manager.attempt, outcome: manager.status },
+    authority:
+      snapshot === undefined
+        ? null
+        : {
+            candidateDigest: snapshot.candidateDigest,
+            snapshotDigest: snapshot.snapshotDigest,
+            executorIdentityDigest: snapshot.executor.identityDigest,
+            maxDepth: snapshot.maxDepth,
+            maxCalls: snapshot.maxCalls,
+          },
+    invocation: {
+      count: delegation === undefined ? 0 : 1,
+      prepared: delegation !== undefined,
+      settled: settlement !== undefined,
+      receipt: settlement !== undefined && receipts.length === 1,
+      child,
+    },
+    constraints: { complete, violations: violationList },
+  });
 }
 
 function safeMetricSum(left: number, right: number): number {

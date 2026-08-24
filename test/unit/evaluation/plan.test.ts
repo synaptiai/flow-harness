@@ -81,6 +81,70 @@ describe("evaluation plan", () => {
     });
   });
 
+  it("parses one paired delegation qualification with both holdout classes", () => {
+    const plan = parseEvaluationPlanText(validDelegationPlan(), "delegation.yaml");
+
+    expect(plan).toMatchObject({
+      purpose: "delegation-v1",
+      suite: {
+        tasks: [
+          { id: "delegate-review", delegationClass: "delegation-fit", partition: "holdout" },
+          { id: "edit-directly", delegationClass: "sequential-control", partition: "holdout" },
+        ],
+      },
+      profiles: [
+        {
+          id: "baseline",
+          adapter: "flow-workflow-v1",
+          workflow: "baseline.workflow.yaml",
+        },
+        {
+          id: "candidate",
+          adapter: "flow-workflow-v1",
+          candidate: "delegation.candidate.yaml",
+        },
+      ],
+    });
+
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace("      delegationClass: delegation-fit\n", ""),
+      ),
+    ).toThrow(/delegation.*class/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace(
+          "delegationClass: sequential-control",
+          "delegationClass: delegation-fit",
+        ),
+      ),
+    ).toThrow(/both.*class|delegation-fit.*sequential-control/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace("partition: holdout", "partition: tuning"),
+      ),
+    ).toThrow(/delegation.*holdout|holdout.*delegation/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace(
+          "  budget:",
+          `  phaseRoutingProfiles:
+    - { profileId: baseline, profileDigest: "${"1".repeat(64)}" }
+    - { profileId: candidate, profileDigest: "${"2".repeat(64)}" }
+  budget:`,
+        ),
+      ),
+    ).toThrow(/phase-routing.*purpose/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        validDelegationPlan().replace(
+          "  maxVerifiedSuccessRegression: 0",
+          "  maxVerifiedSuccessRegression: 0\n  minimumCostReductionRate: 0.1",
+        ),
+      ),
+    ).toThrow(/phase-routing.*purpose/i);
+  });
+
   it("rejects ACP qualification sources that weaken the paired contract", () => {
     expect(() =>
       parseEvaluationPlanText(
@@ -528,6 +592,72 @@ order: paired-alternating-v1
 comparison:
   baselineProfileId: codex-agent
   candidateProfileId: opencode-agent
+  minimumPairedTrials: 2
+  confidenceLevel: 0.95
+  minimumEffect: 0
+  maxFalseCompletionRate: 0
+  maxPolicyViolations: 0
+  maxVerifiedSuccessRegression: 0
+`;
+}
+
+function validDelegationPlan(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: EvaluationPlan
+purpose: delegation-v1
+metadata:
+  id: bounded-delegation
+suite:
+  id: delegation-suite
+  version: 1.0.0
+  tasks:
+    - id: delegate-review
+      partition: holdout
+      delegationClass: delegation-fit
+      fixture: fixtures/delegate-review
+      instruction: TASK.md
+      verifier:
+        kind: filesystem-v1
+        assertions:
+          - kind: exists
+            path: RESULT.md
+    - id: edit-directly
+      partition: holdout
+      delegationClass: sequential-control
+      fixture: fixtures/edit-directly
+      instruction: TASK.md
+      verifier:
+        kind: filesystem-v1
+        assertions:
+          - kind: exists
+            path: RESULT.md
+profiles:
+  - id: baseline
+    adapter: flow-workflow-v1
+    workflow: baseline.workflow.yaml
+  - id: candidate
+    adapter: flow-workflow-v1
+    candidate: delegation.candidate.yaml
+controls:
+  model:
+    provider: test
+    id: deterministic
+    thinking: off
+  budget:
+    maxNodeStarts: 8
+    maxModelTokens: 30000
+    maxCostUsdMicros: 3000000
+    maxExecutionMs: 900000
+    maxArtifactBytes: 3145728
+  network: deny
+  retry:
+    providerRetries: 0
+    harnessRetries: 0
+seeds: [11]
+order: paired-alternating-v1
+comparison:
+  baselineProfileId: baseline
+  candidateProfileId: candidate
   minimumPairedTrials: 2
   confidenceLevel: 0.95
   minimumEffect: 0

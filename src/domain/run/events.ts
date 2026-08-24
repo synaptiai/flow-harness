@@ -226,6 +226,18 @@ export interface AgentEvidence {
   readonly semanticReceipts?: readonly SemanticQueryReceipt[];
   readonly capabilities?: AgentCapabilityEvidence;
   readonly acp?: AcpAgentExecutionEvidence;
+  readonly delegationReceipts?: readonly AgentDelegationReceipt[];
+}
+
+export interface AgentDelegationReceipt {
+  readonly version: 1;
+  readonly sequence: 1;
+  readonly candidateDigest: string;
+  readonly snapshotDigest: string;
+  readonly childRunId: string;
+  readonly terminalSequence: number;
+  readonly outcome: "succeeded" | "failed" | "cancelled" | "resource_exhausted";
+  readonly resultValueHash: string | null;
 }
 
 export function calculateAcpAgentSessionBindingDigest(input: {
@@ -438,6 +450,28 @@ export interface NodeAttemptInterruptedEvent extends RunEventBase {
   readonly disposition: "fresh_retry";
   readonly resourceAccounting: "incomplete";
   readonly modelSession?: ModelSessionSummary;
+}
+
+export interface NodeDelegationPreparedEvent extends RunEventBase {
+  readonly type: "node_delegation_prepared";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly delegationSequence: 1;
+  readonly delegationId: string;
+  readonly candidateDigest: string;
+  readonly snapshotDigest: string;
+  readonly child: ChildRunLink;
+}
+
+export interface NodeDelegationSettledEvent extends RunEventBase {
+  readonly type: "node_delegation_settled";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly delegationSequence: 1;
+  readonly delegationId: string;
+  readonly candidateDigest: string;
+  readonly snapshotDigest: string;
+  readonly evidence: ChildEvidence;
 }
 
 export interface ControlBranchGuard {
@@ -1222,6 +1256,8 @@ export type RunEvent =
   | WorkflowApprovalApprovedEvent
   | WorkflowApprovalDeniedEvent
   | NodeStartedEvent
+  | NodeDelegationPreparedEvent
+  | NodeDelegationSettledEvent
   | NodeAttemptInterruptedEvent
   | NodeConditionEvaluatedEvent
   | NodeResultPublishedEvent
@@ -1335,10 +1371,24 @@ export interface NodeRunState {
   readonly effects: readonly NodeEffectRunState[];
   readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
   readonly commands: readonly NodeAgentCommandRunState[];
+  readonly delegations: readonly NodeDelegationRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
   readonly control: NodeControlRunState | null;
   readonly omission: NodeOmissionRunState | null;
   readonly optimization: OptimizationCheckRunState | null;
+}
+
+export interface NodeDelegationRunState {
+  readonly sequence: 1;
+  readonly delegationId: string;
+  readonly candidateDigest: string;
+  readonly snapshotDigest: string;
+  readonly child: ChildRunLink;
+  readonly preparedAt: string;
+  readonly settlement: {
+    readonly evidence: ChildEvidence;
+    readonly settledAt: string;
+  } | null;
 }
 
 export interface OptimizationCheckRunState {
@@ -1919,6 +1969,19 @@ const agentCommandEvidenceSchema = commandEvidenceSchema.extend({
   sandbox: sandboxEvidenceSchema,
 });
 
+const agentDelegationReceiptSchema = z
+  .object({
+    version: z.literal(1),
+    sequence: z.literal(1),
+    candidateDigest: sha256Schema,
+    snapshotDigest: sha256Schema,
+    childRunId: identifierSchema,
+    terminalSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outcome: z.enum(["succeeded", "failed", "cancelled", "resource_exhausted"]),
+    resultValueHash: sha256Schema.nullable(),
+  })
+  .strict();
+
 const agentEvidenceSchema = z
   .object({
     kind: z.literal("agent"),
@@ -1972,6 +2035,7 @@ const agentEvidenceSchema = z
       .optional(),
     capabilities: agentCapabilityEvidenceSchema.optional(),
     acp: acpAgentExecutionEvidenceSchema.optional(),
+    delegationReceipts: z.array(agentDelegationReceiptSchema).max(1).optional(),
   })
   .strict()
   .superRefine((evidence, context) => {
@@ -1988,7 +2052,8 @@ const agentEvidenceSchema = z
       evidence.policyDecisions.length !== 0 ||
       evidence.effectReceipts.length !== 0 ||
       evidence.semanticReceipts !== undefined ||
-      evidence.capabilities !== undefined
+      evidence.capabilities !== undefined ||
+      evidence.delegationReceipts !== undefined
     ) {
       context.addIssue({
         code: "custom",
@@ -3094,6 +3159,32 @@ export const runEventSchema = z.discriminatedUnion("type", [
       approval: approvalReferenceSchema.optional(),
       child: childRunLinkSchema.optional(),
       modelSession: modelSessionSummarySchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_delegation_prepared"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      delegationSequence: z.literal(1),
+      delegationId: identifierSchema,
+      candidateDigest: sha256Schema,
+      snapshotDigest: sha256Schema,
+      child: childRunLinkSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_delegation_settled"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      delegationSequence: z.literal(1),
+      delegationId: identifierSchema,
+      candidateDigest: sha256Schema,
+      snapshotDigest: sha256Schema,
+      evidence: childEvidenceSchema,
     })
     .strict(),
   z
@@ -4810,8 +4901,91 @@ export function appendRunEvent(
         effects: Object.freeze([]),
         commandProtocol: event.commandProtocol ?? null,
         commands: Object.freeze([]),
+        delegations: Object.freeze([]),
       });
       resources = addResourcesForStart(resources, eventIndex);
+      break;
+    }
+    case "node_delegation_prepared": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const controlNode = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      const delegation = currentState.capabilitySnapshot?.delegation;
+      if (
+        controlNode.type !== "agent" ||
+        delegation === undefined ||
+        delegation.target.workflowId !== event.workflowId ||
+        delegation.target.managerNodeId !== event.nodeId
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" has no admitted delegation authority`,
+        );
+      }
+      if (
+        current.delegations.length !== 0 ||
+        event.delegationSequence !== 1 ||
+        event.delegationId !== nodeDelegationId(event.sequence) ||
+        event.candidateDigest !== delegation.candidateDigest ||
+        event.snapshotDigest !== delegation.snapshotDigest ||
+        event.child.runId !== calculateChildRunId(event.runId, event.nodeId, event.attempt) ||
+        event.child.workflowId !== delegation.child.workflowId ||
+        event.child.workflowDigest !== delegation.child.workflowDigest ||
+        event.child.resultNodeId !== delegation.child.resultNodeId ||
+        event.child.resultSchemaDigest !== delegation.child.resultSchemaDigest ||
+        event.child.isolationBackend !== "reflink-copy-v1"
+      ) {
+        throw new RunReplayError(eventIndex, "delegation preparation does not match its snapshot");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        delegations: Object.freeze([
+          deepFreeze({
+            sequence: 1 as const,
+            delegationId: event.delegationId,
+            candidateDigest: event.candidateDigest,
+            snapshotDigest: event.snapshotDigest,
+            child: structuredClone(event.child),
+            preparedAt: event.at,
+            settlement: null,
+          }),
+        ]),
+      });
+      break;
+    }
+    case "node_delegation_settled": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const delegation = current.delegations[0];
+      if (
+        delegation === undefined ||
+        current.delegations.length !== 1 ||
+        delegation.settlement !== null ||
+        event.delegationSequence !== delegation.sequence ||
+        event.delegationId !== delegation.delegationId ||
+        event.candidateDigest !== delegation.candidateDigest ||
+        event.snapshotDigest !== delegation.snapshotDigest ||
+        event.evidence.childRunId !== delegation.child.runId ||
+        event.evidence.workflowId !== delegation.child.workflowId ||
+        event.evidence.workflowDigest !== delegation.child.workflowDigest ||
+        (event.evidence.result !== null &&
+          event.evidence.result.schemaDigest !== delegation.child.resultSchemaDigest) ||
+        (event.evidence.outcome === "succeeded" && event.evidence.result === null) ||
+        (event.evidence.result !== null &&
+          event.evidence.result.valueHash !== sha256(event.evidence.result.canonicalValue))
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "delegation settlement does not match its preparation",
+        );
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        delegations: Object.freeze([
+          deepFreeze({
+            ...delegation,
+            settlement: { evidence: structuredClone(event.evidence), settledAt: event.at },
+          }),
+        ]),
+      });
       break;
     }
     case "node_attempt_interrupted": {
@@ -4850,6 +5024,7 @@ export function appendRunEvent(
         effects: Object.freeze([]),
         commandProtocol: null,
         commands: Object.freeze([]),
+        delegations: Object.freeze([]),
         interruptedAttempts: Object.freeze([...current.interruptedAttempts, interruptedAttempt]),
       });
       break;
@@ -6118,6 +6293,7 @@ export function appendRunEvent(
       requireNoOpenAgentCommandApproval(current, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
+      validateDelegationEvidenceProjection(current, event.evidence, event, eventIndex);
       validateEvidenceIntegrity(
         event.evidence,
         event,
@@ -6160,9 +6336,14 @@ export function appendRunEvent(
         eventIndex,
       );
       resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
+      resources = addDelegationResources(resources, current.delegations, eventIndex);
       resourceAvailability = addResourceAvailabilityForEvidence(
         resourceAvailability,
         event.evidence,
+      );
+      resourceAvailability = addDelegationResourceAvailability(
+        resourceAvailability,
+        current.delegations,
       );
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -6201,6 +6382,7 @@ export function appendRunEvent(
       requireNoOpenAgentCommandApproval(current, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
+      validateDelegationEvidenceProjection(current, event.evidence, event, eventIndex);
       if (event.evidence !== null) {
         validateEvidenceIntegrity(
           event.evidence,
@@ -6250,6 +6432,11 @@ export function appendRunEvent(
           event.evidence,
         );
       }
+      resources = addDelegationResources(resources, current.delegations, eventIndex);
+      resourceAvailability = addDelegationResourceAvailability(
+        resourceAvailability,
+        current.delegations,
+      );
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "failed",
@@ -8378,6 +8565,24 @@ function addResourcesForEvidence(
   }
 }
 
+function addDelegationResources(
+  resources: RunResourceConsumption,
+  delegations: readonly NodeDelegationRunState[],
+  eventIndex: number,
+): RunResourceConsumption {
+  try {
+    return delegations.reduce((current, delegation) => {
+      const evidence = delegation.settlement?.evidence;
+      if (evidence === undefined) {
+        throw new Error(`delegation "${delegation.delegationId}" is not settled`);
+      }
+      return addRunResources(current, evidence.resources);
+    }, resources);
+  } catch (error) {
+    throw resourceReplayError(eventIndex, error);
+  }
+}
+
 function addResourceAvailabilityForEvidence(
   current: RunResourceAvailability | undefined,
   evidence: NodeEvidence,
@@ -8409,6 +8614,19 @@ function addResourceAvailabilityForEvidence(
   return next.modelTokens === "complete" && next.modelCostUsdMicros === "complete"
     ? undefined
     : next;
+}
+
+function addDelegationResourceAvailability(
+  current: RunResourceAvailability | undefined,
+  delegations: readonly NodeDelegationRunState[],
+): RunResourceAvailability | undefined {
+  return delegations.reduce((availability, delegation) => {
+    const evidence = delegation.settlement?.evidence;
+    if (evidence === undefined) {
+      throw new Error(`delegation "${delegation.delegationId}" is not settled`);
+    }
+    return addResourceAvailabilityForEvidence(availability, evidence);
+  }, current);
 }
 
 function modelUsageObservationForEvidence(
@@ -9766,6 +9984,61 @@ function validateDurableAgentCommandProjection(
   }
 }
 
+function validateDelegationEvidenceProjection(
+  node: NodeRunState,
+  evidence: NodeEvidence | null,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  eventIndex: number,
+): void {
+  const open = node.delegations.find((delegation) => delegation.settlement === null);
+  if (open !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `node cannot complete while delegation "${open.delegationId}" remains prepared`,
+    );
+  }
+  if (node.delegations.length === 0) {
+    if (evidence?.kind === "agent" && (evidence.delegationReceipts?.length ?? 0) !== 0) {
+      throw new RunReplayError(eventIndex, "agent evidence reports an undeclared delegation");
+    }
+    return;
+  }
+  if (evidence?.kind !== "agent") {
+    throw new RunReplayError(
+      eventIndex,
+      "delegation settlement is missing from terminal agent evidence",
+    );
+  }
+  const expected = node.delegations.map((delegation): AgentDelegationReceipt => {
+    const child = delegation.settlement?.evidence;
+    if (child === undefined) {
+      throw new RunReplayError(eventIndex, "delegation settlement is missing");
+    }
+    return {
+      version: 1,
+      sequence: delegation.sequence,
+      candidateDigest: delegation.candidateDigest,
+      snapshotDigest: delegation.snapshotDigest,
+      childRunId: child.childRunId,
+      terminalSequence: child.terminalSequence,
+      outcome: child.outcome,
+      resultValueHash: child.result?.valueHash ?? null,
+    };
+  });
+  if (JSON.stringify(evidence.delegationReceipts ?? []) !== JSON.stringify(expected)) {
+    throw new RunReplayError(eventIndex, "agent delegation receipt does not match durable state");
+  }
+  if (
+    event.type === "node_succeeded" &&
+    node.delegations.some((delegation) => delegation.settlement?.evidence.outcome !== "succeeded")
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent node cannot succeed after an unsuccessful delegation",
+    );
+  }
+}
+
 function agentCommandSideEffectStatus(
   command: NodeAgentCommandRunState,
 ): NodeFailure["sideEffectStatus"] {
@@ -10015,6 +10288,7 @@ function pendingNodeState(): NodeRunState {
     effects: Object.freeze([]),
     commandProtocol: null,
     commands: Object.freeze([]),
+    delegations: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),
     control: null,
     omission: null,
@@ -10194,6 +10468,13 @@ export function nodeEffectId(eventSequence: number): string {
     throw new RangeError("effect event sequence must be a positive safe integer");
   }
   return `effect-${eventSequence}`;
+}
+
+export function nodeDelegationId(eventSequence: number): string {
+  if (!Number.isSafeInteger(eventSequence) || eventSequence <= 0) {
+    throw new RangeError("delegation event sequence must be a positive safe integer");
+  }
+  return `delegation-${eventSequence}`;
 }
 
 export function nodeAgentCommandId(eventSequence: number): string {
