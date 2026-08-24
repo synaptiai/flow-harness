@@ -10,6 +10,7 @@ export const LEAN_PROOF_QUALIFICATION_REPORT_KIND = "lean-proof-qualification-re
 export const MAX_LEAN_PROOF_QUALIFICATION_INPUT_BYTES = 1_048_576;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const gitCommitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const ociDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const identifierSchema = z
   .string()
@@ -31,9 +32,9 @@ const runtimeIdentitySchema = z
     buildAttestationDigest: sha256Schema,
     dependencyManifestDigest: sha256Schema,
     leanVersion: z.string().regex(/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/),
-    mathlibRevision: sha256Schema,
-    safeVerifyRevision: sha256Schema,
-    nanodaRevision: sha256Schema,
+    mathlibRevision: gitCommitSchema,
+    safeVerifyRevision: gitCommitSchema,
+    nanodaRevision: gitCommitSchema,
     profileDigest: sha256Schema,
   })
   .strict();

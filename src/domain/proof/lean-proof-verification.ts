@@ -12,6 +12,7 @@ export const MAX_LEAN_PROOF_STATEMENT_BYTES = 131_072;
 export const MAX_LEAN_PROOF_BYTES = 262_144;
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const GIT_COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 const OCI_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const EXACT_LEAN_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const LEAN_DECLARATION_PATTERN = /^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)+$/;
@@ -546,11 +547,11 @@ function isRuntimeIdentity(value: unknown): value is LeanProofRuntimeIdentity {
     typeof value.dependencyManifestDigest === "string" &&
     isSha256(value.dependencyManifestDigest) &&
     typeof value.mathlibRevision === "string" &&
-    isSha256(value.mathlibRevision) &&
+    GIT_COMMIT_PATTERN.test(value.mathlibRevision) &&
     typeof value.safeVerifyRevision === "string" &&
-    isSha256(value.safeVerifyRevision) &&
+    GIT_COMMIT_PATTERN.test(value.safeVerifyRevision) &&
     typeof value.nanodaRevision === "string" &&
-    isSha256(value.nanodaRevision) &&
+    GIT_COMMIT_PATTERN.test(value.nanodaRevision) &&
     typeof value.profileDigest === "string" &&
     isSha256(value.profileDigest)
   );

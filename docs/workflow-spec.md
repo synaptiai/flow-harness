@@ -858,9 +858,9 @@ that non-proof product requirements are satisfied.
       buildAttestationDigest: <64 lowercase hexadecimal characters>
       dependencyManifestDigest: <64 lowercase hexadecimal characters>
       leanVersion: 4.33.1
-      mathlibRevision: <64 lowercase hexadecimal characters>
-      safeVerifyRevision: <64 lowercase hexadecimal characters>
-      nanodaRevision: <64 lowercase hexadecimal characters>
+      mathlibRevision: <40 lowercase hexadecimal characters>
+      safeVerifyRevision: <40 lowercase hexadecimal characters>
+      nanodaRevision: <40 lowercase hexadecimal characters>
       profileDigest: <64 lowercase hexadecimal characters>
 ```
 
@@ -875,6 +875,8 @@ The `runtime` object is a closed exact identity. It binds the immutable image, b
 dependency manifest, Lean version, Mathlib revision, SafeVerify revision, Nanoda revision, and
 containment profile. Flow refuses unsupported platforms, missing fields, live-image drift,
 attestation drift, or effective-policy drift before it sends the private request to the appliance.
+Revision fields contain full 40-character Git commit IDs. Digest fields contain 64-character
+SHA-256 values. An OCI image digest also includes the `sha256:` prefix.
 
 If the proof source is an agent node, Flow records that node's exact provider, model, and thinking
 level with an `exact-model-v1` selection rule and `deny` fallback. A command or result proof source

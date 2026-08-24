@@ -137,6 +137,9 @@ const evidenceSourceFieldSchema = z.enum([
 ]);
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/, "must be a SHA-256 digest");
+const gitCommitSchema = z
+  .string()
+  .regex(/^[a-f0-9]{40}$/, "must be a full lowercase hexadecimal Git commit ID");
 const proofRuntimeSchema = z
   .object({
     version: z.literal(1),
@@ -151,9 +154,9 @@ const proofRuntimeSchema = z
         /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/,
         "must be an exact stable Lean version",
       ),
-    mathlibRevision: sha256Schema,
-    safeVerifyRevision: sha256Schema,
-    nanodaRevision: sha256Schema,
+    mathlibRevision: gitCommitSchema,
+    safeVerifyRevision: gitCommitSchema,
+    nanodaRevision: gitCommitSchema,
     profileDigest: sha256Schema,
   })
   .strict();

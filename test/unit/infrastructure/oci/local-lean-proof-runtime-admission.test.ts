@@ -41,6 +41,17 @@ describe("local Lean proof runtime admission", () => {
     await expect(admission.admit(descriptor.runtime)).rejects.toThrow(/Linux x64|image/i);
   });
 
+  it("requires full Git commit IDs instead of SHA-256-shaped pseudo-revisions", () => {
+    const input = attestationInput();
+
+    expect(() =>
+      createLeanProofOciAttestation({
+        ...input,
+        runtime: { ...input.runtime, mathlibRevision: "3".repeat(64) },
+      }),
+    ).toThrow(/invalid runtime identity/i);
+  });
+
   it("does not follow an attestation symlink", async () => {
     const root = await mkdtemp(join(tmpdir(), "flow-proof-attestation-link-"));
     const descriptorPath = join(root, "attestation.json");
@@ -87,9 +98,9 @@ function runtimeWithoutAttestation() {
     imageDigest: `sha256:${"1".repeat(64)}`,
     dependencyManifestDigest: "2".repeat(64),
     leanVersion: "4.33.1",
-    mathlibRevision: "3".repeat(64),
-    safeVerifyRevision: "4".repeat(64),
-    nanodaRevision: "5".repeat(64),
+    mathlibRevision: "3".repeat(40),
+    safeVerifyRevision: "4".repeat(40),
+    nanodaRevision: "5".repeat(40),
     profileDigest: "6".repeat(64),
   };
 }

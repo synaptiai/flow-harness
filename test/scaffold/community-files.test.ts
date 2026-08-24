@@ -281,7 +281,7 @@ describe("public repository contracts", () => {
       | undefined;
 
     expect(proofRuntime?.["runs-on"]).toBe("ubuntu-24.04");
-    expect(proofRuntime?.["timeout-minutes"]).toBe(90);
+    expect(proofRuntime?.["timeout-minutes"]).toBe(120);
     const commands = proofRuntime?.steps
       .map((step) => (typeof step.run === "string" ? step.run : ""))
       .join("\n");

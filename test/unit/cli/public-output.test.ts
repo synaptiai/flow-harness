@@ -25,9 +25,9 @@ describe("public run output", () => {
         buildAttestationDigest: "b".repeat(64),
         dependencyManifestDigest: "c".repeat(64),
         leanVersion: "4.33.1",
-        mathlibRevision: "d".repeat(64),
-        safeVerifyRevision: "e".repeat(64),
-        nanodaRevision: "1".repeat(64),
+        mathlibRevision: "d".repeat(40),
+        safeVerifyRevision: "e".repeat(40),
+        nanodaRevision: "1".repeat(40),
         profileDigest: "2".repeat(64),
       },
       faithfulness: {

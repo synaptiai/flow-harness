@@ -231,9 +231,9 @@ function qualificationInput(): LeanProofQualificationInput {
     buildAttestationDigest: digest("b"),
     dependencyManifestDigest: digest("c"),
     leanVersion: "4.33.1",
-    mathlibRevision: digest("d"),
-    safeVerifyRevision: digest("e"),
-    nanodaRevision: digest("f"),
+    mathlibRevision: "d".repeat(40),
+    safeVerifyRevision: "e".repeat(40),
+    nanodaRevision: "f".repeat(40),
     profileDigest: digest("0"),
   };
   return {

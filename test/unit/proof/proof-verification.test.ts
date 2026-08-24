@@ -226,9 +226,9 @@ function requestInput() {
       buildAttestationDigest: digest("b"),
       dependencyManifestDigest: digest("c"),
       leanVersion: "4.33.1",
-      mathlibRevision: digest("d"),
-      safeVerifyRevision: digest("e"),
-      nanodaRevision: digest("1"),
+      mathlibRevision: "d".repeat(40),
+      safeVerifyRevision: "e".repeat(40),
+      nanodaRevision: "1".repeat(40),
       profileDigest: digest("2"),
     },
     faithfulness: {

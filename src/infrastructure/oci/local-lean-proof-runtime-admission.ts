@@ -8,6 +8,7 @@ import { parseStrictJson } from "../../domain/strict-json.js";
 
 const MAX_ATTESTATION_BYTES = 65_536;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const GIT_COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 const IMAGE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 export type LeanProofRuntimeWithoutAttestation = Omit<
@@ -235,13 +236,12 @@ function validateRuntimeWithoutAttestation(value: LeanProofRuntimeWithoutAttesta
     value.architecture !== "x64" ||
     !IMAGE_DIGEST_PATTERN.test(value.imageDigest) ||
     !/^\d+\.\d+\.\d+$/.test(value.leanVersion) ||
-    ![
-      value.dependencyManifestDigest,
-      value.mathlibRevision,
-      value.safeVerifyRevision,
-      value.nanodaRevision,
-      value.profileDigest,
-    ].every((digest) => SHA256_PATTERN.test(digest))
+    ![value.dependencyManifestDigest, value.profileDigest].every((digest) =>
+      SHA256_PATTERN.test(digest),
+    ) ||
+    ![value.mathlibRevision, value.safeVerifyRevision, value.nanodaRevision].every((revision) =>
+      GIT_COMMIT_PATTERN.test(revision),
+    )
   ) {
     throw new Error("Lean proof OCI attestation has an invalid runtime identity");
   }
