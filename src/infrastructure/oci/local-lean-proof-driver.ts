@@ -23,6 +23,7 @@ const LEAN_PROOF_OCI_ENV = Object.freeze([
 export const LEAN_PROOF_OCI_MASKED_PATHS = Object.freeze([
   "/proc/acpi",
   "/proc/asound",
+  "/proc/interrupts",
   "/proc/kcore",
   "/proc/keys",
   "/proc/latency_stats",
@@ -31,20 +32,17 @@ export const LEAN_PROOF_OCI_MASKED_PATHS = Object.freeze([
   "/proc/sched_debug",
   "/proc/scsi",
   "/proc/cmdline",
-  "/proc/sys",
-  "/sys/block",
-  "/sys/bus",
-  "/sys/class",
   "/sys/class/dmi/id",
-  "/sys/dev",
-  "/sys/devices",
   "/sys/devices/virtual/dmi/id",
   "/sys/firmware",
-  "/sys/hypervisor",
-  "/sys/kernel",
-  "/sys/module",
-  "/sys/power",
   "/sys/devices/virtual/powercap",
+]);
+export const LEAN_PROOF_OCI_READONLY_PATHS = Object.freeze([
+  "/proc/bus",
+  "/proc/fs",
+  "/proc/irq",
+  "/proc/sys",
+  "/proc/sysrq-trigger",
 ]);
 
 export const LEAN_PROOF_OCI_POLICY = Object.freeze({
@@ -388,6 +386,7 @@ export class LocalLeanProofDriver implements LeanProofDriver {
         SecurityOpt: ["no-new-privileges", `seccomp=${this.#seccompJson}`],
         Binds: [],
         MaskedPaths: [...LEAN_PROOF_OCI_MASKED_PATHS],
+        ReadonlyPaths: [...LEAN_PROOF_OCI_READONLY_PATHS],
         Tmpfs: {
           "/workspace": workspaceTmpfsPolicy(policy),
         },
@@ -512,6 +511,7 @@ function assertContainerInspection(
     !sameStrings(host.CapAdd, ["SETUID"]) ||
     !sameStrings(host.SecurityOpt, ["no-new-privileges", `seccomp=${seccompJson}`]) ||
     !sameStrings(host.MaskedPaths, LEAN_PROOF_OCI_MASKED_PATHS) ||
+    !sameStrings(host.ReadonlyPaths, LEAN_PROOF_OCI_READONLY_PATHS) ||
     !exactWorkspaceTmpfs(host.Tmpfs, policy) ||
     !exactUlimits(host.Ulimits, policy) ||
     !emptyDockerList(host.Binds)

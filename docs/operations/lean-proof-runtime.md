@@ -116,7 +116,7 @@ the effective Linux state before it reads a proof request.
 | Boundary | Effective policy |
 | --- | --- |
 | Network | Docker network mode `none`; only the loopback interface can exist |
-| Filesystem | Read-only image root; no host bind mounts; disposable root-owned `/workspace` tmpfs with `nosuid`, `nodev`, and `noexec` |
+| Filesystem | Read-only image root; no host bind mounts; sensitive kernel paths masked; `/proc/sys` and other standard system paths readable but read-only; disposable root-owned `/workspace` tmpfs with `nosuid`, `nodev`, and `noexec` |
 | Credentials | Fixed environment, separate compiler homes, root-only checker home, and rejection of credential-like environment names |
 | Namespaces | Private PID, interprocess communication, and cgroup namespaces |
 | Privileges | `no-new-privileges`, seccomp filtering, all capabilities dropped except supervisor `CAP_SETUID` |

@@ -7,6 +7,7 @@ import { createLeanProofRequest } from "../../../../src/domain/proof/lean-proof-
 import {
   LEAN_PROOF_OCI_POLICY,
   LEAN_PROOF_OCI_MASKED_PATHS,
+  LEAN_PROOF_OCI_READONLY_PATHS,
   type LeanProofContainerLease,
   LocalLeanProofDriver,
   leanProofLeaseKey,
@@ -35,8 +36,26 @@ describe("local Lean proof driver", () => {
       coreSizeMaxBytes: LEAN_PROOF_OCI_POLICY.coreSizeMaxBytes,
       stopGraceSeconds: LEAN_PROOF_OCI_POLICY.stopGraceSeconds,
       maskedPaths: LEAN_PROOF_OCI_MASKED_PATHS,
+      readonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,
       supervisorCapabilities: ["SETUID"],
     });
+    expect(LEAN_PROOF_OCI_MASKED_PATHS).toEqual([
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/cmdline",
+      "/sys/class/dmi/id",
+      "/sys/devices/virtual/dmi/id",
+      "/sys/firmware",
+      "/sys/devices/virtual/powercap",
+    ]);
   });
 
   it("durably records intent before a fixed, isolated container and confirms cleanup", async () => {
@@ -105,6 +124,7 @@ describe("local Lean proof driver", () => {
           CapDrop: ["ALL"],
           CapAdd: ["SETUID"],
           MaskedPaths: LEAN_PROOF_OCI_MASKED_PATHS,
+          ReadonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,
           SecurityOpt: expect.arrayContaining(["no-new-privileges"]),
         }),
       }),
@@ -167,6 +187,36 @@ describe("local Lean proof driver", () => {
         HostConfig: {
           ...inspection.HostConfig,
           MaskedPaths: LEAN_PROOF_OCI_MASKED_PATHS.slice(1),
+        },
+      };
+    });
+    const driver = new LocalLeanProofDriver({
+      api,
+      seccompProfile: { defaultAction: "SCMP_ACT_ERRNO" },
+      admitRuntime: async () => undefined,
+      leaseStore: memoryLeaseStore(),
+    });
+
+    await expect(driver.execute(request, executionContext())).rejects.toThrow(/policy/i);
+    expect(api.startContainer).not.toHaveBeenCalled();
+    expect(api.removeContainer).toHaveBeenCalled();
+  });
+
+  it("rejects read-only system-path drift before untrusted proof work starts", async () => {
+    const order: string[] = [];
+    const request = proofRequest();
+    const api = dockerApi(order, acceptedContainerResult(request));
+    const inspect = api.inspectContainer.getMockImplementation();
+    api.inspectContainer.mockImplementation(async (reference: string, signal?: AbortSignal) => {
+      const inspection = await inspect?.(reference, signal);
+      if (inspection === null || inspection === undefined || order.includes("remove")) {
+        return inspection ?? null;
+      }
+      return {
+        ...inspection,
+        HostConfig: {
+          ...inspection.HostConfig,
+          ReadonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS.filter((path) => path !== "/proc/sys"),
         },
       };
     });
@@ -380,6 +430,7 @@ function expectedConfiguration(lease: LeanProofContainerLease) {
       CapAdd: ["SETUID"],
       SecurityOpt: ["no-new-privileges", 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'],
       MaskedPaths: LEAN_PROOF_OCI_MASKED_PATHS,
+      ReadonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,
       Tmpfs: {
         "/workspace": `rw,nosuid,nodev,noexec,size=${LEAN_PROOF_OCI_POLICY.workspaceBytes},nr_inodes=${LEAN_PROOF_OCI_POLICY.workspaceInodes},uid=${LEAN_PROOF_OCI_POLICY.workspaceUid},gid=${LEAN_PROOF_OCI_POLICY.workspaceGid},mode=${LEAN_PROOF_OCI_POLICY.workspaceMode}`,
       },
