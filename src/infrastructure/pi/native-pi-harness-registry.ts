@@ -10,11 +10,17 @@ import {
   parseExternalHarnessIdentity,
 } from "../../domain/evaluation/external-harness.js";
 import type { EvaluationProfileSource } from "../../domain/evaluation/plan.js";
-import { FLOW_SANDBOX_POLICY_DIGEST } from "../sandbox/srt-command-sandbox.js";
 import type {
   ExternalHarnessDescriptor,
   ExternalHarnessLaunch,
 } from "../process/external-harness-descriptor.js";
+import { FLOW_SANDBOX_POLICY_DIGEST } from "../sandbox/srt-command-sandbox.js";
+import {
+  PI_AI_INTEGRITY,
+  PI_AI_VERSION,
+  PI_CODING_AGENT_INTEGRITY,
+  PI_CODING_AGENT_VERSION,
+} from "./pi-package-pins.js";
 
 const MAX_TRUSTED_ARTIFACT_BYTES = 4 * 1_048_576;
 export const MAX_EXTERNAL_HARNESS_EXECUTABLE_BYTES = 256 * 1_048_576;
@@ -24,12 +30,6 @@ const MAX_PACKAGE_CLOSURE_PACKAGES = 1_024;
 const MAX_RUNTIME_OBSERVATIONS = 200_000;
 const NATIVE_PI_ADAPTER_CONTRACT_VERSION = "1.0.0";
 const SRT_VERSION = "0.0.70";
-const PI_VERSION = "0.84.0";
-const PI_INTEGRITY =
-  "sha512-oxEU7BT9xuVT6UKNwUNDzNP5dVGb+DZRGfaEyMyAab8dRlqTSxxyhSlMAxmYsu//YOeasj9E8n2+px1BzIai0g==";
-const PI_AI_VERSION = "0.84.0";
-const PI_AI_INTEGRITY =
-  "sha512-N9RDk8q0eglGiy+NqTZ3Ev2j+6oFNXSAJa8b0CYhvWB9HGiKZjsoCESXkUvMDLybrn0wXp75sdsoBzEtHxk9kA==";
 
 export const NATIVE_PI_EVALUATION_CONFIG = Object.freeze({
   version: 1,
@@ -161,7 +161,7 @@ export class NativePiHarnessRegistry {
       readTrustedPackageClosure(
         this.#piCodingAgentRoot,
         "@earendil-works/pi-coding-agent",
-        PI_VERSION,
+        PI_CODING_AGENT_VERSION,
         "Pi coding-agent package closure",
         observations,
       ),
@@ -208,8 +208,8 @@ export class NativePiHarnessRegistry {
       },
       harness: {
         package: "@earendil-works/pi-coding-agent",
-        version: PI_VERSION,
-        integrity: PI_INTEGRITY,
+        version: PI_CODING_AGENT_VERSION,
+        integrity: PI_CODING_AGENT_INTEGRITY,
         packageContentSha256: piCodingAgent.sha256,
         config: "pi-evaluation-v1",
         configDigest: sha256(JSON.stringify(NATIVE_PI_EVALUATION_CONFIG)),
