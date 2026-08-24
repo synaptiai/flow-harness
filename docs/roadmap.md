@@ -249,6 +249,11 @@ current pre-stable compatibility and security boundaries.
   A protected job creates a complete draft and publishes it only when release immutability is
   enabled. It cannot publish npm or assign `latest`.
 
+- **Implemented:** The `0.1.0-alpha.2` usability checkpoint reads one reviewed version from the
+  package manifest. It requires matching shrinkwrap and release notes, then derives every workflow
+  release name. It rejects a missing, malformed, linked, oversized, reused, or inconsistent
+  identity before publication.
+
 - **Operator publication:** The first npm version requires an interactive two-factor-authenticated
   publication of the exact GitHub archive under `preview`. Later revisions use stage-only trusted
   publishing. A human retains two-factor-authenticated approval.

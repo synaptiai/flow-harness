@@ -46,6 +46,17 @@ archive contains the versioned JSON catalog and readable Markdown reference.
 
 ## Verify a preview package
 
+Resolve the manifest-owned preview identity before you build a candidate release:
+
+```sh
+node scripts/resolve-preview-release-identity.mjs
+```
+
+The resolver requires the root package name and prerelease version, shrinkwrap metadata, and
+canonical release-notes heading to agree. It derives the tag, archive, attestation, title, and
+notes path that hosted automation consumes. It follows no metadata links and enforces bounded
+reads. A mismatch fails before packaging.
+
 Use the local package check while you develop release code:
 
 ```sh

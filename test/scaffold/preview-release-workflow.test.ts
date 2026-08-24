@@ -23,15 +23,30 @@ describe("preview release workflow", () => {
     });
 
     expect(workflow.jobs.prepare["runs-on"]).toBe("ubuntu-24.04");
+    expect(workflow.jobs.prepare.outputs).toEqual({
+      "package-name": githubExpression("steps.release_identity.outputs.package-name"),
+      "package-version": githubExpression("steps.release_identity.outputs.package-version"),
+      "release-tag": githubExpression("steps.release_identity.outputs.release-tag"),
+      "archive-name": githubExpression("steps.release_identity.outputs.archive-name"),
+      "attestation-name": githubExpression("steps.release_identity.outputs.attestation-name"),
+      "release-title": githubExpression("steps.release_identity.outputs.release-title"),
+      "release-notes-path": githubExpression("steps.release_identity.outputs.release-notes-path"),
+      "npm-dist-tag": githubExpression("steps.release_identity.outputs.npm-dist-tag"),
+    });
     expect(workflow.jobs.prepare.steps.map(stepName)).toEqual([
       "Check out the exact revision",
       "Set up Node.js",
+      "Resolve the preview release identity",
       "Require successful CI for the revision",
       "Install exact dependencies",
       "Run release-focused tests",
       "Prepare the exact preview artifact",
       "Upload the exact preview artifact",
     ]);
+    expect(workflow.jobs.prepare.steps[2]).toMatchObject({
+      id: "release_identity",
+      run: 'node scripts/resolve-preview-release-identity.mjs --github-output >> "$GITHUB_OUTPUT"',
+    });
     expect(workflow.jobs.prepare.steps.at(-1)).toMatchObject({
       uses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
       with: {
@@ -106,6 +121,12 @@ describe("preview release workflow", () => {
       uses: "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
       with: { "subject-path": "release/package/*" },
     });
+    expect(workflow.jobs.attest.steps[2]?.env).toEqual({
+      ATTESTATION_NAME: githubExpression("needs.prepare.outputs.attestation-name"),
+    });
+    expect(workflow.jobs.attest.steps[3]?.with?.path).toBe(
+      `release/attestation/${githubExpression("needs.prepare.outputs.attestation-name")}`,
+    );
 
     expect(workflow.jobs.publish.needs).toEqual(["prepare", "verify", "attest"]);
     expect(workflow.jobs.publish.if).toContain("inputs.publish_github");
@@ -113,6 +134,7 @@ describe("preview release workflow", () => {
     expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
     expect(workflow.jobs.publish.steps.map(stepName)).toEqual([
       "Check out the exact revision",
+      "Set up Node.js",
       "Download the exact preview artifact",
       "Download the attestation bundle",
       "Require an unused release identity",
@@ -134,6 +156,15 @@ describe("preview release workflow", () => {
     expect(source).not.toContain("NPM_TOKEN");
     expect(source).not.toContain("NODE_AUTH_TOKEN");
     expect(source).not.toContain("id-token: read");
+    expect(publishSource).toContain(
+      `npm view "${shellVariable("PACKAGE_NAME")}@${shellVariable("PACKAGE_VERSION")}" version --json`,
+    );
+    expect(publishSource).toContain('error?.code !== "E404"');
+    expect(publishSource).toContain("$RELEASE_TAG");
+    expect(publishSource).toContain(shellVariable("ARCHIVE_NAME"));
+    expect(publishSource).toContain(shellVariable("ATTESTATION_NAME"));
+    expect(publishSource).toContain("$RELEASE_TITLE");
+    expect(publishSource).toContain("$RELEASE_NOTES_PATH");
   });
 
   it("pins every external action and the public Node.js baseline", async () => {
@@ -152,8 +183,8 @@ describe("preview release workflow", () => {
     }
 
     expect(source).toContain("refs/heads/main");
-    expect(source).toContain("0.1.0-alpha.1");
-    expect(source).toContain("v0.1.0-alpha.1");
+    expect(source).not.toMatch(/0\.1\.0-alpha\.\d+/);
+    expect(source).not.toContain("tag=v");
   });
 });
 
@@ -162,6 +193,7 @@ type WorkflowStep = {
   readonly id?: string;
   readonly uses?: string;
   readonly run?: string;
+  readonly env?: Record<string, string>;
   readonly with?: Record<string, unknown>;
 };
 
@@ -170,6 +202,7 @@ type WorkflowJob = {
   readonly if?: string;
   readonly environment?: string;
   readonly permissions?: Record<string, string>;
+  readonly outputs?: Record<string, string>;
   readonly strategy?: unknown;
   readonly "runs-on"?: string;
   readonly steps: readonly WorkflowStep[];
@@ -207,4 +240,12 @@ function jobSource(source: string, job: string, nextJob: string | undefined): st
 
 function count(source: string, fragment: string): number {
   return source.split(fragment).length - 1;
+}
+
+function githubExpression(expression: string): string {
+  return `\${{ ${expression} }}`;
+}
+
+function shellVariable(name: string): string {
+  return `\${${name}}`;
 }

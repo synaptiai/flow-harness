@@ -7,6 +7,10 @@ revision through GitHub, npm, and user installation.
 
 Every release must satisfy these requirements:
 
+- Read the package version from `package.json`. Require `npm-shrinkwrap.json` and the canonical
+  release-notes heading to match it, then derive the tag, archive, attestation, title, and notes
+  path. Don't enter a version through workflow input.
+
 - Build one npm archive from a clean `main` revision that has successful CI.
 
 - Publish the reviewed `npm-shrinkwrap.json` and verify the dependency closure that npm resolves
@@ -54,19 +58,32 @@ administration settings. Don't add a long-lived administration token to the work
 
 ## Build and verify without publication
 
+From a clean checkout of the candidate revision, resolve and inspect the release identity:
+
+```sh
+node scripts/resolve-preview-release-identity.mjs
+```
+
+The command must report `0.1.0-alpha.2` and the matching tag, archive, attestation, title, notes
+path, and `preview` npm tag. It fails if the manifest, shrinkwrap, or release notes are unsafe or
+inconsistent. Review this output before you dispatch the workflow.
+
 Dispatch **Preview release** from the exact `main` revision with `publish_github` set to `false`.
 The workflow performs these actions:
 
 1. Requires successful `CI` for the same revision.
-2. Builds `release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz` once.
-3. Records its source revision, SHA-512 digest, archive paths, modes, and byte counts in
+2. Resolves the version from `package.json` and rejects inconsistent shrinkwrap or release notes.
+3. Builds `release/package/synaptiai-flow-harness-0.1.0-alpha.2.tgz` once.
+4. Records its source revision, SHA-512 digest, archive paths, modes, and byte counts in
    `package-release-evidence.json`.
-4. Verifies the published shrinkwrap, downloaded artifact, clean installation, installed guided
+5. Verifies the published shrinkwrap, downloaded artifact, clean installation, installed guided
    quick start, and explicit browser path on both supported x64 hosts.
-5. Produces SLSA build provenance with GitHub's short-lived OpenID Connect identity.
+6. Produces SLSA build provenance with GitHub's short-lived OpenID Connect identity.
 
 Review every job before you authorize publication. A green workflow proves the tested artifact and
 workflow identity. It doesn't replace a source review or the repository's normal CI gates.
+Confirm that the publication job is skipped and that no new Git tag, GitHub release, npm version,
+or npm distribution tag exists.
 
 ## Publish the immutable GitHub prerelease
 
@@ -75,9 +92,11 @@ Approve the `preview-release` environment only after all prepare, host-verificat
 jobs pass. Run the immutable-release check in [Prepare GitHub authority](#prepare-github-authority)
 immediately before approval.
 
-The publication job refuses an existing release or tag. It creates a draft, uploads the npm
-archive, release evidence, and attestation bundle, and then publishes the prerelease. GitHub makes
-the release tag and assets immutable at publication.
+The publication job refuses an existing release, Git tag, or npm version. It treats only npm's
+explicit `E404` response as evidence that the version is unused. Authentication, transport,
+availability, and malformed-response failures block publication. It creates a draft, uploads the
+npm archive, release evidence, and attestation bundle, and then publishes the prerelease. GitHub
+makes the release tag and assets immutable at publication.
 
 After publication, verify the release from a new empty directory by following
 [Install the Flow preview](../guides/install-preview.md#download-and-verify-the-github-release).
@@ -94,7 +113,7 @@ two-factor authentication.
 2. Confirm that the version doesn't exist:
 
    ```sh
-   npm view @synaptiai/flow-harness@0.1.0-alpha.1 version
+   npm view @synaptiai/flow-harness@0.1.0-alpha.2 version
    ```
 
    npm must return a not-found response. If it returns a version, stop and compare the registry
@@ -103,7 +122,7 @@ two-factor authentication.
 3. Publish the verified local archive under `preview`:
 
    ```sh
-   npm publish "$release_dir/synaptiai-flow-harness-0.1.0-alpha.1.tgz" \
+   npm publish "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz" \
      --access public \
      --tag preview
    ```
@@ -114,10 +133,10 @@ two-factor authentication.
 4. Confirm the registry identity:
 
    ```sh
-   npm view @synaptiai/flow-harness@0.1.0-alpha.1 version dist.integrity dist-tags
+   npm view @synaptiai/flow-harness@0.1.0-alpha.2 version dist.integrity dist-tags
    ```
 
-   The version must be `0.1.0-alpha.1`, `preview` must select that version, and `latest` must not
+   The version must be `0.1.0-alpha.2`, `preview` must select that version, and `latest` must not
    select it.
 
 ## Configure later staged publications

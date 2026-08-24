@@ -4,8 +4,7 @@ Use the coding quick start to prove one provider-backed read and edit through Fl
 creates a reviewed fixture, lets one agent make one exact change, and accepts the goal only after a
 separate deterministic command runs. That command verifies every fixture byte.
 
-This feature is available in the current source tree. The immutable `0.1.0-alpha.1` release
-predates `flow quickstart`.
+This feature is available in Flow `0.1.0-alpha.2` and the current source tree.
 
 ## Understand the boundary
 
@@ -28,8 +27,9 @@ boundary. Read the [security policy](../../SECURITY.md) before unattended use.
 
 ## Before you begin
 
-Complete the source installation in [Getting started](../getting-started.md). Confirm that this
-command shows `flow quickstart`:
+Install Flow by following [Install the Flow preview](install-preview.md), or complete the source
+installation in [Getting started](../getting-started.md). Confirm that this command shows
+`flow quickstart`:
 
 ```sh
 flow --help
