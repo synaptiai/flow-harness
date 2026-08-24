@@ -30,6 +30,12 @@ jobs:
           node-version: 26.7.0
           cache: npm
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.0
+          cache: false
+
       - name: Set up Bun
         id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -233,3 +239,72 @@ jobs:
 
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=low
+
+  proof-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
+          cache: npm
+
+      - name: Verify hosted Linux x64
+        run: |
+          test "$(uname --system)" = Linux
+          test "$(uname --machine)" = x86_64
+
+      - name: Install the exact Docker Engine
+        run: |
+          conflicts=()
+          for package in containerd docker-compose docker-compose-v2 docker-doc docker.io podman-docker runc; do
+            if dpkg-query --show --showformat='${db:Status-Status}' "$package" 2>/dev/null | grep --quiet '^installed$'; then
+              conflicts+=("$package")
+            fi
+          done
+          if (( ${#conflicts[@]} > 0 )); then
+            sudo apt-get remove --yes "${conflicts[@]}"
+          fi
+          sudo install --mode=0755 --directory /etc/apt/keyrings
+          sudo curl --fail --silent --show-error --location \
+            https://download.docker.com/linux/ubuntu/gpg \
+            --output /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: https://download.docker.com/linux/ubuntu' \
+            'Suites: noble' \
+            'Components: stable' \
+            'Architectures: amd64' \
+            'Signed-By: /etc/apt/keyrings/docker.asc' | \
+            sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null
+          sudo apt-get update
+          docker_version='5:28.3.3-1~ubuntu.24.04~noble'
+          sudo apt-get install --yes --allow-downgrades \
+            docker-ce="$docker_version" \
+            docker-ce-cli="$docker_version" \
+            containerd.io='1.7.27-1' \
+            docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'
+          sudo systemctl restart docker.service
+          test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
+          test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
+          test "$(docker info --format '{{.OSType}}/{{.Architecture}}')" = 'linux/x86_64'
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Prepare the reproducible Lean proof appliance
+        run: npm run proof:prepare
+
+      - name: Verify proof identity, containment, checkers, recovery, and cleanup
+        run: FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify
+
+      - name: Report proof runtime disk use
+        if: always()
+        run: docker system df

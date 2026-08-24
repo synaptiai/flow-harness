@@ -128,8 +128,8 @@ describe("Lean proof verifier executor", () => {
 });
 
 const specification = "For every natural number n, n plus zero is n.";
-const statement = "theorem add_zero (n : Nat) : n + 0 = n := by";
-const proof = "  omega\n";
+const statement = "theorem Flow.Proof.add_zero (n : Nat) : n + 0 = n";
+const proof = "by\n  omega\n";
 
 function proofVerifier(): CompiledVerifierNode {
   return {

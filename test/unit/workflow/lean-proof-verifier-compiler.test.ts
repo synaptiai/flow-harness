@@ -57,6 +57,14 @@ describe("Lean proof verifier compiler", () => {
       "proof_faithfulness_approval_mismatch",
     ],
     [
+      "approval that reverses the specification and statement",
+      proofWorkflow().replace(
+        "evidence:\n        - { nodeId: specification, field: command.stdout }\n        - { nodeId: statement, field: command.stdout }",
+        "evidence:\n        - { nodeId: statement, field: command.stdout }\n        - { nodeId: specification, field: command.stdout }",
+      ),
+      "proof_faithfulness_approval_mismatch",
+    ],
+    [
       "non-human control dependency",
       proofWorkflow().replace(
         "faithfulnessApprovalNodeId: approve-statement",

@@ -1287,7 +1287,7 @@ function validateProofFaithfulnessApproval(
   const observed = approval.approval.evidence.map((source) => `${source.nodeId}\0${source.field}`);
   if (
     required.length !== observed.length ||
-    required.some((source) => !observed.includes(source))
+    required.some((source, sourceIndex) => source !== observed[sourceIndex])
   ) {
     diagnostics.push({
       code: "proof_faithfulness_approval_mismatch",

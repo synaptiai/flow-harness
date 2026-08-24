@@ -110,7 +110,7 @@ retain the embedded Pi path.
 ## Architecture at a glance
 
 Flow is distributed as one Node.js command-line package. It can start local supervisor and worker
-processes and, for Prime evaluation, a pinned local container. The diagram follows a request from
+processes and pinned local containers for Prime evaluation and Lean proof verification. The diagram follows a request from
 the person or automation that starts it to the systems that perform work and the records that
 survive interruption.
 
@@ -146,6 +146,7 @@ flowchart TB
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         qualification["ACP qualification<br/>Two exact agents · one verified result contract"]
         phaseRouting["Phase routing qualification<br/>Exact roles · held-out quality and efficiency"]
+        proofQualification["Proof qualification<br/>Coverage · faithfulness · tests · lifecycle"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
@@ -157,6 +158,7 @@ flowchart TB
         acpProcess["Isolated local ACP agent<br/>Fresh process · fresh session · prompt-only"]
         semantic["Semantic query service<br/>Short-lived LSP · read-only projection"]
         commands["Command sandboxes<br/>SRT · Docker"]
+        proofAppliance["Lean proof appliance<br/>Compiler · SafeVerify · Nanoda"]
     end
 
     subgraph state["4. Durable project state — survives restart"]
@@ -167,6 +169,7 @@ flowchart TB
         goalLedger[("Goal revision ledger")]
         stores[("Run, package, activation, and evaluation stores")]
         workspaces[("Isolated workspaces")]
+        proofState[("Proof runtime attestation and leases")]
     end
 
     subgraph external["5. External systems"]
@@ -174,6 +177,7 @@ flowchart TB
         models["Model providers"]
         project["Project files and Git"]
         sources["HTTPS, OCI, and TUF package sources"]
+        docker["Local Docker Engine<br/>Linux x64 · cgroup v2"]
     end
 
     people -->|"Approves a preview release"| release
@@ -191,6 +195,7 @@ flowchart TB
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Qualifies two exact local agents"| qualification
     cli -->|"Qualifies one exact route pair"| phaseRouting
+    cli -->|"Qualifies one exact proof profile"| proofQualification
     cli -->|"Compares three context modes"| compaction
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
@@ -215,6 +220,7 @@ flowchart TB
     adaptation -->|"Runs paired trials"| engine
     qualification -->|"Runs a complete paired schedule"| engine
     phaseRouting -->|"Runs paired held-out profiles"| engine
+    proofQualification -->|"Checks the complete declared denominator"| engine
     compaction -->|"Runs held-out trials"| engine
     adaptation -->|"Stages one atomic entry and relationship change"| memory
     memory -->|"Supplies exact target context"| engine
@@ -224,6 +230,7 @@ flowchart TB
     adaptation -->|"Stores evaluation and activation evidence"| stores
     qualification -->|"Stores identity-bound verdict evidence"| stores
     phaseRouting -->|"Stores request-bound qualification evidence"| stores
+    proofQualification -->|"Stores content-free qualification evidence"| stores
     compaction -->|"Stores a dedicated report"| stores
     ledgers -->|"Supplies exact evidence references"| memory
     memory -->|"Persists entries, claims, and assessments"| stores
@@ -232,9 +239,16 @@ flowchart TB
     workContext -->|"Supplies pacing guidance"| agents
     rules -->|"Authorizes bounded agent work"| agents
     rules -->|"Authorizes bounded commands"| commands
+    rules -->|"Requires exact human approval and proof identities"| proofAppliance
     agents -->|"Makes bounded model requests"| models
     agents -->|"Routes ACP work"| acpProcess
     commands -->|"Contains it"| acpProcess
+    engine -->|"Runs an admitted proof verifier"| proofAppliance
+    agents -->|"Can propose one exact-routed proof"| proofAppliance
+    proofAppliance -->|"Uses a fixed no-network container"| docker
+    cli -->|"Prepares and attests an exact image"| docker
+    docker -->|"Records image identity and durable lifecycle"| proofState
+    proofState -->|"Re-admits runtime and recovery identity"| proofAppliance
     acpProcess -->|"Calls one provider"| models
     acpProcess -->|"Returns evidence"| agents
     agents -->|"Appends completed portable events"| sessions
@@ -261,6 +275,7 @@ flowchart TB
     agents -->|"Returns evidence for durable append"| ledgers
     semantic -->|"Returns settled query receipts"| ledgers
     commands -->|"Returns effect receipts for durable append"| ledgers
+    proofAppliance -->|"Returns compiler, checker, and cleanup evidence"| ledgers
 ```
 
 Read the diagram from top to bottom:
@@ -281,13 +296,15 @@ Read the diagram from top to bottom:
    isolated process boundary. ACP qualification alternates two distinct frozen identities through
    the same workflow and keeps the expected typed result outside their input. Phase-routing
    qualification compares two complete immutable profiles and admits only request-bound evidence
-   from exact targets.
+   from exact targets. Proof qualification keeps mathematical coverage, human statement
+   faithfulness, ordinary tests, policy, cost, latency, and cleanup as separate complete fields.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state. A selected ACP attempt gets a fresh process, private
    directory, session binding, provider-domain network route, and credential lease. The semantic
    service starts one exact language server for one request against a read-only, network-denied
-   project projection.
+   project projection. The Lean appliance compiles one exact statement in a disposable container,
+   then requires SafeVerify and Nanoda to agree before it returns proof evidence.
 
 4. Durable project state records events, evidence, private model context, goal revisions,
    ownership, installed capabilities, evaluations, and isolated workspace identity. Flow replays
@@ -314,6 +331,8 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
 | ACP interoperability qualification | `src/domain/evaluation/plan.ts`, `src/domain/evaluation/agent-result-verifier.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, `src/application/evaluation-adapter.ts`, `src/application/run-evaluation.ts`, `src/infrastructure/fs/local-evaluation-plan.ts`, and `src/infrastructure/fs/local-evaluation-store.ts` | Admits two distinct exact ACP executors for one closed workflow, verifies each canonical typed result privately, persists identity-bound observations, and derives complete paired qualification verdicts offline. |
 | Phase-aware model routing | `src/domain/adaptation/phase-routing-candidate.ts`, `src/infrastructure/fs/local-phase-routing-candidate.ts`, `src/application/run-workflow.ts`, `src/domain/run/model-session.ts`, `src/application/evaluation-adapter.ts`, `src/domain/evaluation/aggregate.ts`, and `src/application/prepare-effective-harness-activation.ts` | Admits and composes complete exact route profiles, resolves root and child targets before provider I/O, records durable request decisions, derives held-out qualification, and activates only the exact qualified artifact. |
+| Exact Lean proof verification | `src/domain/proof/lean-proof-verification.ts`, `src/application/verifier-executor.ts`, `src/infrastructure/oci/local-lean-proof-driver.ts`, `src/infrastructure/oci/local-lean-proof-lease-store.ts`, `src/infrastructure/oci/local-lean-proof-runtime-admission.ts`, `src/infrastructure/oci/production-lean-proof-oci-preparation.ts`, `scripts/prepare-proof-runtime.mjs`, and `proof-container/` | Binds one exact specification, statement, proof, human approval, and runtime; prepares and admits a reproducible Linux x64 appliance; requires compiler, SafeVerify, Nanoda, and cleanup agreement; and preserves content-free public evidence. |
+| Lean proof qualification | `src/domain/evaluation/lean-proof-qualification.ts`, `src/infrastructure/fs/local-lean-proof-qualification.ts`, and `src/cli/main.ts` | Requires one identity-consistent trial per declared task and reports complete proof, faithfulness, ordinary-test, cost, latency, policy, cleanup, and missingness evidence without activation authority. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
@@ -1241,6 +1260,28 @@ The goal evaluator is a pure domain transition: it receives only a compiled crit
 
 The verifier executor is a separate application seam. Its command driver delegates to the existing sandboxed command executor and preserves nested evidence and side-effect uncertainty. Its model driver receives only declared durable evidence, invokes a separate Pi session with a dedicated immutable system prompt and zero tools or project discovery, and parses one bounded strict JSON verdict. The persisted contract contains Flow-owned provenance, hashes, usage, and source observations rather than Pi or provider types. Only accepted evidence succeeds the node. This isolation limits authority and context but does not make probabilistic evaluation prompt-injection-proof or equivalent to deterministic hidden checks.
 
+### Exact Lean proof verification
+
+The proof verifier is a distinct evaluator driver behind the same application port. The domain
+contract binds a bounded private specification and one exact theorem or lemma header. It also binds
+a separate proof term, the target declaration, an attested runtime identity, and a human approval.
+
+The proof decision is pure. It accepts only matching compiler, SafeVerify, Nanoda, axiom-policy,
+and cleanup evidence. It doesn't call Docker, parse tool output, or invoke a provider. It also
+doesn't infer statement faithfulness.
+
+OCI infrastructure owns preparation, admission, write-ahead container leases, exact Docker
+configuration, output bounds, recovery, and confirmed removal. The supervisor validates effective
+Linux namespaces, seccomp, capabilities, mounts, cgroups, resource limits, environment, and network
+state before reading the request. It compiles untrusted source as an unprivileged user and freezes
+the resulting artifacts across the root-owned verifier boundary. The appliance receives no source
+specification, provider credential, project mount, network, or workflow-completion authority.
+
+Proof qualification is another pure domain boundary. It requires one trial for every declared task
+and keeps mathematical proof, human statement approval, ordinary tests, cost, latency, policy, and
+cleanup as separate fields. A complete failure is `not_qualified`. Absent evidence is
+`insufficient_evidence`. Neither state can activate or complete a workflow.
+
 ## Current trust boundaries
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
@@ -1269,6 +1310,10 @@ Pi intentionally has no built-in security boundary and the host-side agent runti
 - Operator/project capacity configuration can bound detached workers and queue depth, but it is not
   process containment, a provider quota, or a run resource budget. Projects may narrow an operator
   ceiling and cannot widen it.
+- The Lean proof appliance runs only from an exact locally attested Linux x64 image. It has no
+  network, credentials, host bind mounts, ambient home directory, or project-write authority. Its
+  shared Docker and Linux kernel remain external trusted computing-base dependencies, so it isn't
+  a hostile multi-tenant or virtual-machine boundary.
 
 Native sandboxing is not equivalent to a microVM. SRT is a beta dependency built on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. Kernel or sandbox-runtime vulnerabilities remain outside Flow's enforcement model, and the host-side Pi process is not contained by this command adapter. Hostile workloads still require a reviewed container, microVM, Gondolin, OpenShell, or managed isolation boundary.
 
@@ -1324,6 +1369,10 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 27. ACP qualification cannot accept an incomplete denominator, duplicate executor identity,
     unverified result, or incomplete token or cost observation. It also rejects authority activity,
     policy violations, and unconfirmed process termination.
+28. Proof acceptance cannot survive a changed request, statement, runtime, compiler environment,
+    checker result, axiom policy, human approval, or cleanup identity.
+29. Proof qualification cannot combine mathematical acceptance with missing statement
+    faithfulness, ordinary tests, cost, latency, policy, or cleanup evidence.
 
 ## Failure modes
 
@@ -1368,6 +1417,10 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Tool timeout or crash | Terminate the process tree where possible and classify side-effect uncertainty |
 | Partial external mutation | Reconcile authoritative external state; compensate only when explicitly supported |
 | Verification failure | Record failing or inconclusive evidence and never coerce success |
+| Proof runtime identity, effective containment, or output is missing or inconsistent | Stop before proof acceptance; never substitute a host toolchain, moving image, or partial result |
+| Proof compiler or checker is unavailable, rejects, or disagrees | Preserve each exact state and return rejected or inconclusive according to the closed proof decision |
+| Proof cleanup or prior container reconciliation is unconfirmed | Retain the durable lease, block automatic retry, and never settle an accepted proof |
+| Proof qualification evidence is incomplete | Return `insufficient_evidence`; return `not_qualified` when complete evidence establishes a failure |
 | ACP qualification trial, identity, result, accounting, containment, or pair evidence is incomplete | Return `insufficient_evidence`, or `not_qualified` when committed evidence proves conformance failure; never infer compatibility from a partial denominator |
 | Concurrent workspace changes | Detect baseline drift and pause before absorbing the changes |
 | Crash during persistence | Recover to the last committed event and tolerate an incomplete trailing record |

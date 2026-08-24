@@ -67,6 +67,46 @@ descendants run through a required native OS sandbox. These boundaries aren't eq
 - The active process retains failed preparation and lease settlement. It retries that settlement
   before any later create. The durable scanner correctly treats the same process as live.
 
+- The optional Lean proof profile uses a separate digest-attested Linux x64 image. Preparation
+  verifies fixed source archives and base images. It makes two clean final builds and compares their
+  immutable image IDs. It also measures the checker artifacts and publishes an owner-only local
+  attestation. Missing or inconsistent identity evidence fails before proof-container creation.
+
+- A proof container has no network, credential lease, host bind mount, project write, or ambient
+  home directory. It has a read-only root and one bounded `nosuid`, `nodev`, and `noexec` tmpfs
+  workspace. Docker drops all capabilities except supervisor `CAP_SETUID` and applies
+  `no-new-privileges`, seccomp, private namespaces, and fixed cgroup and rlimit ceilings.
+
+- Before reading a proof request, the root supervisor checks its PID, credentials, capabilities,
+  no-new-privileges, and seccomp mode. It also checks mounts, cgroup v2 limits, process limits,
+  environment, and network interfaces. It compiles untrusted proof source as UID and GID 10001.
+
+  The target tree exists and is locked before the separate submission tree is created. Each phase
+  has a separate home. The supervisor copies each bounded no-follow artifact into the root-owned
+  verifier directory before it starts the next phase. The proof phase can't change the frozen
+  target. It receives the exact statement and proof, but not the source specification.
+
+- Each proof compiler and checker uses a separate process group. The supervisor kills and reaps the
+  complete group before it freezes artifacts or starts another checker. Unconfirmed descendant
+  removal fails the proof attempt.
+
+- Proof acceptance requires exact request and runtime identity. It also requires successful Lean
+  compilation and SafeVerify replay under the closed axiom policy. Nanoda must independently accept
+  the exported environment, and Flow must confirm container removal. Human approval separately
+  binds the source specification to the formal statement. A proof or model verdict can't replace
+  that approval.
+  It also can't replace ordinary test evidence.
+
+- Proof recovery uses an owner-only write-ahead lease. The lease binds the run, workflow, node,
+  attempt, request, image, profile, deterministic name, and full container ID when known. Recovery
+  checks the inspected container and effective host policy. It confirms removal and then blocks
+  automatic proof retry. Identity drift or uncertain cleanup retains the lease and can't become
+  success.
+
+- The proof appliance shares the Docker daemon and Linux kernel with the host. Root, the trusted
+  host operator, a Docker compromise, a kernel defect, and hostile multi-tenant isolation remain
+  outside this boundary.
+
 - `flow web` binds one explicit IPv4 loopback listener to an ephemeral port. A random 256-bit
   capability enters the initial URL fragment, tab-scoped `sessionStorage`, and later authorization
   headers. The fixed client clears the fragment after startup and clears the stored capability when

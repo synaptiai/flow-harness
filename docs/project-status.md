@@ -35,6 +35,7 @@ on it.
 | Prompt-only local ACP executor | Linux x64 runtime proof | Limited | Current source supports operator selection, attached and detached execution, fresh recovery, and provider-neutral evidence. Hosted process-containment proof covers Linux x64; macOS has source and contract coverage. |
 | Paired ACP interoperability qualification | Linux x64 runtime proof | Limited | Current source supports two distinct exact local agents, one shared prompt-only workflow, private result verification, complete accounting gates, offline reports, and an opt-in production-agent proof path. No agent pair is claimed compatible without its own `qualified` report. |
 | Phase-aware model routing | Implemented | Implemented | Current source supports exact root and embedded-child profiles, durable per-request decisions, held-out quality and efficiency qualification, and exact-artifact activation. ACP and learned production routing remain unavailable. |
+| Exact Lean proof verification | Linux x64 only | Unavailable | Current source prepares one reproducible OCI appliance, requires exact human statement approval plus compiler, SafeVerify, Nanoda, and cleanup agreement, and provides complete profile qualification. Hosted CI builds and exercises the real appliance without provider credentials. |
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
 | Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
@@ -81,6 +82,24 @@ Read [Run and control workflows](guides/run-and-control.md),
 - Content-free public summaries. Complete bounded receipts remain in the private run ledger.
 
 Read [Use read-only semantic code queries](guides/semantic-code.md).
+
+### Exact proof verification
+
+- One exact Linux x64 OCI runtime built twice from pinned Lean, Mathlib, checker, base-image,
+  BuildKit, seccomp, and profile inputs.
+- Optional provider-neutral proof generation through one exact operator-selected model route with
+  deny fallback.
+- Separate bounded specification, exact theorem or lemma header, proof term, and human
+  specification-to-statement approval.
+- Compiler, exact declaration and type, SafeVerify kernel replay, closed axiom policy, independent
+  Nanoda checking, and confirmed cleanup before acceptance.
+- No runtime network, credentials, host project mount, or ambient home, with effective Linux policy
+  checks and a durable recovery lease.
+- Content-free public inspection and three-state profile qualification with explicit proof,
+  faithfulness, ordinary-test, cost, latency, policy, cleanup, and missingness coverage.
+
+Read [Verify an exact Lean statement](guides/lean-proof-verification.md) and
+[Operate the Lean proof runtime](operations/lean-proof-runtime.md).
 
 ### Policy, approval, and containment
 

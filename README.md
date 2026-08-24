@@ -55,6 +55,8 @@ Current capability groups include:
 - Attached and detached execution with local terminal, browser, and ACP control.
 - Operator-selected prompt-only local ACP v1 execution and paired exact-agent qualification with
   fresh isolated processes, private result verification, and provider-neutral evidence.
+- Optional exact Lean statement verification on a reproducible Linux x64 appliance. The profile
+  requires human statement approval, SafeVerify replay, Nanoda checking, and confirmed cleanup.
 
 ### Capability distribution and evaluation
 
@@ -155,6 +157,8 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Recovery and interruption safety](docs/recovery.md) | Exact restart, uncertainty, and remediation rules |
 | [Reproducible harness evaluation](docs/evaluation.md) | Comparative plans, private verification, candidates, activation, and export |
 | [Qualify two local ACP agents](docs/guides/qualify-acp-agents.md) | Paired production-agent identity, private result verification, accounting, verdicts, and recovery |
+| [Verify an exact Lean statement](docs/guides/lean-proof-verification.md) | Proof inputs, human statement approval, checker evidence, qualification, and non-goals |
+| [Lean proof runtime operations](docs/operations/lean-proof-runtime.md) | Reproducible Linux x64 preparation, containment, identity, recovery, and replacement |
 | [Testing and evaluation](docs/testing-and-evaluation.md) | Contributor gates, test layers, runtime proofs, and live-provider policy |
 
 ## Community

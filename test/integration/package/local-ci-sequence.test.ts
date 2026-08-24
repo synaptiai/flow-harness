@@ -23,6 +23,7 @@ describe("local CI sequence", () => {
     await mkdir(binaryRoot);
     await writeExecutable(join(binaryRoot, "npm"), fakeCommandSource("npm", logPath, false));
     await writeExecutable(join(binaryRoot, "node"), fakeCommandSource("node", logPath, true));
+    await writeExecutable(join(binaryRoot, "go"), fakeCommandSource("go", logPath, false));
 
     const { FLOW_PRIME_PREPARED_ATTESTATION: _prepared, ...cleanEnvironment } = process.env;
     const result = await run(process.execPath, ["scripts/ci-local.mjs"], {
@@ -64,9 +65,14 @@ describe("local CI sequence", () => {
       ({ command, args }) =>
         command === "node" && args.join(" ") === "dist/cli/public-capability-reference.js --check",
     );
+    const proofSupervisorIndex = commands.findIndex(
+      ({ command, args }) => command === "go" && args.join(" ") === "test ./...",
+    );
 
     expect(buildIndex).toBeGreaterThan(-1);
     expect(capabilityReferenceIndex).toBeGreaterThan(buildIndex);
+    expect(proofSupervisorIndex).toBeGreaterThan(capabilityReferenceIndex);
+    expect(preparationIndex).toBeGreaterThan(proofSupervisorIndex);
     expect(preparationIndex).toBeGreaterThan(capabilityReferenceIndex);
     expect(preparationIndex).toBeGreaterThan(-1);
     expect(coverageIndex).toBeGreaterThan(preparationIndex);
@@ -89,6 +95,7 @@ describe("local CI sequence", () => {
     await writeFile(attestationPath, JSON.stringify({ image: { id: `sha256:${"b".repeat(64)}` } }));
     await writeExecutable(join(binaryRoot, "npm"), fakeCommandSource("npm", logPath, false));
     await writeExecutable(join(binaryRoot, "node"), fakeCommandSource("node", logPath, true));
+    await writeExecutable(join(binaryRoot, "go"), fakeCommandSource("go", logPath, false));
 
     const result = await run(process.execPath, ["scripts/ci-local.mjs"], {
       ...process.env,

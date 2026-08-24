@@ -258,6 +258,7 @@ import {
   ContextCompactionEvaluationPlanError,
 } from "../domain/evaluation/context-compaction-evaluation.js";
 import { verifyEvaluationWorkspace } from "../domain/evaluation/filesystem-verifier.js";
+import { qualifyLeanProofProfile } from "../domain/evaluation/lean-proof-qualification.js";
 import { EvaluationPlanError } from "../domain/evaluation/plan.js";
 import { EvaluationRecordError } from "../domain/evaluation/records.js";
 import {
@@ -383,6 +384,7 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
+import { loadLocalLeanProofQualificationInput } from "../infrastructure/fs/local-lean-proof-qualification.js";
 import {
   LocalGoalWorkspaceSourceError,
   readLocalGoalWorkspaceSource,
@@ -464,6 +466,7 @@ import {
   type StrictOciCapabilityRegistry,
 } from "../infrastructure/http/strict-oci-capability-registry.js";
 import { inspectPreparedPrimeRuntime } from "../infrastructure/oci/prime-environment-doctor.js";
+import type { LeanProofOciPreparationResult } from "../infrastructure/oci/production-lean-proof-oci-preparation.js";
 import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
 import {
   collectWorkflowEnvironmentRequirements,
@@ -580,11 +583,12 @@ Usage:
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
+  flow eval proof qualify <qualification.json> [--output <report.json>]
   flow eval compaction validate <plan.yaml>
   flow eval compaction run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
   flow eval compaction inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval compaction export <evaluation-id> --output <path> [--evaluations-dir <path>]
-  flow runtime prepare prime-agent
+  flow runtime prepare <prime-agent|lean-proof>
   flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--acp-agent <project-relative-manifest.json>] [--goal-workspace] [--language-server <manifest.json>]
   flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--acp-agent <project-relative-manifest.json>] [--work-profile <fast|standard|long>] [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--work-profile <fast|standard|long>] [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -697,6 +701,10 @@ export interface CliDependencies {
     readonly cwd: string;
     readonly signal: AbortSignal | undefined;
   }) => Promise<PrimeOciPreparationResult>;
+  readonly prepareLeanProofRuntime?: (input: {
+    readonly cwd: string;
+    readonly signal: AbortSignal | undefined;
+  }) => Promise<LeanProofOciPreparationResult>;
   readonly runSupervisorDaemon: typeof runSupervisorDaemon;
   readonly isInteractiveTerminal: () => boolean;
   readonly createTerminalPresentationRenderer: (options: {
@@ -1013,14 +1021,26 @@ async function runtimeCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const { positionals } = parseCommandArgs(args, {});
-  if (
-    positionals.length !== 2 ||
-    positionals[0] !== "prepare" ||
-    positionals[1] !== "prime-agent"
-  ) {
-    throw new CliUsageError("runtime prepare requires prime-agent");
+  if (positionals.length !== 2 || positionals[0] !== "prepare") {
+    throw new CliUsageError("runtime prepare requires prime-agent or lean-proof");
   }
   const cwd = overrides.cwd ?? process.cwd();
+  if (positionals[1] === "lean-proof") {
+    const prepareLeanProofRuntime =
+      overrides.prepareLeanProofRuntime ??
+      (async (input: { readonly cwd: string; readonly signal: AbortSignal | undefined }) => {
+        const { prepareProductionLeanProofOciRuntime } = await import(
+          "../infrastructure/oci/production-lean-proof-oci-preparation.js"
+        );
+        return prepareProductionLeanProofOciRuntime(input);
+      });
+    const result = await prepareLeanProofRuntime({ cwd, signal: overrides.signal });
+    io.stdout(JSON.stringify({ prepared: true, ...result }, null, 2));
+    return 0;
+  }
+  if (positionals[1] !== "prime-agent") {
+    throw new CliUsageError("runtime prepare requires prime-agent or lean-proof");
+  }
   const preparePrimeRuntime =
     overrides.preparePrimeRuntime ??
     (async (input: { readonly cwd: string; readonly signal: AbortSignal | undefined }) => {
@@ -3284,6 +3304,9 @@ async function evaluationCommand(
   if (subcommand === "compaction") {
     return await contextCompactionEvaluationCommand(args.slice(1), io, overrides);
   }
+  if (subcommand === "proof") {
+    return await leanProofQualificationCommand(args.slice(1), io, overrides);
+  }
   if (subcommand === "validate") {
     const { positionals } = parseCommandArgs(args.slice(1), {});
     const planArgument = requireSinglePositional(
@@ -3573,7 +3596,38 @@ async function evaluationCommand(
     return 0;
   }
 
-  throw new CliUsageError("eval requires validate, run, inspect, export, or tuning-evidence");
+  throw new CliUsageError(
+    "eval requires validate, run, inspect, export, tuning-evidence, proof, or compaction",
+  );
+}
+
+async function leanProofQualificationCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  if (args[0] !== "qualify") {
+    throw new CliUsageError("eval proof requires qualify <qualification.json>");
+  }
+  const { positionals, values } = parseCommandArgs(args.slice(1), {
+    output: { type: "string" },
+  });
+  const inputArgument = requireSinglePositional(
+    positionals,
+    "eval proof qualify requires one qualification input path",
+  );
+  const dependencies = configDependenciesFrom(overrides);
+  const input = await loadLocalLeanProofQualificationInput(
+    resolve(dependencies.cwd, inputArgument),
+    dependencies.signal,
+  );
+  dependencies.signal?.throwIfAborted();
+  const report = qualifyLeanProofProfile(input);
+  if (values.output !== undefined) {
+    await writeCanonicalEvaluationExport(resolve(dependencies.cwd, values.output), report);
+  }
+  io.stdout(JSON.stringify(report, null, 2));
+  return 0;
 }
 
 async function contextCompactionEvaluationCommand(

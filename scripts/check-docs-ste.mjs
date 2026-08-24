@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { publicDocumentationFiles } from "./public-documentation-files.mjs";
+
 const execute = promisify(execFile);
 const argumentsList = process.argv.slice(2);
 const findings = [];
@@ -37,13 +39,18 @@ if (process.exitCode === undefined) {
 
 async function checkChangedProse() {
   const base = await resolveDiffBase();
+  const publicPaths = new Set(await publicDocumentationFiles(process.cwd()));
   const committed = await git(["diff", "--unified=0", "--no-ext-diff", base, "--", "*.md"]);
-  checkAddedDiff(committed);
+  const changed = collectAddedLines(committed);
+  for (const [path, lines] of changed) {
+    if (!publicPaths.has(path)) continue;
+    checkAddedProse(path, await readFile(resolve(path), "utf8"), lines);
+  }
   const untracked = (
     await git(["ls-files", "--others", "--exclude-standard", "--", "docs/*.md", "docs/**/*.md"])
   )
     .split("\n")
-    .filter(Boolean);
+    .filter((path) => path.length > 0 && publicPaths.has(path));
   for (const path of untracked) {
     checkProse(path, await readFile(path, "utf8"));
   }
@@ -63,10 +70,10 @@ async function resolveDiffBase() {
   throw new Error("The STE gate cannot find a Git comparison base");
 }
 
-function checkAddedDiff(source) {
+function collectAddedLines(source) {
   let path = "unknown.md";
   let addedLine = 0;
-  const added = [];
+  const added = new Map();
   for (const line of source.split("\n")) {
     if (line.startsWith("+++ b/")) {
       path = line.slice(6);
@@ -78,13 +85,31 @@ function checkAddedDiff(source) {
       continue;
     }
     if (line.startsWith("+") && !line.startsWith("+++")) {
-      added.push({ path, line: addedLine, text: line.slice(1) });
+      const lines = added.get(path) ?? new Set();
+      lines.add(addedLine);
+      added.set(path, lines);
       addedLine += 1;
     } else if (!line.startsWith("-")) {
       addedLine += 1;
     }
   }
-  checkLines(added);
+  return added;
+}
+
+function checkAddedProse(path, source, addedLines) {
+  let fence;
+  const entries = [];
+  for (const [index, text] of source.split("\n").entries()) {
+    const line = index + 1;
+    const fenceMatch = /^\s*(?<fence>`{3,}|~{3,})/u.exec(text);
+    if (fenceMatch?.groups?.fence !== undefined) {
+      const marker = fenceMatch.groups.fence[0];
+      fence = fence === undefined ? marker : fence === marker ? undefined : fence;
+      continue;
+    }
+    if (fence === undefined && addedLines.has(line)) entries.push({ path, line, text });
+  }
+  checkLines(entries);
 }
 
 function checkProse(path, source) {
@@ -140,6 +165,8 @@ function checkLines(lines) {
       flushParagraph();
       continue;
     }
+    const listItem = /^\s*(?:[-*]|\d+[.)])\s+/.test(entry.text);
+    if (listItem) flushParagraph();
     const prose = stripMarkup(entry.text);
     if (prose.includes(";")) {
       addFinding(entry, "semicolon");
@@ -152,7 +179,7 @@ function checkLines(lines) {
     paragraph.push({
       entry,
       prose,
-      strict: /^\s*(?:[-*]|\d+[.)])\s+/.test(entry.text),
+      strict: listItem,
     });
   }
   flushParagraph();

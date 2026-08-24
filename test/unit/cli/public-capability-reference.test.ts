@@ -23,9 +23,26 @@ describe("public capability reference CLI", () => {
 
     expect(await runPublicCapabilityReferenceCli(["--write"], options(root, output))).toBe(0);
     expect(await runPublicCapabilityReferenceCli(["--check"], options(root, output))).toBe(0);
-    expect(
-      JSON.parse(await readFile(join(root, PUBLIC_CAPABILITY_REFERENCE_PATHS.json), "utf8")),
-    ).toMatchObject({ version: "flow.public-capabilities/v1" });
+    const catalog = JSON.parse(
+      await readFile(join(root, PUBLIC_CAPABILITY_REFERENCE_PATHS.json), "utf8"),
+    );
+    expect(catalog).toMatchObject({ version: "flow.public-capabilities/v1" });
+    expect(catalog.limits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "proof-specification-bytes", value: 65_536 }),
+        expect.objectContaining({ id: "proof-statement-bytes", value: 131_072 }),
+        expect.objectContaining({ id: "proof-term-bytes", value: 262_144 }),
+        expect.objectContaining({ id: "proof-qualification-input-bytes", value: 1_048_576 }),
+      ]),
+    );
+    expect(catalog.executionSeams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "lean-proof-verifier",
+          implementation: "lean-proof-oci-v1",
+        }),
+      ]),
+    );
     expect(output).toEqual([
       "Generated the public capability reference.\n",
       "The public capability reference is current.\n",

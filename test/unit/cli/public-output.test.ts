@@ -8,8 +8,8 @@ import { createLeanProofRequest } from "../../../src/domain/proof/lean-proof-ver
 describe("public run output", () => {
   it("replaces private proof content with bounded identities", () => {
     const specification = "PRIVATE_SPECIFICATION: n + 0 = n";
-    const statement = "PRIVATE_STATEMENT: theorem add_zero";
-    const proof = "PRIVATE_PROOF: by omega";
+    const statement = "theorem Flow.Proof.add_zero (PRIVATE_STATEMENT : Prop) : PRIVATE_STATEMENT";
+    const proof = "by\n  exact PRIVATE_PROOF";
     const specificationDigest = sha256(specification);
     const statementDigest = sha256(statement);
     const request = createLeanProofRequest({
@@ -92,8 +92,11 @@ describe("public run output", () => {
         request: {
           requestDigest: request.requestDigest,
           specification: { digest: request.specificationDigest, bytes: 32 },
-          statement: { digest: request.statementDigest, bytes: 35 },
-          proof: { digest: request.proofDigest, bytes: 23 },
+          statement: {
+            digest: request.statementDigest,
+            bytes: Buffer.byteLength(statement, "utf8"),
+          },
+          proof: { digest: request.proofDigest, bytes: Buffer.byteLength(proof, "utf8") },
           targetDeclaration: {
             digest: sha256(request.targetDeclaration),
             bytes: 19,

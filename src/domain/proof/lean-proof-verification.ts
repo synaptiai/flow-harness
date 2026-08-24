@@ -15,6 +15,8 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const OCI_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const EXACT_LEAN_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const LEAN_DECLARATION_PATTERN = /^[A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)+$/;
+const LEAN_STATEMENT_HEADER_PATTERN =
+  /^\s*(?:theorem|lemma)\s+([A-Za-z_][A-Za-z0-9_']*(?:\.[A-Za-z_][A-Za-z0-9_']*)+)[\s\S]*$/;
 
 export type LeanProofContractErrorCode =
   | "invalid_request"
@@ -225,6 +227,7 @@ export function createLeanProofRequest(input: LeanProofRequestInput): LeanProofR
   validateBoundedText("statement", input.statement, MAX_LEAN_PROOF_STATEMENT_BYTES);
   validateBoundedText("proof", input.proof, MAX_LEAN_PROOF_BYTES);
   validateTargetDeclaration(input.targetDeclaration);
+  validateStatementAndProof(input.statement, input.proof, input.targetDeclaration);
   validateRuntimeIdentity(input.runtime);
   validateFaithfulnessApproval(input.faithfulness);
   if (input.proofModel !== undefined) validateProofModel(input.proofModel);
@@ -483,6 +486,27 @@ function validateTargetDeclaration(value: string): void {
       "invalid_request",
       "target declaration must be an exact namespaced Lean declaration",
     );
+  }
+}
+
+function validateStatementAndProof(
+  statement: string,
+  proof: string,
+  targetDeclaration: string,
+): void {
+  const statementMatch = LEAN_STATEMENT_HEADER_PATTERN.exec(statement);
+  if (
+    statementMatch?.[1] !== targetDeclaration ||
+    statement.includes(":=") ||
+    statement.includes("\0")
+  ) {
+    throw new LeanProofContractError(
+      "invalid_request",
+      "statement must be one exact theorem header for the target declaration without a proof body",
+    );
+  }
+  if (!/^\s*by(?:\s|$)/.test(proof) || proof.includes("\0")) {
+    throw new LeanProofContractError("invalid_request", "proof must be a separate Lean by-term");
   }
 }
 

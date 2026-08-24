@@ -12,8 +12,8 @@ verification without allowing a proof, a proof-generating model, or a formal sta
 unreviewed task-completion authority.
 
 The user approved Refined Approach B with corrected runtime defaults: a Flow-owned, reproducibly
-built Linux x64 OCI proof appliance; an exact Lean toolchain and dependency closure; a
-SafeVerify-derived kernel check; an independent Nanoda check; exact human approval of statement
+built Linux x64 OCI proof appliance; an exact Lean toolchain and dependency closure; an exact
+Leanstral SafeVerify kernel check; an independent Nanoda check; exact human approval of statement
 faithfulness; and optional provider-neutral proof generation through existing model authority.
 
 ## Existing evidence
@@ -44,7 +44,7 @@ faithfulness; and optional provider-neutral proof generation through existing mo
 ### Refined Approach B: Flow-owned proof appliance
 
 Flow prepares one Linux x64 OCI image from fixed, digest-checked inputs. The prepared artifact binds
-the image manifest, platform, Lean toolchain, Lake dependency manifest, proof checker versions,
+the immutable image ID, platform, Lean toolchain, Lake dependency manifest, proof checker versions,
 build recipe, and two-clean-build reproducibility result. Proof execution cannot start when any
 identity is missing, stale, unsupported, or inconsistent.
 
@@ -55,9 +55,14 @@ there is no proof-provider interface, provider discovery, or fallback model.
 
 The proof driver runs behind the existing `VerifierExecutor` boundary. It compiles an isolated
 submission, checks the requested declaration and type, replays the environment under a fixed axiom
-policy with a Flow-owned SafeVerify-derived checker, and invokes Nanoda over the complete exported
+policy with the pinned Leanstral SafeVerify checker, and invokes Nanoda over the complete exported
 environment. Acceptance requires both checkers to agree. Source scans for incomplete and unsafe
 constructs are defense in depth, not the kernel trust decision.
+
+The target compiler phase exists alone, runs under UID and GID 10001, and settles its complete
+process group before the supervisor locks its tree and freezes the target artifact. Only then does
+the supervisor create the separate submission tree and home for the proof compiler. The proof
+phase cannot change the frozen target artifact.
 
 The container has no network, credentials, ambient home directory, host PID namespace, or
 authoritative project write mount. It has a read-only root, disposable bounded workspace, fixed CPU,
@@ -73,6 +78,11 @@ Proof qualification is purpose-specific. It measures complete proof coverage, ex
 approval coverage, ordinary deterministic verification, false acceptance and policy failures,
 cleanup, cost, and latency. Only complete evidence can be `qualified`; constraint breaches are
 `not_qualified`, and missing or incomparable evidence is `insufficient_evidence`.
+
+The qualification command validates one closed operator-assembled audit document. It binds the
+complete admitted input and publishes content-free task identities, but it does not reopen a run
+ledger or gain activation authority. Reviewers retain the input with its immutable private source
+evidence.
 
 ### Fixed first-version defaults
 
@@ -107,7 +117,7 @@ selected Lean and dependency closure run reliably within it.
 1. The operator selects the checked-in proof build manifest on a supported Linux x64 builder.
 2. Flow reopens each fixed input and verifies its digest before build execution.
 3. Flow performs two clean builds from the same inputs and compares normalized OCI identities.
-4. Flow probes the image for exact Lean, Lake, dependency, SafeVerify-derived checker, and Nanoda
+4. Flow probes the image for exact Lean, Lake, dependency, SafeVerify, lean4export, and Nanoda
    identities and validates the fixed runtime policy.
 5. Flow writes a local attestation only after all identities and probes agree.
 
@@ -120,7 +130,7 @@ selected Lean and dependency closure run reliably within it.
    workspace identity, and lease intent.
 5. The appliance compiles the isolated submission and returns bounded structured results for the
    target declaration, exact type, imports, axioms, completeness, and unsafe-state checks.
-6. The SafeVerify-derived checker replays the target environment. Nanoda independently checks the
+6. SafeVerify replays the target environment. Nanoda independently checks the
    complete exported environment.
 7. Flow accepts only matching successful checks and a current exact faithfulness approval. It
    confirms container removal before settling the verifier result.
@@ -240,15 +250,15 @@ _Captured by specification-capture skill on 2026-08-24. Source: user-confirmed._
 
 | Criteria | Type | Verification command | Passing evidence | Does not promise |
 | --- | --- | --- | --- | --- |
-| 1 | Contract, build, runtime | `npm run proof:prepare:verify && npm run proof:image:verify` | Fixed inputs, two clean builds, local attestation, exact Linux x64 image and component identities pass | Reproducibility on unsupported hosts |
-| 2, 4–6 | Domain and behavioral | `node_modules/.bin/vitest run test/unit/domain/proof-verification.test.ts test/unit/application/proof-verifier-executor.test.ts` | Bounded request admission, exact optional route, human approval, checker agreement, negative proof matrix, and content-free projection pass | Correctness of an unformalized requirement |
-| 3, 9 | Lifecycle and recovery | `node_modules/.bin/vitest run test/unit/infrastructure/oci/local-proof-container-engine.test.ts test/unit/application/production-proof-verifier.test.ts test/integration/supervisor/proof-recovery.test.ts` | No-network fixed policy, write-ahead lease, cancellation, recovery, confirmed cleanup, and uncertainty tests pass | Multi-host recovery |
-| 4 | Hosted Linux x64 | `npm run proof:runtime:test` | Real Lean compilation, exact target/type, allowed-axiom acceptance, refused constructs, SafeVerify-derived replay, Nanoda agreement, containment, resource, descendant, and cleanup probes pass | Native macOS or Linux arm64 execution |
-| 5, 9 | Durable data and replay | `node_modules/.bin/vitest run test/unit/run/proof-verifier-evidence.test.ts test/integration/cli/proof-verification.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts` | Private bounded evidence and content-free public evidence retain exact identities across attached, detached, replay, inspection, export, and recovery | External archival guarantees |
-| 7 | Composition | `node_modules/.bin/vitest run test/unit/application/run-workflow.test.ts test/unit/application/criterion-evidence.test.ts` | Proof acceptance remains one verifier result and cannot substitute for other required evidence | Completeness of operator-authored tests |
-| 8 | Evaluation | `node_modules/.bin/vitest run test/unit/evaluation/proof-plan.test.ts test/unit/evaluation/proof-aggregate.test.ts test/unit/application/run-evaluation.test.ts test/integration/cli/evaluation.test.ts` | Coverage, faithfulness, ordinary results, cost, latency, policy, cleanup, missingness, and three-state qualification tests pass | General theorem-proving benchmark superiority |
-| 10 | Documentation | `npm run docs:capabilities:generate && npm run docs:capabilities:check && npm run docs:style && npm run docs:links && npm run docs:ste && node_modules/.bin/vitest run test/integration/package/architecture-documentation.test.ts` | Canonical guide, README navigation, architecture Mermaid and repository map, roadmap, status, capability reference, and Linux x64 boundary are current | Third-party certification |
-| 11 | Full local and hosted gates | `npm run ci:local` and the hosted Linux x64 proof-runtime workflow | Local CI-equivalent checks and hosted runtime checks pass without paid-provider credentials | Paid-provider availability |
+| 1 | Contract, build, runtime | `npm run proof:prepare:verify` and hosted `npm run proof:prepare` | Fixed inputs, two clean builds, local attestation, exact Linux x64 image, and component identities pass | Reproducibility on unsupported hosts |
+| 2, 4–7 | Domain, workflow, and behavioral | `npx vitest run test/unit/proof/proof-verification.test.ts test/unit/workflow/lean-proof-verifier-compiler.test.ts test/unit/application/proof-verifier-executor.test.ts test/unit/application/run-workflow-proof-verifier.test.ts test/unit/cli/public-output.test.ts` | Bounded request admission, exact optional route, human approval, checker agreement, workflow composition, durable evidence, and content-free projection pass | Correctness of an unformalized requirement |
+| 3, 9 | Lifecycle and recovery | `npx vitest run test/unit/infrastructure/oci/local-lean-proof-driver.test.ts test/unit/infrastructure/oci/local-lean-proof-lease-store.test.ts test/unit/infrastructure/oci/local-lean-proof-runtime-admission.test.ts test/unit/infrastructure/runtime/production-node-executor.test.ts` | No-network fixed policy, exact admission, write-ahead lease, cancellation, recovery, confirmed cleanup, and uncertainty tests pass | Multi-host recovery |
+| 4 | Hosted Linux x64 | `FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify` | Real Lean compilation, SafeVerify replay, Nanoda agreement, containment self-checks, refused proof cases, recovery, cancellation, and cleanup pass | Native macOS or Linux arm64 execution |
+| 5, 9 | Durable data and replay | `npx vitest run test/unit/application/run-workflow-proof-verifier.test.ts test/unit/cli/public-output.test.ts test/runtime/lean-proof-oci.runtime.test.ts` | Private bounded evidence and content-free public evidence retain exact identities across run, replay, inspection, recovery, and runtime lifecycle paths | External archival guarantees |
+| 7 | Composition | `npx vitest run test/unit/workflow/lean-proof-verifier-compiler.test.ts test/unit/application/run-workflow-proof-verifier.test.ts` | Proof acceptance remains one explicit verifier result with a separate ordinary-test dependency | Completeness of operator-authored tests |
+| 8 | Evaluation | `npx vitest run test/unit/evaluation/lean-proof-qualification.test.ts test/integration/cli/lean-proof-qualification.test.ts` | Proof, faithfulness, ordinary-test, cost, latency, policy, cleanup, missingness, and three-state qualification rules pass | General theorem-proving benchmark superiority |
+| 10 | Documentation | `npm run docs:capabilities:generate && npm run docs:capabilities:check && npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts` | Canonical guide, documentation hub, concise README, architecture Mermaid and repository map, roadmap, status, capability reference, and Linux x64 boundary are current | Third-party certification |
+| 11 | Full local and hosted gates | `npm run ci:local` and the hosted Linux x64 `proof-runtime` job | Local CI-equivalent checks and hosted runtime checks pass without paid-provider credentials | Paid-provider availability |
 
 ## Implementation sequence
 
@@ -258,7 +268,7 @@ _Captured by specification-capture skill on 2026-08-24. Source: user-confirmed._
 3. RED/GREEN purpose-specific proof evaluation records, aggregation, and activation refusal.
 4. RED/GREEN the proof OCI manifest, attestation, engine boundary, write-ahead lease, lifecycle,
    recovery, and public inspection.
-5. Implement and exercise the fixed Lean appliance, SafeVerify-derived replay, independent Nanoda
+5. Implement and exercise the fixed Lean appliance, SafeVerify replay, independent Nanoda
    check, negative proof corpus, containment probes, and hosted Linux x64 workflow.
 6. Update the canonical operator guide, documentation hub, concise README, architecture Mermaid and
    repository map, roadmap, project status, testing guide, and generated capability reference.

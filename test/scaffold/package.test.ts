@@ -151,7 +151,7 @@ describe("package contract", () => {
 
     expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.devDependencies?.["@types/node"]).toBe("26.2.0");
-    expect(workflow.match(/node-version: 26\.7\.0/g)).toHaveLength(2);
+    expect(workflow.match(/node-version: 26\.7\.0/g)).toHaveLength(3);
     expect(readme).toContain("Node.js 26.7 or newer");
     expect(contributing).toContain("Node.js 26.7 or newer");
   });

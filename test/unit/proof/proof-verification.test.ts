@@ -61,6 +61,45 @@ describe("Lean proof verification contract", () => {
     );
   });
 
+  it("requires one exact theorem header and a separate by-term proof", () => {
+    expect(() =>
+      createLeanProofRequest({
+        ...requestInput(),
+        statement: "theorem Flow.Proof.add_zero (n : Nat) : n + 0 = n := by",
+      }),
+    ).toThrow(/header|statement/i);
+
+    expect(() =>
+      createLeanProofRequest({
+        ...requestInput(),
+        statement: "theorem Other.add_zero (n : Nat) : n + 0 = n",
+      }),
+    ).toThrow(/target declaration/i);
+
+    expect(() =>
+      createLeanProofRequest({
+        ...requestInput(),
+        proof: "omega",
+      }),
+    ).toThrow(/by-term/i);
+  });
+
+  it("accepts Lean declaration delimiters and trailing apostrophes consistently", () => {
+    const input = requestInput();
+    const statement = "theorem Flow.Proof.identity'\n  (value : Nat) : value = value";
+    const request = createLeanProofRequest({
+      ...input,
+      statement,
+      targetDeclaration: "Flow.Proof.identity'",
+      faithfulness: {
+        ...input.faithfulness,
+        statementDigest: sha256(statement),
+      },
+    });
+
+    expect(request.targetDeclaration).toBe("Flow.Proof.identity'");
+  });
+
   it("accepts only matching compiler, kernel replay, independent checker, and cleanup evidence", () => {
     const request = createLeanProofRequest(requestInput());
     const decision = decideLeanProofVerification(request, acceptedEvidence(request));
@@ -156,8 +195,8 @@ describe("Lean proof verification contract", () => {
       version: 1,
       requestDigest: request.requestDigest,
       specification: { digest: request.specificationDigest, bytes: 45 },
-      statement: { digest: request.statementDigest, bytes: 44 },
-      proof: { digest: request.proofDigest, bytes: 8 },
+      statement: { digest: request.statementDigest, bytes: 49 },
+      proof: { digest: request.proofDigest, bytes: 11 },
       targetDeclaration: {
         digest: sha256("Flow.Proof.add_zero"),
         bytes: 19,
@@ -173,11 +212,11 @@ describe("Lean proof verification contract", () => {
 
 function requestInput() {
   const specification = "For every natural number n, n plus zero is n.";
-  const statement = "theorem add_zero (n : Nat) : n + 0 = n := by";
+  const statement = "theorem Flow.Proof.add_zero (n : Nat) : n + 0 = n";
   return {
     specification,
     statement,
-    proof: "  omega\n",
+    proof: "by\n  omega\n",
     targetDeclaration: "Flow.Proof.add_zero",
     runtime: {
       version: 1 as const,

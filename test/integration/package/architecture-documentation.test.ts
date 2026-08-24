@@ -7,7 +7,7 @@ const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const architecturePath = join(repositoryRoot, "docs", "architecture.md");
 
 describe("architecture documentation", () => {
-  it("maps every top-level runtime module and the Prime container", async () => {
+  it("maps every top-level runtime module and each OCI appliance", async () => {
     const runtimeModules = (await readdir(join(repositoryRoot, "src"), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
@@ -25,6 +25,7 @@ describe("architecture documentation", () => {
       expect(architecture).toContain(`src/${module}/`);
     }
     expect(architecture).toContain("prime-container/");
+    expect(architecture).toContain("proof-container/");
   });
 
   it("contains a plain-language Mermaid overview of the complete runtime", async () => {
@@ -44,6 +45,10 @@ describe("architecture documentation", () => {
     expect(overview).toContain("External systems");
     expect(overview).toContain("Shared public capability descriptors");
     expect(overview).toContain("Generated capability reference");
+    expect(overview).toContain("Proof qualification");
+    expect(overview).toContain("Lean proof appliance");
+    expect(overview).toContain("Proof runtime attestation and leases");
+    expect(overview).toContain("Local Docker Engine");
   });
 
   it("avoids reserved Mermaid node identifiers", async () => {
@@ -69,6 +74,8 @@ describe("architecture documentation", () => {
     expect(architecture).toContain("## Keep the architecture view current");
     expect(architecture).toContain("src/domain/capability/public-capability-reference.ts");
     expect(architecture).toContain("src/cli/public-capability-reference.ts");
+    expect(architecture).toContain("src/domain/proof/lean-proof-verification.ts");
+    expect(architecture).toContain("src/infrastructure/oci/local-lean-proof-driver.ts");
     expect(instructions).toContain("architecture diagram");
     expect(stylePolicy).toContain("architecture diagram");
     expect(contributing).toContain("architecture overview");

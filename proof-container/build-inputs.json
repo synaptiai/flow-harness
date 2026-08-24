@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "platform": "linux/amd64",
+  "sourceDateEpoch": 1787313761,
+  "buildkit": {
+    "image": "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec"
+  },
+  "baseImages": {
+    "golang": "golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651",
+    "rust": "rust:1.89.0-bookworm@sha256:c9ac3fa8945b61dede1e4500d25028aa8fd8a8fe46365fcf9c0422f8d999b9b0",
+    "debian": "debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143"
+  },
+  "lean": {
+    "version": "4.33.1",
+    "url": "https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.tar.zst",
+    "sha256": "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235"
+  },
+  "mathlib": {
+    "revision": "0df444a360eaa60ab8c11dca51a86af692955474",
+    "url": "https://codeload.github.com/leanprover-community/mathlib4/tar.gz/0df444a360eaa60ab8c11dca51a86af692955474",
+    "sha256": "4906567b829fea7e354022c603aeebead7dd2f4ad1a39a91cc42ffae5de46326",
+    "manifestSha256": "1009a101f52a9d5d8ca57666f0256bae91abdb693e0f27b5a4622cffcc38cf03"
+  },
+  "safeVerify": {
+    "revision": "fb9c583eb0ea96426d94625f89b7842c9dc1c313",
+    "url": "https://codeload.github.com/mistralai/LeanstralSafeVerify/tar.gz/fb9c583eb0ea96426d94625f89b7842c9dc1c313",
+    "sha256": "f046f7c7f2f8f47e14235d97cd7728a6ae74becf5f7d482b5d865d8c3bf538ef"
+  },
+  "lean4export": {
+    "revision": "15f6055e299ad5b89345e533cc2192f4cc00f659",
+    "url": "https://codeload.github.com/leanprover/lean4export/tar.gz/15f6055e299ad5b89345e533cc2192f4cc00f659",
+    "sha256": "266271a9c062e31535518475a20b69e92f8516d74832d3866f00298e7192eade"
+  },
+  "nanoda": {
+    "revision": "68d5ca9db226849b41a6fff59d796ff19d0a8840",
+    "url": "https://codeload.github.com/robsimmons/nanoda_lib/tar.gz/68d5ca9db226849b41a6fff59d796ff19d0a8840",
+    "sha256": "30ce33ab5d17fbf7a70001660ba93e97604ddd433708687737284144d3db2a7d"
+  },
+  "seccomp": {
+    "source": "prime-container/seccomp.json",
+    "sha256": "43e8c38cccc936a736c7619eac8b7e0718880f7c29d7a4f6d2d57e4feeb273c3"
+  }
+}
