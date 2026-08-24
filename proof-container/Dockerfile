@@ -61,19 +61,22 @@ ADD --checksum=sha256:266271a9c062e31535518475a20b69e92f8516d74832d3866f00298e71
   https://codeload.github.com/leanprover/lean4export/tar.gz/15f6055e299ad5b89345e533cc2192f4cc00f659 /tmp/lean4export.tar.gz
 ADD --checksum=sha256:4906567b829fea7e354022c603aeebead7dd2f4ad1a39a91cc42ffae5de46326 \
   https://codeload.github.com/leanprover-community/mathlib4/tar.gz/0df444a360eaa60ab8c11dca51a86af692955474 /tmp/mathlib.tar.gz
-RUN mkdir -p /opt/lean /src/safe-verify /src/lean4export /src/mathlib-expected /opt/flow/bin \
+RUN mkdir -p /opt/lean \
     && tar --use-compress-program=unzstd -xf /tmp/lean.tar.zst --strip-components=1 -C /opt/lean \
-    && test "$(lean --version | sed -n '1s/Lean (version \([^,]*\).*/\1/p')" = 4.33.1 \
+    && test "$(lean --version | sed -n '1s/Lean (version \([^,]*\).*/\1/p')" = 4.33.1
+RUN mkdir -p /src/safe-verify /opt/flow/bin \
     && tar -xzf /tmp/safe-verify.tar.gz --strip-components=1 -C /src/safe-verify \
     && printf 'leanprover/lean4:v4.33.1\n' > /src/safe-verify/lean-toolchain \
     && cd /src/safe-verify \
     && lake build safe_verify \
-    && cp .lake/build/bin/safe_verify /opt/flow/bin/safe_verify \
+    && cp .lake/build/bin/safe_verify /opt/flow/bin/safe_verify
+RUN mkdir -p /src/lean4export \
     && tar -xzf /tmp/lean4export.tar.gz --strip-components=1 -C /src/lean4export \
     && printf 'leanprover/lean4:v4.33.1\n' > /src/lean4export/lean-toolchain \
     && cd /src/lean4export \
     && lake build lean4export \
-    && cp .lake/build/bin/lean4export /opt/flow/bin/lean4export \
+    && cp .lake/build/bin/lean4export /opt/flow/bin/lean4export
+RUN mkdir -p /src/mathlib-expected /opt/flow/lean-lib \
     && tar -xzf /tmp/mathlib.tar.gz --strip-components=1 -C /src/mathlib-expected \
     && test "$(sha256sum /src/mathlib-expected/lake-manifest.json | cut -d ' ' -f 1)" = 1009a101f52a9d5d8ca57666f0256bae91abdb693e0f27b5a4622cffcc38cf03 \
     && git clone --filter=blob:none https://github.com/leanprover-community/mathlib4.git /opt/flow/mathlib \

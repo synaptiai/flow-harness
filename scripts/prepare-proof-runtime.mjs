@@ -15,6 +15,7 @@ const proofRoot = join(repositoryRoot, "proof-container");
 const projectRoot = projectPath(process.argv.slice(2));
 const defaultDescriptorPath = join(projectRoot, ".flow", "proof-runtime", "attestation.json");
 const maximumOutputBytes = 16_777_216;
+const maximumFailureDiagnosticBytes = 65_536;
 const maximumAttestationBytes = 65_536;
 const digestPattern = /^[a-f0-9]{64}$/;
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
@@ -523,7 +524,7 @@ function run(executable, args, timeoutMs) {
       }
       rejectPromise(
         new Error(
-          `${executable} command failed (${code ?? signal ?? "unknown"}): ${Buffer.concat(diagnostics).toString("utf8").slice(-4096)}`,
+          `${executable} command failed (${code ?? signal ?? "unknown"}): ${Buffer.concat(diagnostics).toString("utf8").slice(-maximumFailureDiagnosticBytes)}`,
         ),
       );
     });

@@ -79,6 +79,24 @@ describe("Lean proof runtime package boundary", () => {
     expect(snapshotRead).toBeGreaterThan(trustSeed);
   });
 
+  it("isolates toolchain build phases and retains bounded failure diagnostics", async () => {
+    const [dockerfile, preparation] = await Promise.all([
+      readFile(resolve(repositoryRoot, "proof-container/Dockerfile"), "utf8"),
+      readFile(resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"), "utf8"),
+    ]);
+    const lean = dockerfile.indexOf("RUN mkdir -p /opt/lean");
+    const safeVerify = dockerfile.indexOf("RUN mkdir -p /src/safe-verify /opt/flow/bin");
+    const lean4export = dockerfile.indexOf("RUN mkdir -p /src/lean4export");
+    const mathlib = dockerfile.indexOf("RUN mkdir -p /src/mathlib-expected /opt/flow/lean-lib");
+
+    expect(lean).toBeGreaterThanOrEqual(0);
+    expect(safeVerify).toBeGreaterThan(lean);
+    expect(lean4export).toBeGreaterThan(safeVerify);
+    expect(mathlib).toBeGreaterThan(lean4export);
+    expect(preparation).toContain("const maximumFailureDiagnosticBytes = 65_536;");
+    expect(preparation).toContain(".slice(-maximumFailureDiagnosticBytes)");
+  });
+
   it("durably publishes an owner-private attestation", async () => {
     const preparation = await readFile(
       resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"),
