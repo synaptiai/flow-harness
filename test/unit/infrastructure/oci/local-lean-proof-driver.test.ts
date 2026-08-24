@@ -39,6 +39,7 @@ describe("local Lean proof driver", () => {
       readonlyPaths: LEAN_PROOF_OCI_READONLY_PATHS,
       supervisorCapabilities: ["KILL", "SETUID"],
     });
+    expect(LEAN_PROOF_OCI_POLICY.memoryMaxBytes).toBe(8 * 1_024 * 1_024 * 1_024);
     expect(LEAN_PROOF_OCI_MASKED_PATHS).toEqual([
       "/proc/acpi",
       "/proc/asound",

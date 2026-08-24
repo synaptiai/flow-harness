@@ -14,6 +14,7 @@ The supported preparation and execution host has these properties:
 - Linux on x64 hardware.
 - Docker Engine with API 1.51 and the Buildx plugin.
 - A cgroup v2 hierarchy that enforces memory, swap, CPU, and process limits.
+- At least 8 GiB of memory for the proof container, plus memory for Docker and the host.
 - Enough local disk and time for three clean image builds.
 
 Hosted continuous integration (CI) installs Docker Engine 28.3.3, containerd 1.7.27, and Buildx

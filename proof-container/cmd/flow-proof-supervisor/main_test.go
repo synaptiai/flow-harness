@@ -171,6 +171,30 @@ func TestSafeVerifyUnavailableReasonUsesOnlyStableDiagnosticCategories(t *testin
 	}
 }
 
+func TestSafeVerifyUnavailableReasonDistinguishesLaunchAndTermination(t *testing.T) {
+	tests := []struct {
+		result   commandResult
+		expected string
+	}{
+		{commandResult{ExitCode: 255, StartFailure: "resource"}, "kernel_replay_resource_unavailable"},
+		{commandResult{ExitCode: 255, StartFailure: "not_found"}, "kernel_replay_executable_unavailable"},
+		{commandResult{ExitCode: 255, StartFailure: "permission"}, "kernel_replay_filesystem_denied"},
+		{commandResult{ExitCode: -1, Terminated: true}, "kernel_replay_process_terminated"},
+	}
+	for _, test := range tests {
+		if reason := safeVerifyUnavailableReason(test.result); reason != test.expected {
+			t.Fatalf("unexpected process failure reason: got %s, want %s", reason, test.expected)
+		}
+	}
+}
+
+func TestRunCommandClassifiesMissingExecutable(t *testing.T) {
+	result := runCommand(commandSpec{path: "/flow-proof-missing-executable"})
+	if result.ExitCode != 255 || result.StartFailure != commandStartNotFound || result.Terminated {
+		t.Fatalf("unexpected missing executable result: %#v", result)
+	}
+}
+
 func TestRunCommandRemovesBackgroundDescendants(t *testing.T) {
 	result := runCommand(commandSpec{
 		path: "/bin/sh",

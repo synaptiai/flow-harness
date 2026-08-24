@@ -50,7 +50,7 @@ export const LEAN_PROOF_OCI_POLICY = Object.freeze({
   version: 1 as const,
   network: "none" as const,
   rootFilesystem: "read-only" as const,
-  memoryMaxBytes: 4_294_967_296,
+  memoryMaxBytes: 8_589_934_592,
   memorySwapMaxBytes: 0,
   cpuPeriodMicros: 100_000,
   cpuQuotaMicros: 200_000,

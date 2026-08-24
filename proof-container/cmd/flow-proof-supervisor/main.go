@@ -62,10 +62,22 @@ type result struct {
 }
 
 type commandResult struct {
-	ExitCode   int
-	Diagnostic []byte
-	DurationMS int64
+	ExitCode     int
+	Diagnostic   []byte
+	DurationMS   int64
+	StartFailure commandStartFailure
+	Terminated   bool
 }
+
+type commandStartFailure string
+
+const (
+	commandStartNotFound    commandStartFailure = "not_found"
+	commandStartPermission  commandStartFailure = "permission"
+	commandStartResource    commandStartFailure = "resource"
+	commandStartInvalid     commandStartFailure = "invalid"
+	commandStartUnavailable commandStartFailure = "unavailable"
+)
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--probe" {
@@ -375,6 +387,16 @@ func safeVerifyEvidence(req request, environmentDigest string, command commandRe
 func safeVerifyUnavailableReason(command commandResult) string {
 	diagnostic := strings.ToLower(string(command.Diagnostic))
 	switch {
+	case command.StartFailure == commandStartResource:
+		return "kernel_replay_resource_unavailable"
+	case command.StartFailure == commandStartNotFound || command.StartFailure == commandStartInvalid:
+		return "kernel_replay_executable_unavailable"
+	case command.StartFailure == commandStartPermission:
+		return "kernel_replay_filesystem_denied"
+	case command.StartFailure == commandStartUnavailable:
+		return "kernel_replay_launch_unavailable"
+	case command.Terminated:
+		return "kernel_replay_process_terminated"
 	case command.ExitCode == 0:
 		return "kernel_replay_output_unavailable"
 	case strings.Contains(diagnostic, "could not find lakefile"):
@@ -487,9 +509,37 @@ func runCommand(spec commandSpec) commandResult {
 	command := newCommand(spec)
 	command.Stdout = buffer
 	command.Stderr = buffer
-	err := runAndReap(command)
+	if err := command.Start(); err != nil {
+		return commandResult{
+			ExitCode: 255, Diagnostic: buffer.Bytes(), DurationMS: elapsedMS(started),
+			StartFailure: classifyCommandStartFailure(err),
+		}
+	}
+	pid := command.Process.Pid
+	err := command.Wait()
+	reapErr := terminateProofProcessGroup(pid)
+	if err == nil {
+		err = reapErr
+	}
+	exit := exitCode(err)
 	return commandResult{
-		ExitCode: exitCode(err), Diagnostic: buffer.Bytes(), DurationMS: elapsedMS(started),
+		ExitCode: exit, Diagnostic: buffer.Bytes(), DurationMS: elapsedMS(started),
+		Terminated: exit < 0,
+	}
+}
+
+func classifyCommandStartFailure(err error) commandStartFailure {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return commandStartNotFound
+	case errors.Is(err, os.ErrPermission):
+		return commandStartPermission
+	case errors.Is(err, syscall.ENOMEM) || errors.Is(err, syscall.EAGAIN):
+		return commandStartResource
+	case errors.Is(err, syscall.ENOEXEC):
+		return commandStartInvalid
+	default:
+		return commandStartUnavailable
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 
 const (
 	expectedEffectiveCapabilities = uint64(1<<5 | 1<<7) // CAP_KILL | CAP_SETUID
-	expectedMemoryMaxBytes        = "4294967296"
+	expectedMemoryMaxBytes        = "8589934592"
 	expectedMemorySwapMaxBytes    = "0"
 	expectedPidsMax               = "128"
 	expectedCPUQuota              = "200000 100000"

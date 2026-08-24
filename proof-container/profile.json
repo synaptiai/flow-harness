@@ -41,7 +41,7 @@
       "/sys/devices/virtual/powercap"
     ],
     "readonlyPaths": ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"],
-    "memoryMaxBytes": 4294967296,
+    "memoryMaxBytes": 8589934592,
     "memorySwapMaxBytes": 0,
     "cpuPeriodMicros": 100000,
     "cpuQuotaMicros": 200000,
