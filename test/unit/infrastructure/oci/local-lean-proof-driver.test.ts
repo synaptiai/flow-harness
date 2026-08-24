@@ -319,6 +319,23 @@ describe("local Lean proof driver", () => {
       /closed evidence schema: safe_verify_evidence_invalid/i,
     );
   });
+
+  it("distinguishes an invalid container envelope from valid nested evidence", async () => {
+    const request = proofRequest();
+    const driver = new LocalLeanProofDriver({
+      api: dockerApi([], {
+        ...acceptedContainerResult(request),
+        unexpected: "must-not-be-reflected",
+      }),
+      seccompProfile: { defaultAction: "SCMP_ACT_ERRNO" },
+      admitRuntime: async () => undefined,
+      leaseStore: memoryLeaseStore(),
+    });
+
+    await expect(driver.execute(request, executionContext())).rejects.toThrow(
+      /closed evidence schema: container_envelope_invalid/i,
+    );
+  });
 });
 
 function dockerApi(order: string[], result: object) {

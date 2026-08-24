@@ -664,15 +664,16 @@ function parseContainerResult(output: Buffer, request: LeanProofRequest): LeanPr
     cleanup: "confirmed" as const,
   };
   const evidenceValidation = leanProofExecutionEvidenceValidationCode(candidate);
-  if (
+  const envelopeValidation =
     Object.keys(parsed).length !== 5 ||
     (parsed as Record<string, unknown>).version !== 1 ||
-    (parsed as Record<string, unknown>).requestDigest !== request.requestDigest ||
-    evidenceValidation !== "valid" ||
-    !isLeanProofExecutionEvidence(candidate)
-  ) {
+    (parsed as Record<string, unknown>).requestDigest !== request.requestDigest
+      ? "container_envelope_invalid"
+      : "valid";
+  const validation = envelopeValidation === "valid" ? evidenceValidation : envelopeValidation;
+  if (validation !== "valid" || !isLeanProofExecutionEvidence(candidate)) {
     throw new Error(
-      `Lean proof container output violates the closed evidence schema: ${evidenceValidation}`,
+      `Lean proof container output violates the closed evidence schema: ${validation}`,
     );
   }
   return Object.freeze({
