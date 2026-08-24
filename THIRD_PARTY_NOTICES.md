@@ -130,10 +130,13 @@ all applicable Prime Agent and transitive dependency notices.
 - Revision: `fb9c583eb0ea96426d94625f89b7842c9dc1c313`.
 - License: Apache-2.0.
 - Use: kernel replay and observed-axiom reporting in the optional proof appliance.
-- Copied source: none.
+- Copied source: the compatibility patch at
+  `proof-container/patches/leanstral-safe-verify-lean-4.33.1.patch` modifies `Main.lean` for Lean
+  4.33.1 without changing the axiom or statement-name skip policies.
 
-Flow builds the exact upstream source against the appliance's fixed Lean release. The source
-archive and resulting executable have separate SHA-256 identities.
+Flow verifies the exact upstream archive, applies the digest-pinned compatibility patch, and builds
+the result against the appliance's fixed Lean release. The archive, patch, and resulting executable
+have separate SHA-256 identities.
 
 ## lean4export
 

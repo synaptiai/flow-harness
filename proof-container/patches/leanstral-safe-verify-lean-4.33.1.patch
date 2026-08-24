@@ -1,0 +1,25 @@
+diff --git a/Main.lean b/Main.lean
+index 7edb372..4667636 100644
+--- a/Main.lean
++++ b/Main.lean
+@@ -25,0 +26 @@ def AllowedAxioms := [`propext, `Quot.sound, `Classical.choice]
++namespace SafeCollectAxioms
+@@ -27,2 +28,10 @@ def AllowedAxioms := [`propext, `Quot.sound, `Classical.choice]
+-partial def collect (c : Name) (skipNames: List String) : CollectAxioms.M Unit := do
+-  let collectExpr (e : Expr) : CollectAxioms.M Unit := e.getUsedConstants.forM fun c => collect c skipNames
++structure State where
++  visited : NameSet := {}
++  axioms : Array Name := #[]
++
++abbrev M := ReaderT Environment $ StateM State
++
++end SafeCollectAxioms
++
++partial def collect (c : Name) (skipNames: List String) : SafeCollectAxioms.M Unit := do
++  let collectExpr (e : Expr) : SafeCollectAxioms.M Unit := e.getUsedConstants.forM fun c => collect c skipNames
+@@ -154 +163 @@ unsafe def replayFile (mFile : System.FilePath)(targets: Array Info × Array Imp
+-      let (_,s):=(CollectAxioms.collect n).run env' |>.run {}
++      let (_,s):=(collect n []).run env' |>.run {}
+@@ -160 +169 @@ unsafe def replayFile (mFile : System.FilePath)(targets: Array Info × Array Imp
+-        if dv.safety != .safe then
++        if dv.safety != DefinitionSafety.safe then

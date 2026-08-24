@@ -290,6 +290,12 @@ async function verifyLocalInputs() {
   if (sha256(await readFile(join(proofRoot, "build-inputs.json"))) !== dependencyManifestDigest) {
     throw new Error("Lean proof dependency manifest digest changed during preparation");
   }
+  const compatibilityPatch = await readFile(
+    join(proofRoot, buildInputs.safeVerify.compatibilityPatch.source),
+  );
+  if (sha256(compatibilityPatch) !== buildInputs.safeVerify.compatibilityPatch.sha256) {
+    throw new Error("Lean proof SafeVerify compatibility patch digest changed");
+  }
   const dockerfile = await readFile(join(proofRoot, "Dockerfile"), "utf8");
   const requiredRecipeInputs = [
     `ARG GO_IMAGE=${buildInputs.baseImages.golang}`,
@@ -303,6 +309,9 @@ async function verifyLocalInputs() {
       buildInputs.lean4export,
       buildInputs.nanoda,
     ].flatMap((source) => [`--checksum=sha256:${source.sha256}`, source.url]),
+    `COPY ${buildInputs.safeVerify.compatibilityPatch.source} /tmp/safe-verify-lean-4.33.1.patch`,
+    buildInputs.safeVerify.compatibilityPatch.sha256,
+    "git apply --check --unidiff-zero /tmp/safe-verify-lean-4.33.1.patch",
   ];
   if (requiredRecipeInputs.some((input) => !dockerfile.includes(input))) {
     throw new Error("Lean proof Docker recipe contradicts its authoritative build manifest");
@@ -426,6 +435,10 @@ function validateInputs(value) {
     value.safeVerify?.revision !== "fb9c583eb0ea96426d94625f89b7842c9dc1c313" ||
     value.safeVerify.url !==
       "https://codeload.github.com/mistralai/LeanstralSafeVerify/tar.gz/fb9c583eb0ea96426d94625f89b7842c9dc1c313" ||
+    !exactKeys(value.safeVerify, ["revision", "url", "sha256", "compatibilityPatch"]) ||
+    !exactKeys(value.safeVerify.compatibilityPatch, ["source", "sha256"]) ||
+    value.safeVerify.compatibilityPatch.source !==
+      "patches/leanstral-safe-verify-lean-4.33.1.patch" ||
     value.lean4export?.revision !== "15f6055e299ad5b89345e533cc2192f4cc00f659" ||
     value.lean4export.url !==
       "https://codeload.github.com/leanprover/lean4export/tar.gz/15f6055e299ad5b89345e533cc2192f4cc00f659" ||
@@ -438,6 +451,7 @@ function validateInputs(value) {
       value.mathlib.sha256,
       value.mathlib.manifestSha256,
       value.safeVerify.sha256,
+      value.safeVerify.compatibilityPatch.sha256,
       value.lean4export.sha256,
       value.nanoda.sha256,
       value.seccomp.sha256,

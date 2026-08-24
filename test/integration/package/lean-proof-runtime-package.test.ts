@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -16,6 +17,7 @@ describe("Lean proof runtime package boundary", () => {
     for (const path of [
       "proof-container/Dockerfile",
       "proof-container/build-inputs.json",
+      "proof-container/patches/leanstral-safe-verify-lean-4.33.1.patch",
       "proof-container/profile.json",
       "proof-container/go.mod",
       "proof-container/cmd/flow-proof-supervisor/main.go",
@@ -34,7 +36,11 @@ describe("Lean proof runtime package boundary", () => {
       readonly baseImages: Readonly<Record<"golang" | "rust" | "debian", string>>;
       readonly lean: { readonly url: string; readonly sha256: string };
       readonly mathlib: { readonly url: string; readonly sha256: string };
-      readonly safeVerify: { readonly url: string; readonly sha256: string };
+      readonly safeVerify: {
+        readonly url: string;
+        readonly sha256: string;
+        readonly compatibilityPatch: { readonly source: string; readonly sha256: string };
+      };
       readonly lean4export: { readonly url: string; readonly sha256: string };
       readonly nanoda: { readonly url: string; readonly sha256: string };
     };
@@ -61,6 +67,21 @@ describe("Lean proof runtime package boundary", () => {
     expect(preparation).toContain("RUST_IMAGE: buildInputs.baseImages.rust");
     expect(preparation).toContain("DEBIAN_IMAGE: buildInputs.baseImages.debian");
     expect(preparation).toContain("SOURCE_DATE_EPOCH: String(buildInputs.sourceDateEpoch)");
+
+    const compatibilityPatch = await readFile(
+      resolve(repositoryRoot, "proof-container", inputs.safeVerify.compatibilityPatch.source),
+    );
+    expect(createHash("sha256").update(compatibilityPatch).digest("hex")).toBe(
+      inputs.safeVerify.compatibilityPatch.sha256,
+    );
+    const patchCopy = `COPY ${inputs.safeVerify.compatibilityPatch.source} /tmp/safe-verify-lean-4.33.1.patch`;
+    const patchCheck = `test "$(sha256sum /tmp/safe-verify-lean-4.33.1.patch | cut -d ' ' -f 1)" = ${inputs.safeVerify.compatibilityPatch.sha256}`;
+    const patchApply = "git apply --check --unidiff-zero /tmp/safe-verify-lean-4.33.1.patch";
+    const safeVerifyBuild = "lake build safe_verify";
+    expect(dockerfile).toContain(patchCopy);
+    expect(dockerfile).toContain(patchCheck);
+    expect(dockerfile).toContain(patchApply);
+    expect(dockerfile.indexOf(patchApply)).toBeLessThan(dockerfile.indexOf(safeVerifyBuild));
   });
 
   it("seeds TLS trust from a pinned stage before reading Debian snapshots", async () => {

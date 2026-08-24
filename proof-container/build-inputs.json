@@ -24,7 +24,11 @@
   "safeVerify": {
     "revision": "fb9c583eb0ea96426d94625f89b7842c9dc1c313",
     "url": "https://codeload.github.com/mistralai/LeanstralSafeVerify/tar.gz/fb9c583eb0ea96426d94625f89b7842c9dc1c313",
-    "sha256": "f046f7c7f2f8f47e14235d97cd7728a6ae74becf5f7d482b5d865d8c3bf538ef"
+    "sha256": "f046f7c7f2f8f47e14235d97cd7728a6ae74becf5f7d482b5d865d8c3bf538ef",
+    "compatibilityPatch": {
+      "source": "patches/leanstral-safe-verify-lean-4.33.1.patch",
+      "sha256": "36eda5615789b7d3ac6c2a1aae09aac6999429f0fac45eac380b5072c93d107a"
+    }
   },
   "lean4export": {
     "revision": "15f6055e299ad5b89345e533cc2192f4cc00f659",

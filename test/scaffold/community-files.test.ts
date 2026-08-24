@@ -260,7 +260,7 @@ describe("public repository contracts", () => {
     expect(workflow.on.push).toEqual({ branches: ["main"] });
     expect(workflow.on.workflow_dispatch).toBeDefined();
     expect(workflow.concurrency).toEqual({
-      group: "ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+      group: `ci-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}`,
       "cancel-in-progress": true,
     });
     expect(Object.keys(workflow.jobs).sort()).toEqual([

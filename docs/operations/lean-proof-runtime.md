@@ -45,6 +45,12 @@ The source archive hash and built artifact hash are separate controls. The build
 hash before extraction. The final image labels bind the actual supervisor, SafeVerify,
 lean4export, Nanoda, and Mathlib manifest hashes.
 
+SafeVerify's fixed revision targets Lean 4.29.1. Flow applies the digest-pinned
+[`leanstral-safe-verify-lean-4.33.1.patch`](../../proof-container/patches/leanstral-safe-verify-lean-4.33.1.patch)
+before it builds SafeVerify with Lean 4.33.1. The patch preserves SafeVerify's statement-name
+skip list and axiom traversal while replacing a collector API that Lean no longer exports. The
+input manifest binds the patch path and SHA-256 digest, and preparation refuses a changed patch.
+
 ## Prepare the appliance
 
 Prepare the runtime from the Flow project that will use it:

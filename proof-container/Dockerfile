@@ -57,6 +57,7 @@ ADD --checksum=sha256:890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62ae
   https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.tar.zst /tmp/lean.tar.zst
 ADD --checksum=sha256:f046f7c7f2f8f47e14235d97cd7728a6ae74becf5f7d482b5d865d8c3bf538ef \
   https://codeload.github.com/mistralai/LeanstralSafeVerify/tar.gz/fb9c583eb0ea96426d94625f89b7842c9dc1c313 /tmp/safe-verify.tar.gz
+COPY patches/leanstral-safe-verify-lean-4.33.1.patch /tmp/safe-verify-lean-4.33.1.patch
 ADD --checksum=sha256:266271a9c062e31535518475a20b69e92f8516d74832d3866f00298e7192eade \
   https://codeload.github.com/leanprover/lean4export/tar.gz/15f6055e299ad5b89345e533cc2192f4cc00f659 /tmp/lean4export.tar.gz
 ADD --checksum=sha256:4906567b829fea7e354022c603aeebead7dd2f4ad1a39a91cc42ffae5de46326 \
@@ -66,8 +67,11 @@ RUN mkdir -p /opt/lean \
     && test "$(lean --version | sed -n '1s/Lean (version \([^,]*\).*/\1/p')" = 4.33.1
 RUN mkdir -p /src/safe-verify /opt/flow/bin \
     && tar -xzf /tmp/safe-verify.tar.gz --strip-components=1 -C /src/safe-verify \
-    && printf 'leanprover/lean4:v4.33.1\n' > /src/safe-verify/lean-toolchain \
+    && test "$(sha256sum /tmp/safe-verify-lean-4.33.1.patch | cut -d ' ' -f 1)" = 36eda5615789b7d3ac6c2a1aae09aac6999429f0fac45eac380b5072c93d107a \
     && cd /src/safe-verify \
+    && git apply --check --unidiff-zero /tmp/safe-verify-lean-4.33.1.patch \
+    && git apply --unidiff-zero /tmp/safe-verify-lean-4.33.1.patch \
+    && printf 'leanprover/lean4:v4.33.1\n' > /src/safe-verify/lean-toolchain \
     && lake build safe_verify \
     && cp .lake/build/bin/safe_verify /opt/flow/bin/safe_verify
 RUN mkdir -p /src/lean4export \
