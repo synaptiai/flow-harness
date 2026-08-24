@@ -12,6 +12,7 @@ import { createEffectiveHarnessState } from "../../../../src/domain/adaptation/e
 import { calculateCapabilitySnapshotDigest } from "../../../../src/domain/capability/agent-skills.js";
 import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
 import { childSpecialistCandidateFixture } from "../../../fixtures/child-specialist-candidate.js";
+import { delegationEvaluationCandidateFixture } from "../../../fixtures/delegation-evaluation-candidate.js";
 import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
 import { modelRoutingCandidateSourceFixture } from "../../../fixtures/model-routing-candidate.js";
 import { phaseRoutingCandidateFixture } from "../../../fixtures/phase-routing-candidate.js";
@@ -26,6 +27,39 @@ afterEach(async () => {
 });
 
 describe("local adaptation candidate dispatch", () => {
+  it("dispatches delegation only after resolving its exact executor", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
+    temporaryDirectories.push(directory);
+    const fixture = delegationEvaluationCandidateFixture();
+    const path = join(directory, "delegation.candidate.yaml");
+    await Promise.all([
+      writeFile(path, fixture.sourceText),
+      writeFile(join(directory, "baseline.workflow.yaml"), fixture.baselineText),
+      writeFile(join(directory, "review.workflow.yaml"), fixture.childText),
+    ]);
+    const resolvedIds: string[] = [];
+
+    await expect(
+      admitLocalAdaptationCandidate(path, {
+        capabilityPackages: [],
+        resolveDelegationExecutor: async (source) => {
+          resolvedIds.push(source.metadata.id);
+          return Object.freeze({
+            identity: fixture.executor,
+            assertCurrent: async () => undefined,
+          });
+        },
+      }),
+    ).resolves.toMatchObject({
+      kind: "delegation-evaluation-candidate",
+      candidate: { identity: fixture.projected.identity },
+    });
+    expect(resolvedIds).toEqual([fixture.source.metadata.id]);
+    await expect(admitLocalAdaptationCandidate(path, { capabilityPackages: [] })).rejects.toThrow(
+      /requires an admitted executor/i,
+    );
+  });
+
   it("does not retain a private missing source path as a nested cause", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
     temporaryDirectories.push(directory);

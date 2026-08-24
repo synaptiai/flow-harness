@@ -485,6 +485,12 @@ export async function admitLocalEvaluationPlan(
           `profile "${profile.id}" phase-routing candidate requires the effectiveCandidate field`,
         );
       }
+      if (admittedCandidate.kind === "delegation-evaluation-candidate") {
+        throw new EvaluationAdmissionError(
+          "invalid_workflow",
+          `profile "${profile.id}" delegation candidate requires a delegation evaluation plan`,
+        );
+      }
       if (admittedCandidate.kind === "agent-skill-candidate") {
         const skillCandidate = admittedCandidate.candidate;
         assertEvaluationWorkflowControls(

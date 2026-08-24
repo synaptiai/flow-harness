@@ -4516,6 +4516,12 @@ async function candidateCommand(
         "effective harness composition requires one ordinary adaptation candidate",
       );
     }
+    if (admitted.kind === "delegation-evaluation-candidate") {
+      throw new EffectiveHarnessStoreError(
+        "invalid_input",
+        "delegation evaluation candidates cannot be composed or activated",
+      );
+    }
     const baseline = await loadCurrentEffectiveHarnessBaseline(
       admitted.candidate.identity.scope.workflowId,
       config,
@@ -4629,6 +4635,9 @@ async function candidateCommand(
       throw new CliUsageError(
         "supplemental-memory candidate activation requires a composed effective harness candidate",
       );
+    }
+    if (admitted.kind === "delegation-evaluation-candidate") {
+      throw new CliUsageError("delegation evaluation candidates cannot be activated");
     }
     const evaluationsDirectory = await awaitWithCancellationPrecedence(
       () => resolveEvaluationsDirectory(dependencies, values["evaluations-dir"]),
@@ -5022,6 +5031,8 @@ function effectiveHarnessProjection(
   >,
 ): EffectiveHarnessCandidateProjection {
   switch (admitted.kind) {
+    case "delegation-evaluation-candidate":
+      throw new CliUsageError("delegation evaluation candidates cannot be composed or activated");
     case "prompt-candidate":
       return {
         kind: "prompt",

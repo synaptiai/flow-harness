@@ -8,6 +8,10 @@ import { parseDocument } from "yaml";
 import { MAX_AGENT_SKILL_CANDIDATE_BYTES } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { ChildSpecialistCandidateSource } from "../../domain/adaptation/child-specialist-candidate.js";
 import { MAX_CHILD_SPECIALIST_CANDIDATE_BYTES } from "../../domain/adaptation/child-specialist-candidate.js";
+import {
+  type DelegationEvaluationCandidateSource,
+  MAX_DELEGATION_EVALUATION_CANDIDATE_BYTES,
+} from "../../domain/adaptation/delegation-evaluation-candidate.js";
 import { MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES } from "../../domain/adaptation/effective-harness-candidate.js";
 import type { EffectiveHarnessState } from "../../domain/adaptation/effective-harness-state.js";
 import { MAX_MODEL_ROUTING_CANDIDATE_BYTES } from "../../domain/adaptation/model-routing-candidate.js";
@@ -32,6 +36,11 @@ import {
   admitLocalChildSpecialistCandidate,
 } from "./local-child-specialist-candidate.js";
 import {
+  type AdmittedLocalDelegationEvaluationCandidate,
+  admitLocalDelegationEvaluationCandidate,
+  type DelegationExecutorAdmission,
+} from "./local-delegation-evaluation-candidate.js";
+import {
   type AdmittedLocalEffectiveHarnessCandidate,
   admitLocalEffectiveHarnessCandidate,
 } from "./local-effective-harness-candidate.js";
@@ -55,6 +64,7 @@ import {
 const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
   MAX_CHILD_SPECIALIST_CANDIDATE_BYTES,
+  MAX_DELEGATION_EVALUATION_CANDIDATE_BYTES,
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
   MAX_MODEL_ROUTING_CANDIDATE_BYTES,
   MAX_PHASE_ROUTING_CANDIDATE_BYTES,
@@ -64,6 +74,10 @@ const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 export type AdmittedLocalAdaptationCandidate =
+  | {
+      readonly kind: "delegation-evaluation-candidate";
+      readonly candidate: AdmittedLocalDelegationEvaluationCandidate;
+    }
   | {
       readonly kind: "child-specialist-candidate";
       readonly candidate: AdmittedLocalChildSpecialistCandidate;
@@ -104,6 +118,16 @@ export interface LocalAdaptationCandidateOptions {
   /** Resolve the immutable active package closure only after child-specialist discrimination. */
   readonly resolveChildSpecialistPackages?:
     | ((source: ChildSpecialistCandidateSource) => Promise<readonly CapabilityPackageSnapshot[]>)
+    | undefined;
+  /** Resolve the immutable active package closure only after delegation discrimination. */
+  readonly resolveDelegationPackages?:
+    | ((
+        source: DelegationEvaluationCandidateSource,
+      ) => Promise<readonly CapabilityPackageSnapshot[]>)
+    | undefined;
+  /** Resolve the exact installed executor only after delegation discrimination. */
+  readonly resolveDelegationExecutor?:
+    | ((source: DelegationEvaluationCandidateSource) => Promise<DelegationExecutorAdmission>)
     | undefined;
   /** Resolve one immutable complete baseline only after supplemental-memory discrimination. */
   readonly resolveSupplementalMemoryBaseline?:
@@ -219,6 +243,28 @@ export async function admitLocalAdaptationCandidate(
     options.signal?.throwIfAborted();
     return Object.freeze({ kind: "child-specialist-candidate", candidate });
   }
+  if (kind === "DelegationEvaluationCandidate") {
+    if (
+      options.capabilityPackages === undefined &&
+      options.resolveDelegationPackages === undefined
+    ) {
+      throw new Error("delegation candidate requires an admitted package closure");
+    }
+    if (options.resolveDelegationExecutor === undefined) {
+      throw new Error("delegation candidate requires an admitted executor");
+    }
+    const candidate = await admitLocalDelegationEvaluationCandidate(absolutePath, {
+      ...(options.capabilityPackages === undefined ? {} : { packages: options.capabilityPackages }),
+      ...(options.resolveDelegationPackages === undefined
+        ? {}
+        : { resolvePackages: options.resolveDelegationPackages }),
+      resolveExecutor: options.resolveDelegationExecutor,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+    });
+    options.signal?.throwIfAborted();
+    return Object.freeze({ kind: "delegation-evaluation-candidate", candidate });
+  }
   if (kind === "ModelRoutingCandidate") {
     const candidate = await admitLocalModelRoutingCandidate(absolutePath, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -300,6 +346,7 @@ function parseCandidateKind(
   | "PromptCandidate"
   | "AgentSkillCandidate"
   | "ChildSpecialistCandidate"
+  | "DelegationEvaluationCandidate"
   | "ModelRoutingCandidate"
   | "PhaseRoutingCandidate"
   | "SupplementalMemoryCandidate"
@@ -320,6 +367,7 @@ function parseCandidateKind(
     (value.kind === "PromptCandidate" ||
       value.kind === "AgentSkillCandidate" ||
       value.kind === "ChildSpecialistCandidate" ||
+      value.kind === "DelegationEvaluationCandidate" ||
       value.kind === "ModelRoutingCandidate" ||
       value.kind === "PhaseRoutingCandidate" ||
       value.kind === "SupplementalMemoryCandidate" ||
