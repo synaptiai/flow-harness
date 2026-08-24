@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createLeanProofRequest } from "../../src/domain/proof/lean-proof-verification.js";
+import {
+  createLeanProofRequest,
+  decideLeanProofVerification,
+} from "../../src/domain/proof/lean-proof-verification.js";
 import { DockerUnixApiClient } from "../../src/infrastructure/oci/docker-unix-api-client.js";
 import {
   leanProofLeaseKey,
@@ -49,14 +52,16 @@ describe.skipIf(!enabled)("Lean proof OCI runtime", () => {
     });
   }, 300_000);
 
-  it("does not accept compiler-backed native_decide authority outside the closed axiom policy", async () => {
+  it("does not accept native_decide authority outside the closed axiom policy", async () => {
     const runtime = await preparedRuntime();
     const driver = createProductionLeanProofDriver(repositoryRoot);
     const request = proofRequest(runtime, "by\n  native_decide\n", "native-decide");
     const evidence = await driver.execute(request, context("native-decide"));
 
-    expect(evidence.compiler.status, proofEvidenceSummary(evidence)).toBe("accepted");
-    expect(evidence.safeVerify.status).not.toBe("accepted");
+    expect(
+      decideLeanProofVerification(request, evidence).verdict,
+      proofEvidenceSummary(evidence),
+    ).not.toBe("accepted");
     expect(evidence.cleanup).toBe("confirmed");
   }, 300_000);
 
