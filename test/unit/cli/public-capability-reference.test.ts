@@ -29,6 +29,13 @@ describe("public capability reference CLI", () => {
     expect(catalog).toMatchObject({ version: "flow.public-capabilities/v1" });
     expect(catalog.limits).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          id: "delegation-evaluation-candidate-bytes",
+          value: 1_048_576,
+        }),
+        expect.objectContaining({ id: "delegation-objective-bytes", value: 262_144 }),
+        expect.objectContaining({ id: "delegation-depth", value: 1 }),
+        expect.objectContaining({ id: "delegation-calls-per-manager", value: 1 }),
         expect.objectContaining({ id: "proof-specification-bytes", value: 65_536 }),
         expect.objectContaining({ id: "proof-statement-bytes", value: 131_072 }),
         expect.objectContaining({ id: "proof-term-bytes", value: 262_144 }),

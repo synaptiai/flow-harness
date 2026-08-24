@@ -5,6 +5,12 @@ import {
   type PublicCapabilityCatalog,
   type PublicCapabilityLimitInput,
 } from "../../domain/capability/public-capability-reference.js";
+import {
+  MAX_DELEGATION_EVALUATION_CALLS,
+  MAX_DELEGATION_EVALUATION_CANDIDATE_BYTES,
+  MAX_DELEGATION_EVALUATION_DEPTH,
+  MAX_DELEGATION_OBJECTIVE_BYTES,
+} from "../../domain/adaptation/delegation-evaluation-candidate.js";
 import { MAX_LEAN_PROOF_QUALIFICATION_INPUT_BYTES } from "../../domain/evaluation/lean-proof-qualification.js";
 import { CAPABILITY_PACKAGE_FAMILY_REFERENCES } from "../../domain/capability/capability-bundles.js";
 import { EVALUATION_ADAPTER_REFERENCES } from "../../domain/evaluation/plan.js";
@@ -50,6 +56,33 @@ const LEAN_PROOF_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabilityLimitInp
   },
 ]);
 
+const DELEGATION_EVALUATION_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabilityLimitInput[]>([
+  {
+    id: "delegation-evaluation-candidate-bytes",
+    value: MAX_DELEGATION_EVALUATION_CANDIDATE_BYTES,
+    unit: "bytes",
+    scope: "Maximum UTF-8 bytes in one bounded delegation evaluation candidate.",
+  },
+  {
+    id: "delegation-objective-bytes",
+    value: MAX_DELEGATION_OBJECTIVE_BYTES,
+    unit: "bytes",
+    scope: "Maximum UTF-8 bytes in one sealed delegation objective.",
+  },
+  {
+    id: "delegation-depth",
+    value: MAX_DELEGATION_EVALUATION_DEPTH,
+    unit: "items",
+    scope: "Maximum child delegation depth in one bounded delegation evaluation.",
+  },
+  {
+    id: "delegation-calls-per-manager",
+    value: MAX_DELEGATION_EVALUATION_CALLS,
+    unit: "items",
+    scope: "Maximum sealed delegation calls by one admitted manager attempt.",
+  },
+]);
+
 export function createProductionPublicCapabilityCatalog(): PublicCapabilityCatalog {
   return definePublicCapabilityCatalog({
     version: PUBLIC_CAPABILITY_CATALOG_VERSION,
@@ -65,7 +98,11 @@ export function createProductionPublicCapabilityCatalog(): PublicCapabilityCatal
           }
         : tool,
     ),
-    limits: [...WORKSPACE_AGENT_PUBLIC_LIMITS, ...LEAN_PROOF_PUBLIC_LIMITS],
+    limits: [
+      ...WORKSPACE_AGENT_PUBLIC_LIMITS,
+      ...DELEGATION_EVALUATION_PUBLIC_LIMITS,
+      ...LEAN_PROOF_PUBLIC_LIMITS,
+    ],
     capabilityFamilies: CAPABILITY_PACKAGE_FAMILY_REFERENCES,
     executionSeams: [
       PRODUCTION_AGENT_EXECUTOR_DESCRIPTOR.reference,

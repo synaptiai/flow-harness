@@ -312,6 +312,10 @@ Schema `default` annotations alone don't insert a value.
 | `agent-effects-per-attempt` | 32 items | — | Maximum flow_edit effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |
+| `delegation-calls-per-manager` | 1 items | — | Maximum sealed delegation calls by one admitted manager attempt. |
+| `delegation-depth` | 1 items | — | Maximum child delegation depth in one bounded delegation evaluation. |
+| `delegation-evaluation-candidate-bytes` | 1048576 bytes | — | Maximum UTF-8 bytes in one bounded delegation evaluation candidate. |
+| `delegation-objective-bytes` | 262144 bytes | — | Maximum UTF-8 bytes in one sealed delegation objective. |
 | `edit-file-bytes` | 8388608 bytes | — | Maximum UTF-8 bytes in one edited file. |
 | `edit-input-characters` | 262144 characters | — | Maximum Unicode code points in one old or replacement text schema value. |
 | `edit-input-total-bytes` | 262144 bytes | — | Maximum combined UTF-8 bytes across every old and replacement text value. |

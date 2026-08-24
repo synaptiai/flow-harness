@@ -39,6 +39,8 @@ export {
 
 export const DELEGATION_EVALUATION_CANDIDATE_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_DELEGATION_EVALUATION_CANDIDATE_BYTES = 1_048_576;
+export const MAX_DELEGATION_EVALUATION_DEPTH = 1;
+export const MAX_DELEGATION_EVALUATION_CALLS = 1;
 
 const identifierSchema = z
   .string()
@@ -111,8 +113,8 @@ const sourceSchema = z
           })
           .strict(),
         executor: delegationExecutorIdentitySchema,
-        maxDepth: z.literal(1),
-        maxCalls: z.literal(1),
+        maxDepth: z.literal(MAX_DELEGATION_EVALUATION_DEPTH),
+        maxCalls: z.literal(MAX_DELEGATION_EVALUATION_CALLS),
       })
       .strict(),
   })

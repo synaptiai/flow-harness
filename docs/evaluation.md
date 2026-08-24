@@ -84,6 +84,21 @@ ordinary superiority verdict doesn't own this decision. Read
 [Evaluate and activate phase-aware model routing](guides/phase-routing.md) for candidate authoring,
 the plan, verdicts, activation, recovery, and non-goals.
 
+## Bounded delegation evaluation
+
+An evaluation with `purpose: delegation-v1` compares the same root workflow and package closure
+with and without one sealed foreground specialist. Only the exact candidate manager receives the
+empty-input `flow_delegate` tool. It can skip the tool or call the exact reviewed child once.
+
+The report separates `delegation-fit` and `sequential-control` tasks, child outcomes, child resource
+changes, missing observations, and constraint violations. Missing delegation evidence forces
+`insufficient_evidence`. A proven constraint breach forces `constraint_failed`. No verdict can
+authorize activation.
+
+Read [Evaluate bounded one-shot delegation](guides/evaluate-bounded-delegation.md) for candidate
+production, plan requirements, the foreground child lifecycle, report interpretation, recovery,
+privacy, and non-goals.
+
 ## Context compaction evaluation
 
 The dedicated three-mode evaluator compares complete portable history, verified artifact
@@ -139,6 +154,13 @@ The ACP qualification purpose is the narrow exception for an executor selection.
 `flow-workflow-v1` profiles selects one project-local `AcpAgent` manifest. Admission binds the
 manifest's exact runtime closure in the capability snapshot. Both profiles must select the same
 workflow source and distinct executor identities.
+
+The bounded delegation purpose is the narrow exception for a sealed child capability. Its two
+`flow-workflow-v1` profiles use the same root workflow and package closure. The baseline has no
+delegation authority. The candidate binds one exact embedded Pi manager, objective, child workflow,
+typed result, executor identity, complete child budget, depth of one, and one call. Every task is a
+filesystem-verified holdout labeled `delegation-fit` or `sequential-control`, and both labels are
+required.
 
 Paths are portable relative paths below the plan directory. Fixtures may contain only bounded
 regular files and directories: symbolic links, special files, `.flow`, path escapes, oversized
@@ -776,6 +798,8 @@ and candidate states, relationship-set and assessment identities when present, a
 evaluation identity.
 Phase-routing activation requires the exact composed artifact, evaluation-only `before` state,
 candidate `after` state, ordered profile digests, and purpose-specific qualification report.
+Delegation evaluation candidates cannot be composed or activated, even when the ordinary comparison
+verdict is `superior`.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

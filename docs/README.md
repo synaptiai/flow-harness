@@ -33,6 +33,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
 | [Qualify two local ACP agents](guides/qualify-acp-agents.md) | You need to verify two exact production ACP agents against one prompt-only workflow and private result contract. |
 | [Evaluate and activate phase-aware model routing](guides/phase-routing.md) | You need exact planner, executor, verifier, or escalation routes with held-out quality, cost, latency, and safety gates. |
+| [Evaluate bounded one-shot delegation](guides/evaluate-bounded-delegation.md) | You need to compare one sealed local specialist against the same manager without delegation or activation authority. |
 | [Verify an exact Lean statement](guides/lean-proof-verification.md) | You need human-approved statement faithfulness, compiler and checker agreement, content-free evidence, or proof-profile qualification. |
 
 ## Operate Flow

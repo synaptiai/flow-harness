@@ -68,6 +68,8 @@ Current capability groups include:
   and evidence-backed relationships.
 - Exact phase-aware model routing with per-request durable evidence and held-out qualification
   before activation.
+- A sealed one-call local delegation experiment with paired task classes, durable child evidence,
+  exact resource accounting, and no activation path.
 - A balanced three-mode experiment for complete history, verified artifact references, and bounded
   summaries. It cannot activate production compaction.
 
@@ -157,6 +159,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Recovery and interruption safety](docs/recovery.md) | Exact restart, uncertainty, and remediation rules |
 | [Reproducible harness evaluation](docs/evaluation.md) | Comparative plans, private verification, candidates, activation, and export |
 | [Qualify two local ACP agents](docs/guides/qualify-acp-agents.md) | Paired production-agent identity, private result verification, accounting, verdicts, and recovery |
+| [Evaluate bounded one-shot delegation](docs/guides/evaluate-bounded-delegation.md) | Sealed candidate authority, paired task classes, child evidence, verdicts, recovery, and non-goals |
 | [Verify an exact Lean statement](docs/guides/lean-proof-verification.md) | Proof inputs, human statement approval, checker evidence, qualification, and non-goals |
 | [Lean proof runtime operations](docs/operations/lean-proof-runtime.md) | Reproducible Linux x64 preparation, containment, identity, recovery, and replacement |
 | [Testing and evaluation](docs/testing-and-evaluation.md) | Contributor gates, test layers, runtime proofs, and live-provider policy |

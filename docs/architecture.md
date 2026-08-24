@@ -104,6 +104,13 @@ durable provider request. It qualifies the exact profile pair on held-out qualit
 and safety evidence. Only a complete qualified artifact can activate. Learned routing and silent
 fallback remain outside runtime authority.
 
+Gate 10 also adds one bounded local delegation experiment. A reviewed candidate can give one exact
+embedded Pi manager a sealed empty-input tool for one exact foreground child. The capability binds
+the objective, child workflow, package closure, executor, typed result, five resource ceilings,
+depth, and call count. Durable preparation and settlement reuse isolated child-run identity,
+recovery, replay, cancellation, cleanup, and accounting. Paired evaluation reports both
+delegation-suitable and sequential-control tasks, but no result can activate delegation.
+
 Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
 retain the embedded Pi path.
 
@@ -146,6 +153,7 @@ flowchart TB
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         qualification["ACP qualification<br/>Two exact agents · one verified result contract"]
         phaseRouting["Phase routing qualification<br/>Exact roles · held-out quality and efficiency"]
+        delegation["Bounded delegation evaluation<br/>One sealed local child · no activation"]
         proofQualification["Proof qualification<br/>Coverage · faithfulness · tests · lifecycle"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
@@ -195,6 +203,7 @@ flowchart TB
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Qualifies two exact local agents"| qualification
     cli -->|"Qualifies one exact route pair"| phaseRouting
+    cli -->|"Compares one sealed specialist"| delegation
     cli -->|"Qualifies one exact proof profile"| proofQualification
     cli -->|"Compares three context modes"| compaction
     cli -->|"Requests one inert proposal"| proposals
@@ -220,6 +229,7 @@ flowchart TB
     adaptation -->|"Runs paired trials"| engine
     qualification -->|"Runs a complete paired schedule"| engine
     phaseRouting -->|"Runs paired held-out profiles"| engine
+    delegation -->|"Runs paired task classes"| engine
     proofQualification -->|"Checks the complete declared denominator"| engine
     compaction -->|"Runs held-out trials"| engine
     adaptation -->|"Stages one atomic entry and relationship change"| memory
@@ -230,6 +240,7 @@ flowchart TB
     adaptation -->|"Stores evaluation and activation evidence"| stores
     qualification -->|"Stores identity-bound verdict evidence"| stores
     phaseRouting -->|"Stores request-bound qualification evidence"| stores
+    delegation -->|"Stores content-free child observations"| stores
     proofQualification -->|"Stores content-free qualification evidence"| stores
     compaction -->|"Stores a dedicated report"| stores
     ledgers -->|"Supplies exact evidence references"| memory
@@ -296,7 +307,9 @@ Read the diagram from top to bottom:
    isolated process boundary. ACP qualification alternates two distinct frozen identities through
    the same workflow and keeps the expected typed result outside their input. Phase-routing
    qualification compares two complete immutable profiles and admits only request-bound evidence
-   from exact targets. Proof qualification keeps mathematical coverage, human statement
+   from exact targets. Bounded delegation compares the same root and package closure with and
+   without one sealed foreground child, and it never creates activation authority. Proof
+   qualification keeps mathematical coverage, human statement
    faithfulness, ordinary tests, policy, cost, latency, and cleanup as separate complete fields.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
@@ -331,6 +344,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
 | ACP interoperability qualification | `src/domain/evaluation/plan.ts`, `src/domain/evaluation/agent-result-verifier.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, `src/application/evaluation-adapter.ts`, `src/application/run-evaluation.ts`, `src/infrastructure/fs/local-evaluation-plan.ts`, and `src/infrastructure/fs/local-evaluation-store.ts` | Admits two distinct exact ACP executors for one closed workflow, verifies each canonical typed result privately, persists identity-bound observations, and derives complete paired qualification verdicts offline. |
 | Phase-aware model routing | `src/domain/adaptation/phase-routing-candidate.ts`, `src/infrastructure/fs/local-phase-routing-candidate.ts`, `src/application/run-workflow.ts`, `src/domain/run/model-session.ts`, `src/application/evaluation-adapter.ts`, `src/domain/evaluation/aggregate.ts`, and `src/application/prepare-effective-harness-activation.ts` | Admits and composes complete exact route profiles, resolves root and child targets before provider I/O, records durable request decisions, derives held-out qualification, and activates only the exact qualified artifact. |
+| Bounded delegation evaluation | `src/domain/adaptation/delegation-evaluation*.ts`, `src/domain/run/events.ts`, `src/application/run-workflow.ts`, `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/pi-agent-executor.ts`, `src/application/evaluation-adapter.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, and `src/infrastructure/fs/local-evaluation-*.ts` | Admits one sealed embedded Pi manager and foreground child, attenuates authority at the child boundary, persists replay-safe preparation and settlement, derives task-class observations and resource deltas, and provides no composition or activation path. |
 | Exact Lean proof verification | `src/domain/proof/lean-proof-verification.ts`, `src/application/verifier-executor.ts`, `src/infrastructure/oci/local-lean-proof-driver.ts`, `src/infrastructure/oci/local-lean-proof-lease-store.ts`, `src/infrastructure/oci/local-lean-proof-runtime-admission.ts`, `src/infrastructure/oci/production-lean-proof-oci-preparation.ts`, `scripts/prepare-proof-runtime.mjs`, and `proof-container/` | Binds one exact specification, statement, proof, human approval, and runtime; prepares and admits a reproducible Linux x64 appliance; requires compiler, SafeVerify, Nanoda, and cleanup agreement; and preserves content-free public evidence. |
 | Lean proof qualification | `src/domain/evaluation/lean-proof-qualification.ts`, `src/infrastructure/fs/local-lean-proof-qualification.ts`, and `src/cli/main.ts` | Requires one identity-consistent trial per declared task and reports complete proof, faithfulness, ordinary-test, cost, latency, policy, cleanup, and missingness evidence without activation authority. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
@@ -401,6 +415,7 @@ Architecture is derived from these flows.
 | Compare context compaction | An operator supplies one dedicated held-out plan | Six balanced mode orders compare complete history, verified references, and one optional bounded summary without activation authority |
 | Qualify two ACP agents | An operator supplies two exact manifests and one qualification plan | A complete paired report proves qualification, proves nonconformance, or names the evidence that remains insufficient; it doesn't infer broader ACP compatibility |
 | Qualify phase-aware routing | An operator supplies one exact route pair and held-out plan | A complete paired report qualifies the exact artifact, rejects a failed threshold, or names missing route, quality, cost, latency, environment, or safety evidence. |
+| Evaluate bounded delegation | An operator supplies one reviewed sealed child candidate and paired holdout plan | The same manager runs with and without one optional foreground specialist; the report separates task classes, child outcomes, resources, missingness, and constraint failures without activation authority |
 | Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows
@@ -636,6 +651,13 @@ unavailability: the application audits the former and retries the latter with bo
 backoff under the node signal. Denial returns a bounded tool error to Pi; grant consumption and
 command preparation are one reducer transition. A run-scoped queue serializes pending human
 decisions across concurrent agent nodes, while already granted commands remain free to prepare.
+
+For an admitted `delegation-v1` candidate only, the exact manager session also receives
+`flow_delegate`. The tool has a strict empty object schema, executes sequentially, and calls an
+application-owned one-shot delegation session. Pi cannot replace the sealed objective, child,
+executor, packages, result schema, or budget. The application writes durable preparation before
+child creation and returns the typed result only after terminal child evidence and workspace
+cleanup settle. The child session receives no delegation capability.
 
 Linux preparation resolves a canonical root-owned Bubblewrap executable outside the workspace,
 configures SRT with that absolute path, and accepts only SRT's canonical outer-shell descriptor with
@@ -1373,6 +1395,9 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
     checker result, axiom policy, human approval, or cleanup identity.
 29. Proof qualification cannot combine mathematical acceptance with missing statement
     faithfulness, ordinary tests, cost, latency, policy, or cleanup evidence.
+30. A delegation manager cannot change sealed child authority or call more than once. It cannot
+    report success after an unsuccessful child or settle with an open or mismatched receipt. The
+    child cannot receive delegation authority. Child resources cannot appear in manager usage.
 
 ## Failure modes
 
@@ -1422,6 +1447,10 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Proof cleanup or prior container reconciliation is unconfirmed | Retain the durable lease, block automatic retry, and never settle an accepted proof |
 | Proof qualification evidence is incomplete | Return `insufficient_evidence`; return `not_qualified` when complete evidence establishes a failure |
 | ACP qualification trial, identity, result, accounting, containment, or pair evidence is incomplete | Return `insufficient_evidence`, or `not_qualified` when committed evidence proves conformance failure; never infer compatibility from a partial denominator |
+| Delegation candidate, executor, package, manager, child, result, budget, depth, or call identity is invalid or stale | Reject admission or the trial before granting the sealed tool; never substitute a live or model-selected value |
+| Delegation is prepared but child settlement is missing | Reconcile the exact derived child and workspace, append only proven settlement, return `uncertain_operation`, and never retry the manager automatically |
+| Delegated child fails, is cancelled, exhausts resources, or lacks a typed result | Return bounded non-success to the manager and reject manager success even when its receipt matches the durable identity |
+| Delegation observations, paired task classes, or constraint evidence are incomplete | Return `insufficient_evidence`; return `constraint_failed` for complete proven violations; never create activation authority |
 | Concurrent workspace changes | Detect baseline drift and pause before absorbing the changes |
 | Crash during persistence | Recover to the last committed event and tolerate an incomplete trailing record |
 | Client exits after detached acceptance | The authenticated worker continues with independent standard streams and process group |
@@ -1455,6 +1484,14 @@ and comparison verdict. Neither reducer imports the other's event vocabulary.
 
 The `HarnessEvaluationAdapter` port receives one fresh workspace and one task instruction. It also
 receives public trial identity and fixed controls. It receives no verifier body or store authority.
+
+For `delegation-v1`, both profiles use the same root workflow, package closure, model controls, and
+paired filesystem-verified holdouts. The baseline snapshot contains no delegation authority. The
+candidate snapshot binds one exact manager, private objective, local child, typed result, embedded
+Pi executor, complete child ceiling, depth of one, and one call. The adapter derives a content-free
+observation from replay-validated parent and child ledgers. Offline aggregation requires complete
+observations and pairs, reports outcomes and child resource deltas by task class, and preserves only
+the existing comparison verdicts. Candidate composition and activation reject this surface.
 
 For `acp-interoperability-v1`, both profiles use `flow-workflow-v1`, the same workflow digest, and
 different ACP capability snapshots. The adapter extracts a bounded qualification observation only
@@ -1759,6 +1796,8 @@ also remains unavailable.
 - Flow does not reproduce OMP's full tool surface in the initial release.
 - Flow does not make Markdown an executable orchestration language.
 - Flow does not initially provide distributed or multi-host scheduling.
+- Flow does not provide recursive, parallel, detached, background, remote, A2A, MCP-task, or
+  multi-host delegation. The local one-shot delegation surface is evaluation-only.
 - Flow does not guarantee exactly-once behavior for arbitrary external side effects.
 - Flow does not guarantee prepaid or invoice-authoritative model-cost caps, currency conversion, or distributed quota reservation.
 - Flow does not autonomously merge, release, deploy, or weaken its safety floor.
