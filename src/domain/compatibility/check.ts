@@ -176,6 +176,16 @@ export interface CompatibilityArtifactResult {
   readonly observations?: CompatibilityWorkflowObservations | CompatibilityRunObservations;
 }
 
+export type CompatibilityArtifactSource =
+  | Uint8Array
+  | {
+      readonly category:
+        | "artifact_identity_mismatch"
+        | "artifact_malformed"
+        | "resource_limit"
+        | "source_missing";
+    };
+
 export interface CompatibilityReport {
   readonly version: typeof COMPATIBILITY_REPORT_VERSION;
   readonly flow: { readonly package: "@synapti/flow-harness"; readonly version: string };
@@ -212,7 +222,7 @@ export function checkCompatibilityCorpus(input: {
   readonly flowVersion: string;
   readonly corpusSha256: string;
   readonly manifest: CompatibilityCorpusManifest;
-  readonly sources: ReadonlyMap<string, Uint8Array>;
+  readonly sources: ReadonlyMap<string, CompatibilityArtifactSource>;
 }): CompatibilityReport {
   if (
     !packageVersionSchema.safeParse(input.flowVersion).success ||
@@ -243,7 +253,7 @@ export function checkCompatibilityCorpus(input: {
 
 function checkArtifact(
   artifact: CompatibilityArtifact,
-  source: Uint8Array | undefined,
+  source: CompatibilityArtifactSource | undefined,
 ): CompatibilityArtifactResult {
   const base = {
     id: artifact.id,
@@ -253,6 +263,9 @@ function checkArtifact(
   } as const;
   if (source === undefined) {
     return { ...base, state: "incompatible", category: "source_missing" };
+  }
+  if (!(source instanceof Uint8Array)) {
+    return { ...base, state: "incompatible", category: source.category };
   }
   if (source.byteLength < 1 || source.byteLength > MAX_COMPATIBILITY_ARTIFACT_BYTES) {
     return { ...base, state: "incompatible", category: "resource_limit" };

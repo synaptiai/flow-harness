@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
-
+import type { CompatibilityArtifactSource } from "../../../src/domain/compatibility/check.js";
 import {
   type CompatibilityCorpusError,
   checkCompatibilityCorpus,
@@ -205,6 +205,28 @@ describe("compatibility corpus check", () => {
       category: "artifact_identity_mismatch",
     });
     expect(report.artifacts[1]).not.toHaveProperty("observations");
+  });
+
+  it("preserves a bounded source-read failure as an artifact result", () => {
+    const input = corpusInput();
+    const manifest = parseCompatibilityCorpusManifest(input.manifest);
+    const sources = new Map<string, CompatibilityArtifactSource>(input.sources);
+    sources.set("releases/0.1.0-alpha.1/terminal-run.events.jsonl", {
+      category: "resource_limit",
+    });
+
+    const report = checkCompatibilityCorpus({
+      flowVersion: "0.1.0-alpha.3",
+      corpusSha256: sha256(JSON.stringify(input.manifest)),
+      manifest,
+      sources,
+    });
+
+    expect(report.artifacts[1]).toMatchObject({
+      id: "alpha1-terminal-run",
+      state: "incompatible",
+      category: "resource_limit",
+    });
   });
 
   it("rejects an unsupported corpus version with a stable diagnostic", () => {
