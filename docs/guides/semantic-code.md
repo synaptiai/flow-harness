@@ -4,7 +4,7 @@ Use Flow's semantic code tool when an agent needs diagnostics, definitions, refe
 information from a language server. This guide explains how to select one exact server, declare
 semantic access in a workflow, run the workflow, and inspect its bounded evidence.
 
-This feature is available in Flow `0.1.0-alpha.3` and the current source tree. The hosted runtime
+This feature is available in Flow `0.1.0-alpha.4` and the current source tree. The hosted runtime
 acceptance test covers Linux x64. The feature doesn't make a language-server result authoritative
 workflow evidence.
 

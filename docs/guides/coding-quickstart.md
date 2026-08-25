@@ -4,7 +4,7 @@ Use the coding quick start to prove one provider-backed read and edit through Fl
 creates a reviewed fixture, lets one agent make one exact change, and accepts the goal only after a
 separate deterministic command runs. That command verifies every fixture byte.
 
-This feature is available in Flow `0.1.0-alpha.3` and the current source tree.
+This feature is available in Flow `0.1.0-alpha.4` and the current source tree.
 
 ## Understand the boundary
 

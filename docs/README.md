@@ -10,7 +10,8 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | Document | Use it when |
 | --- | --- |
 | [Install the Flow preview](guides/install-preview.md) | You want to install, call, pin, verify, remove, or replace the published package. |
-| [Flow 0.1.0-alpha.3 release notes](releases/0.1.0-alpha.3.md) | You need the supported environment, verified behaviors, changes, or compatibility limits for the current checkpoint. |
+| [Flow 0.1.0-alpha.4 release notes](releases/0.1.0-alpha.4.md) | You need the supported environment, verified behaviors, changes, or compatibility limits for the current checkpoint. |
+| [Flow 0.1.0-alpha.3 release notes](releases/0.1.0-alpha.3.md) | You intentionally need the historical first npm preview. |
 | [Flow 0.1.0-alpha.2 release notes](releases/0.1.0-alpha.2.md) | You intentionally need the historical GitHub-only usability checkpoint. |
 | [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You intentionally need the historical first-alpha contract. |
 | [Getting started](getting-started.md) | You want to confirm the `flow` command and complete one credential-free run. |
@@ -43,7 +44,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 
 | Document | Use it when |
 | --- | --- |
-| [Preview release operations](operations/release-preview.md) | You need to build, approve, publish, bootstrap npm, or recover a preview release. |
+| [Preview release operations](operations/release-preview.md) | You need to qualify, publish, stage, approve, verify, or recover a preview release. |
 | [Prime runtime operations](operations/prime-runtime.md) | You need the Linux x64 Prime profile or the higher-isolation container command profile. |
 | [Lean proof runtime operations](operations/lean-proof-runtime.md) | You need to prepare, verify, recover, or replace the reproducible Linux x64 proof appliance. |
 | [Recovery and interruption safety](recovery.md) | You need restart rules, uncertain-state handling, remediation, or durable ownership details. |

@@ -37,9 +37,9 @@ The compiled graph decides what runs next. Model prose cannot override missing o
 
 ## Project status
 
-Flow is a public alpha preview. The executable format is `flow.synapti.ai/v1alpha1`. The published
-alpha.3 checkpoint has no compatibility or migration promise. Current source introduces a bounded,
-tested compatibility policy for selected historical artifacts without claiming stable support.
+Flow is a public alpha preview. The executable format is `flow.synapti.ai/v1alpha1`. Alpha.4 is the
+first checkpoint governed by a bounded, tested compatibility policy for selected historical
+artifacts. It doesn't claim stable support or automatic migration.
 
 Current capability groups include:
 
@@ -81,7 +81,7 @@ Read [Project status](docs/project-status.md) for the current feature and platfo
 
 ## Quick start
 
-The `0.1.0-alpha.3` checkpoint provides the guided command. It creates a minimal Flow project and
+The `0.1.0-alpha.4` checkpoint provides the guided command. It creates a minimal Flow project and
 completes one credential-free workflow through the production command sandbox.
 
 ### Prerequisites

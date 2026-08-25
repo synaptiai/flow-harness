@@ -11,7 +11,7 @@ This feature is an evaluation experiment. It cannot activate delegation for ordi
 
 Before you start, prepare these inputs:
 
-- Flow `0.1.0-alpha.3` installed through the [preview installation guide](install-preview.md), or a
+- Flow `0.1.0-alpha.4` installed through the [preview installation guide](install-preview.md), or a
   matching source build.
 - One exact root workflow with an embedded Pi `agent` node that acts as the manager.
 - One exact child workflow with one typed `result` node and no nested child workflow.

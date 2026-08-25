@@ -7,10 +7,9 @@ The supported npm entry point is the `flow` executable. The package doesn't prov
 JavaScript or TypeScript import. Flow verifies selected historical artifacts through an immutable
 corpus so that maintainers can detect unintended changes before publication.
 
-This policy is implemented in the repository after the immutable `0.1.0-alpha.3` checkpoint. It
-will govern the first approved later preview that contains Issue #184. The published alpha.3
-package doesn't contain `flow compatibility check` and retains the limits in its
-[release notes](releases/0.1.0-alpha.3.md).
+`0.1.0-alpha.4` is the first checkpoint governed by this policy. The published alpha.3 package
+doesn't contain `flow compatibility check` and retains the limits in its
+[historical release notes](releases/0.1.0-alpha.3.md).
 
 ## Check the installed release
 

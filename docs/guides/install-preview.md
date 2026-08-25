@@ -4,7 +4,7 @@ This guide installs and calls the public Flow preview without building the repos
 path for the current prerelease channel. Use the immutable GitHub release path when you must verify
 the exact archive and its build provenance before execution.
 
-Flow `0.1.0-alpha.3` is a prerelease. Its workflow and storage contracts can change before the
+Flow `0.1.0-alpha.4` is a prerelease. Its workflow and storage contracts can change before the
 first stable version. Don't use it as a security boundary for hostile or multi-tenant workloads.
 Read the [security policy](../../SECURITY.md) before unattended use.
 
@@ -29,28 +29,31 @@ Confirm the version selected by the prerelease channel:
 npm view @synapti/flow-harness@preview version
 ```
 
-The expected output for this release is `0.1.0-alpha.3`. Install that channel globally and disable
+The expected output for this release is `0.1.0-alpha.4`. Install that channel globally and disable
 package lifecycle scripts because Flow doesn't require one:
 
 ```sh
 npm install --global --ignore-scripts @synapti/flow-harness@preview
 flow --help
+flow compatibility check
 ```
 
 The installation adds the `flow` executable to npm's global executable directory. The help output
-must begin with `Flow — Provider-neutral coding-agent harness` and list `flow quickstart`. The
+must begin with `Flow — Provider-neutral coding-agent harness` and list `flow quickstart`.
+The compatibility command must return a JSON report whose `overall` value is `compatible`. The
 launcher stops before it loads the complete command if Node.js or the operating system is
 unsupported.
 
 The `preview` tag is the canonical prerelease channel, and it moves to each approved prerelease.
-Because alpha.3 is the package's first public npm version, npm also exposes it through `latest` even
-though publication used `--tag preview`. Unqualified installs therefore resolve to alpha.3. Always
-name `@preview` when you want the prerelease channel.
+Because alpha.3 was the package's first public npm version, npm also exposes alpha.3 through
+`latest` even though publication used `--tag preview`. Alpha.4 advances only `preview`.
+Unqualified installs therefore remain on alpha.3. Always name `@preview` when you want the current
+prerelease channel.
 
 Pin the exact version when repeatability matters:
 
 ```sh
-npm install --global --ignore-scripts @synapti/flow-harness@0.1.0-alpha.3
+npm install --global --ignore-scripts @synapti/flow-harness@0.1.0-alpha.4
 ```
 
 Future prereleases must advance only `preview`. The first stable release must move `latest` to the
@@ -62,6 +65,7 @@ Use npm's temporary executable path when you only want to inspect the current co
 
 ```sh
 npm exec --yes --package=@synapti/flow-harness@preview -- flow --help
+npm exec --yes --package=@synapti/flow-harness@preview -- flow compatibility check
 ```
 
 The first `--` ends npm's options. `flow --help` is the harness command. This form downloads the
@@ -92,27 +96,27 @@ Create a private temporary directory and download the three release assets:
 
 ```sh
 release_dir="$(mktemp -d)"
-gh release download v0.1.0-alpha.3 \
+gh release download v0.1.0-alpha.4 \
   --repo synaptiai/flow-harness \
   --dir "$release_dir" \
-  --pattern 'synapti-flow-harness-0.1.0-alpha.3.tgz' \
+  --pattern 'synapti-flow-harness-0.1.0-alpha.4.tgz' \
   --pattern 'package-release-evidence.json' \
-  --pattern 'flow-harness-0.1.0-alpha.3.intoto.jsonl'
+  --pattern 'flow-harness-0.1.0-alpha.4.intoto.jsonl'
 ```
 
 Verify the immutable release and each downloaded asset:
 
 ```sh
-gh release verify v0.1.0-alpha.3 \
+gh release verify v0.1.0-alpha.4 \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.3 \
-  "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz" \
+gh release verify-asset v0.1.0-alpha.4 \
+  "$release_dir/synapti-flow-harness-0.1.0-alpha.4.tgz" \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.3 \
+gh release verify-asset v0.1.0-alpha.4 \
   "$release_dir/package-release-evidence.json" \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.3 \
-  "$release_dir/flow-harness-0.1.0-alpha.3.intoto.jsonl" \
+gh release verify-asset v0.1.0-alpha.4 \
+  "$release_dir/flow-harness-0.1.0-alpha.4.intoto.jsonl" \
   --repo synaptiai/flow-harness
 ```
 
@@ -120,8 +124,8 @@ Verify the archive's build provenance and require the reviewed release workflow:
 
 ```sh
 gh attestation verify \
-  "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz" \
-  --bundle "$release_dir/flow-harness-0.1.0-alpha.3.intoto.jsonl" \
+  "$release_dir/synapti-flow-harness-0.1.0-alpha.4.tgz" \
+  --bundle "$release_dir/flow-harness-0.1.0-alpha.4.intoto.jsonl" \
   --repo synaptiai/flow-harness \
   --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml
 ```
@@ -141,7 +145,7 @@ package lifecycle script:
 
 ```sh
 npm install --global --ignore-scripts \
-  "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz"
+  "$release_dir/synapti-flow-harness-0.1.0-alpha.4.tgz"
 flow --help
 ```
 

@@ -67,8 +67,9 @@ This command rebuilds the current checkout and creates an ephemeral archive. It 
 archive into a clean temporary consumer with lifecycle scripts disabled. The archive includes the
 reviewed `npm-shrinkwrap.json`, and the clean install tests the production dependency closure that
 npm resolves at that time. The check then runs installed `flow quickstart`, verifies its durable
-evidence, checks read-only diagnostics, and opens the accepted run through the explicit browser
-command. It doesn't create publication authority.
+evidence, checks read-only diagnostics and the immutable compatibility corpus, rejects package-root
+and deep imports, and opens the accepted run through the explicit browser command. It doesn't
+create publication authority.
 
 To prepare a settled release directory from a clean revision, use:
 
@@ -93,6 +94,17 @@ x64 and macOS 15 Intel independently download it. Each host validates the archiv
 tree, and completes installed `flow quickstart` through the production sandbox. Each host also
 verifies the explicit browser path. The workflow generates build provenance only after both hosts
 pass. A separate protected job publishes without rebuilding the package.
+
+After that GitHub release becomes immutable, `Preview npm stage` checks out its exact tag and
+repeats the release-record, asset, provenance, source-revision, installed-package, import-boundary,
+and unused-version checks. Its protected job downloads and verifies the archive again. It creates
+an npm stage through short-lived OpenID Connect authority and proves that public distribution tags
+didn't move. CI doesn't approve the npm stage.
+
+Run `npm run analyze:library-api` to reproduce the production-file, internal-export,
+static-reachability, layer, and documented CLI-form counts in the library API assessment. The
+packed-package check provides an independent consumer-side proof. It confirms that the package
+exposes no library import.
 
 For publication authority and recovery, read
 [Preview release operations](operations/release-preview.md).
