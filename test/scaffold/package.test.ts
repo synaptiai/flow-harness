@@ -10,6 +10,7 @@ interface PackageManifest {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   engines?: Record<string, string>;
+  exports?: Record<string, never>;
   files?: string[];
   homepage?: string;
   keywords?: string[];
@@ -44,9 +45,11 @@ describe("package contract", () => {
       ]),
     );
     expect(manifest.bin).toEqual({ flow: "dist/cli/launcher.js" });
+    expect(manifest.exports).toEqual({});
     expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("docs");
+    expect(manifest.files).toContain("compatibility");
     expect(manifest.files).toContain("THIRD_PARTY_NOTICES.md");
     expect(manifest.files).toContain("npm-shrinkwrap.json");
     expect(manifest.files).toContain("SECURITY.md");
@@ -98,6 +101,7 @@ describe("package contract", () => {
       "verify package artifact",
       "install package artifact",
       "verify installed package",
+      "verify installed compatibility",
       "run installed quick start",
       "inspect quick-start project",
       "verify installed diagnostic",
@@ -123,6 +127,10 @@ describe("package contract", () => {
     expect(verifier).toContain('"docs/specs/flow-public-capability-catalog-v1.json"');
     expect(verifier).toContain('"runtime.host"');
     expect(verifier).toContain('"sandbox.native"');
+    expect(verifier).toContain('["compatibility", "check"]');
+    expect(verifier).toContain("verifyRejectedPackageImports");
+    expect(verifier).toContain('"@synapti/flow-harness/dist/cli/main.js"');
+    expect(verifier).toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
   });
 
   it("publishes one exact production dependency tree for the CLI application", async () => {

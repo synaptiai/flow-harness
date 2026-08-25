@@ -205,6 +205,7 @@ function isExpectedPackageManifest(value: unknown, version: string): boolean {
     value.name === "@synapti/flow-harness" &&
     value.version === version &&
     isExactObject(value.bin, { flow: "dist/cli/launcher.js" }) &&
+    isExactObject(value.exports, {}) &&
     isExactObject(value.engines, { node: ">=26.7.0" }) &&
     Array.isArray(value.os) &&
     value.os.length === 2 &&

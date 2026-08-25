@@ -22,6 +22,7 @@ const ROOT_PACKAGE_FILES = new Set([
 ]);
 const PACKAGE_FILE_PATHS = new Set([...ROOT_PACKAGE_FILES, "scripts/prepare-proof-runtime.mjs"]);
 const PACKAGE_DIRECTORY_PREFIXES = [
+  "compatibility/",
   "dist/",
   "docs/",
   "examples/",
@@ -30,6 +31,7 @@ const PACKAGE_DIRECTORY_PREFIXES = [
 ] as const;
 const REQUIRED_PACKAGE_FILES = [
   ...ROOT_PACKAGE_FILES,
+  "compatibility/manifest.json",
   "dist/cli/launcher.js",
   "examples/verify-foundation.workflow.yaml",
 ] as const;

@@ -78,6 +78,28 @@ describe("package release evidence", () => {
     );
   });
 
+  it("admits a versioned compatibility corpus only when its manifest is present", () => {
+    const withCorpus = withAdditionalFile(
+      evidenceFixture(),
+      "compatibility/releases/0.1.0-alpha.1/workflow.yaml",
+    );
+
+    expect(parsePackageReleaseEvidence(encodePackageReleaseEvidence(withCorpus))).toEqual(
+      withCorpus,
+    );
+    expectReleaseError(() =>
+      encodePackageReleaseEvidence({
+        ...withCorpus,
+        archive: {
+          ...withCorpus.archive,
+          entryCount: withCorpus.archive.entryCount - 1,
+          unpackedBytes: withCorpus.archive.unpackedBytes - 1,
+        },
+        files: withCorpus.files.filter((file) => file.path !== "compatibility/manifest.json"),
+      }),
+    );
+  });
+
   it.each([
     "/absolute",
     "../escape",
@@ -201,6 +223,7 @@ function evidenceFixture(): PackageReleaseEvidenceInput {
     { path: "SECURITY.md", bytes: 3, mode: 0o644 },
     { path: "SUPPORT.md", bytes: 4, mode: 0o644 },
     { path: "THIRD_PARTY_NOTICES.md", bytes: 5, mode: 0o644 },
+    { path: "compatibility/manifest.json", bytes: 10, mode: 0o644 },
     { path: "npm-shrinkwrap.json", bytes: 6, mode: 0o644 },
     { path: "dist/cli/launcher.js", bytes: 7, mode: 0o644 },
     { path: "examples/verify-foundation.workflow.yaml", bytes: 8, mode: 0o644 },
