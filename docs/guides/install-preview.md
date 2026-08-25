@@ -105,14 +105,19 @@ After the `preview` npm tag is available, you can use this shorter installation 
 npm install --global --ignore-scripts @synapti/flow-harness@preview
 ```
 
-The `preview` tag is separate from `latest`. Before you install from npm, confirm that the tag
-selects the reviewed version:
+The `preview` tag is the canonical prerelease channel. Because alpha.3 is the package's first public
+npm version, npm also exposes it through `latest` even though publication used `--tag preview`.
+Unqualified installs therefore resolve to alpha.3. Use `@preview` explicitly, and confirm that the
+tag selects the reviewed version:
 
 ```sh
 npm view @synapti/flow-harness@preview version
 ```
 
 The expected output for this release is `0.1.0-alpha.3`.
+
+Future prereleases must advance only `preview`. The first stable release must move `latest` to the
+stable version.
 
 ## Complete a credential-free run
 

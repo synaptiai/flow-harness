@@ -62,10 +62,10 @@ describe("public repository contracts", () => {
     expect(installGuide).toContain("npm prefix --global");
     expect(installGuide).not.toContain("npm bin --global");
     expect(installGuide).toContain("@synapti/flow-harness@preview");
-    expect(installGuide).toContain("`preview` tag is separate from `latest`");
+    expect(installGuide).toContain("`preview` tag is the canonical prerelease channel");
     expect(releaseNotes).toContain("Ubuntu 24.04 x64");
     expect(releaseNotes).toContain("macOS 15 Intel");
-    expect(releaseNotes).toContain("doesn't assign `latest`");
+    expect(releaseNotes).toContain("npm also exposes this version through `latest`");
     expect(releaseNotes).toContain(
       "https://github.com/synaptiai/flow-harness/blob/v0.1.0-alpha.3/docs/guides/install-preview.md",
     );
