@@ -81,7 +81,6 @@ import {
   GoalWorkspaceAdmissionError,
   prepareGoalWorkspaceRevision,
 } from "../application/goal-workspace.js";
-import { resolveSupplementalMemoryRelationshipEvidence } from "../application/resolve-supplemental-memory-relationship-evidence.js";
 import {
   GuidedQuickstartError,
   type GuidedQuickstartMode,
@@ -125,6 +124,7 @@ import {
   CapabilityRepositoryReplacementError,
   replaceCapabilityRepositoryCandidate,
 } from "../application/replace-capability-repository-candidate.js";
+import { resolveSupplementalMemoryRelationshipEvidence } from "../application/resolve-supplemental-memory-relationship-evidence.js";
 import { runEvaluationTrials } from "../application/run-evaluation.js";
 import {
   RunPresentationActionController,
@@ -244,6 +244,7 @@ import {
   type WorkflowPackageSnapshot,
   workflowPackageSource,
 } from "../domain/capability/workflow-packages.js";
+import { checkCompatibilityCorpus } from "../domain/compatibility/check.js";
 import {
   calculateFlowPolicyDigest,
   type EffectiveFlowConfig,
@@ -292,6 +293,11 @@ import {
 import { createFlowAcpProtocolStream } from "../infrastructure/acp/flow-acp-protocol-stream.js";
 import { createStrictAcpStream } from "../infrastructure/acp/strict-acp-stream.js";
 import {
+  type LoadedCompatibilityCorpus,
+  LocalCompatibilityCorpusError,
+  loadLocalCompatibilityCorpus,
+} from "../infrastructure/compatibility/local-corpus.js";
+import {
   CapabilityBundlePackError,
   packCapabilityBundleDirectory,
 } from "../infrastructure/fs/capability-bundle-packer.js";
@@ -316,6 +322,7 @@ import {
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlModelSessionStore } from "../infrastructure/fs/jsonl-model-session-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
+import { admitLocalAcpAgentRuntime } from "../infrastructure/fs/local-acp-agent.js";
 import { LocalAcpSessionStore } from "../infrastructure/fs/local-acp-session-store.js";
 import { admitLocalAdaptationCandidate } from "../infrastructure/fs/local-adaptation-candidate.js";
 import {
@@ -384,7 +391,6 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
-import { loadLocalLeanProofQualificationInput } from "../infrastructure/fs/local-lean-proof-qualification.js";
 import {
   LocalGoalWorkspaceSourceError,
   readLocalGoalWorkspaceSource,
@@ -394,8 +400,8 @@ import {
   LocalGoalWorkspaceStoreError,
   MAX_GOAL_WORKSPACE_HISTORY_PAGE,
 } from "../infrastructure/fs/local-goal-workspace-store.js";
-import { admitLocalAcpAgentRuntime } from "../infrastructure/fs/local-acp-agent.js";
 import { admitLocalLanguageServer } from "../infrastructure/fs/local-language-server.js";
+import { loadLocalLeanProofQualificationInput } from "../infrastructure/fs/local-lean-proof-qualification.js";
 import {
   PolicyPackageCatalogError,
   type ProjectPolicyPackageCatalog,
@@ -466,13 +472,13 @@ import {
   type StrictOciCapabilityRegistry,
 } from "../infrastructure/http/strict-oci-capability-registry.js";
 import { inspectPreparedPrimeRuntime } from "../infrastructure/oci/prime-environment-doctor.js";
-import type { LeanProofOciPreparationResult } from "../infrastructure/oci/production-lean-proof-oci-preparation.js";
 import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
+import type { LeanProofOciPreparationResult } from "../infrastructure/oci/production-lean-proof-oci-preparation.js";
+import { EmbeddedPiExecutorRegistry } from "../infrastructure/pi/embedded-pi-executor-registry.js";
 import {
   collectWorkflowEnvironmentRequirements,
   inspectPiProviderConfiguration,
 } from "../infrastructure/pi/pi-environment-doctor.js";
-import { EmbeddedPiExecutorRegistry } from "../infrastructure/pi/embedded-pi-executor-registry.js";
 import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
@@ -522,6 +528,7 @@ Usage:
   flow config show
   flow doctor [<workflow.yaml|workflow:name@version|activation:workflow-id>] [--profile prime-agent]
   flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]
+  flow compatibility check
   flow goal init <workspace.yaml>
   flow goal show
   flow goal history [--after <revision>] [--limit <count>]
@@ -615,6 +622,7 @@ const MAX_ACP_RUN_START_WAIT_MS = 30_000;
 const QUICKSTART_FOUNDATION_WORKFLOW_PATH = fileURLToPath(
   new URL("../../examples/verify-installation.workflow.yaml", import.meta.url),
 );
+const COMPATIBILITY_CORPUS_PATH = fileURLToPath(new URL("../../compatibility", import.meta.url));
 
 const installedPackageMetadata = createRequire(import.meta.url)("../../package.json") as unknown;
 const installedFlowVersion = parseInstalledFlowVersion(installedPackageMetadata);
@@ -671,6 +679,7 @@ export interface CliDependencies {
     projectRoot?: string,
   ) => WorkspaceIsolator;
   readonly readTextFile: (path: string) => Promise<string>;
+  readonly loadCompatibilityCorpus: () => Promise<LoadedCompatibilityCorpus>;
   readonly initializeProject: (
     directory: string,
     options?: InitializeFlowProjectOptions,
@@ -763,6 +772,8 @@ export async function main(
         return await doctorCommand(args.slice(1), io, dependencyOverrides);
       case "quickstart":
         return await quickstartCommand(args.slice(1), io, dependencyOverrides);
+      case "compatibility":
+        return await compatibilityCommand(args.slice(1), io, dependencyOverrides);
       case "goal":
         return await goalWorkspaceCommand(args.slice(1), io, dependencyOverrides);
       case "skills":
@@ -842,6 +853,10 @@ export async function main(
       return 2;
     }
     if (error instanceof FlowConfigStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof LocalCompatibilityCorpusError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -1014,6 +1029,28 @@ export async function main(
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
+}
+
+async function compatibilityCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  if (args.length !== 1 || args[0] !== "check") {
+    throw new CliUsageError("Usage: flow compatibility check");
+  }
+  const loaded = await (
+    overrides.loadCompatibilityCorpus ??
+    (() => loadLocalCompatibilityCorpus(COMPATIBILITY_CORPUS_PATH))
+  )();
+  const report = checkCompatibilityCorpus({
+    flowVersion: installedFlowVersion,
+    corpusSha256: loaded.corpusSha256,
+    manifest: loaded.manifest,
+    sources: loaded.sources,
+  });
+  io.stdout(JSON.stringify(report, null, 2));
+  return report.overall === "compatible" ? 0 : 1;
 }
 
 async function runtimeCommand(
@@ -7438,6 +7475,9 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
     createWorkspaceIsolator: overrides.createWorkspaceIsolator ?? createProductionWorkspaceIsolator,
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
+    loadCompatibilityCorpus:
+      overrides.loadCompatibilityCorpus ??
+      (() => loadLocalCompatibilityCorpus(COMPATIBILITY_CORPUS_PATH)),
     inspectProjectFilesystem: overrides.inspectProjectFilesystem ?? inspectDoctorProjectFilesystem,
     inspectNativeSandbox: overrides.inspectNativeSandbox ?? inspectProductionNativeSandbox,
     inspectContainerSandbox: overrides.inspectContainerSandbox ?? inspectPreparedPrimeRuntime,

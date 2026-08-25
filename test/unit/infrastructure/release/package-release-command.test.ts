@@ -219,10 +219,11 @@ function packReportFixture(archive: Buffer): object {
     { path: "SECURITY.md", size: 3, mode: 0o644 },
     { path: "SUPPORT.md", size: 4, mode: 0o644 },
     { path: "THIRD_PARTY_NOTICES.md", size: 5, mode: 0o644 },
-    { path: "npm-shrinkwrap.json", size: 6, mode: 0o644 },
-    { path: "dist/cli/launcher.js", size: 7, mode: 0o644 },
-    { path: "examples/verify-foundation.workflow.yaml", size: 8, mode: 0o644 },
-    { path: "package.json", size: 9, mode: 0o644 },
+    { path: "compatibility/manifest.json", size: 6, mode: 0o644 },
+    { path: "npm-shrinkwrap.json", size: 7, mode: 0o644 },
+    { path: "dist/cli/launcher.js", size: 8, mode: 0o644 },
+    { path: "examples/verify-foundation.workflow.yaml", size: 9, mode: 0o644 },
+    { path: "package.json", size: 10, mode: 0o644 },
   ];
   return {
     id: "@synapti/flow-harness@0.1.0-alpha.1",

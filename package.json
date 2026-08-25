@@ -35,7 +35,9 @@
   "bin": {
     "flow": "dist/cli/launcher.js"
   },
+  "exports": {},
   "files": [
+    "compatibility",
     "dist",
     "docs",
     "examples",

@@ -73,6 +73,20 @@ describe("public documentation structure", () => {
     await expect(
       readFile(join(documentationRoot, "operations", "prime-runtime.md"), "utf8"),
     ).resolves.toMatch(/^# Prime runtime operations$/mu);
+
+    const compatibility = await readFile(join(documentationRoot, "compatibility.md"), "utf8");
+    expect(compatibility).toMatch(/^# Compatibility policy$/mu);
+    expect(compatibility).toContain("flow compatibility check");
+    expect(compatibility).toContain("Compiled JavaScript modules");
+
+    const libraryAssessment = await readFile(
+      join(documentationRoot, "library-api-assessment.md"),
+      "utf8",
+    );
+    expect(libraryAssessment).toMatch(/^# Library API assessment$/mu);
+    expect(libraryAssessment).toContain("2,938");
+    expect(libraryAssessment).toContain("Agent Client Protocol");
+    expect(libraryAssessment).toContain("No supported library API");
   });
 
   it("uses the published executable in operator documentation", async () => {

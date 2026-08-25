@@ -18,6 +18,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Diagnose the Flow environment](guides/diagnose-environment.md) | You need a read-only host, project, workflow, provider, sandbox, or Prime preflight. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
 | [Configuration](configuration.md) | You need project settings, operator ceilings, sandbox selection, or policy-change rules. |
+| [Compatibility policy](compatibility.md) | You need the supported package entry point, surface classifications, historical corpus, prerelease change rules, or rollback guidance. |
 
 ## Use Flow
 
@@ -54,6 +55,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | Document | Use it when |
 | --- | --- |
 | [Architecture](architecture.md) | You need the system diagram, component ownership, dependency direction, trust boundaries, failure modes, or non-goals. |
+| [Library API assessment](library-api-assessment.md) | You need the evidence, authority analysis, alternatives, ACP relevance, or gates for a possible future programmatic API. |
 | [Tools and capabilities](reference/tools-and-capabilities.md) | You need exact built-in model-tool names, schemas, limits, package families, or provider and evaluation seams. |
 | [Workflow specification](workflow-spec.md) | You need the normative executable graph, node, package, budget, approval, and ledger contracts. |
 | [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |

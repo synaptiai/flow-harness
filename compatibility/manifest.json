@@ -1,0 +1,45 @@
+{
+  "version": "flow.compatibility-corpus/v1",
+  "id": "alpha-compatibility-v1",
+  "artifacts": [
+    {
+      "id": "alpha1-verify-installation-workflow",
+      "kind": "authored_workflow",
+      "path": "releases/0.1.0-alpha.1/verify-installation.workflow.yaml",
+      "sha256": "34b4be62d1d73b7be950811754ded7a75d164d990ae67fa5ce12364e023b2bbd",
+      "producer": {
+        "package": "@synaptiai/flow-harness",
+        "version": "0.1.0-alpha.1",
+        "archiveSha256": "3a8d76564dae33e2c43951c483a3cd69b146fa7788ce311949d5242cb0229568"
+      },
+      "expected": {
+        "apiVersion": "flow.synapti.ai/v1alpha1",
+        "workflowId": "verify-installation",
+        "workflowDigest": "829448e4f68acdb620f7b67d0696fc6250b1c087407c7f83f95c2b7c2494676d",
+        "nodeCount": 2,
+        "criterionCount": 1
+      }
+    },
+    {
+      "id": "alpha1-terminal-run",
+      "kind": "terminal_run_ledger",
+      "path": "releases/0.1.0-alpha.1/terminal-run.events.jsonl",
+      "sha256": "ee9e84729012fb5cae7f6d1f3ef11e44fd917bbbf7f8ee7139a65505e3a154be",
+      "producer": {
+        "package": "@synaptiai/flow-harness",
+        "version": "0.1.0-alpha.1",
+        "archiveSha256": "3a8d76564dae33e2c43951c483a3cd69b146fa7788ce311949d5242cb0229568"
+      },
+      "expected": {
+        "runId": "alpha1-cross-release-host",
+        "workflowId": "cross-release-compatibility",
+        "workflowDigest": "27e059ea243b14f54d9b28814a2aa55247b3e32f9ce4ac56177c54c4b9037388",
+        "terminalStatus": "succeeded",
+        "lastSequence": 4,
+        "evidenceNodeId": "record-evidence",
+        "stdoutHash": "1e5adbb3ae66517f9de584bf665d7f96ab2c7f4adb6a7ed58adfb9d50ebf697c",
+        "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ]
+}

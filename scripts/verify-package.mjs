@@ -134,6 +134,25 @@ async function verifyPackage() {
       );
     });
 
+    await withPackageReleaseStage("verify installed compatibility", async () => {
+      const report = JSON.parse(
+        (await run(flowBinary, ["compatibility", "check"], projectRoot, verificationRoot)).stdout,
+      );
+      assert.equal(report.version, "flow.compatibility-report/v1");
+      assert.equal(report.flow.package, "@synapti/flow-harness");
+      assert.equal(report.flow.version, evidence.packageVersion);
+      assert.equal(report.corpus.version, "flow.compatibility-corpus/v1");
+      assert.equal(report.overall, "compatible");
+      assert.deepEqual(
+        report.artifacts.map((artifact) => [artifact.id, artifact.state, artifact.category]),
+        [
+          ["alpha1-verify-installation-workflow", "compatible", "compatible"],
+          ["alpha1-terminal-run", "compatible", "compatible"],
+        ],
+      );
+      await verifyRejectedPackageImports(consumerRoot, verificationRoot);
+    });
+
     const effective = await withPackageReleaseStage("run installed quick start", async () => {
       const existingFile = join(projectRoot, "README.md");
       await writeFile(existingFile, "existing consumer file\n", "utf8");
@@ -459,6 +478,22 @@ async function runExpectFailure(command, args, cwd, verificationRoot) {
     };
   }
   assert.fail("package verification command unexpectedly succeeded");
+}
+
+async function verifyRejectedPackageImports(consumerRoot, verificationRoot) {
+  for (const specifier of ["@synapti/flow-harness", "@synapti/flow-harness/dist/cli/main.js"]) {
+    const result = await runExpectFailure(
+      process.execPath,
+      ["--input-type=module", "--eval", `await import(${JSON.stringify(specifier)})`],
+      consumerRoot,
+      verificationRoot,
+    );
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /ERR_PACKAGE_PATH_NOT_EXPORTED/u,
+      `the installed package unexpectedly exported ${specifier}`,
+    );
+  }
 }
 
 async function readInstalledDoctorReport(flowBinary, projectRoot, verificationRoot) {
