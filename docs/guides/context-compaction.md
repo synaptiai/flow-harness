@@ -4,7 +4,7 @@ Use the dedicated compaction evaluation to compare three bounded context modes o
 tasks. Flow balances trial order, verifies protected constraints from private filesystem evidence,
 and records provider-surface and summary costs separately.
 
-This feature is experimental in Flow `0.1.0-alpha.3` and the current source tree. You can run and
+This feature is experimental in Flow `0.1.0-alpha.4` and the current source tree. You can run and
 inspect evaluations, but you cannot activate a compaction mode for ordinary production runs. A
 favorable report is evidence for review, not authority to change runtime defaults.
 

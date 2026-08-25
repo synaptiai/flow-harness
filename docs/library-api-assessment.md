@@ -1,7 +1,8 @@
 # Library API assessment
 
 This document assesses whether Flow should expose a supported JavaScript or TypeScript library API.
-It reflects the current source following `@synapti/flow-harness@0.1.0-alpha.3` and Issue #184.
+It reflects the source prepared for `@synapti/flow-harness@0.1.0-alpha.4` and the package boundary
+introduced in Issue #184.
 
 ## Decision
 
@@ -21,9 +22,17 @@ This assessment is a design recommendation, not a package export or roadmap comm
 
 ## Evidence baseline
 
-The audit used the TypeScript compiler to inspect all production source files and resolve relative
-imports. Counts include top-level declarations marked `export` and named re-exports. They don't
-claim that every declaration is independently callable.
+Run the reproducible source audit from a clean repository checkout:
+
+```sh
+npm run analyze:library-api
+```
+
+The audit uses the repository's pinned TypeScript compiler to inspect all production source files
+and resolve static relative imports. Counts include top-level declarations marked `export` and
+named re-exports. Reachability includes the entry module and follows static imports and re-exports.
+It intentionally excludes dynamic imports. The declaration counts don't claim that every
+declaration is independently callable.
 
 | Observation | Result | Why it matters |
 | --- | --- | --- |
@@ -35,6 +44,7 @@ claim that every declaration is independently callable.
 | Supervisor declarations | 122 | These declarations own queues, worker processes, control requests, and shutdown. |
 | CLI declarations | 17 | The CLI composes 289 of 320 production modules and is the intentional product boundary. |
 | Documented CLI forms | 92 | A future client can't safely wrap every form until their machine outputs and error categories are inventoried. |
+| Direct JSON-to-standard-output sites | 97 | Machine-readable output exists, but many commands own distinct result shapes rather than one versioned automation protocol. |
 
 Reachability shows that a candidate's apparent simplicity can hide a much larger change surface:
 
@@ -49,6 +59,55 @@ Reachability shows that a candidate's apparent simplicity can hide a much larger
 
 The exact counts are a point-in-time audit. The conclusion doesn't depend on one count: the current
 module tree crosses multiple authority and lifecycle boundaries and has no curated export surface.
+The JSON-site count includes only direct `io.stdout(JSON.stringify(...))` calls in the CLI
+composition root. It intentionally doesn't equate call sites with commands or stable schemas, and
+it excludes indirect renderers, newline-delimited streaming, and files written through `--output`.
+It is therefore a reproducible lower bound on implementation sites, not a public API inventory.
+
+The existing machine-readable surface includes these contract families:
+
+- Environment and compatibility reports.
+- Workflow validation and public run projections.
+- Run-event streaming.
+- Package, capability, and activation records.
+- Evaluation evidence and generated JSON files.
+
+These families already give shell and CI consumers structured integration points. They don't yet
+share one envelope, schema-version field, diagnostic registry, framing rule, or stability class.
+A future client must inventory those contracts. It must not assume that every JSON result has the
+same lifecycle or compatibility guarantee.
+
+### Cross-check the packed consumer boundary
+
+Source syntax isn't the consumer contract. The packed-package verifier independently installs the
+exact archive in a clean consumer project and checks these outcomes:
+
+| Consumer action | Alpha.4 result | Support state |
+| --- | --- | --- |
+| Run the installed `flow` binary | Succeeds on a supported host | Supported alpha entry point |
+| Import `@synapti/flow-harness` | Fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` | Unsupported by design |
+| Import `@synapti/flow-harness/dist/cli/main.js` | Fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` | Unsupported by design |
+| Import an absolute file from the installed package | Node can bypass package-name encapsulation | Unsupported implementation access |
+
+The package contains declaration maps because the executable and its internal modules need a
+coherent build. Those files don't override the empty `exports` map. The release verifier also
+requires the installed manifest to retain exactly one `flow` binary and an empty exports map.
+
+The immutable alpha.3 archive provides a second check against source-tree confusion: it doesn't
+contain Issue #184's compatibility command, corpus, or package-boundary verification. Alpha.4 must
+use a new semantic version because later source can't be attributed retroactively to published
+alpha.3 bytes.
+
+### Check demand separately from technical feasibility
+
+The workflow validator is technically extractable, but the demand gate isn't met. Repository
+evidence for this checkpoint identifies zero independent consumers with a task that requires an
+in-process API. The threshold is three. CLI inconvenience, internal test imports, and hypothetical
+editor integrations don't count as independent demand.
+
+This result doesn't prove that demand is absent. It means Flow lacks enough evidence to freeze a
+second public package, diagnostic vocabulary, runtime matrix, and support policy. Record concrete
+consumer tasks before changing the decision.
 
 ## Start from consumer flows
 

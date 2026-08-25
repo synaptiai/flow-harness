@@ -1,0 +1,308 @@
+name: Preview npm stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable Flow preview tag to stage on npm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-npm-stage-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      attestations: read
+      contents: read
+    outputs:
+      package-name: ${{ steps.release_identity.outputs.package-name }}
+      package-version: ${{ steps.release_identity.outputs.package-version }}
+      release-tag: ${{ steps.release_identity.outputs.release-tag }}
+      archive-name: ${{ steps.release_identity.outputs.archive-name }}
+      attestation-name: ${{ steps.release_identity.outputs.attestation-name }}
+      npm-dist-tag: ${{ steps.release_identity.outputs.npm-dist-tag }}
+      source-revision: ${{ steps.release.outputs.source-revision }}
+    steps:
+      - name: Require a default-branch dispatch
+        run: test "$GITHUB_REF" = refs/heads/main
+
+      - name: Check out the default-branch verifier
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check out the immutable release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: release-source
+          ref: ${{ inputs.release_tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
+
+      - name: Require the staged-publication toolchain
+        run: |
+          test "$(npm --version)" = 11.19.0
+          npm stage publish --help >/dev/null
+
+      - name: Resolve the manifest-derived identity
+        id: release_identity
+        run: |
+          node scripts/resolve-preview-release-identity.mjs \
+            --root release-source \
+            --github-output >> "$GITHUB_OUTPUT"
+
+      - name: Read and validate the immutable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_identity.outputs.release-tag }}
+          RELEASE_TITLE: ${{ steps.release_identity.outputs.release-title }}
+          RELEASE_NOTES_PATH: ${{ steps.release_identity.outputs.release-notes-path }}
+          ARCHIVE_NAME: ${{ steps.release_identity.outputs.archive-name }}
+          ATTESTATION_NAME: ${{ steps.release_identity.outputs.attestation-name }}
+        run: |
+          test "$RELEASE_TAG" = "${{ inputs.release_tag }}"
+          mkdir --parents release
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,name,body,isDraft,isImmutable,isPrerelease,publishedAt,targetCommitish,assets \
+            > release/github-release.json
+          source_revision="$(git -C release-source rev-parse HEAD)"
+          node scripts/verify-preview-npm-release.mjs \
+            --release-json release/github-release.json \
+            --release-notes "release-source/$RELEASE_NOTES_PATH" \
+            --expected-tag "$RELEASE_TAG" \
+            --expected-title "$RELEASE_TITLE" \
+            --expected-archive "$ARCHIVE_NAME" \
+            --expected-attestation "$ATTESTATION_NAME" \
+            --expected-revision "$source_revision"
+          printf 'source-revision=%s\n' "$source_revision" >> "$GITHUB_OUTPUT"
+
+      - name: Download the exact release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_identity.outputs.release-tag }}
+          ARCHIVE_NAME: ${{ steps.release_identity.outputs.archive-name }}
+          ATTESTATION_NAME: ${{ steps.release_identity.outputs.attestation-name }}
+        run: |
+          mkdir --parents release-source/release/package release-source/release/attestation
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-source/release/package \
+            --pattern "$ARCHIVE_NAME" \
+            --pattern package-release-evidence.json
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-source/release/attestation \
+            --pattern "$ATTESTATION_NAME"
+
+      - name: Verify the release and asset identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_identity.outputs.release-tag }}
+          ARCHIVE_NAME: ${{ steps.release_identity.outputs.archive-name }}
+          ATTESTATION_NAME: ${{ steps.release_identity.outputs.attestation-name }}
+        run: |
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          gh release verify-asset "$RELEASE_TAG" "release-source/release/package/$ARCHIVE_NAME" \
+            --repo "$GITHUB_REPOSITORY"
+          gh release verify-asset "$RELEASE_TAG" \
+            release-source/release/package/package-release-evidence.json \
+            --repo "$GITHUB_REPOSITORY"
+          gh release verify-asset "$RELEASE_TAG" \
+            "release-source/release/attestation/$ATTESTATION_NAME" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Verify the release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_NAME: ${{ steps.release_identity.outputs.archive-name }}
+          ATTESTATION_NAME: ${{ steps.release_identity.outputs.attestation-name }}
+          SOURCE_REVISION: ${{ steps.release.outputs.source-revision }}
+        run: |
+          gh attestation verify "release-source/release/package/$ARCHIVE_NAME" \
+            --bundle "release-source/release/attestation/$ATTESTATION_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml \
+            --source-digest "$SOURCE_REVISION" \
+            --deny-self-hosted-runners
+          gh attestation verify release-source/release/package/package-release-evidence.json \
+            --bundle "release-source/release/attestation/$ATTESTATION_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml \
+            --source-digest "$SOURCE_REVISION" \
+            --deny-self-hosted-runners
+
+      - name: Install Ubuntu sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
+          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+        working-directory: release-source
+
+      - name: Build the release verifier
+        run: npm run build
+        working-directory: release-source
+
+      - name: Verify the installed release package
+        env:
+          GITHUB_SHA: ${{ steps.release.outputs.source-revision }}
+        run: npm run release:verify
+        working-directory: release-source
+
+      - name: Require the current npm channel policy
+        env:
+          PACKAGE_NAME: ${{ steps.release_identity.outputs.package-name }}
+          PACKAGE_VERSION: ${{ steps.release_identity.outputs.package-version }}
+        run: |
+          npm view "$PACKAGE_NAME" dist-tags --json > "$RUNNER_TEMP/npm-tags-preflight.json"
+          NPM_TAGS_FILE="$RUNNER_TEMP/npm-tags-preflight.json" node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            const tags = JSON.parse(readFileSync(process.env.NPM_TAGS_FILE, "utf8"));
+            const candidate = process.env.PACKAGE_VERSION;
+            if (
+              tags === null ||
+              typeof tags !== "object" ||
+              Array.isArray(tags) ||
+              typeof tags.preview !== "string" ||
+              typeof tags.latest !== "string" ||
+              !/^0\.1\.0-alpha\.[1-9]\d*$/.test(tags.preview) ||
+              Object.values(tags).includes(candidate)
+            ) {
+              console.error("Preview npm channel policy is inconsistent.");
+              process.exit(1);
+            }
+          '
+
+      - name: Require an unused npm version
+        env:
+          PACKAGE_NAME: ${{ steps.release_identity.outputs.package-name }}
+          PACKAGE_VERSION: ${{ steps.release_identity.outputs.package-version }}
+        run: |
+          npm_result="$(mktemp)"
+          trap 'rm -f "$npm_result"' EXIT
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --json > "$npm_result"; then
+            printf 'Preview npm version already exists.\n' >&2
+            exit 1
+          fi
+          NPM_RESULT="$npm_result" node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            let error;
+            try {
+              error = JSON.parse(readFileSync(process.env.NPM_RESULT, "utf8")).error;
+            } catch {
+              error = undefined;
+            }
+            if (error?.code !== "E404") {
+              console.error("Preview npm identity could not be verified as unused.");
+              process.exit(1);
+            }
+          '
+
+  stage:
+    needs: verify
+    environment: preview-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      attestations: read
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_NAME: ${{ needs.verify.outputs.package-name }}
+      PACKAGE_VERSION: ${{ needs.verify.outputs.package-version }}
+      RELEASE_TAG: ${{ needs.verify.outputs.release-tag }}
+      ARCHIVE_NAME: ${{ needs.verify.outputs.archive-name }}
+      ATTESTATION_NAME: ${{ needs.verify.outputs.attestation-name }}
+      NPM_DIST_TAG: ${{ needs.verify.outputs.npm-dist-tag }}
+      SOURCE_REVISION: ${{ needs.verify.outputs.source-revision }}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
+
+      - name: Require the staged-publication toolchain
+        run: |
+          test "$(npm --version)" = 11.19.0
+          npm stage publish --help >/dev/null
+
+      - name: Download the exact release assets again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir --parents release/package release/attestation
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release/package \
+            --pattern "$ARCHIVE_NAME"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release/attestation \
+            --pattern "$ATTESTATION_NAME"
+
+      - name: Reverify the release and staged archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          gh release verify-asset "$RELEASE_TAG" "release/package/$ARCHIVE_NAME" \
+            --repo "$GITHUB_REPOSITORY"
+          gh release verify-asset "$RELEASE_TAG" "release/attestation/$ATTESTATION_NAME" \
+            --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "release/package/$ARCHIVE_NAME" \
+            --bundle "release/attestation/$ATTESTATION_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml \
+            --source-digest "$SOURCE_REVISION" \
+            --deny-self-hosted-runners
+
+      - name: Capture the public npm tags
+        run: npm view "$PACKAGE_NAME" dist-tags --json > "$RUNNER_TEMP/npm-tags-before.json"
+
+      - name: Require the npm version to remain unused
+        run: |
+          npm_result="$(mktemp)"
+          trap 'rm -f "$npm_result"' EXIT
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --json > "$npm_result"; then
+            printf 'Preview npm version already exists.\n' >&2
+            exit 1
+          fi
+          NPM_RESULT="$npm_result" node --input-type=module --eval '
+            import { readFileSync } from "node:fs";
+            let error;
+            try {
+              error = JSON.parse(readFileSync(process.env.NPM_RESULT, "utf8")).error;
+            } catch {
+              error = undefined;
+            }
+            if (error?.code !== "E404") {
+              console.error("Preview npm identity could not be verified as unused.");
+              process.exit(1);
+            }
+          '
+
+      - name: Stage the exact preview archive
+        run: |
+          npm stage publish "release/package/${ARCHIVE_NAME}" \
+            --access public \
+            --tag "${NPM_DIST_TAG}" \
+            --provenance
+
+      - name: Require public npm tags to remain unchanged
+        run: |
+          npm view "$PACKAGE_NAME" dist-tags --json > "$RUNNER_TEMP/npm-tags-after.json"
+          cmp --silent "$RUNNER_TEMP/npm-tags-before.json" "$RUNNER_TEMP/npm-tags-after.json"

@@ -76,6 +76,9 @@ jobs:
             test/unit/infrastructure/release/package-release-verifier.test.ts \
             test/scaffold/package.test.ts \
             test/scaffold/community-files.test.ts \
+            test/scaffold/library-api-assessment.test.ts \
+            test/scaffold/preview-npm-stage-release.test.ts \
+            test/scaffold/preview-npm-stage-workflow.test.ts \
             test/scaffold/preview-release-identity.test.ts \
             test/scaffold/preview-release-workflow.test.ts
 

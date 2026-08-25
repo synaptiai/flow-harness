@@ -28,12 +28,12 @@ describe("preview release identity", () => {
       stdout: `${JSON.stringify(
         {
           packageName: "@synapti/flow-harness",
-          packageVersion: "0.1.0-alpha.3",
-          releaseTag: "v0.1.0-alpha.3",
-          archiveName: "synapti-flow-harness-0.1.0-alpha.3.tgz",
-          attestationName: "flow-harness-0.1.0-alpha.3.intoto.jsonl",
-          releaseTitle: "Flow 0.1.0-alpha.3",
-          releaseNotesPath: "docs/releases/0.1.0-alpha.3.md",
+          packageVersion: "0.1.0-alpha.4",
+          releaseTag: "v0.1.0-alpha.4",
+          archiveName: "synapti-flow-harness-0.1.0-alpha.4.tgz",
+          attestationName: "flow-harness-0.1.0-alpha.4.intoto.jsonl",
+          releaseTitle: "Flow 0.1.0-alpha.4",
+          releaseNotesPath: "docs/releases/0.1.0-alpha.4.md",
           npmDistTag: "preview",
         },
         undefined,
@@ -47,12 +47,12 @@ describe("preview release identity", () => {
       stderr: "",
       stdout: [
         "package-name=@synapti/flow-harness",
-        "package-version=0.1.0-alpha.3",
-        "release-tag=v0.1.0-alpha.3",
-        "archive-name=synapti-flow-harness-0.1.0-alpha.3.tgz",
-        "attestation-name=flow-harness-0.1.0-alpha.3.intoto.jsonl",
-        "release-title=Flow 0.1.0-alpha.3",
-        "release-notes-path=docs/releases/0.1.0-alpha.3.md",
+        "package-version=0.1.0-alpha.4",
+        "release-tag=v0.1.0-alpha.4",
+        "archive-name=synapti-flow-harness-0.1.0-alpha.4.tgz",
+        "attestation-name=flow-harness-0.1.0-alpha.4.intoto.jsonl",
+        "release-title=Flow 0.1.0-alpha.4",
+        "release-notes-path=docs/releases/0.1.0-alpha.4.md",
         "npm-dist-tag=preview",
         "",
       ].join("\n"),
@@ -119,9 +119,9 @@ describe("preview release identity", () => {
 
   it("rejects linked release metadata", async () => {
     const root = await createFixture();
-    const notesPath = join(root, "docs", "releases", "0.1.0-alpha.3.md");
+    const notesPath = join(root, "docs", "releases", "0.1.0-alpha.4.md");
     const targetPath = join(root, "notes-target.md");
-    await writeFile(targetPath, "# Flow 0.1.0-alpha.3 release notes\n", "utf8");
+    await writeFile(targetPath, "# Flow 0.1.0-alpha.4 release notes\n", "utf8");
     await rm(notesPath);
     await symlink(targetPath, notesPath);
 
@@ -135,7 +135,7 @@ describe("preview release identity", () => {
 
   it("rejects oversized release metadata", async () => {
     const root = await createFixture({
-      notes: `# Flow 0.1.0-alpha.3 release notes\n${"x".repeat(300_000)}`,
+      notes: `# Flow 0.1.0-alpha.4 release notes\n${"x".repeat(300_000)}`,
     });
 
     const result = await runResolver(root);
@@ -159,7 +159,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "flow-preview-identity-"));
   fixtureRoots.push(root);
   const packageName = options.packageName ?? "@synapti/flow-harness";
-  const version = options.version ?? "0.1.0-alpha.3";
+  const version = options.version ?? "0.1.0-alpha.4";
   const releaseDirectory = join(root, "docs", "releases");
   await mkdir(releaseDirectory, { recursive: true });
   await Promise.all([

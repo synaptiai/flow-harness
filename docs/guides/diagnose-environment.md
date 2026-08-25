@@ -7,12 +7,12 @@ provider, create a container, change project files, or publish durable Flow stat
 Run this command after installation, after a configuration change, or before you report an
 environment problem.
 
-Flow `0.1.0-alpha.3` and the current source tree contain this command. Follow the
+Flow `0.1.0-alpha.4` and the current source tree contain this command. Follow the
 [versioned installation guide](install-preview.md) for the current package boundary.
 
 ## Before you begin
 
-Install Flow `0.1.0-alpha.3` through the [versioned installation guide](install-preview.md). If you
+Install Flow `0.1.0-alpha.4` through the [versioned installation guide](install-preview.md). If you
 want to check a workflow, make the workflow and its selected capability packages available to the
 current project. If you want to check Prime, prepare the Prime runtime first by following
 [Prime runtime operations](../operations/prime-runtime.md). Contributors can instead use the

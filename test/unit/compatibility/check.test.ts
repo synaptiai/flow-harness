@@ -132,14 +132,14 @@ describe("compatibility corpus check", () => {
 
     expect(
       checkCompatibilityCorpus({
-        flowVersion: "0.1.0-alpha.3",
+        flowVersion: "0.1.0-alpha.4",
         corpusSha256: sha256(JSON.stringify(input.manifest)),
         manifest,
         sources: input.sources,
       }),
     ).toEqual({
       version: "flow.compatibility-report/v1",
-      flow: { package: "@synapti/flow-harness", version: "0.1.0-alpha.3" },
+      flow: { package: "@synapti/flow-harness", version: "0.1.0-alpha.4" },
       corpus: {
         version: "flow.compatibility-corpus/v1",
         id: "alpha-compatibility-v1",
@@ -191,7 +191,7 @@ describe("compatibility corpus check", () => {
     sources.set("releases/0.1.0-alpha.1/terminal-run.events.jsonl", Buffer.from("changed\n"));
 
     const report = checkCompatibilityCorpus({
-      flowVersion: "0.1.0-alpha.3",
+      flowVersion: "0.1.0-alpha.4",
       corpusSha256: sha256(JSON.stringify(input.manifest)),
       manifest,
       sources,
@@ -216,7 +216,7 @@ describe("compatibility corpus check", () => {
     });
 
     const report = checkCompatibilityCorpus({
-      flowVersion: "0.1.0-alpha.3",
+      flowVersion: "0.1.0-alpha.4",
       corpusSha256: sha256(JSON.stringify(input.manifest)),
       manifest,
       sources,

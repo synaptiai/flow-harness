@@ -27,7 +27,7 @@ describe("flow compatibility check", () => {
     expect(stderr).toEqual([]);
     expect(JSON.parse(stdout.join("\n"))).toMatchObject({
       version: "flow.compatibility-report/v1",
-      flow: { package: "@synapti/flow-harness", version: "0.1.0-alpha.3" },
+      flow: { package: "@synapti/flow-harness", version: "0.1.0-alpha.4" },
       corpus: {
         version: "flow.compatibility-corpus/v1",
         id: "alpha-compatibility-v1",

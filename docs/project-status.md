@@ -1,11 +1,11 @@
 # Project status
 
-Flow is a public alpha preview. Its executable format is `flow.synapti.ai/v1alpha1`. The immutable
-alpha.3 release has no compatibility or migration promise. Current source adds a bounded
-compatibility policy and historical corpus without claiming stable support.
+Flow is a public alpha preview. Its executable format is `flow.synapti.ai/v1alpha1`. Alpha.4 is the
+first checkpoint governed by the bounded compatibility policy and historical corpus. It doesn't
+claim stable support or automatic migration.
 
-Version `0.1.0-alpha.3` is the current usability checkpoint. GitHub-hosted Ubuntu 24.04 x64 and
-macOS 15 Intel runners verify the same npm archive before publication. The `preview` npm
+Version `0.1.0-alpha.4` is the current compatibility-governed usability checkpoint. GitHub-hosted
+Ubuntu 24.04 x64 and macOS 15 Intel runners verify the same npm archive before publication. The `preview` npm
 distribution tag is the registry channel. The immutable `0.1.0-alpha.2` release is GitHub-only
 historical evidence because its manifest selected the wrong npm organization scope.
 
@@ -25,7 +25,7 @@ on it.
 | Capability | Linux | macOS | Notes |
 | --- | --- | --- | --- |
 | Workflow validation and inspection | Implemented | Implemented | No provider is needed for credential-free examples. |
-| Offline compatibility check | Implemented in current source | Implemented in current source | The first later preview that contains Issue #184 will validate its packaged historical corpus without project, provider, or network access. Published alpha.3 doesn't contain this command. |
+| Offline compatibility check | Implemented | Implemented | Alpha.4 validates its packaged historical corpus without project, provider, or network access. Published alpha.3 doesn't contain this command. |
 | Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
 | Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
@@ -60,6 +60,8 @@ on it.
 - A decision-grade [library API assessment](library-api-assessment.md). It recommends no current
   library export, a possible future separate read-only workflow contract, and a later
   process-isolated client for execution.
+- A separately recoverable npm staging workflow that reverifies the immutable GitHub release and
+  uses a stage-only trusted publisher. Human review and two-factor approval remain outside CI.
 
 Read the [Compatibility policy](compatibility.md) for exact surface classifications, prerelease
 change rules, migration, and rollback.

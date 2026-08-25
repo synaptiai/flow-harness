@@ -641,8 +641,25 @@ doesn't make a prerelease stable or convert internal TypeScript exports into a l
   flows. The audit covers authority, coupling, lifecycle, errors, resource limits, versioning,
   package boundaries, and ACP relevance.
 
-The first approved preview after alpha.3 that contains this slice becomes the first package governed
-by the new command. The immutable alpha.3 release doesn't gain the command retroactively.
+The immutable alpha.3 release doesn't gain this command retroactively.
+
+### Slice 11.2: Release the first compatibility-governed checkpoint
+
+- **Implemented in current source:** Advance the manifest-owned preview identity to alpha.4. Keep
+  alpha.3 immutable and retain its first-publication `latest` exception as historical evidence.
+- **Implemented in current source:** Reproduce the library-boundary audit with the pinned TypeScript
+  compiler. Report production-file, exported-declaration, static-reachability, layer, and documented
+  CLI-form counts from current source.
+- **Implemented in current source:** Add a separate npm staging workflow. It verifies the immutable
+  GitHub release, source revision, asset set, and provenance. It also checks the installed package,
+  package import boundary, and unused npm version before it requests stage-only authority.
+- **Implemented in current source:** Use GitHub OpenID Connect and npm staged publication without a
+  long-lived token. Keep human artifact comparison, two-factor approval, and rejection outside CI.
+- **Implemented in current source:** Document each operator state. The states cover qualification,
+  GitHub publication, npm staging, approval, public verification, channel behavior, and recovery.
+
+Alpha.4 is the first package governed by Slice 11.1. It doesn't add a supported library import,
+expand the corpus without release-produced evidence, or claim stable compatibility.
 
 ### Possible later slices
 

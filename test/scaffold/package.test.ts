@@ -27,7 +27,7 @@ describe("package contract", () => {
     const manifest = JSON.parse(await readFile(manifestUrl, "utf8")) as PackageManifest;
 
     expect(manifest.name).toBe("@synapti/flow-harness");
-    expect(manifest.version).toBe("0.1.0-alpha.3");
+    expect(manifest.version).toBe("0.1.0-alpha.4");
     expect(manifest.description).toBe(
       "Provider-neutral coding-agent harness with deterministic workflow graphs, durable evidence, and fail-closed sandboxed execution",
     );
@@ -57,6 +57,9 @@ describe("package contract", () => {
     expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.0");
     expect(manifest.dependencies?.typebox).toBe("1.3.7");
     expect(manifest.scripts?.build).toContain("npm run clean");
+    expect(manifest.scripts?.["analyze:library-api"]).toBe(
+      "node scripts/analyze-library-boundary.mjs",
+    );
     expect(manifest.scripts?.clean).toContain("rmSync('dist'");
     expect(manifest.scripts?.check).toContain("npm run typecheck");
     expect(manifest.scripts?.check).toContain("npm run test");
@@ -145,7 +148,7 @@ describe("package contract", () => {
 
     expect(shrinkwrap).toMatchObject({
       name: "@synapti/flow-harness",
-      version: "0.1.0-alpha.3",
+      version: "0.1.0-alpha.4",
       lockfileVersion: 3,
     });
     expect(shrinkwrap.packages?.[""]?.dev).not.toBe(true);
