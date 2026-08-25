@@ -12,11 +12,11 @@ sandboxes, cancellation, durable state, replay, and public evidence.
 
 ## Start the editor bridge
 
-Build Flow and start the bridge from the selected project:
+Install the [Flow preview](guides/install-preview.md), open the selected project, and start the
+bridge through the public executable:
 
 ```sh
-npm run build
-node dist/cli/main.js acp --actor local:operator
+flow acp --actor local:operator
 ```
 
 Use `--runs-dir <path>` only when the same project uses a non-default run store. Standard input and
@@ -94,9 +94,9 @@ submission, the descriptor, supervisor command, and run ledger form the complete
 
 ## Run a local ACP executor
 
-Current source builds can launch one operator-selected local ACP v1 agent for all eligible agent
-nodes in one attached or detached run. If you omit the selection, Flow uses its embedded Pi
-executor with the same behavior as before.
+The published preview and current source can launch one operator-selected local ACP v1 agent for
+all eligible agent nodes in one attached or detached run. If you omit the selection, Flow uses its
+embedded Pi executor with the same behavior as before.
 
 To compare two exact agents through this boundary, follow
 [Qualify two local ACP agents](guides/qualify-acp-agents.md). Keep the manifest and containment

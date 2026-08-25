@@ -4,9 +4,12 @@ Use the dedicated compaction evaluation to compare three bounded context modes o
 tasks. Flow balances trial order, verifies protected constraints from private filesystem evidence,
 and records provider-surface and summary costs separately.
 
-This feature is experimental in the current source tree. You can run and inspect evaluations, but
-you cannot activate a compaction mode for ordinary production runs. A favorable report is evidence
-for review, not authority to change runtime defaults.
+This feature is experimental in Flow `0.1.0-alpha.3` and the current source tree. You can run and
+inspect evaluations, but you cannot activate a compaction mode for ordinary production runs. A
+favorable report is evidence for review, not authority to change runtime defaults.
+
+Install the [Flow preview](install-preview.md) before you use this guide. Run commands that name the
+included `examples/...` plan from a Flow checkout that matches the installed version.
 
 ## Understand the safety boundary
 
@@ -56,11 +59,11 @@ total model usage.
 
 ## Validate the included example
 
-Build Flow, then validate the example without provider credentials or filesystem mutation:
+From the matching checkout, validate the example without provider credentials or filesystem
+mutation:
 
 ```sh
-npm run build
-node dist/cli/main.js eval compaction validate \
+flow eval compaction validate \
   examples/evaluation/context-compaction.evaluation.yaml
 ```
 
@@ -72,7 +75,7 @@ The example schedules 18 trials: one task, six seeds, and three modes. Running i
 declared provider and uses that provider's normal Pi credentials:
 
 ```sh
-node dist/cli/main.js eval compaction run \
+flow eval compaction run \
   examples/evaluation/context-compaction.evaluation.yaml
 ```
 
@@ -138,13 +141,13 @@ The default evaluation identifier is the plan's `metadata.id`. Inspect the examp
 or partial run:
 
 ```sh
-node dist/cli/main.js eval compaction inspect reference-first-compaction-example
+flow eval compaction inspect reference-first-compaction-example
 ```
 
 Export the same offline evidence to a new file:
 
 ```sh
-node dist/cli/main.js eval compaction export reference-first-compaction-example \
+flow eval compaction export reference-first-compaction-example \
   --output context-compaction-report.json
 ```
 

@@ -1,7 +1,8 @@
 # Install the Flow preview
 
-This guide installs the public Flow preview and verifies the release before you execute it. Use
-this path when you want to evaluate Flow without building the repository.
+This guide installs and calls the public Flow preview without building the repository. Use the npm
+path for the current prerelease channel. Use the immutable GitHub release path when you must verify
+the exact archive and its build provenance before execution.
 
 Flow `0.1.0-alpha.3` is a prerelease. Its workflow and storage contracts can change before the
 first stable version. Don't use it as a security boundary for hostile or multi-tenant workloads.
@@ -13,12 +14,60 @@ Install these prerequisites:
 
 - Node.js 26.7.0 or newer.
 - npm with global package support.
-- GitHub CLI 2.93.0 or newer if you want to verify release integrity and provenance.
+- GitHub CLI 2.93.0 or newer for the optional release-integrity and provenance procedure.
 - An x64 Linux or macOS host for a release-qualified installation.
 - Bubblewrap, CA certificates, curl, ripgrep, socat, util-linux, and unprivileged user namespaces on Ubuntu 24.04.
 
 The release workflow verifies the same archive on GitHub-hosted Ubuntu 24.04 x64 and macOS 15
 Intel runners. Other Linux and macOS architectures aren't release-qualified in this version.
+
+## Install from npm
+
+Confirm the version selected by the prerelease channel:
+
+```sh
+npm view @synapti/flow-harness@preview version
+```
+
+The expected output for this release is `0.1.0-alpha.3`. Install that channel globally and disable
+package lifecycle scripts because Flow doesn't require one:
+
+```sh
+npm install --global --ignore-scripts @synapti/flow-harness@preview
+flow --help
+```
+
+The installation adds the `flow` executable to npm's global executable directory. The help output
+must begin with `Flow — Provider-neutral coding-agent harness` and list `flow quickstart`. The
+launcher stops before it loads the complete command if Node.js or the operating system is
+unsupported.
+
+The `preview` tag is the canonical prerelease channel, and it moves to each approved prerelease.
+Because alpha.3 is the package's first public npm version, npm also exposes it through `latest` even
+though publication used `--tag preview`. Unqualified installs therefore resolve to alpha.3. Always
+name `@preview` when you want the prerelease channel.
+
+Pin the exact version when repeatability matters:
+
+```sh
+npm install --global --ignore-scripts @synapti/flow-harness@0.1.0-alpha.3
+```
+
+Future prereleases must advance only `preview`. The first stable release must move `latest` to the
+stable version.
+
+## Call Flow without a global installation
+
+Use npm's temporary executable path when you only want to inspect the current command surface:
+
+```sh
+npm exec --yes --package=@synapti/flow-harness@preview -- flow --help
+```
+
+The first `--` ends npm's options. `flow --help` is the harness command. This form downloads the
+selected package into npm's cache but doesn't add `flow` to your global executable directory.
+Repeat the complete `npm exec` prefix for every later command. The remaining guides assume the
+global installation because a run normally needs several `flow` commands.
 
 ## Prepare an Ubuntu 24.04 host
 
@@ -96,28 +145,9 @@ npm install --global --ignore-scripts \
 flow --help
 ```
 
-The launcher stops before it loads the complete command if Node.js or the operating system is
-unsupported.
-
-After the `preview` npm tag is available, you can use this shorter installation command:
-
-```sh
-npm install --global --ignore-scripts @synapti/flow-harness@preview
-```
-
-The `preview` tag is the canonical prerelease channel. Because alpha.3 is the package's first public
-npm version, npm also exposes it through `latest` even though publication used `--tag preview`.
-Unqualified installs therefore resolve to alpha.3. Use `@preview` explicitly, and confirm that the
-tag selects the reviewed version:
-
-```sh
-npm view @synapti/flow-harness@preview version
-```
-
-The expected output for this release is `0.1.0-alpha.3`.
-
-Future prereleases must advance only `preview`. The first stable release must move `latest` to the
-stable version.
+The installed archive exposes the same `flow` executable as the registry package. If you already
+installed the registry package globally, this command replaces that installation with the verified
+archive bytes.
 
 ## Complete a credential-free run
 

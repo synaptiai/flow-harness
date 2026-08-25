@@ -180,11 +180,11 @@ infer that either agent is better.
 
 ## Validate before provider use
 
-Build Flow and validate the complete local identity without making a provider request:
+Install the [Flow preview](install-preview.md), open the project that contains the qualification
+plan, and validate the complete local identity without making a provider request:
 
 ```sh
-npm run build
-node dist/cli/main.js eval validate acp-qualification.evaluation.yaml
+flow eval validate acp-qualification.evaluation.yaml
 ```
 
 Confirm all of these fields before you run:
@@ -204,10 +204,10 @@ invalid private verifier.
 An enabled run can contact the selected provider and incur cost:
 
 ```sh
-node dist/cli/main.js eval run acp-qualification.evaluation.yaml \
+flow eval run acp-qualification.evaluation.yaml \
   --evaluation-id acp-interoperability-run-1
-node dist/cli/main.js eval inspect acp-interoperability-run-1
-node dist/cli/main.js eval export acp-interoperability-run-1 \
+flow eval inspect acp-interoperability-run-1
+flow eval export acp-interoperability-run-1 \
   --output acp-interoperability-run-1.json
 ```
 

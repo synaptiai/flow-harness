@@ -4,9 +4,10 @@ Use this guide to inspect the safe metadata for a model-backed node and to resum
 interrupted attempt. Flow preserves completed conversation and tool context in a private,
 provider-neutral record. It never treats that record as proof that a node or workflow succeeded.
 
-This feature is implemented in the current source tree. It applies to model-backed agent and model
-verifier nodes that run through the production Pi adapter. Reference-first compaction is available
-only through the dedicated evaluation path. Ordinary runs don't select a compaction policy.
+This feature is implemented in Flow `0.1.0-alpha.3` and the current source tree. It applies to
+model-backed agent and model verifier nodes that run through the production Pi adapter.
+Reference-first compaction is available only through the dedicated evaluation path. Ordinary runs
+don't select a compaction policy.
 
 ## Understand the two durable records
 

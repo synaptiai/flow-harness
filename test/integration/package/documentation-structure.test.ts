@@ -75,6 +75,56 @@ describe("public documentation structure", () => {
     ).resolves.toMatch(/^# Prime runtime operations$/mu);
   });
 
+  it("uses the published executable in operator documentation", async () => {
+    const documentationFiles = await markdownFiles(documentationRoot);
+    const sourceEntrypointDocuments: string[] = [];
+
+    for (const path of documentationFiles) {
+      const source = await readFile(path, "utf8");
+      if (/node dist\/cli\/(?:launcher|main)\.js/u.test(source)) {
+        sourceEntrypointDocuments.push(normalizePath(relative(documentationRoot, path)));
+      }
+    }
+
+    expect(sourceEntrypointDocuments.sort()).toEqual(["testing-and-evaluation.md"]);
+
+    const [
+      packageMetadataText,
+      readme,
+      installGuide,
+      gettingStarted,
+      testing,
+      contributing,
+      support,
+    ] = await Promise.all([
+      readFile(join(repositoryRoot, "package.json"), "utf8"),
+      readFile(join(repositoryRoot, "README.md"), "utf8"),
+      readFile(join(documentationRoot, "guides", "install-preview.md"), "utf8"),
+      readFile(join(documentationRoot, "getting-started.md"), "utf8"),
+      readFile(join(documentationRoot, "testing-and-evaluation.md"), "utf8"),
+      readFile(join(repositoryRoot, "CONTRIBUTING.md"), "utf8"),
+      readFile(join(repositoryRoot, "SUPPORT.md"), "utf8"),
+    ]);
+    const packageMetadata = JSON.parse(packageMetadataText) as {
+      readonly name?: unknown;
+      readonly bin?: unknown;
+    };
+
+    expect(packageMetadata.name).toBe("@synapti/flow-harness");
+    expect(packageMetadata.bin).toEqual({ flow: "dist/cli/launcher.js" });
+    expect(readme).toContain("npm install --global --ignore-scripts @synapti/flow-harness@preview");
+    expect(readme).toContain("flow --help");
+    expect(installGuide).toContain(
+      "npm exec --yes --package=@synapti/flow-harness@preview -- flow --help",
+    );
+    expect(gettingStarted).toContain("flow <command> [arguments]");
+    expect(testing).toContain("This contributor-only smoke test deliberately calls");
+    expect(contributing).toContain("node dist/cli/launcher.js --help");
+    expect(contributing).toContain("test an uninstalled change");
+    expect(support).toContain("published as `@synapti/flow-harness` on npm");
+    expect(support).not.toContain("There is no supported npm release");
+  });
+
   it("persists the public documentation policy for contributors and automated agents", async () => {
     const [agentInstructions, contributing, stylePolicy] = await Promise.all([
       readFile(join(repositoryRoot, "AGENTS.md"), "utf8"),

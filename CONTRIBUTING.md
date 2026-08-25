@@ -26,6 +26,18 @@ Use `npm install` only when intentionally changing dependencies. Commit the resu
 `npm-shrinkwrap.json` change and explain why the dependency is needed. The publishable lock keeps
 the installed command's dependency tree reproducible.
 
+## Run the current source
+
+Build the checkout and call its launcher directly when you need to test an uninstalled change:
+
+```sh
+npm run build
+node dist/cli/launcher.js --help
+```
+
+The launcher applies the same Node.js and platform checks as the installed `flow` executable. Use
+the installed command in operator procedures. Do not require users to clone or link the repository.
+
 ## Change workflow
 
 1. Start from an issue with observable acceptance criteria.

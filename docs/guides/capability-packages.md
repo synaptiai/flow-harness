@@ -8,6 +8,10 @@ freshness, TUF, Sigstore, and recovery contracts.
 Read [Tools and capabilities](../reference/tools-and-capabilities.md) for the generated package
 family roster and the exact built-in model-tool surface.
 
+Install the [Flow preview](install-preview.md), then run these commands from the Flow project that
+owns the local packages or package store. Paths under `examples/...` require a Flow checkout that
+matches the installed version.
+
 ## Package types
 
 | Type | Local path | Manifest | Purpose |
@@ -24,29 +28,29 @@ family roster and the exact built-in model-tool surface.
 Use the command for the package type:
 
 ```sh
-node dist/cli/main.js skills validate
-node dist/cli/main.js skills list
-node dist/cli/main.js skills inspect review
+flow skills validate
+flow skills list
+flow skills inspect review
 
-node dist/cli/main.js verifiers validate
-node dist/cli/main.js verifiers list
-node dist/cli/main.js verifiers inspect release-tests
+flow verifiers validate
+flow verifiers list
+flow verifiers inspect release-tests
 
-node dist/cli/main.js tools validate
-node dist/cli/main.js tools list
-node dist/cli/main.js tools inspect git-status --version 1.0.0
+flow tools validate
+flow tools list
+flow tools inspect git-status --version 1.0.0
 
-node dist/cli/main.js workflows validate
-node dist/cli/main.js workflows list
-node dist/cli/main.js workflows inspect release-check --version 1.0.0
+flow workflows validate
+flow workflows list
+flow workflows inspect release-check --version 1.0.0
 
-node dist/cli/main.js policies validate
-node dist/cli/main.js policies list
-node dist/cli/main.js policies inspect restricted-review --version 1.0.0
+flow policies validate
+flow policies list
+flow policies inspect restricted-review --version 1.0.0
 
-node dist/cli/main.js presentations validate .flow/presentations/concise/PRESENTATION.yaml
-node dist/cli/main.js presentations list
-node dist/cli/main.js presentations inspect concise --version 1.0.0
+flow presentations validate .flow/presentations/concise/PRESENTATION.yaml
+flow presentations list
+flow presentations inspect concise --version 1.0.0
 ```
 
 Validation performs bounded no-follow reads and rejects source drift. List output is metadata-only.
@@ -77,7 +81,7 @@ A bundle source contains `BUNDLE.json` and any supported package trees. Pack it 
 deterministic `.flowpkg`:
 
 ```sh
-node dist/cli/main.js packages pack examples/capability-bundle-source \
+flow packages pack examples/capability-bundle-source \
   --output /tmp/review-suite-1.0.0.flowpkg
 ```
 
@@ -92,7 +96,7 @@ blindly.
 ### Public HTTPS with an out-of-band digest
 
 ```sh
-node dist/cli/main.js packages install \
+flow packages install \
   https://packages.example.test/review-suite-1.0.0.flowpkg \
   --sha256 <64-lowercase-hex>
 ```
@@ -106,7 +110,7 @@ signed OCI form when policy requires proof that the admitted publisher signed th
 ### Publisher-authenticated OCI
 
 ```sh
-node dist/cli/main.js packages install-oci \
+flow packages install-oci \
   registry.example.test/flow/review-suite@sha256:<64-lowercase-hex> \
   --certificate-issuer https://token.actions.githubusercontent.com/ \
   --certificate-identity <exact-certificate-identity>
@@ -119,7 +123,7 @@ For a private registry, pass the password through standard input:
 
 ```sh
 read -r -s registry_password
-printf '%s\n' "$registry_password" | node dist/cli/main.js packages install-oci \
+printf '%s\n' "$registry_password" | flow packages install-oci \
   registry.example.test/flow/private-suite@sha256:<64-lowercase-hex> \
   --certificate-issuer https://token.actions.githubusercontent.com/ \
   --certificate-identity <exact-certificate-identity> \
@@ -133,10 +137,10 @@ configuration or invoke credential helpers.
 ## Inspect installed packages
 
 ```sh
-node dist/cli/main.js packages list
-node dist/cli/main.js packages inspect review-suite --version 1.0.0
-node dist/cli/main.js packages verify
-node dist/cli/main.js packages remove review-suite --version 1.0.0
+flow packages list
+flow packages inspect review-suite --version 1.0.0
+flow packages verify
+flow packages remove review-suite --version 1.0.0
 ```
 
 Removing one exact installed version does not grant replacement or reinstall authority.
@@ -147,7 +151,7 @@ Replacement keeps the previous immutable blob until you explicitly prune retired
 the maintenance plan before you change the store:
 
 ```sh
-node dist/cli/main.js packages prune
+flow packages prune
 ```
 
 The preview returns a plan digest, the number of retired blobs, and their logical byte total. It
@@ -156,7 +160,7 @@ does not change the active package lock or any blob.
 If the preview matches the content that you intend to retire, apply that exact plan:
 
 ```sh
-node dist/cli/main.js packages prune --apply \
+flow packages prune --apply \
   --expected-plan-digest sha256:<64-lowercase-hex>
 ```
 
@@ -182,22 +186,22 @@ retrying interrupted or uncertain maintenance.
 Establish metadata authority from explicit local files:
 
 ```sh
-node dist/cli/main.js packages metadata refresh capability-metadata.json \
+flow packages metadata refresh capability-metadata.json \
   --sigstore-bundle capability-metadata.sigstore.json \
   --certificate-issuer https://token.actions.githubusercontent.com/ \
   --certificate-identity <exact-metadata-certificate-identity>
-node dist/cli/main.js packages metadata inspect
+flow packages metadata inspect
 ```
 
 Check a signed public channel without changing active metadata:
 
 ```sh
-node dist/cli/main.js packages metadata check \
+flow packages metadata check \
   https://metadata.example.test/flow/capability-metadata.json \
   --certificate-issuer https://token.actions.githubusercontent.com/ \
   --certificate-identity <exact-metadata-certificate-identity>
-node dist/cli/main.js packages metadata candidates list
-node dist/cli/main.js packages metadata candidate inspect sha256:<candidate-digest>
+flow packages metadata candidates list
+flow packages metadata candidate inspect sha256:<candidate-digest>
 ```
 
 Candidate review is inert. Activation requires a new exact signer policy and a fresh clock reading.
@@ -208,11 +212,11 @@ Read [Capability sourcing](../capability-sourcing.md) before activation or remed
 Initialize from one explicit local root:
 
 ```sh
-node dist/cli/main.js packages repository init https://updates.example.test/ \
+flow packages repository init https://updates.example.test/ \
   --trusted-root ./root.json
-node dist/cli/main.js packages repository check
-node dist/cli/main.js packages repository candidates list
-node dist/cli/main.js packages repository candidate inspect sha256:<candidate-digest>
+flow packages repository check
+flow packages repository candidates list
+flow packages repository candidate inspect sha256:<candidate-digest>
 ```
 
 Repository checks download and authenticate metadata and candidate bytes. They do not activate or

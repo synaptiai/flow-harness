@@ -158,6 +158,10 @@ Test doubles are permitted only in tests at explicit ports. Production modules c
 
 After `npm run build`:
 
+This contributor-only smoke test deliberately calls the compiled source entry point so it verifies
+the current checkout without a global installation. Public operator documentation must call the
+launcher-backed `flow` executable instead.
+
 ```sh
 node dist/cli/main.js --help
 node dist/cli/main.js init .

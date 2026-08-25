@@ -1,5 +1,9 @@
 # Run and control workflows
 
+Install the [Flow preview](install-preview.md), then run these commands from the Flow project that
+owns the selected workflow and run store. Paths under `examples/...` require a Flow checkout that
+matches the installed version.
+
 This guide covers attached and detached execution, work profiles, observation, approvals, budgets,
 cancellation, and recovery entry points.
 
@@ -10,9 +14,9 @@ Complete [Getting started](../getting-started.md) before using these commands.
 Validate before execution:
 
 ```sh
-node dist/cli/main.js validate <workflow.yaml>
-node dist/cli/main.js run <workflow.yaml> --run-id <run-id>
-node dist/cli/main.js inspect <run-id>
+flow validate <workflow.yaml>
+flow run <workflow.yaml> --run-id <run-id>
+flow inspect <run-id>
 ```
 
 The attached command owns the live scheduler. Closing the terminal can interrupt that owner. Use a
@@ -92,10 +96,10 @@ precedence, replay, and context contracts.
 Submit one durable command:
 
 ```sh
-node dist/cli/main.js run <workflow.yaml> --detach --run-id background-run \
+flow run <workflow.yaml> --detach --run-id background-run \
   --command-id 019fd722-4144-7a72-9c86-6f9af022b2e8
-node dist/cli/main.js supervisor status
-node dist/cli/main.js events background-run --after 0 --follow
+flow supervisor status
+flow events background-run --after 0 --follow
 ```
 
 The supervisor returns one of three admission results:
@@ -120,14 +124,14 @@ its authenticated worker.
 Use `inspect` for the current public projection:
 
 ```sh
-node dist/cli/main.js inspect <run-id>
+flow inspect <run-id>
 ```
 
 Use `events` for bounded ledger pages or continuous observation:
 
 ```sh
-node dist/cli/main.js events <run-id> --after 0
-node dist/cli/main.js events <run-id> --after 0 --follow
+flow events <run-id> --after 0
+flow events <run-id> --after 0 --follow
 ```
 
 These commands emit public JSON. Private capability bytes and private error causes do not enter the
@@ -138,7 +142,7 @@ projection.
 Start the first-party terminal host from an interactive terminal:
 
 ```sh
-node dist/cli/main.js tui <run-id> --actor local:operator
+flow tui <run-id> --actor local:operator
 ```
 
 Use the arrow keys or `j` and `k` to select an action. Press Enter to submit it. Press `q` or Ctrl-C
@@ -152,7 +156,7 @@ images, package code, or arbitrary terminal controls.
 Start the first-party browser host:
 
 ```sh
-node dist/cli/main.js web <run-id> --actor local:operator
+flow web <run-id> --actor local:operator
 ```
 
 Flow prints one IPv4 loopback URL with a fragment capability. Open it under the same local operator
@@ -167,7 +171,7 @@ extensions.
 Start the local stdio bridge from the selected project:
 
 ```sh
-node dist/cli/main.js acp --actor local:operator
+flow acp --actor local:operator
 ```
 
 Use `/flow-run <source>` once to bind a workflow. Use `/flow-continue` to observe and steer the bound
@@ -195,10 +199,10 @@ Flow has three approval boundaries. The same `approve` and `deny` commands route
 Run the approval example and inspect the pending request:
 
 ```sh
-node dist/cli/main.js run examples/approval-gated-command.workflow.yaml --run-id approval-demo
-node dist/cli/main.js inspect approval-demo
-node dist/cli/main.js approve approval-demo approval-2 --actor local:operator
-node dist/cli/main.js resume examples/approval-gated-command.workflow.yaml --run-id approval-demo
+flow run examples/approval-gated-command.workflow.yaml --run-id approval-demo
+flow inspect approval-demo
+flow approve approval-demo approval-2 --actor local:operator
+flow resume examples/approval-gated-command.workflow.yaml --run-id approval-demo
 ```
 
 Approval records consent. It does not execute the command. Resume must use the exact starting
@@ -207,7 +211,7 @@ workflow and execution directory.
 To deny the request:
 
 ```sh
-node dist/cli/main.js deny approval-demo approval-2 --actor local:operator \
+flow deny approval-demo approval-2 --actor local:operator \
   --reason "not authorized"
 ```
 
@@ -217,8 +221,8 @@ An agent can require approval for every `flow_exec` request. Inspect the live ru
 exact decision from another terminal:
 
 ```sh
-node dist/cli/main.js approve <run-id> <request-id> --actor local:operator
-node dist/cli/main.js deny <run-id> <request-id> --actor local:operator \
+flow approve <run-id> <request-id> --actor local:operator
+flow deny <run-id> <request-id> --actor local:operator \
   --reason "command is not authorized"
 ```
 
@@ -230,10 +234,10 @@ expiring and single-use. An ordinary live decision does not need `resume`.
 An approval node binds completed evidence from declared dependencies:
 
 ```sh
-node dist/cli/main.js run examples/evidence-approval.workflow.yaml --run-id review-demo
-node dist/cli/main.js inspect review-demo
-node dist/cli/main.js approve review-demo approval-4 --actor local:operator
-node dist/cli/main.js resume examples/evidence-approval.workflow.yaml --run-id review-demo
+flow run examples/evidence-approval.workflow.yaml --run-id review-demo
+flow inspect review-demo
+flow approve review-demo approval-4 --actor local:operator
+flow resume examples/evidence-approval.workflow.yaml --run-id review-demo
 ```
 
 This approval succeeds a pure control node. It does not authorize a process or widen policy.
@@ -257,9 +261,9 @@ A workflow can declare any non-empty combination of these limits:
 Validate and run the credential-free budget example:
 
 ```sh
-node dist/cli/main.js validate examples/budgeted-foundation.workflow.yaml
-node dist/cli/main.js run examples/budgeted-foundation.workflow.yaml --run-id budget-demo
-node dist/cli/main.js inspect budget-demo
+flow validate examples/budgeted-foundation.workflow.yaml
+flow run examples/budgeted-foundation.workflow.yaml --run-id budget-demo
+flow inspect budget-demo
 ```
 
 Flow reconstructs consumption and remaining allowance from durable events. A model response can
@@ -274,7 +278,7 @@ Read [Configuration](../configuration.md) for operator ceilings. Read the
 Cancel an active or queued run with attribution:
 
 ```sh
-node dist/cli/main.js cancel background-run --actor local:operator \
+flow cancel background-run --actor local:operator \
   --reason "operator requested" \
   --command-id 019fd722-4144-7a72-9c86-6f9af022b2e9
 ```
@@ -285,7 +289,7 @@ cancellation creates no run ledger, active claim, or worker.
 Shutdown refuses while active or queued work exists:
 
 ```sh
-node dist/cli/main.js supervisor shutdown
+flow supervisor shutdown
 ```
 
 ## Recover interrupted work
@@ -293,8 +297,8 @@ node dist/cli/main.js supervisor shutdown
 Inspect first. Resume with the exact workflow that started the run:
 
 ```sh
-node dist/cli/main.js inspect interrupted-run
-node dist/cli/main.js resume <workflow.yaml> --run-id interrupted-run
+flow inspect interrupted-run
+flow resume <workflow.yaml> --run-id interrupted-run
 ```
 
 Flow normally continues only from a committed boundary. Eligible agent nodes can opt into bounded

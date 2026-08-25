@@ -9,11 +9,11 @@ Read the [security policy](../SECURITY.md) before unattended use.
 
 | Document | Use it when |
 | --- | --- |
-| [Install the Flow preview](guides/install-preview.md) | You want to verify, install, remove, or replace the versioned package. |
+| [Install the Flow preview](guides/install-preview.md) | You want to install, call, pin, verify, remove, or replace the published package. |
 | [Flow 0.1.0-alpha.3 release notes](releases/0.1.0-alpha.3.md) | You need the supported environment, verified behaviors, changes, or compatibility limits for the current checkpoint. |
 | [Flow 0.1.0-alpha.2 release notes](releases/0.1.0-alpha.2.md) | You intentionally need the historical GitHub-only usability checkpoint. |
 | [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You intentionally need the historical first-alpha contract. |
-| [Getting started](getting-started.md) | You want to complete one credential-free run. |
+| [Getting started](getting-started.md) | You want to confirm the `flow` command and complete one credential-free run. |
 | [Complete the coding quick start](guides/coding-quickstart.md) | You want to prove one bounded provider-backed edit and inspect its evidence. |
 | [Diagnose the Flow environment](guides/diagnose-environment.md) | You need a read-only host, project, workflow, provider, sandbox, or Prime preflight. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
