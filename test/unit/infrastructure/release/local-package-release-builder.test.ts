@@ -33,13 +33,13 @@ describe("local package release builder", () => {
     );
 
     expect(result).toEqual({
-      archivePath: join(outputDirectory, "synaptiai-flow-harness-0.1.0-alpha.1.tgz"),
+      archivePath: join(outputDirectory, "synapti-flow-harness-0.1.0-alpha.1.tgz"),
       evidencePath: join(outputDirectory, "package-release-evidence.json"),
       settlement: "created",
     });
     expect((await readdir(outputDirectory)).sort()).toEqual([
       "package-release-evidence.json",
-      "synaptiai-flow-harness-0.1.0-alpha.1.tgz",
+      "synapti-flow-harness-0.1.0-alpha.1.tgz",
     ]);
     expect(await readFile(result.archivePath)).toEqual(archive);
     expect(parsePackageReleaseEvidence(await readFile(result.evidencePath))).toMatchObject({
@@ -178,9 +178,9 @@ describe("local package release builder", () => {
         ),
       "settle package artifact",
     );
-    expect(
-      await readFile(join(outputDirectory, "synaptiai-flow-harness-0.1.0-alpha.1.tgz")),
-    ).toEqual(archive);
+    expect(await readFile(join(outputDirectory, "synapti-flow-harness-0.1.0-alpha.1.tgz"))).toEqual(
+      archive,
+    );
   });
 });
 
@@ -215,14 +215,14 @@ function packReportFixture(archive: Buffer): PackReport {
     { path: "package.json", size: 9, mode: 0o644 },
   ];
   return {
-    id: "@synaptiai/flow-harness@0.1.0-alpha.1",
-    name: "@synaptiai/flow-harness",
+    id: "@synapti/flow-harness@0.1.0-alpha.1",
+    name: "@synapti/flow-harness",
     version: "0.1.0-alpha.1",
     size: archive.byteLength,
     unpackedSize: files.reduce((total, file) => total + file.size, 0),
     shasum: createHash("sha1").update(archive).digest("hex"),
     integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`,
-    filename: "synaptiai-flow-harness-0.1.0-alpha.1.tgz",
+    filename: "synapti-flow-harness-0.1.0-alpha.1.tgz",
     files,
     entryCount: files.length,
     bundled: [],

@@ -176,7 +176,7 @@ function evidenceFixture(
     sourceRepository: FLOW_PACKAGE_REPOSITORY,
     sourceRevision: "f".repeat(40),
     archive: {
-      fileName: "synaptiai-flow-harness-0.1.0-alpha.1.tgz",
+      fileName: "synapti-flow-harness-0.1.0-alpha.1.tgz",
       bytes: archive.byteLength,
       unpackedBytes: files.reduce((total, file) => total + file.bytes, 0),
       entryCount: files.length,
@@ -197,7 +197,7 @@ function evidenceFixture(
 
 function packageManifestFixture(): Record<string, unknown> {
   return {
-    name: "@synaptiai/flow-harness",
+    name: "@synapti/flow-harness",
     version: "0.1.0-alpha.1",
     bin: { flow: "dist/cli/launcher.js" },
     engines: { node: ">=26.7.0" },

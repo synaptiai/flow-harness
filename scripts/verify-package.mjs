@@ -102,7 +102,7 @@ async function verifyPackage() {
       );
     });
 
-    const installedPackageRoot = join(consumerRoot, "node_modules", "@synaptiai", "flow-harness");
+    const installedPackageRoot = join(consumerRoot, "node_modules", "@synapti", "flow-harness");
     const flowBinary = join(consumerRoot, "node_modules", ".bin", "flow");
     await withPackageReleaseStage("verify installed package", async () => {
       await releaseVerifier.verifyInstalledPackageRelease(installedPackageRoot, evidence);

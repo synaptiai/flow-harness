@@ -3,7 +3,7 @@ import { verifierPackageVersionSchema } from "../capability/verifier-packages.js
 import { parseStrictJson } from "../strict-json.js";
 
 export const PACKAGE_RELEASE_EVIDENCE_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
-export const FLOW_PACKAGE_NAME = "@synaptiai/flow-harness" as const;
+export const FLOW_PACKAGE_NAME = "@synapti/flow-harness" as const;
 export const FLOW_PACKAGE_REPOSITORY = "https://github.com/synaptiai/flow-harness" as const;
 export const MAX_PACKAGE_RELEASE_EVIDENCE_BYTES = 4 * 1024 * 1024;
 export const MAX_PACKAGE_RELEASE_ARCHIVE_BYTES = 16 * 1024 * 1024;
@@ -153,7 +153,7 @@ export function parsePackageReleaseEvidence(source: Uint8Array): PackageReleaseE
 function validateEvidence(
   evidence: z.infer<typeof evidenceSchema>,
 ): z.infer<typeof evidenceSchema> {
-  const expectedFileName = `synaptiai-flow-harness-${evidence.packageVersion}.tgz`;
+  const expectedFileName = `synapti-flow-harness-${evidence.packageVersion}.tgz`;
   if (evidence.archive.fileName !== expectedFileName) {
     throw new Error("archive name does not match the package version");
   }

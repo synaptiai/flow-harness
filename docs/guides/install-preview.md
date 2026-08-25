@@ -3,7 +3,7 @@
 This guide installs the public Flow preview and verifies the release before you execute it. Use
 this path when you want to evaluate Flow without building the repository.
 
-Flow `0.1.0-alpha.2` is a prerelease. Its workflow and storage contracts can change before the
+Flow `0.1.0-alpha.3` is a prerelease. Its workflow and storage contracts can change before the
 first stable version. Don't use it as a security boundary for hostile or multi-tenant workloads.
 Read the [security policy](../../SECURITY.md) before unattended use.
 
@@ -43,27 +43,27 @@ Create a private temporary directory and download the three release assets:
 
 ```sh
 release_dir="$(mktemp -d)"
-gh release download v0.1.0-alpha.2 \
+gh release download v0.1.0-alpha.3 \
   --repo synaptiai/flow-harness \
   --dir "$release_dir" \
-  --pattern 'synaptiai-flow-harness-0.1.0-alpha.2.tgz' \
+  --pattern 'synapti-flow-harness-0.1.0-alpha.3.tgz' \
   --pattern 'package-release-evidence.json' \
-  --pattern 'flow-harness-0.1.0-alpha.2.intoto.jsonl'
+  --pattern 'flow-harness-0.1.0-alpha.3.intoto.jsonl'
 ```
 
 Verify the immutable release and each downloaded asset:
 
 ```sh
-gh release verify v0.1.0-alpha.2 \
+gh release verify v0.1.0-alpha.3 \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.2 \
-  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz" \
+gh release verify-asset v0.1.0-alpha.3 \
+  "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz" \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.2 \
+gh release verify-asset v0.1.0-alpha.3 \
   "$release_dir/package-release-evidence.json" \
   --repo synaptiai/flow-harness
-gh release verify-asset v0.1.0-alpha.2 \
-  "$release_dir/flow-harness-0.1.0-alpha.2.intoto.jsonl" \
+gh release verify-asset v0.1.0-alpha.3 \
+  "$release_dir/flow-harness-0.1.0-alpha.3.intoto.jsonl" \
   --repo synaptiai/flow-harness
 ```
 
@@ -71,8 +71,8 @@ Verify the archive's build provenance and require the reviewed release workflow:
 
 ```sh
 gh attestation verify \
-  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz" \
-  --bundle "$release_dir/flow-harness-0.1.0-alpha.2.intoto.jsonl" \
+  "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz" \
+  --bundle "$release_dir/flow-harness-0.1.0-alpha.3.intoto.jsonl" \
   --repo synaptiai/flow-harness \
   --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml
 ```
@@ -92,7 +92,7 @@ package lifecycle script:
 
 ```sh
 npm install --global --ignore-scripts \
-  "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz"
+  "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz"
 flow --help
 ```
 
@@ -102,17 +102,17 @@ unsupported.
 After the `preview` npm tag is available, you can use this shorter installation command:
 
 ```sh
-npm install --global --ignore-scripts @synaptiai/flow-harness@preview
+npm install --global --ignore-scripts @synapti/flow-harness@preview
 ```
 
 The `preview` tag is separate from `latest`. Before you install from npm, confirm that the tag
 selects the reviewed version:
 
 ```sh
-npm view @synaptiai/flow-harness@preview version
+npm view @synapti/flow-harness@preview version
 ```
 
-The expected output for this release is `0.1.0-alpha.2`.
+The expected output for this release is `0.1.0-alpha.3`.
 
 ## Complete a credential-free run
 
@@ -152,7 +152,7 @@ complete diagnostic contract is in [Diagnose the Flow environment](diagnose-envi
 Remove the global package when you finish evaluating it:
 
 ```sh
-npm uninstall --global @synaptiai/flow-harness
+npm uninstall --global @synapti/flow-harness
 ```
 
 Prerelease versions don't have a compatibility promise. Before you install a newer preview, read
