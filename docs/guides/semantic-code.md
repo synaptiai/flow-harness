@@ -4,14 +4,15 @@ Use Flow's semantic code tool when an agent needs diagnostics, definitions, refe
 information from a language server. This guide explains how to select one exact server, declare
 semantic access in a workflow, run the workflow, and inspect its bounded evidence.
 
-This feature is available in current source builds. The hosted runtime acceptance test covers
-Linux x64. The feature doesn't make a language-server result authoritative workflow evidence.
+This feature is available in Flow `0.1.0-alpha.3` and the current source tree. The hosted runtime
+acceptance test covers Linux x64. The feature doesn't make a language-server result authoritative
+workflow evidence.
 
 ## Before you begin
 
 You need:
 
-- A built Flow source tree.
+- Flow installed through the [preview installation guide](install-preview.md).
 - A Flow project and workflow.
 - A local language-server executable that supports LSP 3.18 over standard input and output.
 - The SHA-256 digest of the exact executable.

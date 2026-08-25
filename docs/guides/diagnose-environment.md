@@ -12,10 +12,11 @@ Flow `0.1.0-alpha.3` and the current source tree contain this command. Follow th
 
 ## Before you begin
 
-Install Flow `0.1.0-alpha.3`, or build the current source tree on a supported host. If you want to
-check a workflow, make the workflow and its selected capability packages available to the current
-project. If you want to check Prime, prepare the Prime runtime first by following
-[Prime runtime operations](../operations/prime-runtime.md).
+Install Flow `0.1.0-alpha.3` through the [versioned installation guide](install-preview.md). If you
+want to check a workflow, make the workflow and its selected capability packages available to the
+current project. If you want to check Prime, prepare the Prime runtime first by following
+[Prime runtime operations](../operations/prime-runtime.md). Contributors can instead use the
+source-build procedure in [Contributing](../../CONTRIBUTING.md).
 
 `flow doctor` prints a versioned JSON report. The report contains fixed categories and remediation
 text. It doesn't include credentials, private paths, raw provider responses, or nested private

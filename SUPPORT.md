@@ -1,14 +1,15 @@
 # Support
 
-Flow is a public pre-alpha source preview. There is no supported npm release, hosted service, or
-compatibility guarantee yet.
+Flow is a public alpha preview published as `@synapti/flow-harness` on npm. There is no stable
+release, hosted service, or prerelease compatibility guarantee yet.
 
 ## Usage and development questions
 
 Search existing [GitHub issues](https://github.com/synaptiai/flow-harness/issues) first. If the
 question is not covered, open the issue form that best matches an observed bug or requested
-capability. Include the operating system, Node.js version, workflow excerpt with secrets removed,
-actual result, and the evidence needed to confirm the answer.
+capability. Include the Flow package version, complete `flow` command, operating system, and Node.js
+version. Also include the actual result, the evidence needed to confirm it, and a workflow excerpt
+with secrets removed. Run `flow doctor` when it applies, and include only its public report.
 
 Maintainers do not provide private implementation support through the vulnerability-reporting or
 conduct channels.

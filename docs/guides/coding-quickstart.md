@@ -27,9 +27,8 @@ boundary. Read the [security policy](../../SECURITY.md) before unattended use.
 
 ## Before you begin
 
-Install Flow by following [Install the Flow preview](install-preview.md), or complete the source
-installation in [Getting started](../getting-started.md). Confirm that this command shows
-`flow quickstart`:
+Install Flow by following [Install the Flow preview](install-preview.md). Confirm that this command
+shows `flow quickstart`:
 
 ```sh
 flow --help

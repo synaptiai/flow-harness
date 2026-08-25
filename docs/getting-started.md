@@ -16,9 +16,8 @@ The default path does not need model credentials, Docker, Bun, or the Prime runt
 Flow is a public alpha preview. Do not use it as a security boundary for hostile or multi-tenant
 workloads. Read the [security policy](../SECURITY.md) before unattended use.
 
-Follow [Install the Flow preview](guides/install-preview.md) to install and verify the versioned
-archive. Contributors can use the source-build procedure in
-[Build the current source](#build-the-current-source).
+Follow [Install the Flow preview](guides/install-preview.md) to install the published npm package or
+a verified release archive. The installation exposes one public executable named `flow`.
 
 ### Ubuntu 24.04 sandbox prerequisite
 
@@ -34,18 +33,32 @@ The namespace setting changes the host security posture. Apply it only to a revi
 or CI host. Use a container, microVM, or managed sandbox for hostile workloads. Flow stops before
 command creation when the sandbox is unavailable.
 
-## Build the current source
+## Confirm the Flow command
 
-From the repository root, install the exact dependencies, build the package, and link its CLI:
+Confirm that your shell resolves the installed executable:
 
 ```sh
-npm ci
-npm run build
-npm link
 flow --help
 ```
 
-The build must succeed. The help output must include `flow quickstart`.
+The output must begin with `Flow — Provider-neutral coding-agent harness` and include
+`flow quickstart`. If your shell reports that `flow` isn't found, follow the
+[`PATH` recovery steps](guides/install-preview.md#resolve-installation-problems) before you continue.
+
+All operator procedures use this command form:
+
+```text
+flow <command> [arguments]
+```
+
+Run the command from the Flow project that you want to inspect or change. Relative workflow,
+manifest, output, and run-store paths resolve from the invocation directory unless a command says
+otherwise. Commands that name repository files such as `examples/...` must run from a checkout that
+matches the installed Flow version.
+
+Contributors who need to run an uninstalled source build must follow
+[Contributing](../CONTRIBUTING.md). Contributor-only checks can call a compiled entry point
+directly. Operator guides use the installed `flow` executable and its launcher checks.
 
 ## Complete the credential-free quick start
 

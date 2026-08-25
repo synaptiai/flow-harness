@@ -4,8 +4,8 @@ Flow is a provider-neutral coding-agent harness. It executes deterministic workf
 durable evidence, and confines command execution through fail-closed sandboxes.
 
 > **Alpha preview:** Flow is under active development. Its contracts may change. Install the
-> versioned prerelease from its immutable GitHub release, and don't use it as a security boundary
-> for hostile or multi-tenant workloads.
+> published npm prerelease from the `preview` channel, or verify and install its immutable GitHub
+> release. Don't use Flow as a security boundary for hostile or multi-tenant workloads.
 
 Flow is a standalone product. It does not depend on Claude Code or preserve compatibility with the
 earlier Flow plugin. Pi supplies the default model-facing agent loop. Flow owns scheduling, policy,
@@ -90,12 +90,11 @@ completes one credential-free workflow through the production command sandbox.
 - npm with global package support
 - x64 Linux or macOS
 
-Build and link the current source:
+Install the published preview and confirm that your shell can call Flow:
 
 ```sh
-npm ci
-npm run build
-npm link
+npm install --global --ignore-scripts @synapti/flow-harness@preview
+flow --help
 ```
 
 Create a directory and complete the first run:
@@ -112,8 +111,8 @@ The result contains the run status, the project-relative evidence path, and toke
 Read [Getting started](docs/getting-started.md) for provider selection, output details, and failure
 recovery. Use the [coding quick start](docs/guides/coding-quickstart.md) when you are ready to prove
 one real provider-backed read, hash-bound edit, and deterministic verification. Follow
-[Install the Flow preview](docs/guides/install-preview.md) to verify and install the versioned
-archive.
+[Install the Flow preview](docs/guides/install-preview.md) for exact-version pinning, one-off npm
+invocation, provenance verification, upgrades, removal, and `PATH` recovery.
 
 ## Security
 
@@ -140,8 +139,8 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 
 | Start with | When you need |
 | --- | --- |
-| [Install the Flow preview](docs/guides/install-preview.md) | Verified package download, installation, removal, and release-specific limits |
-| [Getting started](docs/getting-started.md) | Source setup and the first credential-free run |
+| [Install the Flow preview](docs/guides/install-preview.md) | Published installation, invocation, exact pinning, provenance verification, removal, and release-specific limits |
+| [Getting started](docs/getting-started.md) | Installed command verification and the first credential-free run |
 | [Complete the coding quick start](docs/guides/coding-quickstart.md) | Provider setup, one bounded edit, cost interpretation, evidence, cancellation, cleanup, and recovery |
 | [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |

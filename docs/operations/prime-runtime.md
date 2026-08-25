@@ -6,6 +6,10 @@ container command profile.
 Do not use this procedure for the credential-free first run. Follow
 [Getting started](../getting-started.md) instead.
 
+Install an exact Flow version through the [preview installation guide](../guides/install-preview.md)
+before you prepare the runtime. Run the example evaluation from a Flow checkout that matches that
+installed version.
+
 ## Safety boundary
 
 Use this profile only on a dedicated, reprovisionable runner. Do not use a shared development host.
@@ -137,14 +141,12 @@ evidence.
 
 ## Prepare the image
 
-Build Flow first, then initialize the selected project:
+From the matching checkout, initialize the selected project and prepare the fixed runtime:
 
 ```sh
-npm ci --ignore-scripts
-npm run build
-node dist/cli/main.js init .
-node dist/cli/main.js runtime prepare prime-agent
-node dist/cli/main.js doctor --profile prime-agent
+flow init .
+flow runtime prepare prime-agent
+flow doctor --profile prime-agent
 ```
 
 Preparation performs two image builds and compares their identities. It stores local host evidence
@@ -162,9 +164,9 @@ create, start, stop, or remove a container. Read
 Validate the example before execution:
 
 ```sh
-node dist/cli/main.js eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
-node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
-node dist/cli/main.js eval inspect native-prime-comparison
+flow eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+flow eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+flow eval inspect native-prime-comparison
 ```
 
 Prime runs in one fixed OCI image. Python receives no provider credential or external network route.
@@ -193,7 +195,7 @@ sandbox authority.
 Inspect the effective result:
 
 ```sh
-node dist/cli/main.js config show
+flow config show
 ```
 
 The effective policy digest changes with the profile. An active supervisor must become idle and

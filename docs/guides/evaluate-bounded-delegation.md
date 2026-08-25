@@ -11,7 +11,8 @@ This feature is an evaluation experiment. It cannot activate delegation for ordi
 
 Before you start, prepare these inputs:
 
-- A source build of Flow with its dependencies installed.
+- Flow `0.1.0-alpha.3` installed through the [preview installation guide](install-preview.md), or a
+  matching source build.
 - One exact root workflow with an embedded Pi `agent` node that acts as the manager.
 - One exact child workflow with one typed `result` node and no nested child workflow.
 - The exact capability-package closure used by the root workflow. An empty closure is supported.
@@ -102,17 +103,14 @@ between profiles.
 
 ## Validate and run the experiment
 
-Build Flow so the command uses the current compiled source:
-
-```sh
-npm run build
-```
+Open the project that contains the reviewed plan and its bound workflow and package sources.
+Confirm that `flow --help` succeeds before you validate the plan.
 
 Validate the candidate, executor, package closure, task classes, controls, and complete paired
 schedule without starting a model request:
 
 ```sh
-node dist/cli/main.js eval validate <plan.yaml>
+flow eval validate <plan.yaml>
 ```
 
 The command returns `valid: true`, `purpose: delegation-v1`, both task classes, both profile
@@ -122,7 +120,7 @@ review the candidate before you continue.
 Start or resume the evaluation with an explicit durable identifier:
 
 ```sh
-node dist/cli/main.js eval run <plan.yaml> --evaluation-id <evaluation-id>
+flow eval run <plan.yaml> --evaluation-id <evaluation-id>
 ```
 
 Flow revalidates the sealed embedded Pi executor before it creates each candidate trial attempt.
@@ -149,13 +147,13 @@ resource-exhausted child.
 Inspect the stored report without loading the candidate source, provider, or embedded Pi executor:
 
 ```sh
-node dist/cli/main.js eval inspect <evaluation-id>
+flow eval inspect <evaluation-id>
 ```
 
 Export the same public evidence to a new file:
 
 ```sh
-node dist/cli/main.js eval export <evaluation-id> --output <report.json>
+flow eval export <evaluation-id> --output <report.json>
 ```
 
 The public header and records contain digests, byte counts, task classes, lifecycle states,

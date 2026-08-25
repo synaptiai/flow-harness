@@ -372,7 +372,7 @@ describe("Prime Agent package boundary", () => {
     const workflowReleaseGate = workflow.indexOf("run: npm run ci:local");
     const workflowDockerDiagnostic = workflow.indexOf("name: Diagnose Prime Docker availability");
     const runbookCorePatternWrite = runbook.indexOf("sudo sysctl --write kernel.core_pattern=core");
-    const runbookPreparation = runbook.indexOf("node dist/cli/main.js runtime prepare prime-agent");
+    const runbookPreparation = runbook.indexOf("flow runtime prepare prime-agent");
 
     expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
     expect(workflow).toContain(

@@ -9,36 +9,39 @@ This makes a result inspectable and reproducible from committed evidence. It doe
 or biased suite statistically representative, turn a seed into provider-side sampling control, or
 justify a superiority claim without enough held-out tasks.
 
+Install the [Flow preview](guides/install-preview.md) before you use this guide. Commands that name
+an included `examples/...` plan must run from the root of a Flow checkout that matches the installed
+version. Replace those paths with your own project-relative plans when you evaluate another project.
+
 ## Quick start
 
-Build Flow, then validate the included plan without credentials or filesystem mutation:
+From the matching checkout, validate the included plan without credentials or filesystem mutation:
 
 ```sh
-npm run build
-node dist/cli/main.js eval validate examples/evaluation/harness-comparison.evaluation.yaml
+flow eval validate examples/evaluation/harness-comparison.evaluation.yaml
 ```
 
 Validation compiles both workflows and fingerprints every admitted source. Running trials contacts
 the declared provider and therefore needs its normal Pi credentials:
 
 ```sh
-node dist/cli/main.js eval run examples/evaluation/harness-comparison.evaluation.yaml
-node dist/cli/main.js eval inspect harness-comparison
-node dist/cli/main.js eval export harness-comparison --output harness-comparison.json
+flow eval run examples/evaluation/harness-comparison.evaluation.yaml
+flow eval inspect harness-comparison
+flow eval export harness-comparison --output harness-comparison.json
 ```
 
 The native Pi example uses one Flow workflow and one native Pi profile:
 
 ```sh
-node dist/cli/main.js eval validate examples/evaluation/native-pi-comparison.evaluation.yaml
-node dist/cli/main.js eval run examples/evaluation/native-pi-comparison.evaluation.yaml
+flow eval validate examples/evaluation/native-pi-comparison.evaluation.yaml
+flow eval run examples/evaluation/native-pi-comparison.evaluation.yaml
 ```
 
 The native OMP example compares the native Pi and native OMP profiles:
 
 ```sh
-node dist/cli/main.js eval validate examples/evaluation/native-omp-comparison.evaluation.yaml
-node dist/cli/main.js eval run examples/evaluation/native-omp-comparison.evaluation.yaml
+flow eval validate examples/evaluation/native-omp-comparison.evaluation.yaml
+flow eval run examples/evaluation/native-omp-comparison.evaluation.yaml
 ```
 
 The OMP example requires Linux and an attested official Bun 1.3.14 standard executable for x64 or
@@ -49,9 +52,9 @@ local runtime identities. A run also needs the declared provider credentials in 
 The Prime Agent example compares one Flow workflow with one fixed Prime profile:
 
 ```sh
-node dist/cli/main.js runtime prepare prime-agent
-node dist/cli/main.js eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
-node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+flow runtime prepare prime-agent
+flow eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+flow eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
 ```
 
 Prime Agent requires Linux x64, Docker API 1.51, cgroup v2, and the fixed local image. Docker must
@@ -105,9 +108,9 @@ The dedicated three-mode evaluator compares complete portable history, verified 
 references, and reference-first bounded summaries:
 
 ```sh
-node dist/cli/main.js eval compaction validate \
+flow eval compaction validate \
   examples/evaluation/context-compaction.evaluation.yaml
-node dist/cli/main.js eval compaction run \
+flow eval compaction run \
   examples/evaluation/context-compaction.evaluation.yaml
 ```
 
