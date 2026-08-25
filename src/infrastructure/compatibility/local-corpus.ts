@@ -76,10 +76,7 @@ export async function loadLocalCompatibilityCorpus(
     try {
       sources.set(
         artifact.path,
-        await readBoundedNoFollow(
-          join(rootDirectory, ...artifact.path.split("/")),
-          MAX_COMPATIBILITY_ARTIFACT_BYTES,
-        ),
+        await readContainedArtifact(rootDirectory, artifact.path, MAX_COMPATIBILITY_ARTIFACT_BYTES),
       );
     } catch (error) {
       sources.set(artifact.path, { category: artifactReadCategory(error) });
@@ -98,6 +95,53 @@ export async function loadLocalCompatibilityCorpus(
     manifest,
     sources,
   };
+}
+
+async function readContainedArtifact(
+  rootDirectory: string,
+  artifactPath: string,
+  maximumBytes: number,
+): Promise<Buffer> {
+  const directoriesBefore = await observeArtifactDirectories(rootDirectory, artifactPath);
+  const source = await readBoundedNoFollow(
+    join(rootDirectory, ...artifactPath.split("/")),
+    maximumBytes,
+  );
+  const directoriesAfter = await observeArtifactDirectories(rootDirectory, artifactPath);
+  if (
+    directoriesBefore.length !== directoriesAfter.length ||
+    directoriesBefore.some(
+      (observation, index) =>
+        directoriesAfter[index] === undefined ||
+        !sameObservation(observation, directoriesAfter[index]),
+    )
+  ) {
+    throw new CorpusReadError("changed");
+  }
+  return source;
+}
+
+async function observeArtifactDirectories(
+  rootDirectory: string,
+  artifactPath: string,
+): Promise<readonly BigIntStats[]> {
+  const observations: BigIntStats[] = [];
+  let directory = rootDirectory;
+  for (const segment of artifactPath.split("/").slice(0, -1)) {
+    directory = join(directory, segment);
+    let observation: BigIntStats;
+    try {
+      observation = await lstat(directory, { bigint: true });
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") throw new CorpusReadError("missing");
+      throw new CorpusReadError("malformed");
+    }
+    if (!observation.isDirectory() || observation.isSymbolicLink()) {
+      throw new CorpusReadError("malformed");
+    }
+    observations.push(observation);
+  }
+  return observations;
 }
 
 async function observeCorpusDirectory(path: string): Promise<BigIntStats> {
@@ -133,7 +177,7 @@ class CorpusReadError extends Error {
 async function readBoundedNoFollow(path: string, maximumBytes: number): Promise<Buffer> {
   let handle: FileHandle;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") throw new CorpusReadError("missing");
     throw new CorpusReadError("malformed");

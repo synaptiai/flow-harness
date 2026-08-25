@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
@@ -11,6 +13,7 @@ import {
 } from "../../../../src/infrastructure/compatibility/local-corpus.js";
 
 const WORKFLOW_PATH = "releases/0.1.0-alpha.1/workflow.yaml";
+const executeFile = promisify(execFile);
 const WORKFLOW = `apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata:
@@ -55,6 +58,30 @@ describe("local compatibility corpus", () => {
     const artifact = join(root, WORKFLOW_PATH);
     await rm(artifact);
     await symlink(target, artifact);
+
+    const loaded = await loadLocalCompatibilityCorpus(root);
+
+    expect(loaded.sources.get(WORKFLOW_PATH)).toEqual({ category: "artifact_malformed" });
+  });
+
+  it("does not follow an intermediate directory symbolic link", async () => {
+    const root = await createCorpus();
+    const outside = await mkdtemp(join(tmpdir(), "flow-outside-compatibility-"));
+    await mkdir(join(outside, "0.1.0-alpha.1"), { recursive: true });
+    await writeFile(join(outside, "0.1.0-alpha.1", "workflow.yaml"), WORKFLOW);
+    await rm(join(root, "releases"), { recursive: true });
+    await symlink(outside, join(root, "releases"));
+
+    const loaded = await loadLocalCompatibilityCorpus(root);
+
+    expect(loaded.sources.get(WORKFLOW_PATH)).toEqual({ category: "artifact_malformed" });
+  });
+
+  it("rejects a FIFO without waiting for a writer", async () => {
+    const root = await createCorpus();
+    const artifact = join(root, WORKFLOW_PATH);
+    await rm(artifact);
+    await executeFile("mkfifo", [artifact]);
 
     const loaded = await loadLocalCompatibilityCorpus(root);
 
