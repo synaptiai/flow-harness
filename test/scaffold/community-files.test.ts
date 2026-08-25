@@ -34,15 +34,16 @@ describe("public repository contracts", () => {
   });
 
   it("documents an honest installable alpha first run", async () => {
-    const [readme, installGuide, releaseNotes] = await Promise.all([
+    const [readme, installGuide, releaseNotes, historicalNotes] = await Promise.all([
       readPublicDocumentation(),
       readText("docs/guides/install-preview.md"),
+      readText("docs/releases/0.1.0-alpha.3.md"),
       readText("docs/releases/0.1.0-alpha.2.md"),
     ]);
 
     expect(readme).toMatch(/alpha preview/i);
-    expect(readme).toContain("0.1.0-alpha.2");
-    expect(installGuide).toContain("gh release download v0.1.0-alpha.2");
+    expect(readme).toContain("0.1.0-alpha.3");
+    expect(installGuide).toContain("gh release download v0.1.0-alpha.3");
     expect(readme).toContain("npm install --global --ignore-scripts");
     expect(readme).toContain("bubblewrap");
     expect(readme).toContain("flow run");
@@ -52,23 +53,25 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security policy](SECURITY.md)");
 
     expect(installGuide).toContain("gh release verify-asset");
-    expect(installGuide).toContain("gh release verify v0.1.0-alpha.2");
+    expect(installGuide).toContain("gh release verify v0.1.0-alpha.3");
     expect(installGuide).toContain("gh attestation verify");
     expect(installGuide).toContain(
-      '--bundle "$release_dir/flow-harness-0.1.0-alpha.2.intoto.jsonl"',
+      '--bundle "$release_dir/flow-harness-0.1.0-alpha.3.intoto.jsonl"',
     );
     expect(installGuide).toContain("GitHub CLI 2.93.0 or newer");
     expect(installGuide).toContain("npm prefix --global");
     expect(installGuide).not.toContain("npm bin --global");
-    expect(installGuide).toContain("@synaptiai/flow-harness@preview");
+    expect(installGuide).toContain("@synapti/flow-harness@preview");
     expect(installGuide).toContain("`preview` tag is separate from `latest`");
     expect(releaseNotes).toContain("Ubuntu 24.04 x64");
     expect(releaseNotes).toContain("macOS 15 Intel");
     expect(releaseNotes).toContain("doesn't assign `latest`");
     expect(releaseNotes).toContain(
-      "https://github.com/synaptiai/flow-harness/blob/v0.1.0-alpha.2/docs/guides/install-preview.md",
+      "https://github.com/synaptiai/flow-harness/blob/v0.1.0-alpha.3/docs/guides/install-preview.md",
     );
     expect(releaseNotes).not.toMatch(/\]\(\.\.\//);
+    expect(releaseNotes).toContain("GitHub-only historical release");
+    expect(historicalNotes).toContain("# Flow 0.1.0-alpha.2 release notes");
   });
 
   it("routes preview release details to canonical documentation owners", async () => {

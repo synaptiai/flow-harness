@@ -3,7 +3,7 @@ import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const EXPECTED_PACKAGE_NAME = "@synaptiai/flow-harness";
+const EXPECTED_PACKAGE_NAME = "@synapti/flow-harness";
 const PREVIEW_VERSION_PATTERN = /^0\.1\.0-alpha\.[1-9]\d*$/u;
 const PACKAGE_METADATA_LIMIT = 64 * 1024;
 const SHRINKWRAP_METADATA_LIMIT = 1024 * 1024;
@@ -64,7 +64,7 @@ async function resolveIdentity(root) {
     packageName: EXPECTED_PACKAGE_NAME,
     packageVersion,
     releaseTag: `v${packageVersion}`,
-    archiveName: `synaptiai-flow-harness-${packageVersion}.tgz`,
+    archiveName: `synapti-flow-harness-${packageVersion}.tgz`,
     attestationName: `flow-harness-${packageVersion}.intoto.jsonl`,
     releaseTitle,
     releaseNotesPath,

@@ -214,7 +214,7 @@ function evidenceFixture(): PackageReleaseEvidenceInput {
     sourceRepository: FLOW_PACKAGE_REPOSITORY,
     sourceRevision: "a".repeat(40),
     archive: {
-      fileName: "synaptiai-flow-harness-0.1.0-alpha.1.tgz",
+      fileName: "synapti-flow-harness-0.1.0-alpha.1.tgz",
       bytes: 128,
       unpackedBytes: sumFileBytes(files),
       entryCount: files.length,

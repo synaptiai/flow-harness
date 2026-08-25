@@ -1,6 +1,6 @@
 # Getting started
 
-This guide completes one credential-free run with Flow `0.1.0-alpha.2`. It also explains the
+This guide completes one credential-free run with Flow `0.1.0-alpha.3`. It also explains the
 optional provider path and each safe recovery action.
 
 ## Before you begin

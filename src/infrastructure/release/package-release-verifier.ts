@@ -202,7 +202,7 @@ function expectedDirectoryPaths(evidence: PackageReleaseEvidence): Set<string> {
 function isExpectedPackageManifest(value: unknown, version: string): boolean {
   if (!isObject(value)) return false;
   return (
-    value.name === "@synaptiai/flow-harness" &&
+    value.name === "@synapti/flow-harness" &&
     value.version === version &&
     isExactObject(value.bin, { flow: "dist/cli/launcher.js" }) &&
     isExactObject(value.engines, { node: ">=26.7.0" }) &&

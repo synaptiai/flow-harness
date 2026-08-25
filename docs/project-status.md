@@ -4,9 +4,10 @@ Flow is a public alpha preview. Its executable format is
 `flow.synapti.ai/v1alpha1`. There is no compatibility or migration promise before the first stable
 release.
 
-Version `0.1.0-alpha.2` is the current usability checkpoint. GitHub-hosted Ubuntu 24.04 x64 and
+Version `0.1.0-alpha.3` is the current usability checkpoint. GitHub-hosted Ubuntu 24.04 x64 and
 macOS 15 Intel runners verify the same npm archive before publication. The `preview` npm
-distribution tag is the registry channel after its initial two-factor-authenticated bootstrap.
+distribution tag is the registry channel. The immutable `0.1.0-alpha.2` release is GitHub-only
+historical evidence because its manifest selected the wrong npm organization scope.
 
 ## Status terms
 

@@ -64,7 +64,7 @@ From a clean checkout of the candidate revision, resolve and inspect the release
 node scripts/resolve-preview-release-identity.mjs
 ```
 
-The command must report `0.1.0-alpha.2` and the matching tag, archive, attestation, title, notes
+The command must report `0.1.0-alpha.3` and the matching tag, archive, attestation, title, notes
 path, and `preview` npm tag. It fails if the manifest, shrinkwrap, or release notes are unsafe or
 inconsistent. Review this output before you dispatch the workflow.
 
@@ -73,7 +73,7 @@ The workflow performs these actions:
 
 1. Requires successful `CI` for the same revision.
 2. Resolves the version from `package.json` and rejects inconsistent shrinkwrap or release notes.
-3. Builds `release/package/synaptiai-flow-harness-0.1.0-alpha.2.tgz` once.
+3. Builds `release/package/synapti-flow-harness-0.1.0-alpha.3.tgz` once.
 4. Records its source revision, SHA-512 digest, archive paths, modes, and byte counts in
    `package-release-evidence.json`.
 5. Verifies the published shrinkwrap, downloaded artifact, clean installation, installed guided
@@ -113,7 +113,7 @@ two-factor authentication.
 2. Confirm that the version doesn't exist:
 
    ```sh
-   npm view @synaptiai/flow-harness@0.1.0-alpha.2 version
+   npm view @synapti/flow-harness@0.1.0-alpha.3 version
    ```
 
    npm must return a not-found response. If it returns a version, stop and compare the registry
@@ -122,7 +122,7 @@ two-factor authentication.
 3. Publish the verified local archive under `preview`:
 
    ```sh
-   npm publish "$release_dir/synaptiai-flow-harness-0.1.0-alpha.2.tgz" \
+   npm publish "$release_dir/synapti-flow-harness-0.1.0-alpha.3.tgz" \
      --access public \
      --tag preview
    ```
@@ -133,10 +133,10 @@ two-factor authentication.
 4. Confirm the registry identity:
 
    ```sh
-   npm view @synaptiai/flow-harness@0.1.0-alpha.2 version dist.integrity dist-tags
+   npm view @synapti/flow-harness@0.1.0-alpha.3 version dist.integrity dist-tags
    ```
 
-   The version must be `0.1.0-alpha.2`, `preview` must select that version, and `latest` must not
+   The version must be `0.1.0-alpha.3`, `preview` must select that version, and `latest` must not
    select it.
 
 ## Configure later staged publications
@@ -145,7 +145,7 @@ After npm records the first package, configure one trusted publisher for future 
 revisions. Permit only staged publication:
 
 ```sh
-npm trust github @synaptiai/flow-harness \
+npm trust github @synapti/flow-harness \
   --repo synaptiai/flow-harness \
   --file preview-release.yml \
   --env preview-release \

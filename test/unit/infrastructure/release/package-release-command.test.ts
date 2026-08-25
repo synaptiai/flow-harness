@@ -28,7 +28,7 @@ describe("package release command", () => {
         if (command === "git" && args[0] === "status") return { stdout: "" };
         const destination = args.at(-1);
         if (destination === undefined) throw new Error("missing pack destination");
-        await writeFile(join(destination, "synaptiai-flow-harness-0.1.0-alpha.1.tgz"), archive);
+        await writeFile(join(destination, "synapti-flow-harness-0.1.0-alpha.1.tgz"), archive);
         return { stdout: JSON.stringify([packReportFixture(archive)]) };
       },
     );
@@ -105,10 +105,10 @@ describe("package release command", () => {
     const duplicate: Execute = async (_command, args) => {
       const destination = args.at(-1);
       if (destination === undefined) throw new Error("missing pack destination");
-      await writeFile(join(destination, "synaptiai-flow-harness-0.1.0-alpha.1.tgz"), archive);
+      await writeFile(join(destination, "synapti-flow-harness-0.1.0-alpha.1.tgz"), archive);
       const report = JSON.stringify([packReportFixture(archive)]).replace(
-        '"name":"@synaptiai/flow-harness"',
-        '"name":"@synaptiai/flow-harness","name":"PRIVATE_PACKAGE"',
+        '"name":"@synapti/flow-harness"',
+        '"name":"@synapti/flow-harness","name":"PRIVATE_PACKAGE"',
       );
       return { stdout: report };
     };
@@ -168,7 +168,7 @@ describe("package release command", () => {
         }
         const destination = args.at(-1);
         if (destination === undefined) throw new Error("missing pack destination");
-        await writeFile(join(destination, "synaptiai-flow-harness-0.1.0-alpha.1.tgz"), archive);
+        await writeFile(join(destination, "synapti-flow-harness-0.1.0-alpha.1.tgz"), archive);
         return { stdout: JSON.stringify([packReportFixture(archive)]) };
       });
 
@@ -225,14 +225,14 @@ function packReportFixture(archive: Buffer): object {
     { path: "package.json", size: 9, mode: 0o644 },
   ];
   return {
-    id: "@synaptiai/flow-harness@0.1.0-alpha.1",
-    name: "@synaptiai/flow-harness",
+    id: "@synapti/flow-harness@0.1.0-alpha.1",
+    name: "@synapti/flow-harness",
     version: "0.1.0-alpha.1",
     size: archive.byteLength,
     unpackedSize: files.reduce((total, file) => total + file.size, 0),
     shasum: createHash("sha1").update(archive).digest("hex"),
     integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`,
-    filename: "synaptiai-flow-harness-0.1.0-alpha.1.tgz",
+    filename: "synapti-flow-harness-0.1.0-alpha.1.tgz",
     files,
     entryCount: files.length,
     bundled: [],

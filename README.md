@@ -81,7 +81,7 @@ Read [Project status](docs/project-status.md) for the current feature and platfo
 
 ## Quick start
 
-The `0.1.0-alpha.2` checkpoint provides the guided command. It creates a minimal Flow project and
+The `0.1.0-alpha.3` checkpoint provides the guided command. It creates a minimal Flow project and
 completes one credential-free workflow through the production command sandbox.
 
 ### Prerequisites

@@ -25,8 +25,8 @@ describe("package contract", () => {
     const manifestUrl = new URL("../../package.json", import.meta.url);
     const manifest = JSON.parse(await readFile(manifestUrl, "utf8")) as PackageManifest;
 
-    expect(manifest.name).toBe("@synaptiai/flow-harness");
-    expect(manifest.version).toBe("0.1.0-alpha.2");
+    expect(manifest.name).toBe("@synapti/flow-harness");
+    expect(manifest.version).toBe("0.1.0-alpha.3");
     expect(manifest.description).toBe(
       "Provider-neutral coding-agent harness with deterministic workflow graphs, durable evidence, and fail-closed sandboxed execution",
     );
@@ -82,6 +82,10 @@ describe("package contract", () => {
     );
 
     expect(verifier).toContain('await run(flowBinary, ["doctor"]');
+    expect(verifier).toContain('join(consumerRoot, "node_modules", "@synapti", "flow-harness")');
+    expect(verifier).not.toContain(
+      'join(consumerRoot, "node_modules", "@synaptiai", "flow-harness")',
+    );
     expect(verifier).toContain(
       '"Package release failed during installed native sandbox diagnostic"',
     );
@@ -132,8 +136,8 @@ describe("package contract", () => {
     };
 
     expect(shrinkwrap).toMatchObject({
-      name: "@synaptiai/flow-harness",
-      version: "0.1.0-alpha.2",
+      name: "@synapti/flow-harness",
+      version: "0.1.0-alpha.3",
       lockfileVersion: 3,
     });
     expect(shrinkwrap.packages?.[""]?.dev).not.toBe(true);

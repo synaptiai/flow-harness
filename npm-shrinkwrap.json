@@ -1,12 +1,12 @@
 {
-  "name": "@synaptiai/flow-harness",
-  "version": "0.1.0-alpha.2",
+  "name": "@synapti/flow-harness",
+  "version": "0.1.0-alpha.3",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
-      "name": "@synaptiai/flow-harness",
-      "version": "0.1.0-alpha.2",
+      "name": "@synapti/flow-harness",
+      "version": "0.1.0-alpha.3",
       "license": "Apache-2.0",
       "os": [
         "darwin",

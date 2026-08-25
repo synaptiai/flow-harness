@@ -146,14 +146,14 @@ function packReportFixture(archive: Buffer): PackReport {
     { path: "package.json", size: 9, mode: 0o644 },
   ];
   return {
-    id: "@synaptiai/flow-harness@0.1.0-alpha.1",
-    name: "@synaptiai/flow-harness",
+    id: "@synapti/flow-harness@0.1.0-alpha.1",
+    name: "@synapti/flow-harness",
     version: "0.1.0-alpha.1",
     size: archive.byteLength,
     unpackedSize: files.reduce((total, file) => total + file.size, 0),
     shasum: createHash("sha1").update(archive).digest("hex"),
     integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`,
-    filename: "synaptiai-flow-harness-0.1.0-alpha.1.tgz",
+    filename: "synapti-flow-harness-0.1.0-alpha.1.tgz",
     files,
     entryCount: files.length,
     bundled: [],
