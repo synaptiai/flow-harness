@@ -27,16 +27,19 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
-Gate 8 remains the delivery priority. Slices 8.1 through 8.4 provide an installable preview,
-source-build diagnostics, guided foundation and provider checks, and one useful bounded
-provider-backed coding change.
+Gate 8 provides an installable preview, source-build diagnostics, guided foundation and provider
+checks, and one useful bounded provider-backed coding change.
 
 Gate 9 adds bounded long-horizon context and semantic code feedback. Gate 10 adds standards-based
-executor interoperability and evidence-gated specialized execution. Gate 8 must close before a
-Gate 9 or Gate 10 experiment becomes a default user path.
+executor interoperability and evidence-gated specialized execution. Their evaluation-only
+experiments don't become default user paths without separate evidence and approval.
 
-Remaining targets include executable extensions, remote or multi-user UI hosts, and stronger
-isolation.
+Gate 11 starts the public compatibility program. Its first slice closes the npm entry boundary and
+adds a real historical corpus with a read-only check. It classifies public surfaces and assesses a
+future library API without exporting one.
+
+Remaining targets include executable extensions, remote or multi-user UI hosts, stronger
+isolation, measured product benchmarks, and a future stable compatibility program.
 Each first-party host accepts exact A2UI-profile presentation packages.
 These packages arrange a closed Flow-owned widget catalog. Catalog v2 also adds bounded attributed
 static notes without behavior or run authority. Explicit
@@ -607,6 +610,59 @@ library, a specialized model, or a proof assistant mandatory. It does not allow 
 plugins, model-written control loops, unrestricted code-as-action, automatic memory activation, or
 unreviewed background delegation. These capabilities require separate evidence and, for executable
 authority, stronger isolation.
+
+## Gate 11: Public compatibility and integration boundary
+
+Gate 11 defines what alpha consumers can depend on and proves selected cross-release behavior. It
+doesn't make a prerelease stable or convert internal TypeScript exports into a library API.
+
+### Slice 11.1: Define the public compatibility contract
+
+- **Implemented in current source:** Expose only the `flow` executable from the npm package. The
+  empty `exports` map rejects package-root and undeclared-subpath imports.
+- **Implemented in current source:** Package one versioned immutable corpus with the exact
+  alpha.1 installation workflow. It also includes one terminal run ledger from the verified
+  immutable alpha.1 archive.
+- **Implemented in current source:** Provide `flow compatibility check` as a read-only, offline
+  command. It returns one bounded report, an ordered result for every artifact, stable categories,
+  and a fail-closed overall result.
+- **Implemented in current source:** Reuse the production workflow compiler, workflow digest,
+  strict JSON parser, run-event parser, and reducer. The check doesn't use a simplified
+  compatibility-only interpretation.
+- **Implemented in current source:** Reject input that is missing, malformed, oversized,
+  unsupported, identity-mismatched, or semantically changed. The check doesn't modify the corpus or
+  a project.
+- **Implemented in current source:** Make the packed-archive gate install the archive and run the
+  historical check. The gate tests the import boundaries. Package-root and deep imports must fail.
+- **Implemented in current source:** Classify CLI invocation, authored schemas, public output,
+  durable records, capability packages, presentation packages, and compiled modules. Define alpha
+  version, channel, deprecation, migration, and rollback rules without a stable claim.
+- **Implemented in current source:** Audit a possible library API across user, operator, and system
+  flows. The audit covers authority, coupling, lifecycle, errors, resource limits, versioning,
+  package boundaries, and ACP relevance.
+
+The first approved preview after alpha.3 that contains this slice becomes the first package governed
+by the new command. The immutable alpha.3 release doesn't gain the command retroactively.
+
+### Possible later slices
+
+- Expand the immutable corpus only with reviewed release-produced artifacts that add meaningful
+  workflow, recovery, package, presentation, or public-output coverage.
+- Measure independent demand for read-only in-process workflow validation. If demand passes the
+  documented gate, evaluate a separately versioned package. It must have no ambient filesystem,
+  process, network, credential, or provider authority.
+- Design a versioned Flow process protocol before providing a typed execution client. Define
+  negotiation, request identity, framing, backpressure, cancellation, reconnect, errors, binary
+  identity, and cleanup before implementation.
+- Define a stable support window, migration tooling, and channel promotion only as a separately
+  approved program backed by multi-release evidence.
+
+Gate 11 doesn't export `CompiledWorkflow`, `RunEvent`, `RunState`, `runWorkflow`, local stores,
+supervisor services, infrastructure adapters, or the CLI composition root. ACP remains an editor and
+agent boundary. It doesn't become Flow's workflow, ledger, policy, package, or evaluation API.
+
+Read the [Compatibility policy](compatibility.md) for the current contract and the
+[Library API assessment](library-api-assessment.md) for the evidence and alternatives.
 
 ## Product benchmark gate
 

@@ -37,9 +37,9 @@ The compiled graph decides what runs next. Model prose cannot override missing o
 
 ## Project status
 
-Flow is a public alpha preview. The executable format is
-`flow.synapti.ai/v1alpha1`. There is no compatibility or migration promise before the first stable
-release.
+Flow is a public alpha preview. The executable format is `flow.synapti.ai/v1alpha1`. The published
+alpha.3 checkpoint has no compatibility or migration promise. Current source introduces a bounded,
+tested compatibility policy for selected historical artifacts without claiming stable support.
 
 Current capability groups include:
 
@@ -144,6 +144,8 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Complete the coding quick start](docs/guides/coding-quickstart.md) | Provider setup, one bounded edit, cost interpretation, evidence, cancellation, cleanup, and recovery |
 | [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
+| [Compatibility policy](docs/compatibility.md) | Supported surfaces, the packaged historical corpus, prerelease changes, migration, and rollback |
+| [Library API assessment](docs/library-api-assessment.md) | Why the package remains CLI-only and what evidence a future programmatic API needs |
 | [Run and control workflows](docs/guides/run-and-control.md) | Work profiles, detached runs, presentation hosts, approvals, budgets, cancellation, and recovery entry points |
 | [Maintain a durable goal workspace](docs/guides/goal-workspaces.md) | Revisioned long-horizon context, evidence references, compare-and-set updates, run selection, and recovery |
 | [Use read-only semantic code queries](docs/guides/semantic-code.md) | Exact language-server selection, bounded queries, containment, evidence, and failure handling |

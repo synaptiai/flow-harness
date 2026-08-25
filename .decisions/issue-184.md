@@ -118,7 +118,8 @@ input fails closed under stable diagnostic categories.
 - **Malformed manifest or artifact** — Return `corpus_malformed` or `artifact_malformed` without
   accepting partial observations.
 - **Oversized input** — Return `resource_limit` before unbounded allocation or parsing.
-- **Unsupported version or kind** — Return `unsupported_corpus` or `unsupported_artifact`.
+- **Unsupported version or kind** — Return `unsupported_corpus` for an unknown corpus version. Treat
+  a kind outside the v1 schema as `corpus_malformed`.
 - **Digest or identity mismatch** — Return `artifact_identity_mismatch` before semantic validation.
 - **Parser incompatibility** — Include an incompatible artifact result with a bounded semantic
   category; never include private source content in the report.

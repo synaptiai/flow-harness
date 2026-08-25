@@ -1,8 +1,8 @@
 # Project status
 
-Flow is a public alpha preview. Its executable format is
-`flow.synapti.ai/v1alpha1`. There is no compatibility or migration promise before the first stable
-release.
+Flow is a public alpha preview. Its executable format is `flow.synapti.ai/v1alpha1`. The immutable
+alpha.3 release has no compatibility or migration promise. Current source adds a bounded
+compatibility policy and historical corpus without claiming stable support.
 
 Version `0.1.0-alpha.3` is the current usability checkpoint. GitHub-hosted Ubuntu 24.04 x64 and
 macOS 15 Intel runners verify the same npm archive before publication. The `preview` npm
@@ -25,6 +25,7 @@ on it.
 | Capability | Linux | macOS | Notes |
 | --- | --- | --- | --- |
 | Workflow validation and inspection | Implemented | Implemented | No provider is needed for credential-free examples. |
+| Offline compatibility check | Implemented in current source | Implemented in current source | The first later preview that contains Issue #184 will validate its packaged historical corpus without project, provider, or network access. Published alpha.3 doesn't contain this command. |
 | Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
 | Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
@@ -43,6 +44,25 @@ on it.
 | Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
 
 ## Implemented capability groups
+
+### Public delivery and compatibility
+
+- One supported npm executable named `flow` and no supported package-name JavaScript or TypeScript
+  import.
+- An empty npm `exports` map that rejects the package root and undeclared subpaths while preserving
+  the executable.
+- A versioned, immutable compatibility corpus with one alpha.1 authored workflow and one real
+  alpha.1 terminal run ledger.
+- A read-only `flow compatibility check` command in current source. It uses the production compiler
+  and run reducer and emits a bounded, content-free report.
+- A clean packed-archive gate that installs the exact archive and runs the compatibility check. The
+  gate also proves that root and deep package imports fail.
+- A decision-grade [library API assessment](library-api-assessment.md). It recommends no current
+  library export, a possible future separate read-only workflow contract, and a later
+  process-isolated client for execution.
+
+Read the [Compatibility policy](compatibility.md) for exact surface classifications, prerelease
+change rules, migration, and rollback.
 
 ### Deterministic execution and evidence
 

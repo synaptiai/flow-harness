@@ -39,6 +39,8 @@ describe("architecture documentation", () => {
     expect(overview).toContain("Ways to use Flow");
     expect(overview).toContain("Guided quick start");
     expect(overview).toContain("Environment diagnostics");
+    expect(overview).toContain("Compatibility check");
+    expect(overview).toContain("Immutable compatibility corpus");
     expect(overview).toContain("Control plane");
     expect(overview).toContain("Execution plane");
     expect(overview).toContain("Durable project state");
@@ -76,6 +78,8 @@ describe("architecture documentation", () => {
     expect(architecture).toContain("src/cli/public-capability-reference.ts");
     expect(architecture).toContain("src/domain/proof/lean-proof-verification.ts");
     expect(architecture).toContain("src/infrastructure/oci/local-lean-proof-driver.ts");
+    expect(architecture).toContain("src/domain/compatibility/check.ts");
+    expect(architecture).toContain("src/infrastructure/compatibility/local-corpus.ts");
     expect(instructions).toContain("architecture diagram");
     expect(stylePolicy).toContain("architecture diagram");
     expect(contributing).toContain("architecture overview");
