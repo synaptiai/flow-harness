@@ -23,7 +23,10 @@ Every release must satisfy these requirements:
 - Create a draft, attach every asset, and publish only after repository release immutability is
   enabled.
 
-- Publish prereleases under an explicit tag. Never assign `latest` to a prerelease.
+- Publish prereleases under the explicit `preview` tag. After a stable version exists, never move
+  `latest` to a prerelease. npm can bootstrap `latest` to a package's first public version even when
+  publication uses another tag. Record that first-publication exception. Move `latest` to the first
+  stable release.
 
 - Never overwrite an existing tag, release asset, npm version, or staged npm version.
 
@@ -136,8 +139,10 @@ two-factor authentication.
    npm view @synapti/flow-harness@0.1.0-alpha.3 version dist.integrity dist-tags
    ```
 
-   The version must be `0.1.0-alpha.3`, `preview` must select that version, and `latest` must not
-   select it.
+   The version must be `0.1.0-alpha.3`, and `preview` must select that version. For the first public
+   package version, npm can also bootstrap `latest` to the same version. If it does, verify that
+   both tags select the exact published version and record the exception. After a stable version
+   exists, a prerelease must never move `latest`.
 
 ## Configure later staged publications
 
