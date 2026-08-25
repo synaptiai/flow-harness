@@ -1,0 +1,34 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: verify-installation
+  description: Exercise the installed Flow command path without source files or credentials.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: installation-is-usable
+  outcome: The installed Flow package runs a deterministic command workflow.
+  criteria:
+    - id: command-passes
+      description: The installed command executes a credential-free Node.js check.
+      verifier:
+        nodeId: installation-smoke
+nodes:
+  - id: node-version
+    type: command
+    command:
+      executable: node
+      args:
+        - --version
+      timeoutMs: 10000
+  - id: installation-smoke
+    type: command
+    dependsOn:
+      - node-version
+    command:
+      executable: node
+      args:
+        - -e
+        - process.stdout.write('flow-preview-ready')
+      timeoutMs: 10000
