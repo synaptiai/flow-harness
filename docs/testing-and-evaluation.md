@@ -164,6 +164,46 @@ Application and CLI tests prove that session creation precedes `node_started`. T
 interruption before workflow disposition, detached-worker composition, legacy-run compatibility,
 and content-free inspection.
 
+## Verify production rolling context
+
+Production rolling context uses deterministic provider seams so the default and hosted test suites
+need no credential. Run the focused contract before the complete quality gate:
+
+```sh
+npm test -- --run \
+  test/unit/workflow/compiler.test.ts \
+  test/unit/run/model-request-capacity.test.ts \
+  test/unit/infrastructure/pi/provider-input-token-counter.test.ts \
+  test/unit/run/model-session.test.ts \
+  test/integration/fs/jsonl-model-session-store.test.ts \
+  test/unit/application/model-session-inspection.test.ts \
+  test/unit/infrastructure/pi/pi-agent-session.test.ts \
+  test/unit/infrastructure/pi/pi-agent-executor.test.ts \
+  test/unit/infrastructure/runtime/production-node-executor.test.ts
+```
+
+The compiler tests cover explicit opt-in, defaults, immutability, digest binding, limits, and
+unknown-field rejection. Capacity tests prove threshold boundaries and one-token overflow with
+integer arithmetic. Provider tests execute the closed same-origin OpenAI and Anthropic count
+contracts, header and body filtering, timeout, redirect, media type, response size, and content-free
+failure categories. They require OpenAI to record `provider_exact` and Anthropic to record
+`provider_estimate`. The tests don't relabel the Anthropic estimate as exact.
+
+Reducer tests cover write-ahead ordering, eight epochs, two generation attempts, cumulative and
+delta ranges, and exact recent-tail preservation. Filesystem, application, and inspection tests
+cover atomic checkpoints, torn-tail repair, restart reconstruction, and public redaction.
+
+Pi tests serialize the pinned OpenAI Responses and Anthropic Messages payloads through local
+provider doubles. They prove that measurement precedes inference. They also prove payload
+reserialization, summary controls, usage accounting, failure-code propagation, and ACP refusal.
+
+After the focused contract passes, run `npm run ci:local` and the hosted Linux x64 pull-request
+checks. A live provider run is optional evidence, not a replacement for deterministic tests. When
+you perform one, freeze the workflow, model catalog, provider route, expected count method, and
+holdout before execution. Preserve failed and interrupted attempts in the denominator, compare
+public inspection with private test evidence under the same disclosure rules. Require independent
+task verification before claiming success.
+
 Test doubles are permitted only in tests at explicit ports. Production modules contain no mock executor, fake provider, fallback success, or sample result.
 
 ## Runtime smoke test
@@ -515,6 +555,12 @@ cover closed ranges, one accepted summary, two generations at most, a smaller re
 interrupted lifecycle settlement. Pi tests also keep the exact objective, protected constraints,
 system instructions, tools, and authority outside summary authority. They verify zero-tool summary
 requests, usage accounting, ambient-compaction disablement, and durable crash reconstruction.
+
+Production rolling-context tests add exact serialized task and summary admission, capacity
+thresholds, the `provider_exact` and `provider_estimate` uncertainty labels, two-request exact-tail
+preservation, repeated checkpoints, and fresh-process reconstruction. They also cover epoch and
+summary-call limits, fail-closed measurement, payload drift, usage, and content-free public state.
+The evaluation-only three-mode schedule cannot activate this policy.
 
 Specialized evaluation tests cover holdout-only plans, one verifier assertion per protected
 constraint, all six mode orders, root-workflow-only measurement, and the 4,096-trial limit. Report

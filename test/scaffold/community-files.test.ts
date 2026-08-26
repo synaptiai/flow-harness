@@ -99,6 +99,58 @@ describe("public repository contracts", () => {
     expect(testing).toContain("npm run release:verify");
   });
 
+  it("documents production rolling context through canonical owners", async () => {
+    const [
+      readme,
+      hub,
+      guide,
+      modelSessions,
+      evaluator,
+      workflowSpec,
+      architecture,
+      recovery,
+      testing,
+      status,
+      roadmap,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/README.md"),
+      readText("docs/guides/rolling-context.md"),
+      readText("docs/guides/model-sessions.md"),
+      readText("docs/guides/context-compaction.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/architecture.md"),
+      readText("docs/recovery.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("docs/project-status.md"),
+      readText("docs/roadmap.md"),
+    ]);
+
+    expect(readme).toContain(
+      "[Keep long model sessions within provider capacity](docs/guides/rolling-context.md)",
+    );
+    expect(hub).toContain(
+      "[Keep long model sessions within provider capacity](guides/rolling-context.md)",
+    );
+    expect(guide).toContain("mode: rolling");
+    expect(guide).toContain("pressureThresholdPercent: 85");
+    expect(guide).toMatch(/two most recent completed requests/i);
+    expect(guide).toContain("/responses/input_tokens");
+    expect(guide).toContain("/messages/count_tokens");
+    expect(guide).toContain("pi_model_context_measurement_unavailable");
+    expect(modelSessions).toContain("[Keep long model sessions within provider capacity]");
+    expect(evaluator).toMatch(/rolling context.*production opt-in/is);
+    expect(workflowSpec).toContain("`model_request_capacity_checked`");
+    expect(workflowSpec).toContain("`rolling_context_epoch_started`");
+    expect(workflowSpec).toContain("`rolling_context_epoch_settled`");
+    expect(architecture).toContain("Rolling context admission");
+    expect(recovery).toContain("rolling context epoch");
+    expect(testing).toContain("provider_exact");
+    expect(testing).toContain("provider_estimate");
+    expect(status).toMatch(/production rolling context.*opt-in/is);
+    expect(roadmap).toMatch(/Slice 11\.3:[\s\S]*\*\*Implemented in current source:\*\*/);
+  });
+
   it("routes exact Lean proof guidance to maintained canonical owners", async () => {
     const [readme, hub, guide, operations, architecture, roadmap, status, capabilities] =
       await Promise.all([

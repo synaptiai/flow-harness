@@ -151,6 +151,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Use read-only semantic code queries](docs/guides/semantic-code.md) | Exact language-server selection, bounded queries, containment, evidence, and failure handling |
 | [Retain and inspect command artifacts](docs/guides/retained-artifacts.md) | Exact oversized command output, bounded agent reads, inspection, retention, and pruning |
 | [Inspect and recover portable model sessions](docs/guides/model-sessions.md) | Private context records, public integrity metadata, fresh recovery, limits, and failure handling |
+| [Keep long model sessions within provider capacity](docs/guides/rolling-context.md) | Opt-in exact request measurement, rolling checkpoints, inspection, limits, and recovery |
 | [Evaluate reference-first context compaction](docs/guides/context-compaction.md) | Held-out three-mode plans, protected constraints, metrics, verdicts, and recovery |
 | [Manage supplemental-memory relationships](docs/guides/supplemental-memory-relationships.md) | Evidence-backed memory relationships, atomic rebinding, review, activation, rollback, limits, and recovery |
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |

@@ -661,6 +661,32 @@ The immutable alpha.3 release doesn't gain this command retroactively.
 Alpha.4 is the first package governed by Slice 11.1. It doesn't add a supported library import,
 expand the corpus without release-produced evidence, or claim stable compatibility.
 
+### Slice 11.3: Keep long model sessions within safe provider capacity
+
+- **Implemented in current source:** Add one explicit rolling context policy for embedded Pi agent
+  nodes. Omission preserves existing behavior. The published alpha.4 package remains unchanged.
+- **Implemented in current source:** Intercept Pi's exact serialized OpenAI Responses or Anthropic
+  Messages payload before inference. Use the same-origin provider count endpoint. Preserve exact
+  versus estimated uncertainty. Reject unavailable measurement without a token heuristic fallback.
+- **Implemented in current source:** Record write-ahead capacity checks and rolling epoch starts and
+  settlements in the private append-only model-session record. Bind cumulative and delta source
+  ranges. Also bind payload, surface, runtime, policy, and public-state identities.
+- **Implemented in current source:** Preserve the objective, Flow authority, current instructions,
+  tools, protected constraints, and complete tool pairs. Keep the two most recent completed
+  requests exact. Project only eligible older artifact-backed results and closed history.
+- **Implemented in current source:** Limit one epoch to two zero-tool summary attempts. Limit one
+  session to eight epochs and 16 summary calls. Require a 4,096-byte minimum reduction. Add summary
+  usage to node and run budgets.
+- **Implemented in current source:** Reconstruct only complete accepted checkpoints after restart.
+  Settle unmatched starts as interrupted and verify bindings against original events. Require the
+  inference payload to match the admitted serialized payload.
+- **Implemented in current source:** Fail an opted-in ACP node and unsupported Pi adapter closed.
+  Keep provider-native persistence, automatic opt-in, approximate capacity, and library exports
+  outside this slice.
+
+Read [Keep long model sessions within provider capacity](guides/rolling-context.md) for operator
+guidance and [Architecture](architecture.md#rolling-context-admission) for ownership and non-goals.
+
 ### Possible later slices
 
 - Expand the immutable corpus only with reviewed release-produced artifacts that add meaningful

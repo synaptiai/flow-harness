@@ -30,6 +30,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Use read-only semantic code queries](guides/semantic-code.md) | You need bounded diagnostics, definitions, references, or hover information from an exact language server. |
 | [Retain and inspect command artifacts](guides/retained-artifacts.md) | You need exact oversized command output, bounded agent reads, inspection, retention, or pruning. |
 | [Inspect and recover portable model sessions](guides/model-sessions.md) | You need private session boundaries, public integrity metadata, fresh model context, limits, or failure handling. |
+| [Keep long model sessions within provider capacity](guides/rolling-context.md) | You need opt-in exact request measurement, rolling checkpoints, inspection, limits, or recovery. |
 | [Evaluate reference-first context compaction](guides/context-compaction.md) | You need to compare complete history, artifact references, and bounded summaries on held-out tasks. |
 | [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) | You need to author, review, activate, recover, or roll back evidence-backed relationships between exact memory entries. |
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |

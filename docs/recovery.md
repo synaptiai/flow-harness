@@ -591,6 +591,55 @@ silently changing this behavior.
 Fresh retry is also distinct from completion proof. The retried agent must still produce its own
 terminal evidence, and downstream deterministic verifier nodes still decide criterion acceptance.
 
+### Rolling context epoch recovery
+
+An opted-in rolling context epoch adds a private write-ahead boundary inside the model-session
+record. `rolling_context_epoch_started` must become durable before a summary provider call.
+`rolling_context_epoch_settled` closes that exact epoch and generation attempt as accepted,
+rejected, or interrupted. Only one complete accepted settlement can become the current checkpoint.
+
+Recovery applies this order:
+
+1. Claim and validate the private model-session record under its exclusive owner.
+2. Repair only an unterminated final JSONL fragment under the existing committed-prefix rule.
+3. If the record ends with an unmatched rolling context epoch start, append an interrupted
+   settlement with `process_interrupted`.
+4. Append the private `attempt_interrupted` boundary.
+5. Apply the authoritative workflow proof gate and append `node_attempt_interrupted` only when the
+   attempt is safe to repeat.
+6. Start a fresh in-memory Pi session and reconstruct the latest complete accepted checkpoint from
+   original primary events.
+7. Remeasure the exact next serialized task request before inference.
+
+Recovery never promotes an unmatched start, rejected candidate, partial provider response, or
+in-memory summary. It doesn't continue provider-native conversation state. A later rolling epoch
+uses the prior accepted summary plus newly eligible exact events, while its cumulative range still
+binds the complete original source prefix.
+
+| Recovered state | Result |
+| --- | --- |
+| No accepted rolling checkpoint | Keep the complete exact source history and apply the normal fresh-session rules. |
+| One complete accepted checkpoint with matching source, policy, and runtime bindings | Reconstruct the checkpoint and retain the two most recent completed requests exactly. |
+| Unmatched epoch start | Record one interrupted settlement before the attempt interruption. Don't infer a summary result. |
+| Rejected or interrupted settlement after an older accepted checkpoint | Keep the older accepted checkpoint current. |
+| Changed policy, route, runtime, instructions, tools, authority, source range, protected constraints, or rendered identity | Fail with `pi_model_context_checkpoint_invalid` before provider I/O. |
+| Missing, corrupt, oversized, unsafe, or live-owned private record | Block recovery and preserve the record for diagnosis. |
+| Provider count unavailable after restart | Record content-free measurement failure and fail with `pi_model_context_measurement_unavailable` before inference. |
+
+Inspect the run before and after the ordinary resume command:
+
+```sh
+flow inspect <run-id>
+flow resume <workflow.yaml> --run-id <run-id>
+flow inspect <run-id>
+```
+
+Don't edit checkpoint text, ranges, digests, or bindings. Don't delete an unmatched start or copy a
+checkpoint between sessions. Preserve an invalid run for audit and start a new reviewed run when
+the exact replay proof cannot pass. Read
+[Keep long model sessions within provider capacity](guides/rolling-context.md) for configuration,
+inspection fields, and failure-code actions.
+
 ## Ownership and crash handling
 
 Every process that may append or execute for a run publishes complete owner metadata atomically.
@@ -864,6 +913,12 @@ diagnosis.
 | `corrupt` | Committed ledger or ownership data is invalid or ambiguous | Preserve the run directory and diagnose it; do not hand-edit authoritative events |
 | `policy_mismatch` | The client and durable/live supervisor generation resolved different effective capacity policies | Inspect `flow config show` and `flow supervisor status`; let work become idle, then explicitly shut down the old generation. If it already exited, temporarily restore its prior values so it can restart and be shut down safely |
 | `queue_full` | Active and queued detached capacity are both exhausted | Retry later with the same persisted command id, or deliberately change operator capacity after an idle shutdown |
+| `pi_model_context_floor_exhausted` | The exact protected model surface has no safe input floor or no older range is eligible | Preserve the run; select a larger-capacity model or reduce authored exact input in a new reviewed workflow |
+| `pi_model_context_epochs_exhausted` | Rolling pressure would require more than eight epochs | Preserve and inspect the run; start a reviewed new run |
+| `pi_model_context_measurement_unavailable` | Provider token counting is unsupported or failed its bounded contract | Inspect the content-free failure category and exact adapter route; don't bypass measurement |
+| `pi_model_context_capacity_exceeded` | Bounded rolling attempts didn't produce an admitted task request | Inspect capacity evidence; use a larger-capacity model or a smaller reviewed exact surface |
+| `pi_model_context_checkpoint_invalid` | The admitted payload, checkpoint, range, policy, or runtime binding doesn't replay exactly | Preserve the record and compare reviewed inputs; start a new run when the proof cannot pass |
+| `rolling_context_unsupported_acp` | The opted-in node selected an ACP executor without an exact serialization boundary | Use embedded Pi or remove the opt-in in a separately reviewed workflow |
 
 ## Guarantees and non-guarantees
 

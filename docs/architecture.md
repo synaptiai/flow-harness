@@ -78,6 +78,10 @@ eligible fresh recovery.
 Gate 9 also adds a dedicated reference-first compaction experiment. It projects verified artifact
 references before one optional bounded summary and compares three modes on held-out tasks. It does
 not enable a production compaction policy.
+Current source separately adds an explicit rolling-context policy for embedded Pi agents. It
+measures the exact serialized provider request, records durable capacity and checkpoint evidence,
+and derives repeated bounded projections without changing the primary-event ledger. The published
+alpha.4 package doesn't include this later source capability.
 Gate 9 also lets an operator attach a bounded, evidence-backed relationship sidecar to reviewed
 supplemental memory. Relationship admission resolves exact run events, while execution uses only
 the immutable effective runtime. Contradictions remain explicit and unresolved. No live graph or
@@ -162,6 +166,7 @@ flowchart TB
         delegation["Bounded delegation evaluation<br/>One sealed local child · no activation"]
         proofQualification["Proof qualification<br/>Coverage · faithfulness · tests · lifecycle"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
+        rolling["Rolling context admission<br/>Exact count · durable projection · fail closed"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
     end
@@ -251,6 +256,7 @@ flowchart TB
     delegation -->|"Runs paired task classes"| engine
     proofQualification -->|"Checks the complete declared denominator"| engine
     compaction -->|"Runs held-out trials"| engine
+    engine -->|"Selects one explicit Pi policy"| rolling
     adaptation -->|"Stages one atomic entry and relationship change"| memory
     memory -->|"Supplies exact target context"| engine
     goals -->|"Supplies bounded cross-run context"| engine
@@ -283,6 +289,11 @@ flowchart TB
     acpProcess -->|"Returns evidence"| agents
     agents -->|"Appends completed portable events"| sessions
     sessions -->|"Supplies measured context history"| compaction
+    sessions -->|"Supplies append-only source history"| rolling
+    artifacts -->|"Proves older tool-result references"| rolling
+    rolling -->|"Returns one measured request surface"| agents
+    rolling -->|"Appends checks and checkpoints"| sessions
+    rolling -->|"Counts the serialized request"| models
     sessions -->|"Supplies one fresh untrusted-data turn"| agents
     agents -->|"Uses workspace tools through Flow policy"| project
     agents -->|"Requests bounded code context"| semantic
@@ -336,13 +347,17 @@ Read the diagram from top to bottom:
    without one sealed foreground child, and it never creates activation authority. Proof
    qualification keeps mathematical coverage, human statement
    faithfulness, ordinary tests, policy, cost, latency, and cleanup as separate complete fields.
+   An explicitly selected rolling-context policy admits only a provider request that has a durable
+   count decision and matching serialized identity.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state. A selected ACP attempt gets a fresh process, private
    directory, session binding, provider-domain network route, and credential lease. The semantic
    service starts one exact language server for one request against a read-only, network-denied
    project projection. The Lean appliance compiles one exact statement in a disposable container,
-   then requires SafeVerify and Nanoda to agree before it returns proof evidence.
+   then requires SafeVerify and Nanoda to agree before it returns proof evidence. Embedded Pi can
+   derive a smaller rolling request from private source events, but local ACP, OMP, and Prime
+   adapters don't receive that production policy.
 
 4. Durable project state records events, evidence, private model context, goal revisions,
    ownership, installed capabilities, evaluations, and isolated workspace identity. Flow replays
@@ -381,6 +396,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
 | Portable model-session boundary | `src/domain/run/model-session.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/fs/jsonl-model-session-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Records completed provider-neutral context and write-ahead request identities privately, renders bounded fresh-turn recovery context, and exposes only redacted integrity metadata. |
+| Rolling context admission | `src/domain/run/model-request-capacity.ts`, `src/domain/run/context-compaction.ts`, `src/domain/run/model-session.ts`, `src/domain/workflow/schema.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/pi/provider-input-token-counter.ts`, `src/infrastructure/pi/pi-agent-executor.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Compiles one explicit policy, measures Pi's exact serialized provider payload, derives bounded reference and summary projections from append-only history, persists restart-safe checkpoints, and fails unsupported or changed request surfaces before inference. |
 | Context compaction experiment | `src/domain/run/context-compaction.ts`, `src/domain/evaluation/context-compaction-evaluation.ts`, `src/application/evaluation-adapter.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-plan.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Projects verified artifact references, records bounded summary lifecycle evidence, runs the balanced three-mode evaluation, and prevents production activation. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
@@ -424,6 +440,7 @@ Architecture is derived from these flows.
 | Maintain long-horizon context | An operator initializes or updates the project goal workspace | One complete immutable revision or a no-change conflict; a new run can freeze the current revision explicitly |
 | Query code semantics | A user selects one exact language server for a workflow that declares `semantic` | Bounded diagnostics or navigation context plus a private canonical receipt; no file mutation or workflow authority |
 | Manage retained command artifacts | An operator inspects a reference or previews an exact prune plan | Bounded same-run reads, explicit retention state, or reviewed byte removal while immutable run provenance remains |
+| Keep one long model session within capacity | A workflow explicitly enables rolling context for an embedded Pi agent | Every inference request has a provider count decision and matching serialized identity; pressure can produce a restart-safe derived checkpoint without rewriting source history |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
@@ -465,7 +482,10 @@ flowchart TD
     scheduler --> context["Minimal node context<br/>Profile · remaining budget guidance"]
     context --> executor["Agent executor"]
     executor --> pi["Pi AgentSession"]
-    pi --> provider["Selected model provider"]
+    pi -->|"Default request"| provider["Selected model provider"]
+    pi -->|"Explicit rolling policy"| rollingAdmission["Exact count and rolling admission"]
+    rollingAdmission -->|"Count, then matched inference"| provider
+    rollingAdmission <-->|"Checks, source events, and checkpoints"| privateSession[("Private model-session record")]
     pi --> broker["Flow tool broker"]
     broker --> policy["Policy, approval, and sandbox"]
     policy --> environment["Repository, shell, Git, browser, and APIs"]
@@ -772,6 +792,46 @@ mismatch categories. The projection doesn't return private values. Read
 [Evaluate reference-first context compaction](guides/context-compaction.md) for the experiment, and
 the [Workflow specification](workflow-spec.md#portable-model-session-record) for the persisted
 contract.
+
+### Rolling context admission
+
+Production rolling context reuses the private model-session record but not the evaluation store or
+activation mechanism. The workflow compiler owns the explicit policy and defaults. The production
+executor permits it only for an embedded Pi agent. The Pi adapter owns final-payload interception,
+provider counting, reference projection, summary generation, and the matching reserialization gate.
+The domain owns capacity arithmetic, checkpoint validation, cumulative and delta ranges, limits,
+and content-free public projection.
+
+For every rolling task request, Pi serializes the actual request and Flow intercepts it before
+network I/O. The adapter sends a closed filtered copy to the same-origin provider count endpoint.
+OpenAI Responses returns an exact count. Anthropic Messages returns an estimate, so the durable
+record preserves that uncertainty. Unsupported adapters and ACP executors fail closed. Flow
+doesn't substitute byte arithmetic or a token heuristic.
+
+The append-only record is the source plane. A checkpoint is a derived projection plane. At
+pressure, the projection can replace eligible old large command results with proven retained
+artifact references and summarize a closed older range. It keeps the original objective, current
+instructions, tools, authority, protected constraints, and two most recent completed requests
+exact. A later epoch receives the previous accepted summary plus only its new eligible delta, while
+the checkpoint binds the complete cumulative source range.
+
+Before summary inference, `rolling_context_epoch_started` records the range, reference surface,
+output allowance, policy, and runtime bindings. `rolling_context_epoch_settled` records rejection,
+interruption, or one complete accepted checkpoint. `model_request_capacity_checked` records every
+summary and task admission. After task admission, Pi serializes the request again. Only the same
+endpoint, payload digest, and byte count can reach inference.
+
+On restart, replay uses only complete accepted settlements. It reconstructs the projection from the
+original events, verifies all bindings, and marks an unmatched start interrupted before closing the
+attempt. Summary text is private and untrusted. It never becomes policy, approval, budget, effect,
+verification, scheduling, or completion authority.
+
+This boundary deliberately excludes automatic opt-in, provider-owned history, opaque remote
+checkpoints, approximate capacity fallback, unsupported adapters, and ACP approximation. Read
+[Keep long model sessions within provider capacity](guides/rolling-context.md) for use and limits.
+See the [Workflow specification](workflow-spec.md#rolling-context-policy) for exact fields and
+events. See [Recovery and interruption safety](recovery.md#rolling-context-epoch-recovery) for
+restart ordering.
 
 ### Portable Agent Skills
 

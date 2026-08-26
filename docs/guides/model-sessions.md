@@ -6,8 +6,9 @@ provider-neutral record. It never treats that record as proof that a node or wor
 
 This feature is implemented in Flow `0.1.0-alpha.4` and the current source tree. It applies to
 model-backed agent and model verifier nodes that run through the production Pi adapter.
-Reference-first compaction is available only through the dedicated evaluation path. Ordinary runs
-don't select a compaction policy.
+The current source also adds an explicit production rolling-context policy for embedded Pi agent
+nodes. The published `0.1.0-alpha.4` package doesn't include that policy. Reference-first
+three-mode comparison remains a separate evaluation path.
 
 ## Understand the two durable records
 
@@ -47,6 +48,9 @@ The append-only record contains only closed `flow.model-session/v1` events:
 | `resume_surface_prepared` | Binds the digest, size, source head, and render version of a fresh resume surface. |
 | `context_compaction_started` | Binds one selected completed-event range, reference surface, and output-token limit before summary provider I/O. |
 | `context_compaction_settled` | Records an accepted, rejected, or interrupted summary generation with bounded output, usage, reduction, and constraint evidence. |
+| `model_request_capacity_checked` | Binds one rolling task or summary payload identity, measurement method, capacity calculation, and decision before inference. |
+| `rolling_context_epoch_started` | Binds one rolling epoch, generation attempt, cumulative and delta source ranges, output limit, policy, and replay bindings. |
+| `rolling_context_epoch_settled` | Records an accepted, rejected, or interrupted rolling generation. Only an accepted private settlement contains a recoverable checkpoint. |
 
 Flow doesn't store streamed partials, credentials, or provider response or conversation handles.
 It excludes hidden reasoning, thought signatures, raw diagnostics, and provider-native objects.
@@ -128,9 +132,15 @@ version. It also binds the exact system instructions, tool catalog, authority, p
 and actual runtime surface. Attempt, turn, and request coordinates complete the identity. Digests
 bind private surfaces without exposing them through public inspection.
 
-Request admission uses the selected model's declared context window. Flow reserves 16,384 tokens
-for output and another 16,384 tokens as a safety margin. It then applies the smaller remaining
-capacity or the 1 MiB global byte ceiling.
+Without production rolling context, request admission uses the selected model's declared context
+window. Flow keeps a 16,384-token output reserve and a separate 16,384-token safety reserve. It
+also applies the independent 1 MiB global byte ceiling.
+
+With the explicit rolling policy, Flow intercepts Pi's exact serialized provider payload before
+network I/O. It uses the output allowance serialized in that payload, keeps the 16,384-token safety
+reserve, and calls the adapter's provider count endpoint. The OpenAI Responses adapter records an
+exact count as `provider_exact`. The Anthropic Messages adapter records an estimate as
+`provider_estimate`. Unsupported or unavailable measurement fails closed before inference.
 
 When an evaluation selects reference projection, Flow first replaces eligible oversized command
 results with verified retained-artifact references. When it also selects summaries, Flow can
@@ -139,6 +149,11 @@ completed request, current system instructions, tool catalog, authority, and exa
 constraints remain outside model-generated summary text. Read
 [Evaluate reference-first context compaction](context-compaction.md) for the eligibility and
 comparison rules.
+
+For an opted-in ordinary Pi agent, Flow can create as many as eight durable rolling checkpoints.
+It keeps the two most recent completed requests exact and remeasures every admitted provider
+payload. Read [Keep long model sessions within provider capacity](rolling-context.md) for the
+configuration, provider matrix, inspection fields, and failure guidance.
 
 This byte check is deliberately conservative. It isn't a provider tokenizer or a promise that
 every provider formats requests identically. Flow rejects a request when the selected model has no
@@ -167,7 +182,7 @@ count bounds a large sequence of small events.
 | Request surface no longer matches | Reports stable mismatch categories without private values. | Compare reviewed configuration and runtime changes. Start a new run when exact recovery isn't valid. |
 | Provider stream was interrupted | Stores no partial model message and never continues the stream. | Use fresh recovery only when the workflow proof gate allows it. |
 | Tool call has no completed result | Never invents a result. Effect or command settlement decides whether retry is safe. | Inspect the authoritative effect and command state before any new run. |
-| Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. You can use the dedicated compaction evaluation to gather evidence, but it doesn't change ordinary runtime policy. Don't raise limits by editing durable state. |
+| Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. If the current source and selected embedded Pi adapter meet your requirements, you can enable the explicit rolling policy in a new reviewed workflow. Don't raise limits by editing durable state. |
 
 ## Security and compatibility limits
 

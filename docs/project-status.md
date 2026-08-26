@@ -42,6 +42,7 @@ on it.
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
 | Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
+| Production rolling context | Implemented in current source | Implemented in current source | Explicit embedded Pi opt-in for OpenAI Responses and Anthropic Messages. Published alpha.4 doesn't include it. ACP and other adapters fail closed. |
 
 ## Implemented capability groups
 
@@ -81,7 +82,11 @@ change rules, migration, and rollback.
 - Private, bounded, provider-neutral model-session records with write-ahead request identity,
   completed user/model/tool context, redacted inspection, and fresh-turn recovery context.
 - Reference-first projection and bounded summary lifecycle with a dedicated three-mode held-out
-  evaluator. Ordinary runs don't activate compaction.
+  evaluator. Its reports don't activate a runtime policy.
+- Production rolling context in current source for explicitly opted-in embedded Pi agents. Flow
+  measures the serialized request and keeps the complete private ledger. It preserves a two-request
+  exact tail and reconstructs accepted checkpoints after restart. The published alpha.4 package
+  doesn't include this policy.
 - Content-addressed oversized command output with immutable producer references, bounded same-run
   reads, operator inspection, shared retention, and exact-plan pruning.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
@@ -101,6 +106,7 @@ Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),
 [Retain and inspect command artifacts](guides/retained-artifacts.md),
 [Inspect and recover portable model sessions](guides/model-sessions.md),
+[Keep long model sessions within provider capacity](guides/rolling-context.md),
 [Evaluate reference-first context compaction](guides/context-compaction.md), the
 [Workflow specification](workflow-spec.md), and [Architecture](architecture.md).
 

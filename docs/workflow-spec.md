@@ -1340,6 +1340,80 @@ Flow disables both Pi assistant-turn retries and provider retries in the embedde
 keeps retry ownership at the Flow attempt layer. Normal model/tool turns inside one live session
 remain possible and stay bounded by the node timeout.
 
+### Rolling context policy
+
+An agent can explicitly enable production rolling context:
+
+```yaml
+contextCompaction:
+  mode: rolling
+  pressureThresholdPercent: 85
+  protectedConstraints:
+    - Preserve failed attempts in the evaluation denominator.
+```
+
+`contextCompaction` is optional, closed, and accepted only on an agent node. Omission preserves
+nonrolling behavior. When present, `mode` must be `rolling`.
+
+`pressureThresholdPercent` is an integer from 50 through 95 and defaults to 85.
+`protectedConstraints` defaults to an empty list. It contains at most 32 unique, nonempty strings.
+One string contains at most 4,096 characters. The complete list contains at most 65,536 UTF-8
+bytes.
+
+The compiler copies and freezes the list. The workflow digest binds the normalized policy.
+Defaults apply only inside an explicitly authored `contextCompaction` object.
+
+The production executor admits rolling context only for the embedded Pi path. A node routed to an
+Agent Client Protocol (ACP) executor fails with `rolling_context_unsupported_acp` before agent
+execution because ACP doesn't expose the exact serialized-request boundary. Within Pi, only the
+`openai-responses` and `anthropic-messages` API adapters have a token-count contract. Any other
+adapter fails closed before inference.
+
+Before each rolling task request, Pi serializes the exact provider request through its selected
+adapter and Flow intercepts it before network I/O. Flow sends a closed filtered request to the same
+origin's token-count endpoint. OpenAI Responses uses `/responses/input_tokens` and records
+`provider_exact`. Anthropic Messages uses `/messages/count_tokens` and records
+`provider_estimate`. Flow rejects redirects, request bodies larger than 1 MiB, responses larger
+than 8 KiB, non-JSON responses, invalid counts, and operations longer than 15 seconds. The private
+record contains the captured payload digest and byte count, not the payload, credential, or raw
+response.
+
+The captured payload supplies its exact serialized output allowance. Flow evaluates:
+
+```text
+usableInputTokens = contextWindowTokens - outputAllowanceTokens - 16384
+absoluteSafe = measuredInputTokens <= usableInputTokens
+underPressure = measuredInputTokens * 100 >=
+                usableInputTokens * pressureThresholdPercent
+```
+
+The comparison uses safe integers and integer cross-multiplication. Flow doesn't use byte counts or
+a token heuristic as a provider-capacity proof. A measured request is `admitted`,
+`reduction_required`, or `over_capacity`.
+
+At pressure, Flow first projects only eligible older oversized command results to validated
+same-attempt artifact references. The two most recent completed requests, including complete tool
+call/result pairs, remain exact. If an older closed range remains eligible, Flow can start one
+rolling epoch with two summary-generation attempts. The attempts serialize output allowances of
+4,096 and 2,048 tokens, respectively, with reasoning disabled.
+
+A candidate must be canonical
+closed-schema JSON and contain at most 65,536 UTF-8 bytes. It must retain every protected
+constraint exactly. It must also reduce the provider surface by at least 4,096 UTF-8 bytes.
+
+One session can start at most eight rolling epochs and 16 summary calls. Summary usage contributes
+to node and run token and reported-cost budgets. After an accepted checkpoint, Flow reserializes
+the task request. Its endpoint, payload SHA-256 digest, and byte count must equal the admitted
+request before inference. Serialization drift fails with
+`pi_model_context_checkpoint_invalid`.
+
+Rolling context changes only the provider projection. The private primary-event history remains
+append-only. The original objective, current system instructions, tool catalog, authority, budgets,
+approvals, effects, protected constraints, and two-request exact tail remain outside generated
+summary authority. Read
+[Keep long model sessions within provider capacity](guides/rolling-context.md) for operator
+guidance.
+
 Command nodes are supported on Linux and macOS. Flow rejects them before spawning on Windows until the command adapter can contain and terminate the full descendant process tree.
 
 An agent node succeeds when its bounded Pi session settles normally. Its text becomes diagnostic
@@ -1531,6 +1605,9 @@ canonical event. The closed event vocabulary is:
 - `resume_surface_prepared`
 - `context_compaction_started`
 - `context_compaction_settled`
+- `model_request_capacity_checked`
+- `rolling_context_epoch_started`
+- `rolling_context_epoch_settled`
 
 The primary prompt is committed exactly once on attempt 1. A request must prepare before its model
 message, tool calls, tool results, and settlement. Tool results must match a prior tool call in the
@@ -1579,13 +1656,38 @@ keeps the prior surface.
 
 Recovery settles an unmatched compaction start as interrupted before it closes the interrupted
 model attempt. A second generation reconstructs its source from committed primary events. It does
-not continue provider-native state. No ordinary workflow field selects a compaction mode, and no
-evaluation report can activate one.
+not continue provider-native state. No ordinary workflow field selects an evaluation compaction
+mode, and no evaluation report can activate one.
+
+The separate production rolling policy uses `model_request_capacity_checked` as a write-ahead
+admission record for each task and summary payload. Checks are contiguous and bind their operation,
+attempt, adapter, payload identity, measurement status, provider method or fixed failure category,
+capacity arithmetic, and decision. A successful task check must match the next
+`model_request_prepared` event's provider-payload identity.
+
+`rolling_context_epoch_started` binds the task request, epoch, generation attempt, and cumulative
+and delta primary-event ranges. It also binds the reference surface, output allowance, provider,
+runtime, routing, and policy identities before summary provider I/O.
+`rolling_context_epoch_settled` closes the same start. Its outcome is accepted, rejected, or
+interrupted. An accepted private settlement contains the summary text, checkpoint identities, and
+range. It also contains reduction, constraint, binding, policy, and usage evidence.
+
+Rejected and interrupted settlements contain no recoverable summary text.
+
+Replay requires contiguous checks, at most eight epochs, at most two generation attempts in each
+epoch, and a 4,096-token then 2,048-token allowance sequence. Cumulative ranges can grow only over
+original committed primary events, and each later delta begins after the prior accepted cumulative
+range. A current checkpoint is valid only when its source, bindings, policy, protected-constraint
+identity, rendered surface, and accepted settlement agree. The public summary projects only counts,
+capacity arithmetic, uncertainty, digests, byte counts, fixed failure categories, and active state.
+It doesn't project payloads, summary text, constraints, prompts, tool output, credentials, error
+bodies, or private paths.
 
 One encoded event, including its newline, is at most 2 MiB. One record is at most 16 MiB and 1,024
-events. One rendered resume surface is at most 1 MiB and must fit the selected model. Request
-admission reserves 16,384 output tokens and 16,384 safety tokens. Flow subtracts both reserves from
-the selected model's declared context window.
+events. One rendered resume surface is at most 1 MiB and must fit the selected model. Nonrolling
+request admission reserves 16,384 output tokens and 16,384 safety tokens. Rolling admission uses
+the exact output allowance serialized in the provider payload and the same 16,384-token safety
+reserve.
 
 Flow then applies the smaller remaining numeric capacity and global byte limit. The conservative
 byte comparison isn't a provider tokenizer.
