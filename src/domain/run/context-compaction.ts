@@ -183,7 +183,6 @@ const commandOutcomeSchema = z.discriminatedUnion("status", [
 ]);
 const protectedContextConstraintsSchema = z
   .array(z.string().min(1).max(4_096))
-  .min(1)
   .max(MAX_PROTECTED_CONTEXT_CONSTRAINTS)
   .refine((constraints) => new Set(constraints).size === constraints.length, {
     message: "protected context constraints must be unique",

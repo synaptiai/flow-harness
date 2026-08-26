@@ -82,6 +82,22 @@ export class ProductionAgentExecutor implements AgentExecutor {
   ) {}
 
   execute(node: CompiledAgentNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome> {
+    if (
+      context.capabilitySnapshot?.acpAgent !== undefined &&
+      context.contextCompaction?.mode === "rolling"
+    ) {
+      return Promise.resolve({
+        status: "failed",
+        error: {
+          code: "rolling_context_unsupported_acp",
+          message:
+            "rolling context requires an executor that exposes exact provider serialization and token admission",
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+        evidence: null,
+      });
+    }
     return context.capabilitySnapshot?.acpAgent === undefined
       ? this.piExecutor.execute(node, context)
       : this.acpExecutor.execute(node, context);

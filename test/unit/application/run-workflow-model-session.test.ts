@@ -104,6 +104,28 @@ describe("runWorkflow model session coordination", () => {
     });
   });
 
+  it("passes the compiled rolling-context policy to the model executor", async () => {
+    const operations: string[] = [];
+    const store = new MemoryRunStore([], operations);
+    const sessions = new MemoryModelSessionStore(operations);
+    const executor = recordingExecutor(operations, (context) => {
+      if (context.nodeId === "implement") {
+        expect(context.contextCompaction).toEqual({
+          mode: "rolling",
+          pressureThresholdPercent: 85,
+          protectedConstraints: ["Keep the acceptance criteria exact."],
+        });
+      }
+    });
+
+    const state = await runWorkflow(rollingWorkflow(), {
+      ...runOptions(store, executor, sessions),
+      runId: "run-model-session-rolling-policy",
+    });
+
+    expect(state.status).toBe("succeeded");
+  });
+
   it("commits the private interruption boundary before the workflow retry disposition", async () => {
     const operations: string[] = [];
     const compiled = workflow();
@@ -425,6 +447,29 @@ nodes:
       model: { provider: test, id: deterministic }
       tools: [read]
       recovery: { mode: fresh, maxAttempts: 3 }
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function rollingWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: model-session-workflow }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Implement the requested change.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      contextCompaction:
+        mode: rolling
+        pressureThresholdPercent: 85
+        protectedConstraints: [Keep the acceptance criteria exact.]
   - id: verify
     type: command
     dependsOn: [implement]

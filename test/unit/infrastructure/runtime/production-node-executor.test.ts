@@ -68,6 +68,42 @@ describe("production node executor composition", () => {
     expect(piExecute).toHaveBeenCalledTimes(1);
     expect(acpExecute).toHaveBeenCalledTimes(1);
   });
+
+  it("fails an opted-in rolling-context ACP node before either executor runs", async () => {
+    const piExecute = vi.fn(async () => failed("pi"));
+    const acpExecute = vi.fn(async () => failed("acp"));
+    const executor = new ProductionAgentExecutor(
+      { execute: piExecute } satisfies AgentExecutor,
+      { execute: acpExecute } satisfies AgentExecutor,
+    );
+
+    const outcome = await executor.execute(agentNode(), {
+      runId: "run-1",
+      workflowId: "workflow-1",
+      attempt: 1,
+      cwd: "/workspace",
+      projectRoot: "/workspace",
+      protectedPaths: [],
+      capabilitySnapshot: acpAgentCapabilitySnapshot(),
+      contextCompaction: {
+        mode: "rolling",
+        pressureThresholdPercent: 85,
+        protectedConstraints: [],
+      },
+    });
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "rolling_context_unsupported_acp",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+    expect(piExecute).not.toHaveBeenCalled();
+    expect(acpExecute).not.toHaveBeenCalled();
+  });
 });
 
 function agentNode() {

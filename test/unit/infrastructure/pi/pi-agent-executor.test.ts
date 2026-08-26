@@ -325,6 +325,34 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("passes rolling-context settings to the runner", async () => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "Rolling context configured.", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), {
+      ...context,
+      contextCompaction: {
+        mode: "rolling",
+        pressureThresholdPercent: 85,
+        protectedConstraints: ["Keep the acceptance criteria exact."],
+      },
+    });
+
+    expect(outcome.status).toBe("succeeded");
+    expect(request).toMatchObject({
+      contextCompactionMode: "rolling",
+      rollingContext: {
+        pressureThresholdPercent: 85,
+        protectedConstraints: ["Keep the acceptance criteria exact."],
+      },
+    });
+  });
+
   it("preserves optional agent activity telemetry from the runner", async () => {
     const runner: PiAgentRunner = {
       async run() {

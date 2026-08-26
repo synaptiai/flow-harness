@@ -50,6 +50,7 @@ import {
   type ContextCompactionMode,
   type ContextCompactionPolicy,
   type ContextSummaryIdentity,
+  type RollingContextCompactionPolicy,
   projectReferenceFirstToolResult,
   renderContextSummarySurface,
   validateContextSummaryCandidate,
@@ -112,8 +113,9 @@ export interface PiAgentRunRequest {
   readonly semanticSession?: SemanticToolSession;
   readonly artifactStore?: ArtifactStore;
   readonly delegationSession?: NodeDelegationSession;
-  readonly contextCompactionMode?: ContextCompactionMode;
+  readonly contextCompactionMode?: ContextCompactionMode | "rolling";
   readonly contextSummary?: PiContextSummaryOptions;
+  readonly rollingContext?: PiRollingContextOptions;
   readonly authorityDigest?: string;
   readonly phaseRouting?: PhaseRoutingDecision;
   readonly modelSession?: ModelSessionJournal;
@@ -124,6 +126,8 @@ export type PiContextSummaryOptions = Omit<
   Extract<ContextCompactionPolicy, { readonly mode: "references-and-summary" }>,
   "mode"
 >;
+
+export type PiRollingContextOptions = Omit<RollingContextCompactionPolicy, "mode">;
 
 export interface PiAgentRunResult {
   readonly text: string;
@@ -474,6 +478,15 @@ export class PiAgentExecutor implements AgentExecutor {
                         protectedConstraints: context.contextCompaction.protectedConstraints,
                         minimumReductionBytes: context.contextCompaction.minimumReductionBytes,
                         outputTokenLimits: context.contextCompaction.outputTokenLimits,
+                      },
+                    }
+                  : {}),
+                ...(context.contextCompaction.mode === "rolling"
+                  ? {
+                      rollingContext: {
+                        pressureThresholdPercent:
+                          context.contextCompaction.pressureThresholdPercent,
+                        protectedConstraints: context.contextCompaction.protectedConstraints,
                       },
                     }
                   : {}),
@@ -1827,6 +1840,26 @@ function validateContextCompactionRequest(
   request: PiAgentRunRequest,
   modelMaxTokens: number,
 ): void {
+  if (request.contextCompactionMode === "rolling") {
+    if (request.contextSummary !== undefined) {
+      throw new Error("context summary options require references-and-summary mode");
+    }
+    if (request.modelSession === undefined || request.rollingContext === undefined) {
+      throw new Error("rolling mode requires a durable model session and rolling options");
+    }
+    if (
+      !Number.isSafeInteger(request.rollingContext.pressureThresholdPercent) ||
+      request.rollingContext.pressureThresholdPercent < 50 ||
+      request.rollingContext.pressureThresholdPercent > 95
+    ) {
+      throw new RangeError("rolling context pressure threshold must be between 50 and 95 percent");
+    }
+    validateProtectedContextConstraints(request.rollingContext.protectedConstraints);
+    return;
+  }
+  if (request.rollingContext !== undefined) {
+    throw new Error("rolling context options require rolling mode");
+  }
   if (request.contextCompactionMode !== "references-and-summary") {
     if (request.contextSummary !== undefined) {
       throw new Error("context summary options require references-and-summary mode");

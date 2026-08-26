@@ -10,7 +10,7 @@ import type {
   LeanProofModelRoute,
   LeanProofRequest,
 } from "../domain/proof/lean-proof-verification.js";
-import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
+import type { RuntimeContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import type {
   AgentCommandApprovalReference,
   AgentCommandSettlementOutcome,
@@ -195,7 +195,7 @@ export interface NodeExecutionContext {
   readonly modelWorkProfile?: ModelWorkProfileContext;
   readonly phaseRouting?: PhaseRoutingDecision;
   readonly modelSession?: ModelSessionJournal;
-  readonly contextCompaction?: ContextCompactionPolicy;
+  readonly contextCompaction?: RuntimeContextCompactionPolicy;
   readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
   readonly agentMaxOutputTokens?: number;

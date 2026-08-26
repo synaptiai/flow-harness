@@ -837,6 +837,10 @@ async function continueWorkflow(
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
                     ...(modelBacked ? { modelWorkProfile } : {}),
                     ...(phaseRouting === undefined ? {} : { phaseRouting }),
+                    ...(executionNode.type !== "agent" ||
+                    executionNode.agent.contextCompaction === undefined
+                      ? {}
+                      : { contextCompaction: executionNode.agent.contextCompaction }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,
