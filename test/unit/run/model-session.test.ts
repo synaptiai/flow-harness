@@ -375,30 +375,14 @@ describe("model session record", () => {
     ).toThrow(/portable_history/i);
   });
 
-  it("admits the exact model-aware byte boundary and rejects one byte more", () => {
-    const capacity = requestCapacity({ contextWindowTokens: 272_000 });
-
-    expect(capacity).toEqual({
-      contextWindowTokens: 272_000,
-      reservedOutputTokens: 16_384,
-      reservedSafetyTokens: 16_384,
-      modelAwareMaxBytes: 239_232,
-      admittedMaxBytes: 239_232,
+  it("enforces the provider-neutral byte bound without treating tokens as bytes", () => {
+    expect(requestCapacity({ requestBytes: 239_233 })).toEqual({
+      providerNeutralMaxBytes: 1024 * 1024,
     });
-    expect(() => requestCapacity({ contextWindowTokens: 32_768 })).toThrow(/capacity/i);
-    expect(() => requestCapacity({ contextWindowTokens: 272_000, requestBytes: 239_233 })).toThrow(
-      /before provider/i,
-    );
-    expect(requestCapacity({ contextWindowTokens: 1_048_576 })).toMatchObject({
-      modelAwareMaxBytes: 1_015_808,
-      admittedMaxBytes: 1_015_808,
+    expect(requestCapacity({ requestBytes: 1024 * 1024 })).toEqual({
+      providerNeutralMaxBytes: 1024 * 1024,
     });
-    expect(
-      requestCapacity({ contextWindowTokens: 2_000_000, requestBytes: 1024 * 1024 }),
-    ).toMatchObject({ admittedMaxBytes: 1024 * 1024 });
-    expect(() =>
-      requestCapacity({ contextWindowTokens: 2_000_000, requestBytes: 1024 * 1024 + 1 }),
-    ).toThrow(/before provider/i);
+    expect(() => requestCapacity({ requestBytes: 1024 * 1024 + 1 })).toThrow(/provider-neutral/i);
   });
 
   it("records an accepted compaction range, output, usage, constraints, and settlement", () => {

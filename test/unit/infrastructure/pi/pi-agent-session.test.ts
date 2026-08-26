@@ -234,7 +234,7 @@ describe("Pi provider-neutral model session", () => {
     ).not.toHaveProperty("text");
   });
 
-  it("rejects a request above selected-model capacity before provider I/O", async () => {
+  it("does not mistake a selected model token limit for a byte limit without opt-in", async () => {
     const faux = createFauxCore({
       provider: "flow-session-test",
       models: [{ id: "session-model", reasoning: false, contextWindow: 32_768 }],
@@ -244,17 +244,16 @@ describe("Pi provider-neutral model session", () => {
     faux.setResponses([
       () => {
         providerCalls += 1;
-        return fauxAssistantMessage("must not run");
+        return fauxAssistantMessage("Provider request admitted.");
       },
     ]);
     const journal = attemptOneJournal();
 
     const result = await runnerFor(faux, model).run(agentRequest(model, journal));
 
-    expect(providerCalls).toBe(0);
-    expect(result).toMatchObject({ stopReason: "error" });
-    expect(result.errorMessage).toMatch(/capacity/i);
-    expect(journal.state.events.at(-1)?.type).toBe("user_message_committed");
+    expect(providerCalls).toBe(1);
+    expect(result).toMatchObject({ stopReason: "stop", text: "Provider request admitted." });
+    expect(journal.state.events.at(-1)?.type).toBe("model_request_settled");
   });
 
   it("sends a validated reference projection while retaining complete durable tool text", async () => {
