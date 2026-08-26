@@ -353,6 +353,28 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("preserves a stable rolling-context failure code from the runner", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "",
+          stopReason: "error",
+          failureCode: "pi_model_context_measurement_unavailable",
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_model_context_measurement_unavailable",
+        retryable: false,
+      },
+    });
+  });
+
   it("preserves optional agent activity telemetry from the runner", async () => {
     const runner: PiAgentRunner = {
       async run() {

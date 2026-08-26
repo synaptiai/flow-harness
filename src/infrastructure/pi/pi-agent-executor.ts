@@ -74,6 +74,10 @@ import {
   requestCapacity,
   selectContextCompactionRange,
 } from "../../domain/run/model-session.js";
+import {
+  evaluateModelRequestCapacity,
+  MODEL_REQUEST_SAFETY_RESERVE_TOKENS,
+} from "../../domain/run/model-request-capacity.js";
 import type { ModelWorkProfileContext } from "../../domain/run/work-profile.js";
 import {
   MAX_SEMANTIC_QUERY_RECEIPTS,
@@ -88,6 +92,10 @@ import type {
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
+import {
+  countProviderInputTokens,
+  ProviderInputTokenCountError,
+} from "./provider-input-token-counter.js";
 import { createWorkspaceAgentTools, type SemanticToolSession } from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
@@ -133,6 +141,7 @@ export interface PiAgentRunResult {
   readonly text: string;
   readonly stopReason: PiTerminalStopReason;
   readonly errorMessage?: string;
+  readonly failureCode?: PiModelContextFailureCode;
   readonly outputLimitExceeded?: boolean;
   readonly textHash?: string;
   readonly textTruncated?: boolean;
@@ -717,7 +726,7 @@ export class PiAgentExecutor implements AgentExecutor {
           result.stopReason === "aborted"
             ? "pi_agent_aborted"
             : result.stopReason === "error"
-              ? "pi_agent_error"
+              ? (result.failureCode ?? "pi_agent_error")
               : "pi_agent_incomplete";
         return agentFailure(
           code,
@@ -899,6 +908,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         ...(signal === undefined ? {} : { signal }),
       }),
     readonly createSession: typeof createAgentSession = createAgentSession,
+    readonly providerFetch: typeof fetch = globalThis.fetch,
   ) {}
 
   async run(request: PiAgentRunRequest): Promise<PiAgentRunResult> {
@@ -1032,7 +1042,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     const modelSessionRecorder =
       request.modelSession === undefined
         ? undefined
-        : attachModelSessionRecorder(session, request, request.modelSession);
+        : attachModelSessionRecorder(session, request, request.modelSession, this.providerFetch);
 
     if (isAborted(request.signal)) {
       await session.abort().catch(() => undefined);
@@ -1076,6 +1086,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       );
       const activity = translatePiSessionActivity(stats, toolErrors);
       const capabilityReads = capabilitySession?.evidence().reads;
+      const failureCode = modelSessionRecorder?.failureCode();
       if (promptError !== undefined) {
         return {
           ...output.result(),
@@ -1083,6 +1094,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
           activity,
           ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: isAborted(request.signal) ? "aborted" : "error",
+          ...(failureCode === undefined ? {} : { failureCode }),
           errorMessage: boundedMessage(
             promptError instanceof Error ? promptError.message : String(promptError),
           ),
@@ -1107,6 +1119,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         activity,
         ...(capabilityReads === undefined ? {} : { capabilityReads }),
         stopReason: finalMessage.stopReason,
+        ...(failureCode === undefined ? {} : { failureCode }),
         ...(output.truncated ? { outputLimitExceeded: true } : {}),
         ...(finalMessage.errorMessage === undefined
           ? {}
@@ -1123,14 +1136,250 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
 }
 
 const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.84.0";
+const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
+
+export type PiModelContextFailureCode =
+  | "pi_model_context_floor_exhausted"
+  | "pi_model_context_epochs_exhausted"
+  | "pi_model_context_measurement_unavailable"
+  | "pi_model_context_capacity_exceeded"
+  | "pi_model_context_checkpoint_invalid";
+
+interface CapturedProviderRequest {
+  readonly url: string;
+  readonly headers: Headers;
+  readonly payload: unknown;
+  readonly identity: { readonly sha256: string; readonly bytes: number };
+}
+
+class PiModelContextError extends Error {
+  override readonly name = "PiModelContextError";
+
+  constructor(readonly code: PiModelContextFailureCode) {
+    super(modelContextFailureMessage(code));
+  }
+}
+
+class ProviderSerializationIntercepted extends Error {
+  override readonly name = "ProviderSerializationIntercepted";
+
+  constructor() {
+    super("provider serialization intercepted before network I/O");
+  }
+}
+
+async function admitRollingTaskRequest(input: {
+  readonly model: Parameters<PiStreamFunction>[0];
+  readonly context: Context;
+  readonly options: Parameters<PiStreamFunction>[2];
+  readonly request: PiAgentRunRequest;
+  readonly journal: ModelSessionJournal;
+  readonly stream: PiStreamFunction;
+  readonly providerFetch: typeof fetch;
+  readonly attempt: number;
+  readonly turn: number;
+  readonly requestSequence: number;
+}): Promise<CapturedProviderRequest> {
+  const rolling = input.request.rollingContext;
+  if (rolling === undefined) {
+    throw new PiModelContextError("pi_model_context_checkpoint_invalid");
+  }
+  const captured = await captureProviderRequest({
+    model: input.model,
+    context: input.context,
+    options: input.options,
+    stream: input.stream,
+  });
+  const fetchImpl = input.options?.fetch ?? input.providerFetch;
+  let count: Awaited<ReturnType<typeof countProviderInputTokens>>;
+  try {
+    count = await countProviderInputTokens({
+      apiAdapter: input.model.api,
+      inferenceUrl: captured.url,
+      inferenceHeaders: captured.headers,
+      inferencePayload: captured.payload,
+      fetchImpl,
+      ...(input.request.signal === undefined ? {} : { signal: input.request.signal }),
+    });
+  } catch (error) {
+    const failureCategory =
+      error instanceof ProviderInputTokenCountError ? error.code : "request_failed";
+    await input.journal.append({
+      type: "model_request_capacity_checked",
+      check: (await input.journal.read()).capacityCheckCount + 1,
+      attempt: input.attempt,
+      operation: { kind: "task", turn: input.turn, request: input.requestSequence },
+      apiAdapter: input.model.api,
+      providerPayload: captured.identity,
+      measurement: { status: "unavailable", failureCategory },
+    });
+    throw new PiModelContextError("pi_model_context_measurement_unavailable");
+  }
+  let evaluation;
+  try {
+    evaluation = evaluateModelRequestCapacity({
+      contextWindowTokens: input.model.contextWindow,
+      outputAllowanceTokens: serializedOutputAllowance(input.model.api, captured.payload),
+      safetyReserveTokens: MODEL_REQUEST_SAFETY_RESERVE_TOKENS,
+      pressureThresholdPercent: rolling.pressureThresholdPercent,
+      measuredInputTokens: count.inputTokens,
+    });
+  } catch {
+    throw new PiModelContextError("pi_model_context_floor_exhausted");
+  }
+  await input.journal.append({
+    type: "model_request_capacity_checked",
+    check: (await input.journal.read()).capacityCheckCount + 1,
+    attempt: input.attempt,
+    operation: { kind: "task", turn: input.turn, request: input.requestSequence },
+    apiAdapter: input.model.api,
+    providerPayload: captured.identity,
+    measurement: { status: "measured", method: count.method, evaluation },
+  });
+  if (evaluation.decision !== "admitted") {
+    throw new PiModelContextError("pi_model_context_capacity_exceeded");
+  }
+  return captured;
+}
+
+async function captureProviderRequest(input: {
+  readonly model: Parameters<PiStreamFunction>[0];
+  readonly context: Context;
+  readonly options: Parameters<PiStreamFunction>[2];
+  readonly stream: PiStreamFunction;
+}): Promise<CapturedProviderRequest> {
+  let captured: CapturedProviderRequest | undefined;
+  const originalOnPayload = input.options?.onPayload;
+  const interceptFetch: typeof fetch = async (requestInput, init) => {
+    captured = await inspectProviderRequest(requestInput, init);
+    throw new ProviderSerializationIntercepted();
+  };
+  const stream = await input.stream(input.model, input.context, {
+    ...input.options,
+    transport: "sse",
+    fetch: interceptFetch,
+    onPayload: async (payload, model) => {
+      const replacement = await originalOnPayload?.(payload, model);
+      return replacement === undefined ? payload : replacement;
+    },
+  });
+  await stream.result().catch(() => undefined);
+  if (captured === undefined) {
+    throw new PiModelContextError("pi_model_context_measurement_unavailable");
+  }
+  return captured;
+}
+
+async function executeAdmittedProviderRequest(input: {
+  readonly model: Parameters<PiStreamFunction>[0];
+  readonly context: Context;
+  readonly options: Parameters<PiStreamFunction>[2];
+  readonly stream: PiStreamFunction;
+  readonly providerFetch: typeof fetch;
+  readonly admitted: CapturedProviderRequest;
+  readonly onFailure: (code: PiModelContextFailureCode) => void;
+}): Promise<Awaited<ReturnType<PiStreamFunction>>> {
+  const delegate = input.options?.fetch ?? input.providerFetch;
+  const validatingFetch: typeof fetch = async (requestInput, init) => {
+    try {
+      const request = new Request(requestInput, init);
+      const observed = await inspectProviderRequest(request.clone());
+      if (
+        observed.url !== input.admitted.url ||
+        observed.identity.sha256 !== input.admitted.identity.sha256 ||
+        observed.identity.bytes !== input.admitted.identity.bytes
+      ) {
+        throw new PiModelContextError("pi_model_context_checkpoint_invalid");
+      }
+      return await delegate(request);
+    } catch (error) {
+      if (error instanceof PiModelContextError) input.onFailure(error.code);
+      throw error;
+    }
+  };
+  return await input.stream(input.model, input.context, {
+    ...input.options,
+    transport: "sse",
+    fetch: validatingFetch,
+  });
+}
+
+async function inspectProviderRequest(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<CapturedProviderRequest> {
+  let request: Request;
+  try {
+    request = new Request(input, init);
+  } catch {
+    throw new PiModelContextError("pi_model_context_checkpoint_invalid");
+  }
+  if (request.method !== "POST") {
+    throw new PiModelContextError("pi_model_context_checkpoint_invalid");
+  }
+  const source = await request.text();
+  const bytes = Buffer.byteLength(source, "utf8");
+  if (bytes <= 0 || bytes > MAX_CAPTURED_PROVIDER_REQUEST_BYTES) {
+    throw new PiModelContextError("pi_model_context_checkpoint_invalid");
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(source) as unknown;
+  } catch {
+    throw new PiModelContextError("pi_model_context_checkpoint_invalid");
+  }
+  return Object.freeze({
+    url: request.url,
+    headers: new Headers(request.headers),
+    payload,
+    identity: Object.freeze({
+      sha256: createHash("sha256").update(source, "utf8").digest("hex"),
+      bytes,
+    }),
+  });
+}
+
+function serializedOutputAllowance(apiAdapter: string, payload: unknown): number {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new TypeError("provider payload must be one JSON object");
+  }
+  const record = payload as Readonly<Record<string, unknown>>;
+  const field =
+    apiAdapter === "openai-responses"
+      ? record.max_output_tokens
+      : apiAdapter === "anthropic-messages"
+        ? record.max_tokens
+        : undefined;
+  if (!Number.isSafeInteger(field) || (field as number) <= 0) {
+    throw new TypeError("provider payload has no valid output allowance");
+  }
+  return field as number;
+}
+
+function modelContextFailureMessage(code: PiModelContextFailureCode): string {
+  switch (code) {
+    case "pi_model_context_floor_exhausted":
+      return "selected model has no safe rolling-context input floor";
+    case "pi_model_context_epochs_exhausted":
+      return "rolling-context epoch limit is exhausted";
+    case "pi_model_context_measurement_unavailable":
+      return "provider input-token measurement is unavailable";
+    case "pi_model_context_capacity_exceeded":
+      return "provider request exceeds the admitted context capacity";
+    case "pi_model_context_checkpoint_invalid":
+      return "rolling-context provider request identity is invalid";
+  }
+}
 
 function attachModelSessionRecorder(
   session: Awaited<ReturnType<typeof createAgentSession>>["session"],
   request: PiAgentRunRequest,
   journal: ModelSessionJournal,
+  providerFetch: typeof fetch,
 ): {
   readonly detach: () => void;
   readonly compactionUsage: () => ModelSessionUsage;
+  readonly failureCode: () => PiModelContextFailureCode | undefined;
 } {
   const authorityDigest = request.authorityDigest;
   if (authorityDigest === undefined) {
@@ -1142,6 +1391,7 @@ function attachModelSessionRecorder(
     | undefined;
   let acceptedSummary: AcceptedContextSummary | undefined;
   let compactionUsage = emptyModelSessionUsage();
+  let modelContextFailureCode: PiModelContextFailureCode | undefined;
   session.agent.streamFunction = async (model, context, options) => {
     if (
       request.phaseRouting !== undefined &&
@@ -1247,15 +1497,52 @@ function attachModelSessionRecorder(
       turn,
       request: requestSequence,
     };
+    let admittedProviderRequest: CapturedProviderRequest | undefined;
+    if (request.contextCompactionMode === "rolling") {
+      try {
+        admittedProviderRequest = await admitRollingTaskRequest({
+          model,
+          context: providerContext,
+          options,
+          request,
+          journal,
+          stream: originalStreamFunction,
+          providerFetch,
+          attempt,
+          turn,
+          requestSequence,
+        });
+      } catch (error) {
+        if (error instanceof PiModelContextError) {
+          modelContextFailureCode = error.code;
+        }
+        throw error;
+      }
+    }
     await journal.append({
       type: "model_request_prepared",
       attempt,
       turn,
       request: requestSequence,
+      ...(admittedProviderRequest === undefined
+        ? {}
+        : { providerPayload: admittedProviderRequest.identity }),
       identity,
     });
     activeRequest = { attempt, turn, request: requestSequence };
-    return await originalStreamFunction(model, providerContext, options);
+    return admittedProviderRequest === undefined
+      ? await originalStreamFunction(model, providerContext, options)
+      : await executeAdmittedProviderRequest({
+          model,
+          context: providerContext,
+          options,
+          stream: originalStreamFunction,
+          providerFetch,
+          admitted: admittedProviderRequest,
+          onFailure: (code) => {
+            modelContextFailureCode = code;
+          },
+        });
   };
 
   const detach = session.agent.subscribe(async (event) => {
@@ -1333,6 +1620,7 @@ function attachModelSessionRecorder(
   return {
     detach,
     compactionUsage: () => compactionUsage,
+    failureCode: () => modelContextFailureCode,
   };
 }
 

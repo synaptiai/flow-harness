@@ -5,6 +5,7 @@ import {
   fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
+import { streamSimple as openAIResponsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
@@ -36,6 +37,130 @@ const identity: ModelSessionIdentity = {
 };
 
 describe("Pi provider-neutral model session", () => {
+  it("counts the final OpenAI payload and durably admits it before inference", async () => {
+    const model = openAIModel();
+    const journal = attemptOneJournal();
+    let inferencePayload = "";
+    const providerFetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const captured = new Request(input, init);
+      const url = captured.url;
+      if (url.endsWith("/responses/input_tokens")) {
+        expect(journal.state.events.at(-1)?.type).toBe("user_message_committed");
+        return Response.json({ input_tokens: 42 });
+      }
+      expect(url).toBe("https://provider.example/v1/responses");
+      expect(journal.state.events.at(-1)?.type).toBe("model_request_prepared");
+      inferencePayload = await captured.text();
+      return Response.json({ error: { message: "fixture terminal response" } }, { status: 500 });
+    };
+    const runner = openAIRunner(model, providerFetch);
+
+    const result = await runner.run({
+      ...agentRequest(model as never, journal),
+      provider: model.provider,
+      model: model.id,
+      thinking: "high",
+      contextCompactionMode: "rolling",
+      rollingContext: { pressureThresholdPercent: 85, protectedConstraints: [] },
+    });
+
+    expect(result.stopReason).toBe("error");
+    expect(journal.state.events.slice(2, 5).map((event) => event.type)).toEqual([
+      "user_message_committed",
+      "model_request_capacity_checked",
+      "model_request_prepared",
+    ]);
+    const capacity = journal.state.events.find(
+      (event) => event.type === "model_request_capacity_checked",
+    );
+    const prepared = journal.state.events.find((event) => event.type === "model_request_prepared");
+    expect(capacity).toMatchObject({
+      operation: { kind: "task", turn: 1, request: 1 },
+      apiAdapter: "openai-responses",
+      measurement: {
+        status: "measured",
+        method: "provider_exact",
+        evaluation: {
+          contextWindowTokens: 272_000,
+          outputAllowanceTokens: 128_000,
+          measuredInputTokens: 42,
+          decision: "admitted",
+        },
+      },
+    });
+    expect(prepared).toMatchObject({
+      providerPayload: {
+        sha256: createHash("sha256").update(inferencePayload, "utf8").digest("hex"),
+        bytes: Buffer.byteLength(inferencePayload, "utf8"),
+      },
+    });
+    expect(prepared).toMatchObject({ providerPayload: capacity?.providerPayload });
+  });
+
+  it("fails closed before inference when provider token counting is unavailable", async () => {
+    const model = openAIModel();
+    const journal = attemptOneJournal();
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        return new Response(null, { status: 503 });
+      }
+      inferenceCalls += 1;
+      return new Response(null, { status: 500 });
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_measurement_unavailable",
+    });
+    expect(inferenceCalls).toBe(0);
+    expect(journal.state.events.at(-1)).toMatchObject({
+      type: "model_request_capacity_checked",
+      measurement: { status: "unavailable", failureCategory: "response_status" },
+    });
+    expect(journal.state.events.some((event) => event.type === "model_request_prepared")).toBe(
+      false,
+    );
+  });
+
+  it("rejects serialization drift after admission without sending inference", async () => {
+    const model = openAIModel();
+    const journal = attemptOneJournal();
+    let inferenceCalls = 0;
+    const runner = openAIRunner(
+      model,
+      async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/responses/input_tokens")) {
+          return Response.json({ input_tokens: 42 });
+        }
+        inferenceCalls += 1;
+        return new Response(null, { status: 500 });
+      },
+      (payload, serialization) => ({
+        ...(payload as Readonly<Record<string, unknown>>),
+        instructions: `serialization-${serialization}`,
+      }),
+    );
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_checkpoint_invalid",
+    });
+    expect(inferenceCalls).toBe(0);
+    expect(journal.state.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "model_request_capacity_checked" }),
+        expect.objectContaining({ type: "model_request_prepared" }),
+      ]),
+    );
+  });
+
   it("commits a model-verifier prompt before preparing its first provider request", async () => {
     const faux = createFauxCore({
       provider: "flow-session-test",
@@ -683,6 +808,72 @@ describe("Pi provider-neutral model session", () => {
     ).toEqual([]);
   });
 });
+
+function openAIModel() {
+  return {
+    id: "gpt-5.6",
+    name: "GPT-5.6",
+    api: "openai-responses",
+    provider: "openai",
+    baseUrl: "https://provider.example/v1",
+    reasoning: true,
+    input: ["text"] as ("text" | "image")[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 272_000,
+    maxTokens: 128_000,
+  } as const;
+}
+
+function openAIRunner(
+  model: ReturnType<typeof openAIModel>,
+  providerFetch: typeof fetch,
+  transformPayload?: (payload: unknown, serialization: number) => unknown,
+): EmbeddedPiAgentRunner {
+  let serialization = 0;
+  const modelRuntime = {
+    getModel: (provider: string, modelId: string) =>
+      provider === model.provider && modelId === model.id ? model : undefined,
+    hasConfiguredAuth: () => true,
+    checkAuth: async () => undefined,
+    isUsingOAuth: () => false,
+    streamSimple: (
+      selected: typeof model,
+      context: Parameters<typeof openAIResponsesStreamSimple>[1],
+      options: Parameters<typeof openAIResponsesStreamSimple>[2],
+    ) =>
+      openAIResponsesStreamSimple(selected, context, {
+        ...options,
+        apiKey: "test-key",
+        ...(transformPayload === undefined
+          ? {}
+          : {
+              onPayload: async (payload, selectedModel) => {
+                const replacement = await options?.onPayload?.(payload, selectedModel);
+                return transformPayload(replacement ?? payload, (serialization += 1));
+              },
+            }),
+      }),
+  };
+  return new EmbeddedPiAgentRunner(
+    async () => modelRuntime as never,
+    createAgentSession,
+    providerFetch,
+  );
+}
+
+function rollingRequest(
+  model: ReturnType<typeof openAIModel>,
+  journal: ModelSessionJournal,
+): PiAgentRunRequest {
+  return {
+    ...agentRequest(model as never, journal),
+    provider: model.provider,
+    model: model.id,
+    thinking: "high",
+    contextCompactionMode: "rolling",
+    rollingContext: { pressureThresholdPercent: 85, protectedConstraints: [] },
+  };
+}
 
 function runnerFor(
   faux: ReturnType<typeof createFauxCore>,
