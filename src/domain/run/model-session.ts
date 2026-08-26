@@ -5,6 +5,10 @@ import {
   type PhaseRoutingDecision,
   phaseRoutingDecisionSchema,
 } from "../adaptation/phase-routing-candidate.js";
+import {
+  evaluateModelRequestCapacity,
+  type ModelRequestCapacityEvaluation,
+} from "./model-request-capacity.js";
 
 export const MODEL_SESSION_PROTOCOL = "flow.model-session/v1" as const;
 export const MODEL_SESSION_VERSION = 1 as const;
@@ -120,7 +124,53 @@ export interface ModelSessionRequestPreparedEvent extends ModelSessionEventBase 
   readonly attempt: number;
   readonly turn: number;
   readonly request: number;
+  readonly providerPayload?: ModelProviderPayloadIdentity;
   readonly identity: ModelRequestIdentity;
+}
+
+export interface ModelProviderPayloadIdentity {
+  readonly sha256: string;
+  readonly bytes: number;
+}
+
+export type ModelRequestCapacityOperation =
+  | {
+      readonly kind: "task";
+      readonly turn: number;
+      readonly request: number;
+    }
+  | {
+      readonly kind: "summary";
+      readonly epoch: number;
+      readonly generationAttempt: number;
+    };
+
+export type ModelRequestCapacityMeasurement =
+  | {
+      readonly status: "measured";
+      readonly method: "provider_exact" | "provider_estimate";
+      readonly evaluation: ModelRequestCapacityEvaluation;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly failureCategory:
+        | "unsupported_adapter"
+        | "request_invalid"
+        | "request_failed"
+        | "response_status"
+        | "response_media_type"
+        | "response_too_large"
+        | "response_invalid";
+    };
+
+export interface ModelSessionRequestCapacityCheckedEvent extends ModelSessionEventBase {
+  readonly type: "model_request_capacity_checked";
+  readonly check: number;
+  readonly attempt: number;
+  readonly operation: ModelRequestCapacityOperation;
+  readonly apiAdapter: string;
+  readonly providerPayload: ModelProviderPayloadIdentity;
+  readonly measurement: ModelRequestCapacityMeasurement;
 }
 
 export interface ModelSessionModelMessageEvent extends ModelSessionEventBase {
@@ -273,6 +323,7 @@ export type ModelSessionEvent =
   | ModelSessionCreatedEvent
   | ModelSessionAttemptStartedEvent
   | ModelSessionUserMessageEvent
+  | ModelSessionRequestCapacityCheckedEvent
   | ModelSessionRequestPreparedEvent
   | ModelSessionModelMessageEvent
   | ModelSessionToolCallEvent
@@ -293,10 +344,20 @@ export type ModelSessionEventInput =
       readonly text: string;
     }
   | {
+      readonly type: "model_request_capacity_checked";
+      readonly check: number;
+      readonly attempt: number;
+      readonly operation: ModelRequestCapacityOperation;
+      readonly apiAdapter: string;
+      readonly providerPayload: ModelProviderPayloadIdentity;
+      readonly measurement: ModelRequestCapacityMeasurement;
+    }
+  | {
       readonly type: "model_request_prepared";
       readonly attempt: number;
       readonly turn: number;
       readonly request: number;
+      readonly providerPayload?: ModelProviderPayloadIdentity;
       readonly identity: ModelRequestIdentity;
     }
   | {
@@ -380,6 +441,13 @@ export interface ActiveModelRequest {
   readonly toolResultIds: readonly string[];
 }
 
+export interface PendingModelTaskAdmission {
+  readonly attempt: number;
+  readonly turn: number;
+  readonly request: number;
+  readonly providerPayload: ModelProviderPayloadIdentity;
+}
+
 export interface ActiveContextCompaction {
   readonly attempt: number;
   readonly compaction: number;
@@ -401,6 +469,8 @@ export interface ModelSessionState extends ModelSessionIdentity {
   readonly lastAttempt: number;
   readonly activeAttempt: number | null;
   readonly activeRequest: ActiveModelRequest | null;
+  readonly capacityCheckCount: number;
+  readonly pendingTaskAdmission: PendingModelTaskAdmission | null;
   readonly activeCompaction: ActiveContextCompaction | null;
   readonly compactionCount: number;
   readonly acceptedCompactionCount: number;
@@ -528,6 +598,62 @@ const usageSchema = z
   })
   .strict();
 
+const providerPayloadIdentitySchema = z
+  .object({ sha256: sha256Schema, bytes: positiveSafeIntegerSchema })
+  .strict();
+const modelRequestCapacityOperationSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("task"),
+      turn: positiveSafeIntegerSchema,
+      request: positiveSafeIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("summary"),
+      epoch: positiveSafeIntegerSchema,
+      generationAttempt: positiveSafeIntegerSchema.max(2),
+    })
+    .strict(),
+]);
+const modelRequestCapacityEvaluationSchema = z
+  .object({
+    contextWindowTokens: positiveSafeIntegerSchema,
+    outputAllowanceTokens: positiveSafeIntegerSchema,
+    safetyReserveTokens: nonNegativeSafeIntegerSchema,
+    usableInputTokens: positiveSafeIntegerSchema,
+    pressureThresholdPercent: z.number().int().min(50).max(95),
+    measuredInputTokens: nonNegativeSafeIntegerSchema,
+    absoluteSafe: z.boolean(),
+    underPressure: z.boolean(),
+    decision: z.enum(["admitted", "reduction_required", "over_capacity"]),
+  })
+  .strict();
+const modelRequestCapacityMeasurementSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("measured"),
+      method: z.enum(["provider_exact", "provider_estimate"]),
+      evaluation: modelRequestCapacityEvaluationSchema,
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("unavailable"),
+      failureCategory: z.enum([
+        "unsupported_adapter",
+        "request_invalid",
+        "request_failed",
+        "response_status",
+        "response_media_type",
+        "response_too_large",
+        "response_invalid",
+      ]),
+    })
+    .strict(),
+]);
+
 const contextCompactionSurfaceIdentitySchema = z
   .object({
     sha256: sha256Schema,
@@ -608,8 +734,20 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
     .strict(),
   eventBaseSchema
     .extend({
+      type: z.literal("model_request_capacity_checked"),
+      check: positiveSafeIntegerSchema,
+      attempt: positiveSafeIntegerSchema,
+      operation: modelRequestCapacityOperationSchema,
+      apiAdapter: boundedIdentitySchema,
+      providerPayload: providerPayloadIdentitySchema,
+      measurement: modelRequestCapacityMeasurementSchema,
+    })
+    .strict(),
+  eventBaseSchema
+    .extend({
       type: z.literal("model_request_prepared"),
       ...attributedRequestSchema,
+      providerPayload: providerPayloadIdentitySchema.optional(),
       identity: requestIdentitySchema,
     })
     .strict(),
@@ -800,6 +938,8 @@ export function reduceModelSessionEvents(events: readonly ModelSessionEvent[]): 
         lastAttempt: 0,
         activeAttempt: null,
         activeRequest: null,
+        capacityCheckCount: 0,
+        pendingTaskAdmission: null,
         activeCompaction: null,
         compactionCount: 0,
         acceptedCompactionCount: 0,
@@ -1136,6 +1276,57 @@ function applyTransition(
         resumePreparedAttempts: Object.freeze([...state.resumePreparedAttempts, event.attempt]),
       };
     }
+    case "model_request_capacity_checked": {
+      requireActiveAttempt(state, event.attempt);
+      if (!state.primaryPromptCommitted) {
+        throw new ModelSessionReplayError("model request capacity requires a committed objective");
+      }
+      if (state.activeRequest !== null || state.activeCompaction !== null) {
+        throw new ModelSessionReplayError(
+          "model request capacity cannot be checked while another request is open",
+        );
+      }
+      if (state.pendingTaskAdmission !== null) {
+        throw new ModelSessionReplayError(
+          "model request capacity cannot be checked with a pending admission",
+        );
+      }
+      if (event.check !== state.capacityCheckCount + 1) {
+        throw new ModelSessionReplayError("model request capacity checks must be contiguous");
+      }
+      validateProviderPayloadIdentity(event.providerPayload);
+      if (event.operation.kind === "task") {
+        const prepared = state.events.filter(
+          (item): item is ModelSessionRequestPreparedEvent =>
+            item.type === "model_request_prepared",
+        );
+        const expectedRequest = (prepared.at(-1)?.request ?? 0) + 1;
+        const expectedTurn = prepared.filter((item) => item.attempt === event.attempt).length + 1;
+        if (event.operation.request !== expectedRequest || event.operation.turn !== expectedTurn) {
+          throw new ModelSessionReplayError(
+            "model request capacity attribution is not the exact next request",
+          );
+        }
+      }
+      if (event.measurement.status === "measured") {
+        validateCapacityEvaluation(event.measurement.evaluation);
+      }
+      const admittedTask =
+        event.operation.kind === "task" &&
+        event.measurement.status === "measured" &&
+        event.measurement.evaluation.decision === "admitted";
+      return {
+        capacityCheckCount: event.check,
+        pendingTaskAdmission: admittedTask
+          ? deepFreeze({
+              attempt: event.attempt,
+              turn: event.operation.kind === "task" ? event.operation.turn : 0,
+              request: event.operation.kind === "task" ? event.operation.request : 0,
+              providerPayload: event.providerPayload,
+            })
+          : null,
+      };
+    }
     case "context_compaction_started": {
       requireActiveAttempt(state, event.attempt);
       if (!state.primaryPromptCommitted) {
@@ -1222,6 +1413,24 @@ function applyTransition(
           "cannot prepare a request while context compaction is open",
         );
       }
+      const admission = state.pendingTaskAdmission;
+      if (admission !== null) {
+        if (
+          event.providerPayload === undefined ||
+          admission.attempt !== event.attempt ||
+          admission.turn !== event.turn ||
+          admission.request !== event.request ||
+          !sameDigestAndBytes(admission.providerPayload, event.providerPayload)
+        ) {
+          throw new ModelSessionReplayError(
+            "model request provider payload does not match its admitted capacity check",
+          );
+        }
+      } else if (event.providerPayload !== undefined) {
+        throw new ModelSessionReplayError(
+          "model request provider payload requires a prior admitted capacity check",
+        );
+      }
       const lastPrepared = [...state.events]
         .reverse()
         .find(
@@ -1260,6 +1469,7 @@ function applyTransition(
           toolCallIds: Object.freeze([]),
           toolResultIds: Object.freeze([]),
         }),
+        pendingTaskAdmission: null,
       };
     }
     case "model_message_committed": {
@@ -1354,7 +1564,7 @@ function applyTransition(
         return {};
       }
       requireActiveAttempt(state, event.attempt);
-      return { activeAttempt: null, activeRequest: null };
+      return { activeAttempt: null, activeRequest: null, pendingTaskAdmission: null };
     }
     default:
       return assertNever(event);
@@ -1472,6 +1682,36 @@ function validateCompactionSettlement(
 function validateCompactionSurfaceIdentity(surface: ContextCompactionSurfaceIdentity): void {
   if (surface.estimatedTokens !== Math.ceil(surface.bytes / 4)) {
     throw new ModelSessionReplayError("context compaction estimated tokens do not match bytes");
+  }
+}
+
+function validateProviderPayloadIdentity(payload: ModelProviderPayloadIdentity): void {
+  if (
+    !/^[a-f0-9]{64}$/u.test(payload.sha256) ||
+    !Number.isSafeInteger(payload.bytes) ||
+    payload.bytes <= 0
+  ) {
+    throw new ModelSessionReplayError("model request provider payload identity is invalid");
+  }
+}
+
+function validateCapacityEvaluation(evaluation: ModelRequestCapacityEvaluation): void {
+  let expected: ModelRequestCapacityEvaluation;
+  try {
+    expected = evaluateModelRequestCapacity({
+      contextWindowTokens: evaluation.contextWindowTokens,
+      outputAllowanceTokens: evaluation.outputAllowanceTokens,
+      safetyReserveTokens: evaluation.safetyReserveTokens,
+      pressureThresholdPercent: evaluation.pressureThresholdPercent,
+      measuredInputTokens: evaluation.measuredInputTokens,
+    });
+  } catch (error) {
+    throw new ModelSessionReplayError("model request capacity arithmetic is invalid", {
+      cause: error,
+    });
+  }
+  if (canonicalJson(expected) !== canonicalJson(evaluation)) {
+    throw new ModelSessionReplayError("model request capacity decision does not match arithmetic");
   }
 }
 

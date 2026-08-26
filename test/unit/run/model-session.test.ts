@@ -385,6 +385,84 @@ describe("model session record", () => {
     expect(() => requestCapacity({ requestBytes: 1024 * 1024 + 1 })).toThrow(/provider-neutral/i);
   });
 
+  it("requires an admitted provider payload to match the exact next prepared request", () => {
+    let state = sessionReadyForRequest();
+    const providerPayload = { sha256: "6".repeat(64), bytes: 512 };
+    state = append(state, capacityCheck(state, 1, "admitted", providerPayload));
+
+    expect(state.capacityCheckCount).toBe(1);
+    expect(state.pendingTaskAdmission).toMatchObject({ attempt: 1, turn: 1, request: 1 });
+
+    state = append(state, {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      providerPayload,
+      identity: requestIdentity(state),
+    });
+
+    expect(state.pendingTaskAdmission).toBeNull();
+    expect(state.activeRequest).toMatchObject({ attempt: 1, turn: 1, request: 1 });
+  });
+
+  it("rejects provider-payload drift and a second check before admission is consumed", () => {
+    let state = sessionReadyForRequest();
+    const providerPayload = { sha256: "6".repeat(64), bytes: 512 };
+    state = append(state, capacityCheck(state, 1, "admitted", providerPayload));
+
+    expect(() => append(state, capacityCheck(state, 2, "admitted", providerPayload))).toThrow(
+      /pending admission/i,
+    );
+    expect(() =>
+      append(state, {
+        type: "model_request_prepared",
+        attempt: 1,
+        turn: 1,
+        request: 1,
+        providerPayload: { ...providerPayload, sha256: "7".repeat(64) },
+        identity: requestIdentity(state),
+      }),
+    ).toThrow(/provider payload/i);
+  });
+
+  it("records pressure and unavailable checks without authorizing inference", () => {
+    let state = sessionReadyForRequest();
+    const providerPayload = { sha256: "6".repeat(64), bytes: 512 };
+    state = append(state, capacityCheck(state, 1, "reduction_required", providerPayload));
+    expect(state.pendingTaskAdmission).toBeNull();
+
+    state = append(state, {
+      type: "model_request_capacity_checked",
+      check: 2,
+      attempt: 1,
+      operation: { kind: "task", turn: 1, request: 1 },
+      apiAdapter: "openai-responses",
+      providerPayload,
+      measurement: { status: "unavailable", failureCategory: "request_failed" },
+    });
+
+    expect(state.capacityCheckCount).toBe(2);
+    expect(state.pendingTaskAdmission).toBeNull();
+  });
+
+  it("clears an unconsumed admission when the process is interrupted before inference", () => {
+    let state = sessionReadyForRequest();
+    state = append(
+      state,
+      capacityCheck(state, 1, "admitted", { sha256: "6".repeat(64), bytes: 512 }),
+    );
+
+    state = append(state, {
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+
+    expect(state.activeAttempt).toBeNull();
+    expect(state.pendingTaskAdmission).toBeNull();
+  });
+
   it("records an accepted compaction range, output, usage, constraints, and settlement", () => {
     let state = sessionWithTwoSettledRequests();
     state = append(state, compactionStart(state, 1, 1_024));
@@ -652,6 +730,48 @@ function requestIdentity(state?: ModelSessionState): ModelRequestIdentity {
     attempt: 1,
     turn: 1,
     request: 1,
+  };
+}
+
+function sessionReadyForRequest(): ModelSessionState {
+  let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+  state = append(state, { type: "attempt_started", attempt: 1 });
+  return append(state, {
+    type: "user_message_committed",
+    attempt: 1,
+    origin: "primary_prompt",
+    text: "Inspect the project.",
+  });
+}
+
+function capacityCheck(
+  _state: ModelSessionState,
+  check: number,
+  decision: "admitted" | "reduction_required",
+  providerPayload: { readonly sha256: string; readonly bytes: number },
+) {
+  return {
+    type: "model_request_capacity_checked" as const,
+    check,
+    attempt: 1,
+    operation: { kind: "task" as const, turn: 1, request: 1 },
+    apiAdapter: "openai-responses",
+    providerPayload,
+    measurement: {
+      status: "measured" as const,
+      method: "provider_exact" as const,
+      evaluation: {
+        contextWindowTokens: 272_000,
+        outputAllowanceTokens: 128_000,
+        safetyReserveTokens: 16_384,
+        usableInputTokens: 127_616,
+        pressureThresholdPercent: 85,
+        measuredInputTokens: decision === "admitted" ? 100_000 : 108_474,
+        absoluteSafe: true,
+        underPressure: decision === "reduction_required",
+        decision,
+      },
+    },
   };
 }
 
