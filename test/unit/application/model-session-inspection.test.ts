@@ -68,6 +68,25 @@ describe("model session public inspection", () => {
     });
     expect(serialized).not.toContain("PRIVATE_ACTUAL_DIGEST");
   });
+
+  it("retains the content-free routing mismatch category", async () => {
+    const state = privateSession();
+    const inspected = await inspectRunModelSessions(
+      publicRunState(modelSessionSummary(state)),
+      storeReturning(new Error("model request identity mismatch: routing")),
+    );
+
+    expect(inspected).toMatchObject({
+      nodes: {
+        analyze: {
+          modelSession: {
+            inspectionStatus: "unavailable",
+            mismatchCategories: ["routing"],
+          },
+        },
+      },
+    });
+  });
 });
 
 function privateSession(): ModelSessionState {

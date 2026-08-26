@@ -623,6 +623,55 @@ export interface ModelSessionSummary {
   readonly compactionCount: number;
   readonly acceptedCompactionCount: number;
   readonly interruptedCompactionCount: number;
+  readonly capacityCheckCount: number;
+  readonly latestCapacityCheck: {
+    readonly check: number;
+    readonly attempt: number;
+    readonly operation: ModelRequestCapacityOperation;
+    readonly apiAdapter: string;
+    readonly providerPayloadSha256: string;
+    readonly providerPayloadBytes: number;
+    readonly status: "measured" | "unavailable";
+    readonly method: "provider_exact" | "provider_estimate" | null;
+    readonly uncertainty: "exact" | "estimate" | "unavailable";
+    readonly failureCategory: string | null;
+    readonly contextWindowTokens: number | null;
+    readonly outputAllowanceTokens: number | null;
+    readonly safetyReserveTokens: number | null;
+    readonly usableInputTokens: number | null;
+    readonly pressureThresholdPercent: number | null;
+    readonly measuredInputTokens: number | null;
+    readonly absoluteSafe: boolean | null;
+    readonly underPressure: boolean | null;
+    readonly decision: ModelRequestCapacityEvaluation["decision"] | null;
+  } | null;
+  readonly rollingEpochCount: number;
+  readonly rollingGenerationCount: number;
+  readonly acceptedRollingEpochCount: number;
+  readonly interruptedRollingEpochCount: number;
+  readonly activeRollingEpoch: {
+    readonly attempt: number;
+    readonly epoch: number;
+    readonly generationAttempt: number;
+    readonly task: { readonly turn: number; readonly request: number };
+    readonly outputTokenLimit: number;
+    readonly cumulativeSourceSha256: string;
+    readonly deltaSourceSha256: string;
+    readonly bindingsSha256: string;
+    readonly policySha256: string;
+  } | null;
+  readonly currentRollingCheckpoint: {
+    readonly summarySha256: string;
+    readonly summaryBytes: number;
+    readonly sourceSha256: string;
+    readonly sourceFirstSequence: number;
+    readonly sourceLastSequence: number;
+    readonly sourceEventCount: number;
+    readonly renderedSurfaceSha256: string;
+    readonly renderedSurfaceBytes: number;
+    readonly bindingsSha256: string;
+    readonly policySha256: string;
+  } | null;
   readonly activeCompaction: {
     readonly attempt: number;
     readonly compaction: number;
@@ -1341,6 +1390,13 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
     .find(
       (event): event is ModelSessionResumeSurfaceEvent => event.type === "resume_surface_prepared",
     );
+  const latestCapacityCheck = [...state.events]
+    .reverse()
+    .find(
+      (event): event is ModelSessionRequestCapacityCheckedEvent =>
+        event.type === "model_request_capacity_checked",
+    );
+  const checkpoint = state.currentRollingCheckpoint;
   return deepFreeze({
     version: state.version,
     protocol: state.protocol,
@@ -1358,6 +1414,42 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
     compactionCount: state.compactionCount,
     acceptedCompactionCount: state.acceptedCompactionCount,
     interruptedCompactionCount: state.interruptedCompactionCount,
+    capacityCheckCount: state.capacityCheckCount,
+    latestCapacityCheck:
+      latestCapacityCheck === undefined ? null : publicCapacityCheck(latestCapacityCheck),
+    rollingEpochCount: state.rollingEpochCount,
+    rollingGenerationCount: state.rollingGenerationCount,
+    acceptedRollingEpochCount: state.acceptedRollingEpochCount,
+    interruptedRollingEpochCount: state.interruptedRollingEpochCount,
+    activeRollingEpoch:
+      state.activeRollingEpoch === null
+        ? null
+        : {
+            attempt: state.activeRollingEpoch.attempt,
+            epoch: state.activeRollingEpoch.epoch,
+            generationAttempt: state.activeRollingEpoch.generationAttempt,
+            task: state.activeRollingEpoch.task,
+            outputTokenLimit: state.activeRollingEpoch.outputTokenLimit,
+            cumulativeSourceSha256: state.activeRollingEpoch.cumulativeRange.sha256,
+            deltaSourceSha256: state.activeRollingEpoch.deltaRange.sha256,
+            bindingsSha256: calculateModelSessionDigest(state.activeRollingEpoch.bindings),
+            policySha256: state.activeRollingEpoch.policy.sha256,
+          },
+    currentRollingCheckpoint:
+      checkpoint === null
+        ? null
+        : {
+            summarySha256: checkpoint.summary.sha256,
+            summaryBytes: checkpoint.summary.bytes,
+            sourceSha256: checkpoint.cumulativeRange.sha256,
+            sourceFirstSequence: checkpoint.cumulativeRange.firstSequence,
+            sourceLastSequence: checkpoint.cumulativeRange.lastSequence,
+            sourceEventCount: checkpoint.cumulativeRange.eventCount,
+            renderedSurfaceSha256: checkpoint.renderedSurface.sha256,
+            renderedSurfaceBytes: checkpoint.renderedSurface.bytes,
+            bindingsSha256: calculateModelSessionDigest(checkpoint.bindings),
+            policySha256: checkpoint.policy.sha256,
+          },
     activeCompaction:
       state.activeCompaction === null
         ? null
@@ -1388,6 +1480,56 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
           },
     mismatchCategories: Object.freeze([]),
   });
+}
+
+function publicCapacityCheck(
+  event: ModelSessionRequestCapacityCheckedEvent,
+): NonNullable<ModelSessionSummary["latestCapacityCheck"]> {
+  if (event.measurement.status === "unavailable") {
+    return {
+      check: event.check,
+      attempt: event.attempt,
+      operation: event.operation,
+      apiAdapter: event.apiAdapter,
+      providerPayloadSha256: event.providerPayload.sha256,
+      providerPayloadBytes: event.providerPayload.bytes,
+      status: "unavailable",
+      method: null,
+      uncertainty: "unavailable",
+      failureCategory: event.measurement.failureCategory,
+      contextWindowTokens: null,
+      outputAllowanceTokens: null,
+      safetyReserveTokens: null,
+      usableInputTokens: null,
+      pressureThresholdPercent: null,
+      measuredInputTokens: null,
+      absoluteSafe: null,
+      underPressure: null,
+      decision: null,
+    };
+  }
+  const evaluation = event.measurement.evaluation;
+  return {
+    check: event.check,
+    attempt: event.attempt,
+    operation: event.operation,
+    apiAdapter: event.apiAdapter,
+    providerPayloadSha256: event.providerPayload.sha256,
+    providerPayloadBytes: event.providerPayload.bytes,
+    status: "measured",
+    method: event.measurement.method,
+    uncertainty: event.measurement.method === "provider_exact" ? "exact" : "estimate",
+    failureCategory: null,
+    contextWindowTokens: evaluation.contextWindowTokens,
+    outputAllowanceTokens: evaluation.outputAllowanceTokens,
+    safetyReserveTokens: evaluation.safetyReserveTokens,
+    usableInputTokens: evaluation.usableInputTokens,
+    pressureThresholdPercent: evaluation.pressureThresholdPercent,
+    measuredInputTokens: evaluation.measuredInputTokens,
+    absoluteSafe: evaluation.absoluteSafe,
+    underPressure: evaluation.underPressure,
+    decision: evaluation.decision,
+  };
 }
 
 export function calculatePortableHistoryIdentity(state: ModelSessionState): {

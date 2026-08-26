@@ -10,6 +10,7 @@ import {
   type ModelRequestIdentity,
   type ModelSessionEventInput,
   type ModelSessionState,
+  modelSessionSummary,
   reduceModelSessionEvents,
   selectContextCompactionRange,
   selectRollingContextRange,
@@ -65,6 +66,34 @@ describe("rolling context ledger", () => {
     expect(state.acceptedRollingEpochCount).toBe(1);
     expect(state.currentRollingCheckpoint?.summaryText).toBe("Exact private summary surface.");
     expect(state.activeRollingEpoch).toBeNull();
+
+    const publicSummary = modelSessionSummary(state);
+    expect(publicSummary).toMatchObject({
+      capacityCheckCount: 2,
+      latestCapacityCheck: {
+        check: 2,
+        operation: { kind: "summary", epoch: 1, generationAttempt: 1 },
+        status: "measured",
+        method: "provider_exact",
+        uncertainty: "exact",
+        decision: "admitted",
+        outputAllowanceTokens: 4_096,
+      },
+      rollingEpochCount: 1,
+      rollingGenerationCount: 1,
+      acceptedRollingEpochCount: 1,
+      interruptedRollingEpochCount: 0,
+      activeRollingEpoch: null,
+      currentRollingCheckpoint: {
+        summarySha256: checkpoint.summary.sha256,
+        summaryBytes: checkpoint.summary.bytes,
+        sourceSha256: checkpoint.cumulativeRange.sha256,
+        renderedSurfaceSha256: checkpoint.renderedSurface.sha256,
+        bindingsSha256: calculateModelSessionDigest(checkpoint.bindings),
+        policySha256: checkpoint.policy.sha256,
+      },
+    });
+    expect(JSON.stringify(publicSummary)).not.toContain("Exact private summary surface.");
 
     const replayed = reduceModelSessionEvents(state.events.map((event) => ({ ...event })));
     expect(replayed.currentRollingCheckpoint).toEqual(state.currentRollingCheckpoint);

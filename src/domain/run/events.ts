@@ -1634,10 +1634,92 @@ const modelRequestMismatchCategorySchema = z.enum([
   "authority",
   "portable_history",
   "runtime_surface",
+  "routing",
   "attempt",
   "turn",
   "request",
 ] satisfies readonly ModelRequestMismatchCategory[]);
+const modelRequestCapacityOperationSummarySchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("task"),
+      turn: z.number().int().positive().safe(),
+      request: z.number().int().positive().safe(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("summary"),
+      epoch: z.number().int().positive().safe(),
+      generationAttempt: z.number().int().min(1).max(2).safe(),
+    })
+    .strict(),
+]);
+const publicModelCapacityCheckSchema = z
+  .object({
+    check: z.number().int().positive().safe(),
+    attempt: z.number().int().positive().safe(),
+    operation: modelRequestCapacityOperationSummarySchema,
+    apiAdapter: z.string().min(1).max(128),
+    providerPayloadSha256: sha256Schema,
+    providerPayloadBytes: z.number().int().nonnegative().safe(),
+    status: z.enum(["measured", "unavailable"]),
+    method: z.enum(["provider_exact", "provider_estimate"]).nullable(),
+    uncertainty: z.enum(["exact", "estimate", "unavailable"]),
+    failureCategory: z
+      .enum([
+        "unsupported_adapter",
+        "request_invalid",
+        "request_failed",
+        "response_status",
+        "response_media_type",
+        "response_too_large",
+        "response_invalid",
+      ])
+      .nullable(),
+    contextWindowTokens: z.number().int().positive().safe().nullable(),
+    outputAllowanceTokens: z.number().int().positive().safe().nullable(),
+    safetyReserveTokens: z.number().int().nonnegative().safe().nullable(),
+    usableInputTokens: z.number().int().positive().safe().nullable(),
+    pressureThresholdPercent: z.number().int().min(50).max(95).nullable(),
+    measuredInputTokens: z.number().int().nonnegative().safe().nullable(),
+    absoluteSafe: z.boolean().nullable(),
+    underPressure: z.boolean().nullable(),
+    decision: z.enum(["admitted", "reduction_required", "over_capacity"]).nullable(),
+  })
+  .strict();
+const publicRollingContextEpochSchema = z
+  .object({
+    attempt: z.number().int().positive().safe(),
+    epoch: z.number().int().positive().safe(),
+    generationAttempt: z.number().int().min(1).max(2).safe(),
+    task: z
+      .object({
+        turn: z.number().int().positive().safe(),
+        request: z.number().int().positive().safe(),
+      })
+      .strict(),
+    outputTokenLimit: z.number().int().positive().safe(),
+    cumulativeSourceSha256: sha256Schema,
+    deltaSourceSha256: sha256Schema,
+    bindingsSha256: sha256Schema,
+    policySha256: sha256Schema,
+  })
+  .strict();
+const publicRollingContextCheckpointSchema = z
+  .object({
+    summarySha256: sha256Schema,
+    summaryBytes: z.number().int().nonnegative().safe(),
+    sourceSha256: sha256Schema,
+    sourceFirstSequence: z.number().int().positive().safe(),
+    sourceLastSequence: z.number().int().positive().safe(),
+    sourceEventCount: z.number().int().positive().safe(),
+    renderedSurfaceSha256: sha256Schema,
+    renderedSurfaceBytes: z.number().int().positive().safe(),
+    bindingsSha256: sha256Schema,
+    policySha256: sha256Schema,
+  })
+  .strict();
 const modelSessionSummarySchema = z
   .object({
     version: z.literal(1),
@@ -1655,6 +1737,14 @@ const modelSessionSummarySchema = z
     compactionCount: z.number().int().nonnegative().safe().default(0),
     acceptedCompactionCount: z.number().int().nonnegative().safe().default(0),
     interruptedCompactionCount: z.number().int().nonnegative().safe().default(0),
+    capacityCheckCount: z.number().int().nonnegative().safe().default(0),
+    latestCapacityCheck: publicModelCapacityCheckSchema.nullable().default(null),
+    rollingEpochCount: z.number().int().nonnegative().safe().default(0),
+    rollingGenerationCount: z.number().int().nonnegative().safe().default(0),
+    acceptedRollingEpochCount: z.number().int().nonnegative().safe().default(0),
+    interruptedRollingEpochCount: z.number().int().nonnegative().safe().default(0),
+    activeRollingEpoch: publicRollingContextEpochSchema.nullable().default(null),
+    currentRollingCheckpoint: publicRollingContextCheckpointSchema.nullable().default(null),
     activeCompaction: z
       .object({
         attempt: z.number().int().positive().safe(),
@@ -1684,7 +1774,7 @@ const modelSessionSummarySchema = z
       })
       .strict()
       .nullable(),
-    mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(13),
+    mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(14),
   })
   .strict();
 
