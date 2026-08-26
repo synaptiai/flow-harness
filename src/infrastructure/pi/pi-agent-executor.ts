@@ -2593,11 +2593,27 @@ async function projectReferenceFirstContext(
   ) {
     return context;
   }
+  const projectionLimit =
+    request.contextCompactionMode === "rolling"
+      ? rollingReferenceProjectionLimit(context.messages)
+      : context.messages.length;
   const messages: Message[] = [];
-  for (const message of context.messages) {
-    messages.push(await projectReferenceFirstMessage(message, request));
+  for (const [index, message] of context.messages.entries()) {
+    messages.push(
+      index < projectionLimit ? await projectReferenceFirstMessage(message, request) : message,
+    );
   }
   return { ...context, messages };
+}
+
+export function rollingReferenceProjectionLimit(
+  messages: readonly { readonly role: string }[],
+): number {
+  const completedRequestIndexes = messages.flatMap((message, index) =>
+    message.role === "assistant" ? [index] : [],
+  );
+  if (completedRequestIndexes.length <= 2) return 0;
+  return completedRequestIndexes.at(-2) ?? 0;
 }
 
 async function projectReferenceFirstMessage(

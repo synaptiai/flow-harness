@@ -28,6 +28,7 @@ import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-co
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import {
   EmbeddedPiAgentRunner,
+  rollingReferenceProjectionLimit,
   type PiAgentRunRequest,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
 
@@ -38,6 +39,29 @@ const identity: ModelSessionIdentity = {
 };
 
 describe("Pi provider-neutral model session", () => {
+  it("protects the two most recent completed requests from rolling reference projection", () => {
+    expect(
+      rollingReferenceProjectionLimit([
+        { role: "user" },
+        { role: "assistant" },
+        { role: "toolResult" },
+        { role: "assistant" },
+        { role: "toolResult" },
+        { role: "assistant" },
+        { role: "toolResult" },
+      ]),
+    ).toBe(3);
+    expect(
+      rollingReferenceProjectionLimit([
+        { role: "user" },
+        { role: "assistant" },
+        { role: "toolResult" },
+        { role: "assistant" },
+        { role: "toolResult" },
+      ]),
+    ).toBe(0);
+  });
+
   it("counts the final OpenAI payload and durably admits it before inference", async () => {
     const model = openAIModel();
     const journal = attemptOneJournal();
