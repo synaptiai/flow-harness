@@ -1533,6 +1533,16 @@ function freezeNode(
         ...(source.agent.recovery === undefined
           ? {}
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),
+        ...(source.agent.contextCompaction === undefined
+          ? {}
+          : {
+              contextCompaction: Object.freeze({
+                ...source.agent.contextCompaction,
+                protectedConstraints: Object.freeze([
+                  ...source.agent.contextCompaction.protectedConstraints,
+                ]),
+              }),
+            }),
         timeoutMs: source.agent.timeoutMs,
       }),
     };
@@ -1951,6 +1961,16 @@ function freezeLoopBodyNode(
         ...(source.agent.recovery === undefined
           ? {}
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),
+        ...(source.agent.contextCompaction === undefined
+          ? {}
+          : {
+              contextCompaction: Object.freeze({
+                ...source.agent.contextCompaction,
+                protectedConstraints: Object.freeze([
+                  ...source.agent.contextCompaction.protectedConstraints,
+                ]),
+              }),
+            }),
         timeoutMs: source.agent.timeoutMs,
       }),
     };
