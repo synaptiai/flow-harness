@@ -90,9 +90,10 @@ The coding path supports explicit Anthropic and OpenAI preview selections in an 
 uses only read, list, and hash-bound edit tools, then requires deterministic exact-byte
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-The first bounded alpha.4 field pilot against an established separate repository failed before an
-edit and produced no accepted result. Flow failed closed, but this single trial doesn't establish
-unattended coding effectiveness. Read the
+Three bounded alpha.4 attempts against one issue in an established separate repository produced no
+accepted result. Two ended before an edit. A separately authorized rerun committed four partial
+edits, then failed before dependent verification. Flow failed closed, but this single-task series
+doesn't establish unattended coding effectiveness. Read the
 [alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) for the fixed
 controls, evidence, limitations, and roadmap response.
 

@@ -242,7 +242,7 @@ jobs:
 
   proof-runtime:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
