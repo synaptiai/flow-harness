@@ -128,7 +128,7 @@ The result doesn't establish these broader claims:
 
 This pilot has material limitations:
 
-- It used one issue, one model route, one host, and two related prompts. The sample isn't
+- It used one issue, one model route, one host, and three related prompt variants. The sample isn't
   statistically meaningful.
 - The recovery prompt contained conflicting navigation guidance. It first excluded broad README
   and changelog reads. A later general instruction included those documents. The trace doesn't
