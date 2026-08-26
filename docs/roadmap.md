@@ -694,17 +694,19 @@ Read the [Compatibility policy](compatibility.md) for the current contract and t
   parent-owned process evidence.
 - A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
   OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
-- The first bounded use of public alpha.4 against an established separate repository failed safely
-  before an edit. Both permitted attempts produced no effect receipt, dependent verifier, accepted
-  goal, commit, or pull request. This one-task result is product evidence, but it isn't a benchmark
-  or a model-quality conclusion. Read the
+- Three bounded uses of public alpha.4 against one issue in an established separate repository
+  failed safely. Two attempts ended before an edit. A separately authorized rerun committed four
+  partial edits, then failed before dependent verification and goal acceptance. No attempt produced
+  a commit or pull request. This one-task result is product evidence, but it isn't a benchmark or a
+  model-quality conclusion. Read the
   [alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md).
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
 Before extending that field sequence, add a reviewed field-task corpus, bounded source-location
-support, a nonsecret retryability category for provider failures, and one effect-free retry rule.
-Rerun the pinned first issue to acceptance before attempting later issues. Preserve failures in the
-denominator and report every human intervention.
+support, a nonsecret retryability category for provider failures, one effect-free retry rule, and
+an explicit operator disposition for failed attempts with committed effects. Rerun the pinned first
+issue to acceptance before attempting later issues. Preserve failures in the denominator and report
+every human intervention.
 
 The standalone harness is compared against the legacy plugin on held-out repository tasks using equivalent model configurations. Record:
 
