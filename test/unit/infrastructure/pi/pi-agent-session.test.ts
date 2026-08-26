@@ -6,6 +6,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { streamSimple as openAIResponsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
+import { streamSimple as anthropicMessagesStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
@@ -158,6 +159,285 @@ describe("Pi provider-neutral model session", () => {
         expect.objectContaining({ type: "model_request_capacity_checked" }),
         expect.objectContaining({ type: "model_request_prepared" }),
       ]),
+    );
+  });
+
+  it("accepts a durable rolling checkpoint and retries the task with the exact tail", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    const inferenceAllowances: number[] = [];
+    let taskCount = 0;
+    let finalInferenceBody: Readonly<Record<string, unknown>> | undefined;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      const allowance = Number(body.max_output_tokens);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        taskCount += 1;
+        return Response.json({ input_tokens: taskCount === 1 ? 108_474 : 42 });
+      }
+      inferenceAllowances.push(allowance);
+      if (allowance === 4_096) {
+        return openAITextStream(
+          JSON.stringify({
+            version: 1,
+            summary: "The first historical request completed.",
+            protectedConstraints: [],
+          }),
+        );
+      }
+      finalInferenceBody = body;
+      return openAITextStream("Rolling context admitted.");
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({ stopReason: "stop", text: "Rolling context admitted." });
+    expect(countCalls).toBe(3);
+    expect(inferenceAllowances).toEqual([4_096, 128_000]);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "model_request_capacity_checked")
+        .flatMap((event) =>
+          event.measurement.status === "measured"
+            ? [event.measurement.evaluation.outputAllowanceTokens]
+            : [],
+        ),
+    ).toEqual([128_000, 4_096, 128_000]);
+    expect(JSON.stringify(finalInferenceBody)).not.toContain("OLD_ROLLING_CONTEXT");
+    expect(JSON.stringify(finalInferenceBody)).toContain("RECENT_ROLLING_CONTEXT_2");
+    expect(JSON.stringify(finalInferenceBody)).toContain("RECENT_ROLLING_CONTEXT_3");
+    expect(journal.state).toMatchObject({
+      rollingEpochCount: 1,
+      rollingGenerationCount: 1,
+      acceptedRollingEpochCount: 1,
+      activeRollingEpoch: null,
+      currentRollingCheckpoint: {
+        summaryText: "The first historical request completed.",
+        surface: { minimumReductionBytes: 4_096 },
+      },
+    });
+    expect(journal.state.events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "rolling_context_epoch_started",
+        "rolling_context_epoch_settled",
+        "model_request_capacity_checked",
+      ]),
+    );
+
+    journal.state = append(
+      journal.state,
+      { type: "attempt_interrupted", attempt: 2, reason: "process_interrupted" },
+      journal.state.eventCount + 1,
+    );
+    journal.state = append(
+      journal.state,
+      { type: "attempt_started", attempt: 3 },
+      journal.state.eventCount + 1,
+    );
+    let recoveredInferenceBody: Readonly<Record<string, unknown>> | undefined;
+    const recoveredRunner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        return Response.json({ input_tokens: 42 });
+      }
+      recoveredInferenceBody = body;
+      return openAITextStream("Recovered checkpoint admitted.");
+    });
+
+    const recovered = await recoveredRunner.run(rollingRequest(model, journal));
+
+    expect(recovered).toMatchObject({
+      stopReason: "stop",
+      text: "Recovered checkpoint admitted.",
+    });
+    expect(JSON.stringify(recoveredInferenceBody)).not.toContain("OLD_ROLLING_CONTEXT");
+    expect(JSON.stringify(recoveredInferenceBody)).toContain("flow.context-summary");
+    expect(journal.state.rollingEpochCount).toBe(1);
+  });
+
+  it("retries one rejected rolling summary with the smaller exact allowance", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    const inferenceAllowances: number[] = [];
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      const allowance = Number(body.max_output_tokens);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return Response.json({ input_tokens: countCalls === 1 ? 108_474 : 42 });
+      }
+      inferenceAllowances.push(allowance);
+      if (allowance === 4_096) return openAITextStream("not canonical summary JSON");
+      if (allowance === 2_048) {
+        return openAITextStream(
+          JSON.stringify({
+            version: 1,
+            summary: "The historical request completed after one retry.",
+            protectedConstraints: [],
+          }),
+        );
+      }
+      return openAITextStream("Retried rolling context admitted.");
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "stop",
+      text: "Retried rolling context admitted.",
+    });
+    expect(inferenceAllowances).toEqual([4_096, 2_048, 128_000]);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_started")
+        .map((event) => event.outputTokenLimit),
+    ).toEqual([4_096, 2_048]);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement.reason),
+    ).toEqual(["invalid_output", "accepted"]);
+  });
+
+  it("disables Anthropic summary thinking and preserves exact summary allowances", async () => {
+    const model = anthropicModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    const summaryPayloads: Readonly<Record<string, unknown>>[] = [];
+    const runner = anthropicRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/messages/count_tokens")) {
+        countCalls += 1;
+        return Response.json({ input_tokens: countCalls === 1 ? 781_674 : 42 });
+      }
+      summaryPayloads.push(body);
+      return Response.json({ error: { message: "fixture summary rejection" } }, { status: 500 });
+    });
+
+    const result = await runner.run({
+      ...agentRequest(model as never, journal),
+      provider: model.provider,
+      model: model.id,
+      thinking: "high",
+      contextCompactionMode: "rolling",
+      rollingContext: { pressureThresholdPercent: 85, protectedConstraints: [] },
+    });
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_capacity_exceeded",
+    });
+    expect(summaryPayloads.map((payload) => payload.max_tokens)).toEqual([4_096, 2_048]);
+    expect(summaryPayloads.map((payload) => payload.thinking)).toEqual([
+      { type: "disabled" },
+      { type: "disabled" },
+    ]);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "model_request_capacity_checked")
+        .flatMap((event) =>
+          event.measurement.status === "measured"
+            ? [
+                {
+                  method: event.measurement.method,
+                  allowance: event.measurement.evaluation.outputAllowanceTokens,
+                },
+              ]
+            : [],
+        ),
+    ).toEqual([
+      { method: "provider_estimate", allowance: 64_000 },
+      { method: "provider_estimate", allowance: 4_096 },
+      { method: "provider_estimate", allowance: 2_048 },
+    ]);
+  });
+
+  it("feeds a later epoch only the previous summary and newly eligible delta", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let firstCount = 0;
+    const firstRunner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        firstCount += 1;
+        return Response.json({ input_tokens: firstCount === 1 ? 108_474 : 42 });
+      }
+      return Number(body.max_output_tokens) === 4_096
+        ? openAITextStream(
+            JSON.stringify({
+              version: 1,
+              summary: "First rolling checkpoint.",
+              protectedConstraints: [],
+            }),
+          )
+        : openAITextStream("FIRST_POST_CHECKPOINT_TASK");
+    });
+    await firstRunner.run(rollingRequest(model, journal));
+    const firstRange = journal.state.currentRollingCheckpoint?.cumulativeRange;
+    if (firstRange === undefined) throw new Error("first rolling checkpoint is missing");
+    journal.state = append(
+      journal.state,
+      { type: "attempt_interrupted", attempt: 2, reason: "process_interrupted" },
+      journal.state.eventCount + 1,
+    );
+    journal.state = append(
+      journal.state,
+      { type: "attempt_started", attempt: 3 },
+      journal.state.eventCount + 1,
+    );
+    let secondCount = 0;
+    let secondSummaryBody: Readonly<Record<string, unknown>> | undefined;
+    let secondTaskBody: Readonly<Record<string, unknown>> | undefined;
+    const secondRunner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        secondCount += 1;
+        return Response.json({ input_tokens: secondCount === 1 ? 108_474 : 42 });
+      }
+      if (Number(body.max_output_tokens) === 4_096) {
+        secondSummaryBody = body;
+        return openAITextStream(
+          JSON.stringify({
+            version: 1,
+            summary: "Second cumulative rolling checkpoint.",
+            protectedConstraints: [],
+          }),
+        );
+      }
+      secondTaskBody = body;
+      return openAITextStream("SECOND_POST_CHECKPOINT_TASK");
+    });
+
+    const result = await secondRunner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({ stopReason: "stop", text: "SECOND_POST_CHECKPOINT_TASK" });
+    const summaryJson = JSON.stringify(secondSummaryBody);
+    expect(summaryJson).toContain("First rolling checkpoint.");
+    expect(summaryJson).toContain("RECENT_ROLLING_CONTEXT_2");
+    expect(summaryJson).not.toContain("OLD_ROLLING_CONTEXT");
+    const taskJson = JSON.stringify(secondTaskBody);
+    expect(taskJson).toContain("Second cumulative rolling checkpoint.");
+    expect(taskJson).toContain("RECENT_ROLLING_CONTEXT_3");
+    expect(taskJson).toContain("FIRST_POST_CHECKPOINT_TASK");
+    expect(taskJson).not.toContain("RECENT_ROLLING_CONTEXT_2");
+    expect(journal.state).toMatchObject({
+      rollingEpochCount: 2,
+      acceptedRollingEpochCount: 2,
+      currentRollingCheckpoint: {
+        summaryText: "Second cumulative rolling checkpoint.",
+      },
+    });
+    expect(journal.state.currentRollingCheckpoint?.cumulativeRange.lastSequence).toBeGreaterThan(
+      firstRange.lastSequence,
     );
   });
 
@@ -824,6 +1104,22 @@ function openAIModel() {
   } as const;
 }
 
+function anthropicModel() {
+  return {
+    id: "claude-opus-4-6",
+    name: "Claude Opus 4.6",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://anthropic.example/v1",
+    reasoning: true,
+    compat: { forceAdaptiveThinking: true },
+    input: ["text"] as ("text" | "image")[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+  } as const;
+}
+
 function openAIRunner(
   model: ReturnType<typeof openAIModel>,
   providerFetch: typeof fetch,
@@ -849,9 +1145,37 @@ function openAIRunner(
           : {
               onPayload: async (payload, selectedModel) => {
                 const replacement = await options?.onPayload?.(payload, selectedModel);
-                return transformPayload(replacement ?? payload, (serialization += 1));
+                serialization += 1;
+                return transformPayload(replacement ?? payload, serialization);
               },
             }),
+      }),
+  };
+  return new EmbeddedPiAgentRunner(
+    async () => modelRuntime as never,
+    createAgentSession,
+    providerFetch,
+  );
+}
+
+function anthropicRunner(
+  model: ReturnType<typeof anthropicModel>,
+  providerFetch: typeof fetch,
+): EmbeddedPiAgentRunner {
+  const modelRuntime = {
+    getModel: (provider: string, modelId: string) =>
+      provider === model.provider && modelId === model.id ? model : undefined,
+    hasConfiguredAuth: () => true,
+    checkAuth: async () => undefined,
+    isUsingOAuth: () => false,
+    streamSimple: (
+      selected: typeof model,
+      context: Parameters<typeof anthropicMessagesStreamSimple>[1],
+      options: Parameters<typeof anthropicMessagesStreamSimple>[2],
+    ) =>
+      anthropicMessagesStreamSimple(selected, context, {
+        ...options,
+        apiKey: "test-key",
       }),
   };
   return new EmbeddedPiAgentRunner(
@@ -873,6 +1197,37 @@ function rollingRequest(
     contextCompactionMode: "rolling",
     rollingContext: { pressureThresholdPercent: 85, protectedConstraints: [] },
   };
+}
+
+function openAITextStream(text: string): Response {
+  const item = {
+    id: "message-1",
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text, annotations: [] }],
+  };
+  const response = {
+    id: "response-1",
+    status: "completed",
+    output: [item],
+    usage: {
+      input_tokens: 100,
+      output_tokens: 10,
+      total_tokens: 110,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  };
+  const events = [
+    { type: "response.created", response },
+    { type: "response.output_item.added", output_index: 0, item },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response },
+  ];
+  const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
 function runnerFor(
@@ -937,6 +1292,72 @@ function attemptOneJournal(): InMemoryJournal {
 function attemptOneUnseededJournal(): InMemoryJournal {
   let state = createModelSession(identity, at(0)).state;
   state = append(state, { type: "attempt_started", attempt: 1 }, 1);
+  return new InMemoryJournal(state);
+}
+
+function rollingPressureJournal(): InMemoryJournal {
+  let state = attemptOneJournal().state;
+  for (const [request, text] of [
+    [1, `OLD_ROLLING_CONTEXT:${"o".repeat(24_000)}`],
+    [2, `RECENT_ROLLING_CONTEXT_2:${"r".repeat(12_000)}`],
+    [3, "RECENT_ROLLING_CONTEXT_3"],
+  ] as const) {
+    state = append(
+      state,
+      {
+        type: "model_request_prepared",
+        attempt: 1,
+        turn: request,
+        request,
+        identity: {
+          version: 1,
+          provider: "openai",
+          model: "gpt-5.6",
+          apiAdapter: "openai-responses",
+          thinking: "high",
+          runtimeVersion: "pi-0.84.0",
+          system: { sha256: "1".repeat(64), bytes: 1 },
+          toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
+          authority: { sha256: "3".repeat(64) },
+          portableHistory: calculatePortableHistoryIdentity(state),
+          runtimeSurface: { sha256: "5".repeat(64), bytes: 1 },
+          attempt: 1,
+          turn: request,
+          request,
+        },
+      },
+      state.eventCount + 1,
+    );
+    state = append(
+      state,
+      {
+        type: "model_message_committed",
+        attempt: 1,
+        turn: request,
+        request,
+        text,
+        stopReason: "stop",
+      },
+      state.eventCount + 1,
+    );
+    state = append(
+      state,
+      {
+        type: "model_request_settled",
+        attempt: 1,
+        turn: request,
+        request,
+        outcome: "completed",
+      },
+      state.eventCount + 1,
+    );
+  }
+  state = append(
+    state,
+    { type: "attempt_interrupted", attempt: 1, reason: "process_interrupted" },
+    state.eventCount + 1,
+  );
+  state = append(state, { type: "attempt_started", attempt: 2 }, state.eventCount + 1);
   return new InMemoryJournal(state);
 }
 

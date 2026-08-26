@@ -156,6 +156,15 @@ describe("rolling context ledger", () => {
     expect(secondStart.deltaRange.eventCount).toBeLessThan(secondStart.cumulativeRange.eventCount);
   });
 
+  it("allows absolute overflow to trigger one bounded reduction epoch", () => {
+    let state = sessionWithSettledRequests(3);
+    state = append(state, taskCapacityCheck(state, "over_capacity"));
+
+    state = append(state, rollingStart(state, 1, 1, 4_096));
+
+    expect(state.activeRollingEpoch).toMatchObject({ epoch: 1, generationAttempt: 1 });
+  });
+
   it("permits one smaller second generation only after a typed rejection", () => {
     let state = sessionWithSettledRequests(3);
     state = append(state, taskCapacityCheck(state, "reduction_required"));
@@ -282,7 +291,7 @@ function requestIdentity(state: ModelSessionState, request: number): ModelReques
 
 function taskCapacityCheck(
   state: ModelSessionState,
-  decision: "admitted" | "reduction_required",
+  decision: "admitted" | "reduction_required" | "over_capacity",
 ): ModelSessionEventInput {
   const request =
     state.events.filter((event) => event.type === "model_request_prepared").length + 1;
@@ -302,9 +311,10 @@ function taskCapacityCheck(
         safetyReserveTokens: 16_384,
         usableInputTokens: 127_616,
         pressureThresholdPercent: 85,
-        measuredInputTokens: decision === "admitted" ? 100_000 : 108_474,
-        absoluteSafe: true,
-        underPressure: decision === "reduction_required",
+        measuredInputTokens:
+          decision === "admitted" ? 100_000 : decision === "reduction_required" ? 108_474 : 127_617,
+        absoluteSafe: decision !== "over_capacity",
+        underPressure: decision !== "admitted",
         decision,
       },
     },

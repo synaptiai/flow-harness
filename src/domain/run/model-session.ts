@@ -382,6 +382,8 @@ export type RollingContextSettlement =
       readonly reason:
         | "provider_error"
         | "measurement_unavailable"
+        | "capacity_exceeded"
+        | "serialization_unavailable"
         | "output_limited"
         | "constraint_loss"
         | "not_smaller"
@@ -951,6 +953,8 @@ const rollingContextSettlementSchema = z.discriminatedUnion("outcome", [
       reason: z.enum([
         "provider_error",
         "measurement_unavailable",
+        "capacity_exceeded",
+        "serialization_unavailable",
         "output_limited",
         "constraint_loss",
         "not_smaller",
@@ -1819,7 +1823,7 @@ function applyTransition(
           trigger.operation.turn !== event.task.turn ||
           trigger.operation.request !== event.task.request ||
           trigger.measurement.status !== "measured" ||
-          trigger.measurement.evaluation.decision !== "reduction_required"
+          trigger.measurement.evaluation.decision === "admitted"
         ) {
           throw new ModelSessionReplayError(
             "rolling context epoch requires the matching task pressure check",
@@ -2284,10 +2288,29 @@ function validateRollingSummaryAdmission(
         item.operation.generationAttempt === active.generationAttempt,
     )
     .at(-1);
+  if (settlement.outcome === "rejected" && settlement.reason === "serialization_unavailable") {
+    if (admission !== undefined) {
+      throw new ModelSessionReplayError(
+        "rolling context serialization rejection cannot follow summary admission",
+      );
+    }
+    return;
+  }
   if (settlement.outcome === "rejected" && settlement.reason === "measurement_unavailable") {
     if (admission?.measurement.status !== "unavailable") {
       throw new ModelSessionReplayError(
         "rolling context measurement rejection requires unavailable summary evidence",
+      );
+    }
+    return;
+  }
+  if (settlement.outcome === "rejected" && settlement.reason === "capacity_exceeded") {
+    if (
+      admission?.measurement.status !== "measured" ||
+      admission.measurement.evaluation.decision === "admitted"
+    ) {
+      throw new ModelSessionReplayError(
+        "rolling context capacity rejection requires non-admitted summary evidence",
       );
     }
     return;
