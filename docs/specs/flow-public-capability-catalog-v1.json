@@ -478,7 +478,7 @@
       "id": "policy-decisions-per-attempt",
       "value": 64,
       "unit": "items",
-      "scope": "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none."
+      "scope": "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none."
     },
     {
       "id": "policy-target-bytes",

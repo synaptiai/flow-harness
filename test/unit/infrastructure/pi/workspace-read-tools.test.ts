@@ -196,7 +196,7 @@ describe("workspace-confined Pi tools", () => {
     expect(policy.snapshot().map((decision) => decision.sequence)).toEqual(
       policy.snapshot().map((_, index) => index + 1),
     );
-    expect(policy.snapshot().slice(0, -1)).toHaveLength(2);
+    expect(policy.snapshot().slice(0, -1)).toHaveLength(1);
     expect(
       policy
         .snapshot()

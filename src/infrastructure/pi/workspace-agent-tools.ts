@@ -346,7 +346,7 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "policy-decisions-per-attempt",
     MAX_POLICY_DECISIONS,
     "items",
-    "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none.",
+    "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none.",
   ),
   limit(
     "policy-target-bytes",
@@ -585,6 +585,10 @@ export const WORKSPACE_AGENT_TOOL_REFERENCES = Object.freeze(
 
 interface ReadVersionContext {
   sha256?: string;
+  authorization?: {
+    readonly requestedPath: string;
+    readonly canonicalTarget: string;
+  };
 }
 
 /** Build Flow-owned Pi tools whose filesystem view and effects remain Flow-authorized. */
@@ -600,16 +604,26 @@ export async function createWorkspaceAgentTools(
   const readReference = workspaceAgentToolReference("read");
   const readPolicyAction = onlyPolicyAction(readReference);
   const readOperations: ReadOperations = {
-    access: async (path) => broker.execute(readPolicyAction, path, access),
-    readFile: async (path) =>
+    access: async (path) =>
       broker.execute(readPolicyAction, path, async (target) => {
-        const content = await readFile(target);
+        await access(target);
         const context = readVersions.getStore();
         if (context !== undefined) {
-          context.sha256 = sha256(content);
+          context.authorization = { requestedPath: path, canonicalTarget: target };
         }
-        return content;
       }),
+    readFile: async (path) => {
+      const context = readVersions.getStore();
+      const authorization = context?.authorization;
+      const content =
+        authorization?.requestedPath === path
+          ? await readFile(authorization.canonicalTarget)
+          : await broker.execute(readPolicyAction, path, async (target) => await readFile(target));
+      if (context !== undefined) {
+        context.sha256 = sha256(content);
+      }
+      return content;
+    },
   };
   const definitions: ToolDefinition[] = [];
   const names: string[] = [];

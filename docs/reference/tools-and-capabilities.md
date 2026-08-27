@@ -329,7 +329,7 @@ Schema `default` annotations alone don't insert a value.
 | `exec-timeout-milliseconds` | 600000 milliseconds | 120000 milliseconds | Maximum command deadline. |
 | `ls-entries` | 5000 entries | 500 entries | Maximum requested directory entries. |
 | `ls-output-bytes` | 51200 bytes | — | Maximum UTF-8 bytes returned by one directory listing. |
-| `policy-decisions-per-attempt` | 64 items | — | Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call normally records two decisions; skill:// reads record none. |
+| `policy-decisions-per-attempt` | 64 items | — | Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none. |
 | `policy-target-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one policy authorization target. |
 | `proof-qualification-input-bytes` | 1048576 bytes | — | Maximum UTF-8 bytes in one Lean proof qualification input document. |
 | `proof-specification-bytes` | 65536 bytes | — | Maximum UTF-8 bytes in one private Lean proof source specification. |
