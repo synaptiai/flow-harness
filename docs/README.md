@@ -62,6 +62,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Workflow specification](workflow-spec.md) | You need the normative executable graph, node, package, budget, approval, and ledger contracts. |
 | [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |
 | [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |
+| [Next-version capability research](next-version-research.md) | You need deferred-capability maturity, dependencies, research gaps, release-shaping alternatives, or the evidence required before implementation. |
 
 ## Develop and verify
 

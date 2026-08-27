@@ -232,4 +232,6 @@ Read [Manage supplemental-memory relationships](guides/supplemental-memory-relat
 - A stable npm release or hosted Flow service.
 
 The [Delivery roadmap](roadmap.md) records completed gates and planned work. It does not replace the
-current support and security contracts on this page.
+current support and security contracts on this page. Read
+[Next-version capability research](next-version-research.md) for the consolidated deferred-capability
+register, dependency order, and release-shaping alternatives.

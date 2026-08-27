@@ -39,6 +39,10 @@ Gate 11 starts the public compatibility program. Its first slice closes the npm 
 adds a real historical corpus with a read-only check. It classifies public surfaces and assesses a
 future library API without exporting one.
 
+Gate 12 is the next-version research and selection gate. It keeps deferred capabilities outside
+delivery commitments until their flows, authority changes, dependencies, failure behavior, and
+falsifiable evidence gates are explicit.
+
 Remaining targets include executable extensions, remote or multi-user UI hosts, stronger
 isolation, measured product benchmarks, and a future stable compatibility program.
 Each first-party host accepts exact A2UI-profile presentation packages.
@@ -702,34 +706,13 @@ expand the corpus without release-produced evidence, or claim stable compatibili
 Read [Keep long model sessions within provider capacity](guides/rolling-context.md) for operator
 guidance and [Architecture](architecture.md#rolling-context-admission) for ownership and non-goals.
 
-### Possible later slices
+### Deferred candidates
 
-- Expand the immutable corpus only with reviewed release-produced artifacts that add meaningful
-  workflow, recovery, package, presentation, or public-output coverage.
-- Measure independent demand for read-only in-process workflow validation. If demand passes the
-  documented gate, evaluate a separately versioned package. It must have no ambient filesystem,
-  process, network, credential, or provider authority.
-- Design a versioned Flow process protocol before providing a typed execution client. Define
-  negotiation, request identity, framing, backpressure, cancellation, reconnect, errors, binary
-  identity, and cleanup before implementation.
-- Evaluate prefix-cache-aware rolling summaries against the current internal checkpoint tool. Keep
-  the domain validator, protected constraints, payload admission, and provider-neutral evidence
-  unchanged. Adopt only after paired measurements show a material cache or cost benefit.
-- Evaluate model-free head, middle, and tail pruning for oversized tool-result text after verified
-  artifact references. Preserve the complete primary event, cite every projected source event,
-  and retain complete tool pairs. Remeasure before summarization. Never expose the projection as
-  workflow evidence.
-- Evaluate bounded verifier-directed recovery. Freeze the goal, verifiers, holdout, authority, and
-  budgets before execution. Let a deterministic controller select only predeclared repair workflow
-  classes from closed failure categories and durable evidence references. Require progress between
-  cycles, separate attempt records, fixed aggregate ceilings, and human review for contract change.
-  Compare it with operator-authored repair on held-out tasks before any production activation.
-- Evaluate post-request context-overflow recovery only for canonical provider overflow. Preserve
-  the original error unless a durable projection makes measurable progress. Bind the retry to the
-  current exact route and output allowance. Don't inherit an old resumed-session route only to
-  pursue prefix-cache reuse.
-- Define a stable support window, migration tooling, and channel promotion only as a separately
-  approved program backed by multi-release evidence.
+Gate 11 doesn't commit its deferred candidates to a release. The
+[next-version capability research](next-version-research.md) consolidates these candidates with
+their research maturity, dependencies, authority changes, and decision gates. It includes corpus
+expansion, programmatic boundaries, context economy, bounded verifier-directed recovery, stable
+compatibility, and the higher-authority capabilities deferred by earlier gates.
 
 Gate 11 doesn't export `CompiledWorkflow`, `RunEvent`, `RunState`, `runWorkflow`, local stores,
 supervisor services, infrastructure adapters, or the CLI composition root. ACP remains an editor and
@@ -737,6 +720,66 @@ agent boundary. It doesn't become Flow's workflow, ledger, policy, package, or e
 
 Read the [Compatibility policy](compatibility.md) for the current contract and the
 [Library API assessment](library-api-assessment.md) for the evidence and alternatives.
+
+## Gate 12: Shape the next version
+
+Gate 12 selects one primary release thesis before implementation. Research prototypes cannot gain
+production authority, activate themselves, or change a supported contract.
+
+### Slice 12.1: Inventory deferred capabilities
+
+**Implemented in current documentation.**
+
+- Map each deferred capability to a user, operator, or system flow.
+- Classify decision evidence as assessed, partial, or initial.
+- Record missing research, authority change, prerequisites, and a falsifiable research exit.
+- Keep standards at their owning client, agent, presentation, workflow, or security boundary.
+- Preserve one canonical detailed register in
+  [Next-version capability research](next-version-research.md).
+
+### Slice 12.2: Select one release thesis
+
+- Choose an evidence-first usable checkpoint, long-horizon recovery, or integration-platform
+  direction.
+- Name the primary user, production scope, accepted authority change, compatibility level, and
+  evaluation budget.
+- Assign no semantic version until the selected thesis defines its compatibility level. The result
+  can be another governed alpha checkpoint, a breaking preview line, or a stable-support program.
+- Reject a scope that combines unrelated high-authority boundaries.
+
+### Slice 12.3: Complete decision-grade research
+
+- Produce one reviewed dossier for every proposed delivery capability.
+- Compare two to four implementable approaches and retain the simplest viable control.
+- Define non-goals and behavior for timeout, partial failure, invalid input, missing context,
+  dependency outage, resource exhaustion, cancellation, restart, and upgrade.
+- Pin primary sources, standards versions, dependency identities, and licenses.
+- Freeze held-out tasks, controls, budgets, thresholds, stopping rules, and abort criteria before
+  evaluation.
+
+### Slice 12.4: Freeze the version gate
+
+- Convert only accepted dossiers into bounded slices and independently verifiable acceptance
+  criteria.
+- State compatibility, migration, rollback, security-review, release, and support obligations.
+- Require the product benchmark gate before a capability can make a production or superiority
+  claim.
+- Publish every attempted evaluation result, including failures, missingness, and human
+  interventions.
+
+### Gate 12 failure behavior and non-goals
+
+| Condition | Required behavior |
+| --- | --- |
+| Research evidence is missing, leaked, or environment-mismatched | Report insufficient evidence and keep the capability outside delivery scope. |
+| A prototype requires authority beyond its dossier | Stop and return to design review without widening policy. |
+| A standard changes during research | Pin the observed version and reassess the contract; don't infer compatibility. |
+| A candidate improves average quality but increases false acceptance or policy violations | Reject production adoption. |
+| No release thesis wins approval | Keep the current release line and continue bounded research without assigning a version. |
+
+Gate 12 does not promise implementation of every deferred capability. It does not establish a
+stable release, hosted service, public library, remote API, executable-package ABI, or multi-tenant
+security boundary.
 
 ## Product benchmark gate
 
