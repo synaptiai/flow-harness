@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,6 +10,31 @@ import {
 } from "../../../../src/infrastructure/oci/prime-oci-runtime-executables.js";
 
 describe("Prime OCI runtime executable resolution", () => {
+  it("accepts a valid single-digit PID record without a trailing newline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-pid-record-"));
+    const pidPath = join(root, "containerd.pid");
+    await writeFile(pidPath, "7", { encoding: "utf8", mode: 0o644 });
+
+    try {
+      await expect(
+        resolveDockerManagedContainerdExecutable({
+          pidPaths: [pidPath],
+          readDockerDaemonPid: async () => 3,
+          readParentPid: async () => 3,
+          resolveProcessExecutable: async (pid) =>
+            pid === 7 ? "/usr/bin/containerd" : "/usr/bin/dockerd",
+          readProcessArguments: async () => [
+            "/usr/bin/dockerd",
+            "--host=unix:///var/run/docker.sock",
+          ],
+          readDockerDaemonConfiguration: async () => null,
+        }),
+      ).resolves.toBe("/usr/bin/containerd");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the protected root observation for root-owned daemon executables", async () => {
     const result = await resolveDockerManagedRuntimeExecutables({
       pidPaths: ["/run/docker/containerd/containerd.pid"],

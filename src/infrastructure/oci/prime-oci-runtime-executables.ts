@@ -174,7 +174,7 @@ async function readContainerdPid(path: string): Promise<number> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const metadata = await handle.stat();
-    if (!metadata.isFile() || metadata.size < 2 || metadata.size > MAX_PID_FILE_BYTES) {
+    if (!metadata.isFile() || metadata.size < 1 || metadata.size > MAX_PID_FILE_BYTES) {
       throw new Error("Docker containerd PID record is not one bounded regular file");
     }
     const source = await handle.readFile("utf8");
