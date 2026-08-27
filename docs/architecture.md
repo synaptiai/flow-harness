@@ -813,6 +813,12 @@ pressure, the projection can replace eligible old large command results with pro
 artifact references and summarize a closed older range. The source event still contains the
 complete tool result.
 
+Summary generation uses one Pi-internal `flow_context_checkpoint` tool with a closed JSON Schema.
+The provider adapter can use that schema to improve output reliability, but it doesn't decide
+admission. Pi removes reasoning content, accepts only one unmixed call with the exact three
+arguments, canonicalizes those arguments, and passes the result to the domain validator. The tool
+doesn't execute a workspace action and isn't added to the agent's workflow authority.
+
 Flow revalidates each compact reference before count admission and inference.
 It keeps the original objective, current instructions, tools, authority, protected constraints,
 and two most recent completed requests exact. A later epoch receives the previous accepted summary
@@ -827,8 +833,8 @@ endpoint, payload digest, and byte count can reach inference.
 On restart, replay uses only complete accepted settlements. It reconstructs the projection from the
 original events and verifies all bindings. A bounded content-free bootstrap initializes Pi without
 rendering complete pre-checkpoint history. Replay marks an unmatched start interrupted before it
-closes the attempt. Summary text is private and untrusted. It never becomes policy, approval,
-budget, effect, verification, scheduling, or completion authority.
+closes the attempt. Summary text and tool arguments are private and untrusted. They never become
+policy, approval, budget, effect, verification, scheduling, or completion authority.
 
 This boundary deliberately excludes automatic opt-in, provider-owned history, opaque remote
 checkpoints, approximate capacity fallback, unsupported adapters, and ACP approximation. Read

@@ -92,15 +92,14 @@ change rules, migration, and rollback.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
 
 The coding path supports explicit Anthropic and OpenAI preview selections in an empty directory. It
-uses only read, list, and hash-bound edit tools, then requires deterministic exact-byte
+uses only read, list, exclusive create, and hash-bound edit tools, then requires deterministic
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-Three bounded alpha.4 attempts against one issue in an established separate repository produced no
-accepted result. Two ended before an edit. A separately authorized rerun committed four partial
-edits, then failed before dependent verification. Flow failed closed, but this single-task series
-doesn't establish unattended coding effectiveness. Read the
-[alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) for the fixed
-controls, evidence, limitations, and roadmap response.
+Nine bounded attempts against one issue in a separate repository produced one accepted
+implementation. The adaptive series includes one false acceptance and seven nonaccepted attempts.
+It doesn't establish general unattended coding effectiveness. Read the
+[digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) for the fixed controls,
+complete denominator, evidence, and limitations.
 
 Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),

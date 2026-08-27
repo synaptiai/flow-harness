@@ -110,7 +110,8 @@ estimate as a safety fallback.
 - When the request reaches the threshold or exceeds absolute capacity, Flow tries one rolling
   epoch.
 - Flow first applies verified references to eligible older tool results. If the request still needs
-  reduction, Flow asks the selected provider for a zero-tool summary.
+  reduction, Flow asks the selected provider for a summary through one internal
+  `flow_context_checkpoint` tool. The agent's workflow tools remain unavailable during this call.
 - Flow retains the complete tool result in the private ledger. It stores a bounded reference
   projection only when the referenced artifacts are retained, available, and content-addressed.
 - Flow rechecks each reference before the counted summary request and before summary inference. It
@@ -119,8 +120,12 @@ estimate as a safety fallback.
 - Flow tries a 4,096-token summary allowance, then a 2,048-token allowance if the first candidate
   is rejected. It doesn't start an epoch when the first allowance has no safe zero-input capacity.
   It also doesn't start when the selected model's output limit is below 4,096 tokens.
-- Flow accepts only canonical closed-schema JSON. The summary must preserve every protected
-  constraint and reduce the rendered request surface by at least 4,096 UTF-8 bytes.
+- Flow asks the provider adapter to constrain the internal tool arguments to the closed summary
+  schema. Adapter support is advisory. Flow independently rejects the candidate unless it contains
+  exactly `version`, `summary`, and `protectedConstraints`, and then canonicalizes and validates it
+  as domain-owned JSON. Hidden reasoning content isn't part of the candidate.
+- The summary must preserve every protected constraint and reduce the rendered request surface by
+  at least 4,096 UTF-8 bytes.
 - Flow counts valid returned summary input, output, cache, and cost usage against the node and run
   budgets. This rule also applies when Flow rejects the summary candidate. Every positive returned
   cost consumes at least one micro-dollar of budget.
@@ -129,6 +134,24 @@ estimate as a safety fallback.
 
 One session can start at most eight rolling epochs and 16 summary calls. These limits prevent an
 agent from using repeated summary calls as an unbounded retry loop.
+
+### Understand the summary transport
+
+`flow_context_checkpoint` is an internal inference transport. It isn't a workflow capability, an
+agent-command tool, or new authority. Flow doesn't execute it against the workspace. The call only
+submits three untrusted values for validation:
+
+| Argument | Required value |
+| --- | --- |
+| `version` | The integer `1`. |
+| `summary` | One bounded string that includes each protected constraint exactly. |
+| `protectedConstraints` | The exact configured strings in the exact configured order. |
+
+Flow ignores provider reasoning blocks when it selects the candidate. It rejects mixed text, the
+wrong tool name, multiple calls, and missing or extra arguments. It also rejects invalid types,
+changed constraints, oversized content, and insufficient surface reduction. The domain validator
+remains authoritative. This rule applies when an adapter reports strict JSON Schema support or
+downgrades constrained sampling.
 
 ## Inspect rolling evidence
 

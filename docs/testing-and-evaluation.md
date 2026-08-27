@@ -196,6 +196,10 @@ cover atomic checkpoints, torn-tail repair, restart reconstruction, and public r
 Pi tests serialize the pinned OpenAI Responses and Anthropic Messages payloads through local
 provider doubles. They prove that measurement precedes inference. They also prove payload
 reserialization, summary controls, usage accounting, failure-code propagation, and ACP refusal.
+The OpenAI Responses regression fixture uses the adapter's actual server-sent event format with a
+reasoning item followed by a `flow_context_checkpoint` function call. It proves that Flow admits
+the exact closed arguments, rejects schema-expanded arguments before retry, and keeps provider
+constrained sampling subordinate to the domain validator.
 
 After the focused contract passes, run `npm run ci:local` and the hosted Linux x64 pull-request
 checks. A live provider run is optional evidence, not a replacement for deterministic tests. When

@@ -675,9 +675,9 @@ expand the corpus without release-produced evidence, or claim stable compatibili
 - **Implemented in current source:** Preserve the objective, Flow authority, current instructions,
   tools, protected constraints, and complete tool pairs. Keep the two most recent completed
   requests exact. Project only eligible older artifact-backed results and closed history.
-- **Implemented in current source:** Limit one epoch to two zero-tool summary attempts. Limit one
-  session to eight epochs and 16 summary calls. Require a 4,096-byte minimum reduction. Add summary
-  usage to node and run budgets.
+- **Implemented in current source:** Limit one epoch to two internal checkpoint-tool summary
+  attempts. Limit one session to eight epochs and 16 summary calls. Require a 4,096-byte minimum
+  reduction. Add summary usage to node and run budgets.
 - **Implemented in current source:** Reconstruct only complete accepted checkpoints after restart.
   Settle unmatched starts as interrupted and verify bindings against original events. Require the
   inference payload to match the admitted serialized payload.
@@ -698,6 +698,9 @@ guidance and [Architecture](architecture.md#rolling-context-admission) for owner
 - Design a versioned Flow process protocol before providing a typed execution client. Define
   negotiation, request identity, framing, backpressure, cancellation, reconnect, errors, binary
   identity, and cleanup before implementation.
+- Evaluate prefix-cache-aware rolling summaries against the current internal checkpoint tool. Keep
+  the domain validator, protected constraints, payload admission, and provider-neutral evidence
+  unchanged. Adopt only after paired measurements show a material cache or cost benefit.
 - Define a stable support window, migration tooling, and channel promotion only as a separately
   approved program backed by multi-release evidence.
 
@@ -721,19 +724,16 @@ Read the [Compatibility policy](compatibility.md) for the current contract and t
   parent-owned process evidence.
 - A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
   OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
-- Three bounded uses of public alpha.4 against one issue in an established separate repository
-  failed safely. Two attempts ended before an edit. A separately authorized rerun committed four
-  partial edits, then failed before dependent verification and goal acceptance. No attempt produced
-  a commit or pull request. This one-task result is product evidence, but it isn't a benchmark or a
-  model-quality conclusion. Read the
-  [alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md).
+- Nine bounded attempts against one issue in a separate repository produced one accepted
+  implementation. The series also exposed one false acceptance and seven nonaccepted attempts.
+  Every failure remains in the denominator. This adaptive one-task result is product evidence, but
+  it isn't a benchmark or a model-quality conclusion. Read the
+  [digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md).
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
-Before extending that field sequence, add a reviewed field-task corpus, bounded source-location
-support, a nonsecret retryability category for provider failures, one effect-free retry rule, and
-an explicit operator disposition for failed attempts with committed effects. Rerun the pinned first
-issue to acceptance before attempting later issues. Preserve failures in the denominator and report
-every human intervention.
+Before extending that field sequence, publish the accepted patch through ordinary review and hosted
+CI. Freeze each later task's base, workflow, and external holdout before execution. Preserve every
+failure in the denominator and report every human intervention.
 
 The standalone harness is compared against the legacy plugin on held-out repository tasks using equivalent model configurations. Record:
 

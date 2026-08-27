@@ -627,6 +627,10 @@ in-memory summary. It doesn't continue provider-native conversation state. A lat
 uses the prior accepted summary plus newly eligible exact events, while its cumulative range still
 binds the complete original source prefix.
 
+The internal `flow_context_checkpoint` call is only candidate transport. Recovery replays the
+accepted canonical checkpoint from the model-session record. It doesn't replay or re-execute the
+tool call, reasoning content, or provider-native response item.
+
 The private event keeps the complete tool result when it also contains a compact artifact
 projection. Recovery revalidates every referenced artifact before each summary serialization. It
 uses the complete result when a reference is unavailable before count admission. If the reference

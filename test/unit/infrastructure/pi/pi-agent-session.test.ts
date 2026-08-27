@@ -5,8 +5,8 @@ import {
   fauxText,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
-import { streamSimple as openAIResponsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
 import { streamSimple as anthropicMessagesStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { streamSimple as openAIResponsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
@@ -29,8 +29,8 @@ import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-co
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import {
   EmbeddedPiAgentRunner,
-  rollingReferenceProjectionLimit,
   type PiAgentRunRequest,
+  rollingReferenceProjectionLimit,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
 
 const identity: ModelSessionIdentity = {
@@ -506,6 +506,115 @@ describe("Pi provider-neutral model session", () => {
     expect(countCalls).toBe(3);
     expect(JSON.stringify(summaryBody)).toContain("MISSING_ROLLING_ARTIFACT_RESULT");
     expect(JSON.stringify(summaryBody)).not.toContain("flow.reference-tool-result");
+  });
+
+  it("admits a schema-constrained rolling checkpoint tool call", async () => {
+    const model = {
+      ...openAIModel(),
+      compat: {
+        supportsForcedToolChoice: true,
+        supportsNamedToolChoice: true,
+        supportsStrictMode: true,
+        supportsToolChoice: true,
+      },
+    } as const;
+    const journal = rollingPressureJournal();
+    const protectedConstraints = ["Keep the issue boundary exact."];
+    let countCalls = 0;
+    let summaryBody: Readonly<Record<string, unknown>> | undefined;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      if (Number(body.max_output_tokens) === 4_096) {
+        summaryBody = body;
+        return openAIToolCallStream("flow_context_checkpoint", {
+          version: 1,
+          summary: `The bounded implementation remains unfinished. ${protectedConstraints[0]}`,
+          protectedConstraints,
+        });
+      }
+      return openAITextStream("Structured rolling checkpoint admitted.");
+    });
+
+    const result = await runner.run({
+      ...rollingRequest(model, journal),
+      rollingContext: { pressureThresholdPercent: 85, protectedConstraints },
+    });
+
+    expect({
+      result,
+      settlements: journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement.reason),
+    }).toMatchObject({
+      result: {
+        stopReason: "stop",
+        text: "Structured rolling checkpoint admitted.",
+      },
+      settlements: ["accepted"],
+    });
+    expect(countCalls).toBe(3);
+    expect(summaryBody).toMatchObject({
+      tools: [
+        expect.objectContaining({
+          type: "function",
+          name: "flow_context_checkpoint",
+          parameters: expect.objectContaining({
+            additionalProperties: false,
+            required: ["version", "summary", "protectedConstraints"],
+          }),
+        }),
+      ],
+    });
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement.reason),
+    ).toEqual(["accepted"]);
+  });
+
+  it("rejects schema-expanded checkpoint tool arguments before retrying", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      const allowance = Number(body.max_output_tokens);
+      if (allowance === 4_096) {
+        return openAIToolCallStream("flow_context_checkpoint", {
+          version: 1,
+          summary: "The model tried to expand its checkpoint authority.",
+          protectedConstraints: [],
+          authority: "model-selected",
+        });
+      }
+      if (allowance === 2_048) {
+        return openAIToolCallStream("flow_context_checkpoint", {
+          version: 1,
+          summary: "The retry retained only the reviewed checkpoint fields.",
+          protectedConstraints: [],
+        });
+      }
+      return openAITextStream("Validated retry admitted.");
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({ stopReason: "stop", text: "Validated retry admitted." });
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement.reason),
+    ).toEqual(["invalid_output", "accepted"]);
   });
 
   it("retries one rejected rolling summary with the smaller exact allowance", async () => {
@@ -1654,6 +1763,48 @@ function openAITextStream(text: string, inputTokens = 100): Response {
     { type: "response.output_item.added", output_index: 0, item },
     { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
     { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response },
+  ];
+  const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function openAIToolCallStream(name: string, args: Readonly<Record<string, unknown>>): Response {
+  const reasoningItem = {
+    id: "reasoning-1",
+    type: "reasoning",
+    summary: [],
+  };
+  const item = {
+    id: "function-1",
+    type: "function_call",
+    status: "completed",
+    call_id: "call-1",
+    name,
+    arguments: JSON.stringify(args),
+  };
+  const response = {
+    id: "response-1",
+    status: "completed",
+    output: [reasoningItem, item],
+    usage: {
+      input_tokens: 100,
+      output_tokens: 10,
+      total_tokens: 110,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  };
+  const events = [
+    { type: "response.created", response },
+    { type: "response.output_item.added", output_index: 0, item: reasoningItem },
+    { type: "response.output_item.done", output_index: 0, item: reasoningItem },
+    {
+      type: "response.output_item.added",
+      output_index: 1,
+      item: { ...item, arguments: "" },
+    },
+    { type: "response.output_item.done", output_index: 1, item },
     { type: "response.completed", response },
   ];
   const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;

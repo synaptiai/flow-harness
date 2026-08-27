@@ -1430,9 +1430,16 @@ call/result pairs, remain exact. If an older closed range remains eligible, Flow
 rolling epoch with two summary-generation attempts. The attempts serialize output allowances of
 4,096 and 2,048 tokens, respectively, with reasoning disabled.
 
-A candidate must be canonical
-closed-schema JSON and contain at most 65,536 UTF-8 bytes. It must retain every protected
-constraint exactly. It must also reduce the provider surface by at least 4,096 UTF-8 bytes.
+Each attempt exposes only the internal `flow_context_checkpoint` summary tool. Its closed arguments
+are `version`, `summary`, and `protectedConstraints`. Flow requests provider-side JSON Schema
+constrained sampling when the adapter supports it. That request isn't an admission proof. Flow
+ignores reasoning content, rejects mixed or multiple calls and any missing or extra argument,
+canonicalizes the exact arguments, and applies the domain validator. The internal tool doesn't run
+against the workspace and doesn't extend the node's declared tool authority.
+
+The canonical candidate can contain at most 65,536 UTF-8 bytes. It must retain every protected
+constraint exactly and reduce the provider surface by at least 4,096 UTF-8 bytes. An exact legacy
+text candidate remains valid when it already satisfies the same canonical domain contract.
 
 One session can start at most eight rolling epochs and 16 summary calls. Summary usage contributes
 to node and run token and reported-cost budgets. After an accepted checkpoint, Flow reserializes
