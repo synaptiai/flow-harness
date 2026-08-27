@@ -70,6 +70,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Contributing](../CONTRIBUTING.md) | You want to prepare an issue, change, test, or pull request. |
 | [Testing and evaluation](testing-and-evaluation.md) | You need test layers, release gates, runtime smoke checks, or live-provider policy. |
 | [Alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) | You need the controls, negative results, partial-effect evidence, limitations, or next actions from the bounded separate-repository coding attempts. |
+| [Digital-twin modularization field report](field-reports/digital-twin-issue-5-alpha4.md) | You need the complete 11-attempt denominator, durable replacement evidence, recursive repair record, final verification, or compaction conclusions from the second field issue. |
 | [Documentation style](documentation-style.md) | You write or review public documentation. |
 | [Code of conduct](../CODE_OF_CONDUCT.md) | You need the contributor conduct contract. |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | You need dependency attribution and copied-code notices. |

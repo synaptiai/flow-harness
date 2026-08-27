@@ -492,12 +492,14 @@ recomputes typed observations and the delta digest, binds prepare/settlement to 
 id, and requires cleanup before check completion when candidate evidence says retained.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
-`flow.effects/v1`. Before an atomic edit rename, file-create link, or nonrecursive `mkdir`, Flow
-syncs `node_effect_prepared` with a stable effect identity, operation kind, target, request digest,
-after hash, and mode. An edit records its before hash. A file or directory create records a null
-before hash because the path is absent. Flow later syncs exactly one settlement:
+`flow.effects/v1`. Flow syncs `node_effect_prepared` before an atomic file rename, file-create link,
+or nonrecursive `mkdir`. The event records the stable effect identity, operation kind, target,
+request digest, after hash, and mode. An edit or complete replacement also records its before hash.
+A file or directory create records a null before hash because the path is absent.
+
+Flow later syncs exactly one settlement. The value is
 `committed/directory_synced`, `not_applied/commit_not_entered`, or
-`unknown/post_commit_failure`. A process death can therefore leave an unresolved prepared effect,
+`unknown/post_commit_failure`. A process death can leave an unresolved prepared effect,
 or a settled effect without a node outcome. Inspection preserves that distinction.
 
 For each unresolved prepared filesystem effect, recovery enters the same target queue and
@@ -517,7 +519,7 @@ limit is 256 KiB. Directory observation uses a bounded empty-state comparison. R
 If the target's parent has disappeared, the sibling lock cannot exist. Recovery
 rechecks the path and can publish only `target_missing` under the in-process target queue.
 It publishes nothing if any target is observable. An exact after-state becomes
-`applied/target_matches_after`. An edit's exact before-state becomes
+`applied/target_matches_after`. An edit or complete replacement's exact before-state becomes
 `not_applied/target_matches_before`.
 
 A missing file or directory create remains unknown because recovery cannot distinguish a
@@ -531,7 +533,7 @@ error message and never changes the target.
 Recovery provenance is separate from execution settlement. Observing the after-state does not
 prove that the original directory sync, provider response, usage report, or whole node completed.
 It therefore blocks a fresh attempt. Observing the exact before-state proves only that this prepared
-edit was not applied; every effect on the attempt must independently reach that result. Repeated
+file mutation was not applied. Every effect on the attempt must independently reach that result. Repeated
 recovery skips already settled or reconciled effects. If observation or event publication fails
 partway through multiple effects, the durable prefix remains and only later open effects are
 eligible next time. A live or malformed target lock leaves the effect open rather than publishing
@@ -967,7 +969,7 @@ no worker, and an exact command retry reproduces its prior admission result. His
 requests are revalidated against the budget remaining at their exact event boundary, not against
 final run consumption.
 
-For Flow-owned workspace edits, Flow additionally guarantees that rename is never entered before
+For Flow-owned workspace edits and complete replacements, Flow guarantees that rename is not entered before
 the prepared event is acknowledged, committed settlement follows directory sync, terminal receipts
 exactly match settled effects, crash-window evidence remains replayable, and a recovery observation
 is published under the same target lock without mutating the file. The only exception is a missing

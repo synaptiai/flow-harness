@@ -75,14 +75,17 @@ import {
 import {
   createHashAnchoredTextFile,
   editHashAnchoredTextFile,
+  replaceHashAnchoredTextFile,
   type HashAnchoredCreateRequest,
   type HashAnchoredCreateResult,
   type HashAnchoredEditRequest,
   type HashAnchoredEditResult,
+  type HashAnchoredReplaceRequest,
   MAX_CREATE_INPUT_BYTES,
   MAX_EDIT_FILE_BYTES,
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
+  MAX_REPLACE_INPUT_BYTES,
 } from "../fs/hash-anchored-edit.js";
 import { createWorkspacePolicyBroker } from "../policy/workspace-policy-broker.js";
 import type { AgentCommandRecorder } from "./agent-command-recorder.js";
@@ -169,6 +172,25 @@ const editSchema = Type.Object(
       maxItems: MAX_EDIT_REPLACEMENTS,
       description:
         "Exact, unique, non-overlapping replacements matched against the same original content.",
+    }),
+  },
+  { additionalProperties: false },
+);
+
+const replaceSchema = Type.Object(
+  {
+    path: Type.String({
+      minLength: 1,
+      maxLength: MAX_TOOL_PATH_BYTES,
+      description: "Path to one existing UTF-8 file inside the Flow workspace.",
+    }),
+    expectedSha256: Type.String({
+      pattern: "^[a-f0-9]{64}$",
+      description: "Full SHA-256 version returned by flow_read for this file.",
+    }),
+    content: Type.String({
+      maxLength: MAX_REPLACE_INPUT_BYTES,
+      description: "Complete replacement UTF-8 content.",
     }),
   },
   { additionalProperties: false },
@@ -268,6 +290,7 @@ export interface FlowAgentToolOptions {
   readonly effectRecorder?: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
+  readonly replaceFile?: typeof replaceHashAnchoredTextFile;
   readonly createFile?: typeof createHashAnchoredTextFile;
   readonly createDirectory?: typeof createExclusiveDirectory;
   readonly capabilitySession?: AgentSkillSession;
@@ -293,7 +316,7 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "agent-effects-per-attempt",
     MAX_AGENT_EFFECT_RECEIPTS,
     "items",
-    "Maximum combined flow_edit, flow_create, and flow_mkdir effect reservations in one agent attempt.",
+    "Maximum combined flow_edit, flow_replace, flow_create, and flow_mkdir effect reservations in one agent attempt.",
   ),
   limit("artifact-maximum-bytes", MAX_ARTIFACT_BYTES, "bytes", "Maximum retained artifact size."),
   limit(
@@ -327,6 +350,18 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     MAX_EDIT_INPUT_BYTES,
     "bytes",
     "Maximum combined UTF-8 bytes across every old and replacement text value.",
+  ),
+  limit(
+    "replace-input-characters",
+    MAX_REPLACE_INPUT_BYTES,
+    "characters",
+    "Maximum characters in one replacement content schema value.",
+  ),
+  limit(
+    "replace-input-bytes",
+    MAX_REPLACE_INPUT_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one complete replacement file.",
   ),
   limit(
     "edit-replacements",
@@ -502,7 +537,7 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
     name: "flow_read",
     label: "read",
     description:
-      "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
+      "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit or flow_replace. Binary and image decoding is not supported.",
     inputSchema: readSchema,
     executionMode: "default",
     authority: ["read"],
@@ -552,6 +587,28 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
       "edit-input-characters",
       "edit-input-total-bytes",
       "edit-replacements",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "tool-path-characters",
+      "tool-path-bytes",
+    ],
+  }),
+  replace: toolReference({
+    selector: "replace",
+    name: "flow_replace",
+    label: "replace",
+    description:
+      "Atomically replace one existing UTF-8 workspace file using its flow_read SHA-256 version and complete new content. Stale versions fail without automatic merging.",
+    inputSchema: replaceSchema,
+    executionMode: "sequential",
+    authority: ["write"],
+    policyActions: [builtInAgentToolPolicyAction("replace")],
+    availability: ["effect-recorder"],
+    limitIds: [
+      "edit-file-bytes",
+      "agent-effects-per-attempt",
+      "replace-input-characters",
+      "replace-input-bytes",
       "policy-decisions-per-attempt",
       "policy-target-bytes",
       "tool-path-characters",
@@ -731,6 +788,9 @@ export async function createWorkspaceAgentTools(
         break;
       case "edit":
         definition = createEditDefinition(broker, options);
+        break;
+      case "replace":
+        definition = createReplaceDefinition(broker, options);
         break;
       case "create":
         definition = createFileDefinition(broker, options);
@@ -1077,7 +1137,7 @@ function createVersionedReadDefinition(
     promptGuidelines: [
       "Use flow_read only for paths inside the Flow execution workspace.",
       "Use listed skill:// URIs only for Agent Skills selected on this node.",
-      "Pass the returned full-file SHA-256 version to flow_edit; re-read after a stale-version error.",
+      "Pass the returned full-file SHA-256 version to flow_edit or flow_replace; re-read after a stale-version error.",
     ],
     execute: async (...args: Parameters<typeof baseExecute>) => {
       const input = args[1];
@@ -1257,6 +1317,87 @@ function editResult(result: HashAnchoredEditResult, path: string) {
   };
 }
 
+function createReplaceDefinition(
+  broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
+  options: FlowAgentToolOptions,
+): ToolDefinition {
+  const reference = workspaceAgentToolReference("replace");
+  assertDeclaredAvailability(reference, "effect-recorder");
+  const effectRecorder = options.effectRecorder;
+  if (effectRecorder === undefined) {
+    throw new Error("Flow replace requires an attempt-scoped effect recorder");
+  }
+  const policyAction = onlyPolicyAction(reference);
+  const replaceFile = options.replaceFile ?? replaceHashAnchoredTextFile;
+  return defineTool({
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
+    promptSnippet: "Replace a complete existing workspace file from a hash-anchored version",
+    promptGuidelines: [
+      "Call flow_read first and pass its full-file SHA-256 version as expectedSha256.",
+      "Provide the complete desired file content; flow_replace preserves the existing file mode.",
+      "On stale_version, re-read and reconsider the replacement instead of retrying the old request.",
+    ],
+    parameters: reference.inputSchema,
+    executionMode: "sequential",
+    async execute(_toolCallId, input, signal) {
+      validateToolPath(input.path);
+      const request: HashAnchoredReplaceRequest = {
+        expectedSha256: input.expectedSha256,
+        content: input.content,
+      };
+      const operationDigest = calculateReplaceOperationDigest(input);
+      const result = await broker.execute(
+        policyAction,
+        input.path,
+        async (target) => {
+          const reservation = effectRecorder.reserve({
+            kind: "filesystem.edit",
+            target,
+            operationDigest,
+          });
+          let prepared = false;
+          try {
+            const replaceResult = await replaceFile(target, request, {
+              ...(signal === undefined ? {} : { signal }),
+              effectLifecycle: {
+                prepare: async (boundary) => {
+                  await reservation.prepare(boundary);
+                  prepared = true;
+                },
+                settle: async (settlement) => {
+                  await reservation.settle(settlement);
+                },
+              },
+            });
+            return replaceResult;
+          } catch (error) {
+            if (!prepared) {
+              reservation.cancel();
+            }
+            throw error;
+          }
+        },
+        { operationDigest },
+      );
+      return replacementResult(result, input.path);
+    },
+  }) as ToolDefinition;
+}
+
+function replacementResult(result: HashAnchoredEditResult, path: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `Replacement committed for ${path}; new version sha256:${result.afterSha256}`,
+      },
+    ],
+    details: result,
+  };
+}
+
 function createFileDefinition(
   broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
   options: FlowAgentToolOptions,
@@ -1277,7 +1418,7 @@ function createFileDefinition(
     promptGuidelines: [
       "Use flow_create only when the destination does not exist.",
       "Provide the complete file content; flow_create never appends to or replaces a path.",
-      "Use flow_read and flow_edit when a destination already exists.",
+      "Use flow_read and flow_edit for exact changes to an existing file, or flow_replace when supplying its complete new content.",
     ],
     parameters: reference.inputSchema,
     executionMode: "sequential",
@@ -1521,6 +1662,24 @@ function calculateEditOperationDigest(input: {
         path: input.path,
         expectedSha256: input.expectedSha256,
         edits: input.edits,
+      }),
+    )
+    .digest("hex");
+}
+
+function calculateReplaceOperationDigest(input: {
+  readonly path: string;
+  readonly expectedSha256: string;
+  readonly content: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        operation: "replace",
+        path: input.path,
+        expectedSha256: input.expectedSha256,
+        content: input.content,
       }),
     )
     .digest("hex");

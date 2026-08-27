@@ -15,6 +15,32 @@ import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
 
 describe("runWorkflow durable effect journal", () => {
+  it("declares the durable effect protocol for a complete-replacement agent", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      if (node.type === "command") {
+        return successfulCommandOutcome();
+      }
+      expect(context.effectJournal).toBeDefined();
+      expect(store.events.at(-1)).toMatchObject({
+        type: "node_started",
+        effectProtocol: "flow.effects/v1",
+      });
+      return successfulAgentOutcome([]);
+    });
+
+    const state = await runWorkflow(editWorkflow("replace"), {
+      cwd: process.cwd(),
+      protectedPaths: [],
+      runId: "replace-effect-run",
+      store,
+      executor,
+      now: incrementingClock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+  });
+
   it("acknowledges a prepared edit only after its event is durable", async () => {
     const store = new MemoryRunStore();
     let journalObserved = false;
@@ -552,7 +578,7 @@ function successfulCommandOutcome() {
   };
 }
 
-function editWorkflow() {
+function editWorkflow(tool: "edit" | "replace" = "edit") {
   return compileWorkflowText(`
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -563,7 +589,7 @@ nodes:
     agent:
       prompt: Implement the requested change.
       model: { provider: anthropic, id: claude-sonnet-4-5 }
-      tools: [read, edit]
+      tools: [read, ${tool}]
   - id: verify
     type: command
     dependsOn: [implement]
