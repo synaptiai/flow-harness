@@ -41,7 +41,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Concurrent tool calls | Reference implementation only | Pi may run independent tool calls concurrently, but Flow owns graph admission, quiescent waves, durable ordering, failure, and recovery semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
 | Exact tool allowlists | Current defense in depth | The adapter passes the exact allowlist to Pi; Flow's broker remains the per-call authorization boundary |
-| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, exclusive `create`, nonrecursive `mkdir`, hash-anchored `edit`, and sandboxed argv-only `exec` definitions built on Pi's custom-tool interface | Pi's built-in edit and bash tools, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic creation and replacement, command/effect journals, containment, and evidence |
+| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, exclusive `create`, nonrecursive `mkdir`, hash-anchored `edit`, version-anchored complete `replace`, and sandboxed argv-only `exec` definitions built on Pi's custom-tool interface | Pi's built-in edit and bash tools, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic creation and replacement, command/effect journals, containment, and evidence |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
@@ -65,7 +65,11 @@ resources, or dynamic children.
 Flow reviewed DeepSeek Harness's current
 [compaction subsystem](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/compaction.md)
 and its related design records on August 27, 2026. The review covered the
+[append-only session contract](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/session.md),
 [capability seam](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-06-18-compaction-capability-seam.md),
+[basic backend](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/compaction/compaction-basic/README.md),
+[model-free tool-result pruner](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/compaction/compaction-tool-result-pruner),
+[manual command](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/compaction/command-compact/README.md),
 [routed capacity policy](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-07-20-routed-model-context-and-compaction-policy.md),
 [prefix-cache strategy](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/bug-fix/2026-07-21-compaction-summary-prefix-cache-reuse.md),
 and
@@ -73,19 +77,34 @@ and
 
 | Pattern | Flow treatment | Reason |
 | --- | --- | --- |
+| Separate compaction contract, provider, deterministic pruner, and human consumer | **Adopt the separation, not the package graph** | Flow should keep measurement, projection policy, summary inference, and operator control independently testable. None can gain workflow authority. |
 | Append-only source log with a smaller derived surface | **Adopted independently** | Flow's private model-session record remains complete. A rolling checkpoint changes only the provider projection. |
 | Durable compaction start and end markers | **Adopted independently** | Rolling epoch start and settlement events make interrupted summary work detectable and replayable. |
 | Exact retained tail and balanced tool pairs | **Adopted independently** | Flow keeps two recent requests and their complete tool-call/result pairs exact. |
 | Separate capacity facts from compaction policy | **Adopted independently** | The selected model owns its capacity. Domain policy owns thresholds, reserves, and limits. |
-| Model-free reduction before summarization | **Adopted with a different mechanism** | Flow uses verified artifact references. It doesn't replace primary tool-result events with pruned text. |
+| Model-free reduction before summarization | **Partly adopted; extend through evaluation** | Flow uses verified artifact references. Evaluate bounded text pruning only as a cited provider projection when no verified artifact reference is available. Never replace the primary event. |
 | Direct replacement of the conversation surface | **Not adopted** | Flow derives a projection and never rewrites or shadows authoritative source events. |
 | Manual `/compact` command | **Deferred** | Current workflows use explicit automatic policy. Add manual control only after independent operator demand. |
-| Retry after provider-confirmed overflow | **Deferred** | Exact OpenAI counting prevents ordinary overflow. Anthropic remains estimated, but Flow doesn't add a provider retry without a separate proof-safe design. |
-| Prefix-cache-aware summary requests | **Evaluate later** | Replaying a warm prefix can reduce cost. Flow must first prove that the internal checkpoint tool and domain validation remain unchanged. |
+| Retry after provider-confirmed overflow | **Evaluate later** | Exact OpenAI counting prevents ordinary overflow. Anthropic remains estimated. Any retry must preserve the original error unless a durable projection makes progress and must use the current route and output allowance. |
+| Prefix-cache-aware summary requests | **Evaluate later** | Replaying an exact warm prefix can reduce cost. A different model, non-head range, changed request header, expired cache, or stale resumed-session route removes the expected benefit. Flow must preserve its internal checkpoint tool and domain validation. |
+| DeepSeek defaults of 80% pressure and 16% retained tail | **Do not copy** | Ratios depend on routed capacity, output allowance, task shape, and measurement. Flow's current rolling policy remains explicit and separately evaluated. |
 
 DeepSeek's compaction events are log-only, while one replacement user message changes its model
 surface. Flow uses a stricter two-plane boundary. The primary model-session record never loses or
 shadows a source event. This difference preserves Flow's recovery and evidence rules.
+
+The review challenged three attractive assumptions. Prefix-cache reuse is a best-effort
+optimization, not a correctness property. A resumed session can carry an old route even when no
+warm provider cache remains. Provider error wording can also change, so response-based overflow
+classification needs adapter tests and must preserve unknown errors. Finally, one fixed pressure
+ratio can't account for every model's output allowance and indivisible request envelope.
+
+The second digital-twin field series adds a complementary result. Eight phase-specific agent
+sessions completed without compaction or rolling epochs because each stayed below pressure. Durable
+complete-file replacement removed the need to replay a 3,192-line source during wrapper cutover.
+Use phase decomposition and exact low-cost projections before a summary, then retain rolling
+context for sessions that still approach their exact routed limit. Read the
+[issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md).
 
 ## Imported containment primitive
 

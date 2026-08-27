@@ -26,6 +26,7 @@ export const MAX_EDIT_REPLACEMENTS = 32;
 export const MAX_EDIT_INPUT_BYTES = 262_144;
 export const MAX_EDIT_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_CREATE_INPUT_BYTES = 262_144;
+export const MAX_REPLACE_INPUT_BYTES = 262_144;
 export const CREATE_FILE_MODE = 0o644;
 const RECONCILIATION_READ_CHUNK_BYTES = 64 * 1024;
 
@@ -42,6 +43,11 @@ export interface HashAnchoredEditRequest {
 export interface HashAnchoredEditResult {
   readonly beforeSha256: string;
   readonly afterSha256: string;
+}
+
+export interface HashAnchoredReplaceRequest {
+  readonly expectedSha256: string;
+  readonly content: string;
 }
 
 export interface HashAnchoredCreateRequest {
@@ -189,6 +195,19 @@ export async function editHashAnchoredTextFile(
   });
 }
 
+export async function replaceHashAnchoredTextFile(
+  target: string,
+  request: HashAnchoredReplaceRequest,
+  options: HashAnchoredEditOptions = {},
+): Promise<HashAnchoredEditResult> {
+  validateReplaceRequest(request);
+  throwIfAborted(options.signal);
+  return await withMutationQueue(target, async () => {
+    throwIfAborted(options.signal);
+    return await replaceInQueue(target, request, options);
+  });
+}
+
 export async function createHashAnchoredTextFile(
   target: string,
   request: HashAnchoredCreateRequest,
@@ -263,11 +282,29 @@ async function editInQueue(
   request: HashAnchoredEditRequest,
   options: HashAnchoredEditOptions,
 ): Promise<HashAnchoredEditResult> {
+  return await mutateInQueue(target, async () => await editWhileLocked(target, request, options));
+}
+
+async function replaceInQueue(
+  target: string,
+  request: HashAnchoredReplaceRequest,
+  options: HashAnchoredEditOptions,
+): Promise<HashAnchoredEditResult> {
+  return await mutateInQueue(
+    target,
+    async () => await replaceWhileLocked(target, request, options),
+  );
+}
+
+async function mutateInQueue(
+  target: string,
+  mutateWhileLocked: () => Promise<HashAnchoredEditResult>,
+): Promise<HashAnchoredEditResult> {
   const lock = await acquireCrossProcessEditLock(target);
   let result: HashAnchoredEditResult | undefined;
   let operationError: unknown;
   try {
-    result = await editWhileLocked(target, request, options);
+    result = await mutateWhileLocked();
   } catch (error) {
     operationError = error;
   }
@@ -471,6 +508,38 @@ async function editWhileLocked(
   request: HashAnchoredEditRequest,
   options: HashAnchoredEditOptions,
 ): Promise<HashAnchoredEditResult> {
+  return await replaceExistingTextFileWhileLocked(
+    target,
+    request.expectedSha256,
+    (beforeText) => applyExactEdits(beforeText, request.edits),
+    options,
+  );
+}
+
+async function replaceWhileLocked(
+  target: string,
+  request: HashAnchoredReplaceRequest,
+  options: HashAnchoredEditOptions,
+): Promise<HashAnchoredEditResult> {
+  return await replaceExistingTextFileWhileLocked(
+    target,
+    request.expectedSha256,
+    (beforeText) => {
+      if (request.content === beforeText) {
+        throw new HashAnchoredEditError("no_change", "replacement does not change the target");
+      }
+      return request.content;
+    },
+    options,
+  );
+}
+
+async function replaceExistingTextFileWhileLocked(
+  target: string,
+  expectedSha256: string,
+  replacement: (beforeText: string) => string,
+  options: HashAnchoredEditOptions,
+): Promise<HashAnchoredEditResult> {
   const metadata = await readRegularFileMetadata(target);
   throwIfAborted(options.signal);
   if (metadata.size > MAX_EDIT_FILE_BYTES) {
@@ -495,15 +564,15 @@ async function editWhileLocked(
   }
 
   const beforeSha256 = sha256(beforeBytes);
-  if (beforeSha256 !== request.expectedSha256) {
+  if (beforeSha256 !== expectedSha256) {
     throw new HashAnchoredEditError(
       "stale_version",
-      `edit target is stale: expected ${request.expectedSha256}, received ${beforeSha256}`,
+      `edit target is stale: expected ${expectedSha256}, received ${beforeSha256}`,
     );
   }
 
   const beforeText = decodeUtf8(beforeBytes);
-  const afterText = applyExactEdits(beforeText, request.edits);
+  const afterText = replacement(beforeText);
   const afterBytes = Buffer.from(afterText, "utf8");
   if (afterBytes.length > MAX_EDIT_FILE_BYTES) {
     throw new HashAnchoredEditError(
@@ -852,6 +921,27 @@ function validateRequest(request: HashAnchoredEditRequest): void {
     throw new HashAnchoredEditError(
       "invalid_input",
       `edit replacements exceed ${MAX_EDIT_INPUT_BYTES} UTF-8 bytes`,
+    );
+  }
+}
+
+function validateReplaceRequest(request: HashAnchoredReplaceRequest): void {
+  if (!/^[a-f0-9]{64}$/.test(request.expectedSha256)) {
+    throw new HashAnchoredEditError(
+      "invalid_input",
+      "expectedSha256 must be a lowercase SHA-256 hex value",
+    );
+  }
+  if (!hasOnlyValidUnicodeScalars(request.content)) {
+    throw new HashAnchoredEditError(
+      "invalid_input",
+      "replacement content must contain valid Unicode scalar values",
+    );
+  }
+  if (Buffer.byteLength(request.content, "utf8") > MAX_REPLACE_INPUT_BYTES) {
+    throw new HashAnchoredEditError(
+      "invalid_input",
+      `replacement content exceeds ${MAX_REPLACE_INPUT_BYTES} UTF-8 bytes`,
     );
   }
 }

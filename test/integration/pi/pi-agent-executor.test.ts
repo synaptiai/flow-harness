@@ -49,7 +49,8 @@ describe("embedded Pi SDK integration", () => {
     temporaryDirectories.push(cwd);
     const target = join(cwd, "source.ts");
     const before = "const value = 1;\n";
-    const after = "const value = 2;\n";
+    const afterEdit = "const value = 2;\n";
+    const afterReplace = "export const value = 3;\n";
     await writeFile(target, before, "utf8");
     const runtime = await ModelRuntime.create({
       allowModelNetwork: false,
@@ -98,21 +99,30 @@ describe("embedded Pi SDK integration", () => {
 
         queueMicrotask(() => {
           stream.push({ type: "start", partial: message });
-          if (invocation < 2) {
+          if (invocation < 4) {
             const version =
-              invocation === 0 ? undefined : extractReadVersionFromContext(context.messages);
+              invocation === 0 || invocation === 2
+                ? undefined
+                : extractReadVersionFromContext(context.messages);
+            const name = ["flow_read", "flow_edit", "flow_read", "flow_replace"][invocation];
             const toolCall = {
               type: "toolCall" as const,
               id: `flow-sdk-call-${invocation + 1}`,
-              name: invocation === 0 ? "flow_read" : "flow_edit",
+              name: name ?? "flow_read",
               arguments:
-                invocation === 0
+                invocation === 0 || invocation === 2
                   ? { path: "source.ts" }
-                  : {
-                      path: "source.ts",
-                      expectedSha256: version,
-                      edits: [{ oldText: "value = 1", newText: "value = 2" }],
-                    },
+                  : invocation === 1
+                    ? {
+                        path: "source.ts",
+                        expectedSha256: version,
+                        edits: [{ oldText: "value = 1", newText: "value = 2" }],
+                      }
+                    : {
+                        path: "source.ts",
+                        expectedSha256: version,
+                        content: afterReplace,
+                      },
             };
             message.content.push(toolCall);
             stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
@@ -125,7 +135,7 @@ describe("embedded Pi SDK integration", () => {
             message.stopReason = "toolUse";
             stream.push({ type: "done", reason: "toolUse", message });
           } else {
-            const block = { type: "text" as const, text: "FLOW_SDK_EDIT_OK" };
+            const block = { type: "text" as const, text: "FLOW_SDK_EDIT_REPLACE_OK" };
             message.content.push(block);
             stream.push({ type: "text_start", contentIndex: 0, partial: message });
             stream.push({
@@ -150,7 +160,7 @@ describe("embedded Pi SDK integration", () => {
     });
     const executor = new PiAgentExecutor(new EmbeddedPiAgentRunner(async () => runtime));
 
-    const outcome = await executor.execute(agentNode(["read", "edit"]), {
+    const outcome = await executor.execute(agentNode(["read", "edit", "replace"]), {
       runId: "sdk-run",
       workflowId: "sdk-workflow",
       attempt: 1,
@@ -166,10 +176,12 @@ describe("embedded Pi SDK integration", () => {
         kind: "agent",
         provider: "flow-test",
         model: "deterministic",
-        text: "FLOW_SDK_EDIT_OK",
+        text: "FLOW_SDK_EDIT_REPLACE_OK",
         textHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         textTruncated: false,
         policyDecisions: [
+          expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
+          expect.objectContaining({ action: "filesystem.write", outcome: "allowed" }),
           expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
           expect.objectContaining({ action: "filesystem.write", outcome: "allowed" }),
         ],
@@ -177,13 +189,19 @@ describe("embedded Pi SDK integration", () => {
           expect.objectContaining({
             kind: "filesystem.edit",
             beforeSha256: sha256(before),
-            afterSha256: sha256(after),
+            afterSha256: sha256(afterEdit),
+            outcome: "committed",
+          }),
+          expect.objectContaining({
+            kind: "filesystem.edit",
+            beforeSha256: sha256(afterEdit),
+            afterSha256: sha256(afterReplace),
             outcome: "committed",
           }),
         ],
       },
     });
-    expect(await readFile(target, "utf8")).toBe(after);
+    expect(await readFile(target, "utf8")).toBe(afterReplace);
   });
 
   it("applies the requested output-token limit to the selected Pi model", async () => {

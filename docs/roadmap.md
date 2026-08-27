@@ -86,6 +86,9 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Timeouts terminate Linux PID-namespace process trees or POSIX process groups and record partial output.
 - Side-effect uncertainty blocks automatic retry.
 - Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
+- Full-SHA complete replacement of an existing UTF-8 file accepts bounded desired content without
+  replaying the prior content. It preserves mode and shares the edit lock, effect protocol, and
+  recovery contract. *(Implemented.)*
 - Exclusive creation records an absent pre-state and after hash for one new UTF-8 file. It coordinates with edits on the same target. It never replaces an existing path. Recovery fails closed when it cannot distinguish non-application from later deletion. *(Implemented.)*
 - Explicit nonrecursive directory creation records an absent pre-state, canonical empty-directory
   digest, and mode `0755`. It requires an existing parent, shares the target lock and effect limit,
@@ -105,7 +108,8 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Runs resume from authoritative events after process interruption. *(Implemented at committed node boundaries.)*
 - Only one same-host process owns append and execution for a run; exited ownership is recoverable. *(Implemented.)*
 - Flow-owned workspace file and directory mutations persist typed prepare and settlement evidence
-  across interruption. *(Implemented.)*
+  across interruption. Exact edits and complete replacements share one file-effect protocol.
+  *(Implemented.)*
 - Supported open filesystem effects are reconciled before any future retry decision. *(Implemented
   for exact file hash and mode or empty-directory and mode observation under the shared target
   lock.)*
@@ -711,6 +715,19 @@ guidance and [Architecture](architecture.md#rolling-context-admission) for owner
 - Evaluate prefix-cache-aware rolling summaries against the current internal checkpoint tool. Keep
   the domain validator, protected constraints, payload admission, and provider-neutral evidence
   unchanged. Adopt only after paired measurements show a material cache or cost benefit.
+- Evaluate model-free head, middle, and tail pruning for oversized tool-result text after verified
+  artifact references. Preserve the complete primary event, cite every projected source event,
+  and retain complete tool pairs. Remeasure before summarization. Never expose the projection as
+  workflow evidence.
+- Evaluate bounded verifier-directed recovery. Freeze the goal, verifiers, holdout, authority, and
+  budgets before execution. Let a deterministic controller select only predeclared repair workflow
+  classes from closed failure categories and durable evidence references. Require progress between
+  cycles, separate attempt records, fixed aggregate ceilings, and human review for contract change.
+  Compare it with operator-authored repair on held-out tasks before any production activation.
+- Evaluate post-request context-overflow recovery only for canonical provider overflow. Preserve
+  the original error unless a durable projection makes measurable progress. Bind the retry to the
+  current exact route and output allowance. Don't inherit an old resumed-session route only to
+  pursue prefix-cache reuse.
 - Define a stable support window, migration tooling, and channel promotion only as a separately
   approved program backed by multi-release evidence.
 
@@ -734,16 +751,20 @@ Read the [Compatibility policy](compatibility.md) for the current contract and t
   parent-owned process evidence.
 - A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
   OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
-- Nine bounded attempts against one issue in a separate repository produced one accepted
-  implementation. The series also exposed one false acceptance and seven nonaccepted attempts.
-  Every failure remains in the denominator. This adaptive one-task result is product evidence, but
-  it isn't a benchmark or a model-quality conclusion. Read the
-  [digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md).
+- Two adaptive issue series in a separate repository produced reviewed, merged implementations.
+  The first used nine full attempts and exposed one false acceptance. The second used 11 full
+  attempts and four bounded repair workflows, and strengthened review rejected one workflow
+  success.
+  Every full and repair attempt remains in its reported denominator. These results are product
+  evidence, not benchmarks, model-quality conclusions, or proof of autonomous repair selection.
+  Read the
+  [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md) and
+  [issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md).
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
-Before extending that field sequence, publish the accepted patch through ordinary review and hosted
-CI. Freeze each later task's base, workflow, and external holdout before execution. Preserve every
-failure in the denominator and report every human intervention.
+Before extending that field sequence, freeze each later task's base, workflow, external holdout,
+and repair ceiling. Preserve every failure in the denominator. Report every human intervention.
+Publish accepted patches through ordinary review and hosted CI.
 
 The standalone harness is compared against the legacy plugin on held-out repository tasks using equivalent model configurations. Record:
 

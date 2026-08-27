@@ -189,7 +189,7 @@ describe("PiAgentExecutor", () => {
     });
   });
 
-  it.each(["edit", "create"] as const)(
+  it.each(["edit", "replace", "create", "mkdir"] as const)(
     "rejects a %s attempt without a durable effect journal before starting Pi",
     async (tool) => {
       let runnerCalls = 0;

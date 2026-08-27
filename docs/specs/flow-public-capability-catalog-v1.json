@@ -312,7 +312,7 @@
       "selector": "read",
       "name": "flow_read",
       "label": "read",
-      "description": "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
+      "description": "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit or flow_replace. Binary and image decoding is not supported.",
       "inputSchema": {
         "properties": {
           "limit": {
@@ -348,6 +348,59 @@
         "read-output-bytes",
         "read-output-lines",
         "read-skill-resource-bytes"
+      ]
+    },
+    {
+      "selector": "replace",
+      "name": "flow_replace",
+      "label": "replace",
+      "description": "Atomically replace one existing UTF-8 workspace file using its flow_read SHA-256 version and complete new content. Stale versions fail without automatic merging.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "Complete replacement UTF-8 content.",
+            "maxLength": 262144,
+            "type": "string"
+          },
+          "expectedSha256": {
+            "description": "Full SHA-256 version returned by flow_read for this file.",
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path to one existing UTF-8 file inside the Flow workspace.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "expectedSha256",
+          "content"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "write"
+      ],
+      "policyActions": [
+        "filesystem.write"
+      ],
+      "availability": [
+        "effect-recorder"
+      ],
+      "limitIds": [
+        "agent-effects-per-attempt",
+        "edit-file-bytes",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
+        "replace-input-bytes",
+        "replace-input-characters",
+        "tool-path-bytes",
+        "tool-path-characters"
       ]
     },
     {
@@ -439,7 +492,7 @@
       "id": "agent-effects-per-attempt",
       "value": 32,
       "unit": "items",
-      "scope": "Maximum combined flow_edit, flow_create, and flow_mkdir effect reservations in one agent attempt."
+      "scope": "Maximum combined flow_edit, flow_replace, flow_create, and flow_mkdir effect reservations in one agent attempt."
     },
     {
       "id": "artifact-maximum-bytes",
@@ -631,6 +684,18 @@
       "value": 131072,
       "unit": "bytes",
       "scope": "Maximum UTF-8 bytes returned for one admitted skill:// resource."
+    },
+    {
+      "id": "replace-input-bytes",
+      "value": 262144,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one complete replacement file."
+    },
+    {
+      "id": "replace-input-characters",
+      "value": 262144,
+      "unit": "characters",
+      "scope": "Maximum characters in one replacement content schema value."
     },
     {
       "id": "semantic-code-bytes",

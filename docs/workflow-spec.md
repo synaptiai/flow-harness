@@ -1287,6 +1287,12 @@ later call to add each file inside the new directory.
 
 `flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
 
+`flow_replace` accepts `path`, `expectedSha256`, and the complete replacement `content` for one
+existing regular UTF-8 file no larger than 8 MiB. The new content can be empty and can contain at
+most 256 KiB of UTF-8 data. It must contain valid Unicode scalar values and must change the file.
+Use this tool when the desired file is mostly or completely different. Use `flow_edit` for small,
+exact substitutions. Both tools fail with `stale_version` when the current full-file hash differs.
+
 `flow_exec` accepts only `executable`, optional literal `args`, and optional `timeoutMs`. It defaults
 to 120000 ms and caps the deadline at 600000 ms, the executable at 1024 UTF-8 bytes, 64 arguments,
 each argument at 8192 UTF-8 bytes, and the aggregate vector at 32768 UTF-8 bytes. NUL bytes and
@@ -1322,25 +1328,29 @@ also fails, the settlement keeps `command_termination_failed` and `terminationSt
 as the primary truth and appends only bounded cleanup context to its message.
 
 After policy authorization, Flow reserves bounded evidence capacity and acquires a target-local
-exclusive lock. An edit re-reads and preflights the complete request, writes and syncs a
-same-directory exclusive temporary file, and rechecks the live target bytes and mode. It preserves
-the existing permission bits. A file create verifies that the target is absent, writes and syncs a
+exclusive lock. An edit or complete replacement re-reads and preflights the complete request. It
+writes and syncs a same-directory exclusive temporary file. It then rechecks the live target bytes
+and mode and preserves the existing permission bits.
+
+A file create verifies that the target is absent, writes and syncs a
 same-directory exclusive temporary file, and rechecks absence. It then uses an exclusive hard-link
-commit so a concurrent filesystem object cannot be overwritten. A directory create verifies
-absence, calls nonrecursive `mkdir`, sets and verifies mode `0755`, verifies that the directory is
-empty, and synchronizes the new directory and its parent.
+commit so a concurrent filesystem object cannot be overwritten.
+
+A directory create verifies
+absence, calls nonrecursive `mkdir`, and sets and verifies mode `0755`. It then verifies that the
+directory is empty and synchronizes the new directory and its parent.
 
 While still holding the lock and before the mutation, Flow syncs a `node_effect_prepared` event. The
 event contains an effect identity, sequence, operation kind, canonical target, request digest, after
-hash, and mode. An edit also contains its before hash. A file or directory create records
+hash, and mode. An edit or complete replacement also contains its before hash. A file or directory create records
 `beforeSha256: null`. This value distinguishes an absent path from an empty object. Only then can
-Flow rename an edit, link a file create, or call `mkdir`.
+Flow rename an edit or complete replacement, link a file create, or call `mkdir`.
 
 Flow settles a file effect as committed after parent-directory synchronization. It settles a
 directory effect as committed only after synchronizing both the new directory and its parent. A
 post-prepare failure before mutation settles as not applied. A failure after mutation settles as
-unknown when journal publication remains available. File creates, directory creates, and edits
-share the 32-effect attempt limit.
+unknown when journal publication remains available. File creates, directory creates, edits, and
+complete replacements share the 32-effect attempt limit.
 
 The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
 

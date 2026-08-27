@@ -29,7 +29,7 @@ on it.
 | Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
 | Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
-| Agent `read`, `ls`, exclusive `create`, nonrecursive `mkdir`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
+| Agent `read`, `ls`, exclusive `create`, nonrecursive `mkdir`, hash-bound `edit`, and version-bound complete `replace` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
 | Read-only semantic code queries | Linux x64 runtime proof | Limited | Current source supports an exact local LSP 3.18 server under the native sandbox. The hosted containment proof covers Linux x64. |
 | Agent `exec` | Implemented | Unavailable | Linux requires verified PID-namespace descendant containment. |
 | Detached supervisor and workers | Implemented | Implemented | Same-host and same-user only. |
@@ -95,11 +95,15 @@ The coding path supports explicit Anthropic and OpenAI preview selections in an 
 uses only read, list, exclusive create, and hash-bound edit tools, then requires deterministic
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-Nine bounded attempts against one issue in a separate repository produced one accepted
-implementation. The adaptive series includes one false acceptance and seven nonaccepted attempts.
-It doesn't establish general unattended coding effectiveness. Read the
-[digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) for the fixed controls,
-complete denominator, evidence, and limitations.
+Two adaptive field series against separate-repository issues produced reviewed, merged candidates.
+The first needed nine full attempts. The second needed 11 full attempts and four bounded repair
+workflows. Its successful candidate chain still required operator-authored repair selection. These
+results don't establish general unattended coding.
+
+They also don't establish autonomous recursive-repair effectiveness.
+Read the [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md) and
+[issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md) for fixed controls, complete
+denominators, evidence, and limitations.
 
 Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),

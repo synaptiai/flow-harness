@@ -40,6 +40,7 @@ describe("production workspace-agent tool reference", () => {
       "ls",
       "mkdir",
       "read",
+      "replace",
       "semantic",
     ]);
     expect(catalog.capabilityFamilies.map((family) => family.kind)).toEqual([
@@ -313,6 +314,22 @@ describe("production workspace-agent tool reference", () => {
         ],
       },
       {
+        selector: "replace",
+        authority: ["write"],
+        policyActions: ["filesystem.write"],
+        availability: ["effect-recorder"],
+        limitIds: [
+          "agent-effects-per-attempt",
+          "edit-file-bytes",
+          "policy-decisions-per-attempt",
+          "policy-target-bytes",
+          "replace-input-bytes",
+          "replace-input-characters",
+          "tool-path-bytes",
+          "tool-path-characters",
+        ],
+      },
+      {
         selector: "semantic",
         authority: ["read"],
         policyActions: ["filesystem.read"],
@@ -338,6 +355,7 @@ describe("production workspace-agent tool reference", () => {
     ["create", "effect recorder"],
     ["edit", "effect recorder"],
     ["mkdir", "effect recorder"],
+    ["replace", "effect recorder"],
     ["exec", "command recorder"],
     ["semantic", "semantic service"],
     ["artifact", "artifact store"],

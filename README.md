@@ -110,7 +110,7 @@ The result contains the run status, the project-relative evidence path, and toke
 
 Read [Getting started](docs/getting-started.md) for provider selection, output details, and failure
 recovery. Use the [coding quick start](docs/guides/coding-quickstart.md) when you are ready to prove
-one real provider-backed read, hash-bound edit, and deterministic verification. Follow
+one real provider-backed read, hash-bound edit or replacement, and deterministic verification. Follow
 [Install the Flow preview](docs/guides/install-preview.md) for exact-version pinning, one-off npm
 invocation, provenance verification, upgrades, removal, and `PATH` recovery.
 

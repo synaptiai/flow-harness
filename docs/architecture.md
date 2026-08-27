@@ -10,7 +10,8 @@ This document describes the target architecture unless a section is explicitly l
 current executable slice. The delivery roadmap is the source of truth for implementation status.
 Gates 1 and 2 provide compiled graphs, evidence-based completion, bounded Pi agent nodes,
 cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, exclusive file and
-directory creation, hash-anchored edits, argv-only agent commands, fail-closed native command containment, exact deterministic-command
+directory creation, hash-anchored edits and complete replacements, argv-only agent commands,
+and fail-closed native command containment. It also adds exact deterministic-command
 approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
 recovery, exclusive local ownership, typed filesystem-effect reconciliation, proof-safe fresh agent attempts,
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
@@ -385,7 +386,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
-| Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets, performs exclusive file creation, hash-bound editing, and nonrecursive directory creation under one target-lock and effect-journal contract, and reconciles unresolved typed effects without guessing. |
+| Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets; performs exclusive file creation, hash-bound exact editing, version-bound complete replacement, and nonrecursive directory creation under one target-lock and effect-journal contract; and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
 | ACP interoperability qualification | `src/domain/evaluation/plan.ts`, `src/domain/evaluation/agent-result-verifier.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, `src/application/evaluation-adapter.ts`, `src/application/run-evaluation.ts`, `src/infrastructure/fs/local-evaluation-plan.ts`, and `src/infrastructure/fs/local-evaluation-store.ts` | Admits two distinct exact ACP executors for one closed workflow, verifies each canonical typed result privately, persists identity-bound observations, and derives complete paired qualification verdicts offline. |
@@ -1486,11 +1487,12 @@ cleanup as separate fields. A complete failure is `not_qualified`. Absent eviden
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `create`, `mkdir`, `edit`, `exec`, `semantic`,
-  and `artifact`. Nodes can also receive exact selected declarative commands while implicit
+- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `create`, `mkdir`, `edit`,
+  `replace`, `exec`, `semantic`, and `artifact`. Nodes can also receive exact selected declarative commands while implicit
   extensions and resource discovery remain disabled.
-- Reads include an exact-byte SHA-256 version, and edits require that version and exact
-  Unicode-scalar replacements. Same-host Flow processes coordinate same-target file and directory
+- Reads include an exact-byte SHA-256 version. Edits require that version and exact Unicode-scalar
+  substitutions. Complete replacements require that version and bounded complete new content.
+  Same-host Flow processes coordinate same-target file and directory
   mutations. A file or directory create never replaces an existing target, and directory creation
   is nonrecursive. Flow protects sensitive project paths at every depth and rejects stale versions
   without fuzzy or three-way recovery.

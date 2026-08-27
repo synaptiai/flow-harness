@@ -26,6 +26,7 @@ JSON Schema dialect: `https://json-schema.org/draft/2020-12/schema`
 | `ls` | `flow_ls` | read | Always |
 | `mkdir` | `flow_mkdir` | write | effect-recorder |
 | `read` | `flow_read` | read | Always |
+| `replace` | `flow_replace` | write | effect-recorder |
 | `semantic` | `flow_semantic` | read | language-server |
 
 ### `flow_artifact`
@@ -273,7 +274,7 @@ Input schema:
 
 ### `flow_read`
 
-Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.
+Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit or flow_replace. Binary and image decoding is not supported.
 
 - Workflow selector: `read`
 - Execution mode: `default`
@@ -300,6 +301,47 @@ Input schema:
   },
   "required": [
     "path"
+  ],
+  "type": "object"
+}
+```
+
+### `flow_replace`
+
+Atomically replace one existing UTF-8 workspace file using its flow_read SHA-256 version and complete new content. Stale versions fail without automatic merging.
+
+- Workflow selector: `replace`
+- Execution mode: `sequential`
+- Policy actions: `filesystem.write`
+- Public limits: `agent-effects-per-attempt`, `edit-file-bytes`, `policy-decisions-per-attempt`, `policy-target-bytes`, `replace-input-bytes`, `replace-input-characters`, `tool-path-bytes`, `tool-path-characters`
+
+Input schema:
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "description": "Complete replacement UTF-8 content.",
+      "maxLength": 262144,
+      "type": "string"
+    },
+    "expectedSha256": {
+      "description": "Full SHA-256 version returned by flow_read for this file.",
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "path": {
+      "description": "Path to one existing UTF-8 file inside the Flow workspace.",
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "expectedSha256",
+    "content"
   ],
   "type": "object"
 }
@@ -375,7 +417,7 @@ Schema `default` annotations alone don't insert a value.
 | Identifier | Limit | Default | Scope |
 | --- | ---: | ---: | --- |
 | `agent-commands-per-attempt` | 32 items | — | Maximum flow_exec and command-tool-package executions started in one agent attempt. |
-| `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit, flow_create, and flow_mkdir effect reservations in one agent attempt. |
+| `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit, flow_replace, flow_create, and flow_mkdir effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |
 | `create-input-bytes` | 262144 bytes | — | Maximum UTF-8 bytes in one new file. |
@@ -407,6 +449,8 @@ Schema `default` annotations alone don't insert a value.
 | `read-output-bytes` | 51200 bytes | 51200 bytes | Maximum text bytes returned by one underlying Pi read window. |
 | `read-output-lines` | 2000 lines | 2000 lines | Maximum lines returned by one underlying Pi read window. |
 | `read-skill-resource-bytes` | 131072 bytes | — | Maximum UTF-8 bytes returned for one admitted skill:// resource. |
+| `replace-input-bytes` | 262144 bytes | — | Maximum UTF-8 bytes in one complete replacement file. |
+| `replace-input-characters` | 262144 characters | — | Maximum characters in one replacement content schema value. |
 | `semantic-code-bytes` | 256 bytes | — | Maximum UTF-8 bytes in one semantic code value. |
 | `semantic-hover-bytes` | 16384 bytes | — | Maximum UTF-8 bytes in one hover value. |
 | `semantic-message-bytes` | 4096 bytes | — | Maximum UTF-8 bytes in one semantic diagnostic message. |

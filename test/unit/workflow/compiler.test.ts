@@ -587,7 +587,7 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.tools.0");
   });
 
-  it("accepts an agent node with explicit edit, create, and directory-create tools", () => {
+  it("accepts an agent node with explicit edit, replace, create, and directory-create tools", () => {
     const source = workflowWithNodes(`
   - id: analyze
     type: agent
@@ -597,7 +597,7 @@ nodes:
         provider: anthropic
         id: claude-sonnet-4-5
         thinking: medium
-      tools: [read, ls, edit, create, mkdir]
+      tools: [read, ls, edit, replace, create, mkdir]
   - id: verify
     type: command
     dependsOn: [analyze]
@@ -610,7 +610,7 @@ nodes:
       id: "analyze",
       type: "agent",
       agent: {
-        tools: ["read", "ls", "edit", "create", "mkdir"],
+        tools: ["read", "ls", "edit", "replace", "create", "mkdir"],
         timeoutMs: 300000,
       },
     });
