@@ -223,6 +223,9 @@ function recordingReconciler(
     targets,
     async reconcile(descriptor, publish) {
       targets.push(descriptor.target);
+      if (descriptor.kind !== "filesystem.edit") {
+        throw new Error("expected an edit effect");
+      }
       await publish(await observe(descriptor));
     },
   };

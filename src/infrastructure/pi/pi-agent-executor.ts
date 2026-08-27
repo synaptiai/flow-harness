@@ -295,7 +295,10 @@ export class PiAgentExecutor implements AgentExecutor {
         languageServer: semanticLanguageServer,
       });
     }
-    if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
+    if (
+      (node.agent.tools.includes("edit") || node.agent.tools.includes("create")) &&
+      context.effectJournal === undefined
+    ) {
       return agentFailure(
         "pi_effect_journal_unavailable",
         "writable agent execution requires a durable effect journal",

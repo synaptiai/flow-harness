@@ -373,10 +373,10 @@ export interface AgentEffectReceipt {
   readonly workflowId: string;
   readonly nodeId: string;
   readonly attempt: number;
-  readonly kind: "filesystem.edit";
+  readonly kind: "filesystem.edit" | "filesystem.create";
   readonly target: string;
   readonly operationDigest: string;
-  readonly beforeSha256: string;
+  readonly beforeSha256: string | null;
   readonly afterSha256: string;
   readonly outcome: "committed" | "uncertain";
 }
@@ -920,13 +920,26 @@ export interface FilesystemEditEffectDescriptor {
   readonly mode: number;
 }
 
+export interface FilesystemCreateEffectDescriptor {
+  readonly kind: "filesystem.create";
+  readonly target: string;
+  readonly operationDigest: string;
+  readonly beforeSha256: null;
+  readonly afterSha256: string;
+  readonly mode: number;
+}
+
+export type FilesystemEffectDescriptor =
+  | FilesystemEditEffectDescriptor
+  | FilesystemCreateEffectDescriptor;
+
 export interface NodeEffectPreparedEvent extends RunEventBase {
   readonly type: "node_effect_prepared";
   readonly nodeId: string;
   readonly attempt: number;
   readonly effectId: string;
   readonly effectSequence: number;
-  readonly descriptor: FilesystemEditEffectDescriptor;
+  readonly descriptor: FilesystemEffectDescriptor;
 }
 
 export interface NodeAgentCommandPreparedEvent extends RunEventBase {
@@ -1540,7 +1553,7 @@ export interface NodeAgentCommandRunState {
 export interface NodeEffectRunState {
   readonly effectId: string;
   readonly effectSequence: number;
-  readonly descriptor: FilesystemEditEffectDescriptor;
+  readonly descriptor: FilesystemEffectDescriptor;
   readonly preparedAt: string;
   readonly settlement: NodeEffectSettlement | null;
   readonly reconciliation: NodeEffectReconciliation | null;
@@ -2009,6 +2022,28 @@ const filesystemEditEffectDescriptorSchema = z
     message: "effect before and after digests must differ",
   });
 
+const filesystemCreateEffectDescriptorSchema = z
+  .object({
+    kind: z.literal("filesystem.create"),
+    target: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES)
+      .refine((value) => isAbsolute(value) && !value.includes("\0") && normalize(value) === value, {
+        message: "effect target must be an absolute normalized NUL-free path",
+      }),
+    operationDigest: sha256Schema,
+    beforeSha256: z.null(),
+    afterSha256: sha256Schema,
+    mode: z.number().int().min(0).max(0o777),
+  })
+  .strict();
+
+const filesystemEffectDescriptorSchema = z.discriminatedUnion("kind", [
+  filesystemEditEffectDescriptorSchema,
+  filesystemCreateEffectDescriptorSchema,
+]);
+
 const commandEvidenceSchema = z
   .object({
     kind: z.literal("command"),
@@ -2105,17 +2140,33 @@ const agentEvidenceSchema = z
             workflowId: identifierSchema,
             nodeId: identifierSchema,
             attempt: z.number().int().positive(),
-            kind: z.literal("filesystem.edit"),
+            kind: z.enum(["filesystem.edit", "filesystem.create"]),
             target: z
               .string()
               .min(1)
               .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES),
             operationDigest: z.string().regex(/^[a-f0-9]{64}$/),
-            beforeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+            beforeSha256: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .nullable(),
             afterSha256: z.string().regex(/^[a-f0-9]{64}$/),
             outcome: z.enum(["committed", "uncertain"]),
           })
-          .strict(),
+          .strict()
+          .superRefine((receipt, context) => {
+            const validBefore =
+              receipt.kind === "filesystem.edit"
+                ? receipt.beforeSha256 !== null && receipt.beforeSha256 !== receipt.afterSha256
+                : receipt.beforeSha256 === null;
+            if (!validBefore) {
+              context.addIssue({
+                code: "custom",
+                path: ["beforeSha256"],
+                message: `${receipt.kind} has an invalid before digest`,
+              });
+            }
+          }),
       )
       .max(MAX_AGENT_EFFECT_RECEIPTS)
       .default([]),
@@ -3630,7 +3681,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       effectId: effectIdSchema,
       effectSequence: z.number().int().positive().max(MAX_AGENT_EFFECT_RECEIPTS),
-      descriptor: filesystemEditEffectDescriptorSchema,
+      descriptor: filesystemEffectDescriptorSchema,
     })
     .strict(),
   z
@@ -9517,6 +9568,12 @@ function validateEffectReconciliation(
       }
       break;
     case "target_matches_before":
+      if (descriptor.kind !== "filesystem.edit") {
+        throw new RunReplayError(
+          eventIndex,
+          "create effect reconciliation cannot claim an existing before state",
+        );
+      }
       if (
         event.observedSha256 !== descriptor.beforeSha256 ||
         event.observedMode !== descriptor.mode

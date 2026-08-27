@@ -280,6 +280,9 @@ describe("runWorkflow proof-safe fresh recovery", () => {
     const controller = new AbortController();
     const reconciler: NodeEffectReconciler = {
       async reconcile(descriptor, publish) {
+        if (descriptor.kind !== "filesystem.edit") {
+          throw new Error("expected an edit effect");
+        }
         await publish({
           outcome: "not_applied",
           reason: "target_matches_before",
@@ -447,6 +450,9 @@ function reconcilerFor(outcome: "applied" | "not_applied"): NodeEffectReconciler
     targets,
     async reconcile(descriptor, publish) {
       targets.push(descriptor.target);
+      if (descriptor.kind !== "filesystem.edit") {
+        throw new Error("expected an edit effect");
+      }
       await publish(
         outcome === "applied"
           ? {

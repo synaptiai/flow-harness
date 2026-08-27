@@ -34,6 +34,7 @@ describe("production workspace-agent tool reference", () => {
 
     expect(catalog.tools.map((tool) => tool.selector)).toEqual([
       "artifact",
+      "create",
       "edit",
       "exec",
       "ls",
@@ -106,6 +107,11 @@ describe("production workspace-agent tool reference", () => {
       unit: "bytes",
       scope: "Maximum combined UTF-8 bytes across every old and replacement text value.",
     });
+    expect(limits["create-input-characters"]).toMatchObject({
+      value: 262_144,
+      unit: "characters",
+    });
+    expect(limits["create-input-bytes"]).toMatchObject({ value: 262_144, unit: "bytes" });
     expect(limits["semantic-path-characters"]).toMatchObject({
       value: 1_024,
       unit: "characters",
@@ -215,6 +221,21 @@ describe("production workspace-agent tool reference", () => {
         ],
       },
       {
+        selector: "create",
+        authority: ["write"],
+        policyActions: ["filesystem.write"],
+        availability: ["effect-recorder"],
+        limitIds: [
+          "agent-effects-per-attempt",
+          "create-input-bytes",
+          "create-input-characters",
+          "policy-decisions-per-attempt",
+          "policy-target-bytes",
+          "tool-path-bytes",
+          "tool-path-characters",
+        ],
+      },
+      {
         selector: "edit",
         authority: ["write"],
         policyActions: ["filesystem.write"],
@@ -299,6 +320,7 @@ describe("production workspace-agent tool reference", () => {
   });
 
   it.each([
+    ["create", "effect recorder"],
     ["edit", "effect recorder"],
     ["exec", "command recorder"],
     ["semantic", "semantic service"],
@@ -316,17 +338,12 @@ describe("production workspace-agent tool reference", () => {
     const root = await mkdtemp(join(tmpdir(), "flow-tool-reference-"));
     temporaryDirectories.push(root);
     const catalog = createProductionPublicCapabilityCatalog();
-    const tools = await createWorkspaceAgentTools(
-      root,
-      ["read", "ls", "edit", "exec", "semantic", "artifact"],
-      policyBroker(),
-      {
-        effectRecorder: {} as never,
-        commandRecorder: {} as never,
-        semanticSession: {} as never,
-        artifactStore: {} as never,
-      },
-    );
+    const tools = await createWorkspaceAgentTools(root, AGENT_TOOL_NAMES, policyBroker(), {
+      effectRecorder: {} as never,
+      commandRecorder: {} as never,
+      semanticSession: {} as never,
+      artifactStore: {} as never,
+    });
 
     const actual = tools.definitions
       .map((definition) => ({

@@ -460,7 +460,7 @@ describe("public repository contracts", () => {
     ]);
 
     expect(readme).toMatch(/hash-anchored/i);
-    expect(readme).toContain("`read`, `ls`, and `edit`");
+    expect(readme).toContain("`read`, `ls`, `create`, and `edit`");
     expect(readme).toContain("`node_effect_prepared`");
     expect(architecture).toContain("`node_effect_prepared`");
     expect(workflowSpec).toContain("expectedSha256");
@@ -486,6 +486,7 @@ describe("public repository contracts", () => {
     expect(example.nodes.find((node) => node.type === "agent")?.agent?.tools).toEqual([
       "read",
       "ls",
+      "create",
       "edit",
     ]);
   });

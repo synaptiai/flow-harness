@@ -101,6 +101,68 @@ describe("durable effect reconciliation", () => {
     });
     expect(await reopened.read(runId)).toHaveLength(4);
   });
+
+  it("reopens an exact created file from JSONL and classifies it as applied", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-reconcile-create-jsonl-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const target = join(directory, "MIGRATIONS.md");
+    await writeFile(target, "# Migrations\n", { mode: 0o644 });
+    const compiled = createWorkflow();
+    const runId = "durable-create-reconciliation";
+    const store = new JsonlRunStore(runsDirectory);
+    await store.append({
+      ...base(compiled.id, runId, 1),
+      type: "run_started",
+      nodeIds: compiled.nodes.map((node) => node.id),
+      workflowApiVersion: compiled.apiVersion,
+      workflowDigest: createHash("sha256").update(JSON.stringify(compiled)).digest("hex"),
+      executionCwd: resolve(directory),
+    });
+    await store.append({
+      ...base(compiled.id, runId, 2),
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+      effectProtocol: "flow.effects/v1",
+    });
+    await store.append({
+      ...base(compiled.id, runId, 3),
+      type: "node_effect_prepared",
+      nodeId: "implement",
+      attempt: 1,
+      effectId: "effect-3",
+      effectSequence: 1,
+      descriptor: {
+        kind: "filesystem.create",
+        target,
+        operationDigest: "b".repeat(64),
+        beforeSha256: null,
+        afterSha256: sha256("# Migrations\n"),
+        mode: 0o644,
+      },
+    });
+    await store.release(runId);
+
+    await expect(
+      resumeWorkflow(compiled, {
+        cwd: directory,
+        protectedPaths: [runsDirectory],
+        runId,
+        store: new JsonlRunStore(runsDirectory),
+        executor: forbiddenExecutor(),
+        effectReconciler: createProductionNodeEffectReconciler(),
+      }),
+    ).rejects.toMatchObject({ code: "uncertain_operation" });
+
+    const events = await new JsonlRunStore(runsDirectory).read(runId);
+    expect(reduceRunEvents(events).nodes.implement?.effects[0]?.reconciliation).toMatchObject({
+      outcome: "applied",
+      reason: "target_matches_after",
+      observedSha256: sha256("# Migrations\n"),
+      observedMode: 0o644,
+    });
+  });
 });
 
 function forbiddenExecutor(): NodeExecutor {
@@ -123,6 +185,25 @@ nodes:
       prompt: Implement the requested change.
       model: { provider: test, id: deterministic }
       tools: [read, edit]
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function createWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: durable-create-reconciliation }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Create the migration guide.
+      model: { provider: test, id: deterministic }
+      tools: [create]
   - id: verify
     type: command
     dependsOn: [implement]

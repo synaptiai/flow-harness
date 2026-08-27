@@ -51,6 +51,52 @@
       ]
     },
     {
+      "selector": "create",
+      "name": "flow_create",
+      "label": "create",
+      "description": "Atomically create one new UTF-8 workspace file with complete content. An existing path is never replaced.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "Complete UTF-8 content for the new file.",
+            "maxLength": 262144,
+            "type": "string"
+          },
+          "path": {
+            "description": "Path for one new UTF-8 file inside the Flow workspace.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "write"
+      ],
+      "policyActions": [
+        "filesystem.write"
+      ],
+      "availability": [
+        "effect-recorder"
+      ],
+      "limitIds": [
+        "agent-effects-per-attempt",
+        "create-input-bytes",
+        "create-input-characters",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
+        "tool-path-bytes",
+        "tool-path-characters"
+      ]
+    },
+    {
       "selector": "edit",
       "name": "flow_edit",
       "label": "edit",
@@ -355,7 +401,7 @@
       "id": "agent-effects-per-attempt",
       "value": 32,
       "unit": "items",
-      "scope": "Maximum flow_edit effect reservations in one agent attempt."
+      "scope": "Maximum combined flow_edit and flow_create effect reservations in one agent attempt."
     },
     {
       "id": "artifact-maximum-bytes",
@@ -369,6 +415,18 @@
       "unit": "bytes",
       "scope": "Maximum bytes returned by one artifact read.",
       "default": 32768
+    },
+    {
+      "id": "create-input-bytes",
+      "value": 262144,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one new file."
+    },
+    {
+      "id": "create-input-characters",
+      "value": 262144,
+      "unit": "characters",
+      "scope": "Maximum characters in one create content schema value."
     },
     {
       "id": "delegation-calls-per-manager",

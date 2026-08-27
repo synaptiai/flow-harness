@@ -1274,7 +1274,13 @@ a failed semantic request or fall back to an uncontained server. See
 [Use read-only semantic code queries](guides/semantic-code.md) for operator steps and fixed failure
 categories.
 
-`flow_read` preserves Pi's bounded paging behavior and adds a full-file version marker of the form `sha256:<64-lowercase-hex>`. The digest covers the exact bytes read, not only the displayed page. `flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
+`flow_read` preserves Pi's bounded paging behavior and adds a full-file version marker of the form `sha256:<64-lowercase-hex>`. The digest covers the exact bytes read, not only the displayed page. One read call makes one policy decision even though the underlying reader checks access and then reads the bytes.
+
+`flow_create` accepts `path` and the complete `content` for one new UTF-8 file. Content can be empty and can contain at most 256 KiB of UTF-8 data. It must contain valid Unicode scalar values. The parent directory must already exist. Flow creates the file with mode `0644`.
+
+The tool doesn't create directories, append, or replace any existing filesystem object. A successful call returns the SHA-256 version of the exact created bytes.
+
+`flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
 
 `flow_exec` accepts only `executable`, optional literal `args`, and optional `timeoutMs`. It defaults
 to 120000 ms and caps the deadline at 600000 ms, the executable at 1024 UTF-8 bytes, 64 arguments,
@@ -1310,7 +1316,13 @@ publishing terminal success. If termination cannot be confirmed and sandbox clea
 also fails, the settlement keeps `command_termination_failed` and `terminationStatus: unconfirmed`
 as the primary truth and appends only bounded cleanup context to its message.
 
-After policy authorization, Flow reserves bounded evidence capacity, acquires a target-local exclusive lock, re-reads and preflights the complete request, writes a same-directory exclusive temporary file, preserves permission bits, syncs it, and rechecks the live target bytes and mode. While still holding the lock and before rename, it syncs a `node_effect_prepared` event containing an event-derived identity, attempt-local sequence, canonical target, operation digest, before/after hashes, and mode. Only then may it atomically rename. After directory sync it settles committed; a post-prepare failure before rename settles not applied; a failure after rename settles unknown when publication remains available. The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
+After policy authorization, Flow reserves bounded evidence capacity and acquires a target-local exclusive lock. An edit re-reads and preflights the complete request, writes and syncs a same-directory exclusive temporary file, and rechecks the live target bytes and mode. It preserves the existing permission bits. A create verifies that the target is absent, writes and syncs a same-directory exclusive temporary file, and rechecks absence. It then uses an exclusive hard-link commit so a concurrent filesystem object cannot be overwritten.
+
+While still holding the lock and before the commit, Flow syncs a `node_effect_prepared` event. The event contains an effect identity, sequence, operation kind, canonical target, request digest, after hash, and mode. An edit also contains its before hash. A create records `beforeSha256: null`. This value distinguishes an absent path from an empty file. Only then can Flow rename an edit or link a create.
+
+Flow settles an effect as committed after directory sync. A post-prepare failure before commit settles as not applied. A failure after commit settles as unknown when journal publication remains available. Creates and edits share the 32-effect attempt limit.
+
+The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
 
 The target lock coordinates cooperating Flow processes on one host. It is not a security boundary or
 a distributed lease. Authorization and mutation are separate application operations. A hostile
@@ -2574,7 +2586,7 @@ or package, change active runs, or delete artifacts.
   hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - Linux PID namespaces contain agent-command descendants; macOS agent commands fail before spawn because process groups are insufficient. The native sandbox does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
-- Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
+- Agent mutation supports one exclusive UTF-8 file creation or exact edit per call. Agents can also use explicitly selected argv-only sandboxed commands. Flow exposes no delete, rename, shell, network, or fuzzy patch tool. It also exposes no environment override, working-directory override, interactive process, background job, directory creation, or multi-file transaction.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
 - Adaptive candidates support root-agent prompt overlays and selected-resource changes in one

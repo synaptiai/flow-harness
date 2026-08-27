@@ -1,10 +1,10 @@
 import type { NodeEffectReconciler } from "../../application/ports.js";
-import { reconcileHashAnchoredEditEffect } from "../fs/hash-anchored-edit.js";
+import { reconcileHashAnchoredFilesystemEffect } from "../fs/hash-anchored-edit.js";
 
 export function createProductionNodeEffectReconciler(): NodeEffectReconciler {
   const reconciler: NodeEffectReconciler = {
     async reconcile(descriptor, publish, signal) {
-      await reconcileHashAnchoredEditEffect(descriptor, publish, {
+      await reconcileHashAnchoredFilesystemEffect(descriptor, publish, {
         ...(signal === undefined ? {} : { signal }),
       });
     },

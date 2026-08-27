@@ -3,6 +3,51 @@ import { describe, expect, it } from "vitest";
 import { parseRunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
 
 describe("durable effect reconciliation replay", () => {
+  it("replays an exact applied create effect with an explicit absent pre-state", () => {
+    const state = reduceRunEvents([
+      ...preparedCreateEvents(),
+      reconciliationEvent({
+        outcome: "applied",
+        reason: "target_matches_after",
+        observedSha256: "d".repeat(64),
+        observedMode: 0o644,
+      }),
+    ]);
+
+    expect(state.nodes.implement?.effects[0]).toMatchObject({
+      descriptor: { kind: "filesystem.create", beforeSha256: null },
+      reconciliation: { outcome: "applied", reason: "target_matches_after" },
+    });
+  });
+
+  it("keeps a missing create effect unknown instead of authorizing a retry", () => {
+    const state = reduceRunEvents([
+      ...preparedCreateEvents(),
+      reconciliationEvent({ outcome: "unknown", reason: "target_missing" }),
+    ]);
+
+    expect(state.nodes.implement?.effects[0]?.reconciliation).toMatchObject({
+      outcome: "unknown",
+      reason: "target_missing",
+    });
+  });
+
+  it("rejects a create effect that claims an existing before digest", () => {
+    expect(() =>
+      parseRunEvent({
+        ...preparedCreateEvents()[2],
+        descriptor: {
+          kind: "filesystem.create",
+          target: "/workspace/new.ts",
+          operationDigest: "b".repeat(64),
+          beforeSha256: "c".repeat(64),
+          afterSha256: "d".repeat(64),
+          mode: 0o644,
+        },
+      }),
+    ).toThrow(/beforeSha256|invalid/i);
+  });
+
   it.each([
     ["applied", "target_matches_after", "d", 0o644],
     ["not_applied", "target_matches_before", "c", 0o644],
@@ -225,6 +270,30 @@ function preparedEvents() {
         target: "/workspace/source.ts",
         operationDigest: "b".repeat(64),
         beforeSha256: "c".repeat(64),
+        afterSha256: "d".repeat(64),
+        mode: 0o644,
+      },
+    }),
+  ] as const;
+}
+
+function preparedCreateEvents() {
+  const [started, nodeStarted] = preparedEvents();
+  return [
+    started,
+    nodeStarted,
+    parseRunEvent({
+      ...base(3),
+      type: "node_effect_prepared",
+      nodeId: "implement",
+      attempt: 1,
+      effectId: "effect-3",
+      effectSequence: 1,
+      descriptor: {
+        kind: "filesystem.create",
+        target: "/workspace/new.ts",
+        operationDigest: "b".repeat(64),
+        beforeSha256: null,
         afterSha256: "d".repeat(64),
         mode: 0o644,
       },

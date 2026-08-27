@@ -61,7 +61,7 @@ import {
   calculateOptimizationPromotionId,
   DURABLE_EFFECT_PROTOCOL,
   type ExecutionWorkspaceProvenance,
-  type FilesystemEditEffectDescriptor,
+  type FilesystemEffectDescriptor,
   loopLimitFailureMessage,
   type NodeEffectReconciledEvent,
   type NodeEffectSettlementInput,
@@ -1130,7 +1130,7 @@ async function continueWorkflow(
 
   function createEffectJournal(nodeId: string, attempt: number): NodeEffectJournal {
     return Object.freeze({
-      prepare: async (descriptor: FilesystemEditEffectDescriptor) =>
+      prepare: async (descriptor: FilesystemEffectDescriptor) =>
         await publish(async () => {
           const preparedDescriptor = structuredClone(descriptor);
           const sequence = nextSequence();
@@ -1542,7 +1542,10 @@ async function continueWorkflow(
 }
 
 function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
-  return node.type === "agent" && node.agent.tools.includes("edit");
+  return (
+    node.type === "agent" &&
+    (node.agent.tools.includes("edit") || node.agent.tools.includes("create"))
+  );
 }
 
 function supportsAgentCommands(node: CompiledNode): node is CompiledAgentNode {

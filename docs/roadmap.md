@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 includes policy, approvals, hash-anchored edits, durable effect
+Gates 0–2 are implemented. Gate 3 includes policy, approvals, exclusive file creation, hash-anchored edits, durable effect
 receipts, and sandboxed argument-vector command execution.
 
 Gate 4 includes recovery, same-host ownership, effect reconciliation, durable budgets, detached
@@ -85,6 +85,7 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Timeouts terminate Linux PID-namespace process trees or POSIX process groups and record partial output.
 - Side-effect uncertainty blocks automatic retry.
 - Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
+- Exclusive creation records an absent pre-state and after hash for one new UTF-8 file. It coordinates with edits on the same target. It never replaces an existing path. Recovery fails closed when it cannot distinguish non-application from later deletion. *(Implemented.)*
 - A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT and the operator-selected container command profile.)*
 - The initial fixed profile denies network and ambient credentials. It permits workspace work,
   protects durable state, and records provenance. *(Implemented for native SRT and

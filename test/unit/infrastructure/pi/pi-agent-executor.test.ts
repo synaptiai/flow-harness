@@ -189,32 +189,35 @@ describe("PiAgentExecutor", () => {
     });
   });
 
-  it("rejects a writable attempt without a durable effect journal before starting Pi", async () => {
-    let runnerCalls = 0;
-    const runner: PiAgentRunner = {
-      async run() {
-        runnerCalls += 1;
-        return { text: "should not run", stopReason: "stop" };
-      },
-    };
+  it.each(["edit", "create"] as const)(
+    "rejects a %s attempt without a durable effect journal before starting Pi",
+    async (tool) => {
+      let runnerCalls = 0;
+      const runner: PiAgentRunner = {
+        async run() {
+          runnerCalls += 1;
+          return { text: "should not run", stopReason: "stop" };
+        },
+      };
 
-    const outcome = await new PiAgentExecutor(runner).execute(
-      agentNode(300_000, ["edit"]),
-      context,
-    );
+      const outcome = await new PiAgentExecutor(runner).execute(
+        agentNode(300_000, [tool]),
+        context,
+      );
 
-    expect(runnerCalls).toBe(0);
-    expect(outcome).toEqual({
-      status: "failed",
-      error: {
-        code: "pi_effect_journal_unavailable",
-        message: "writable agent execution requires a durable effect journal",
-        retryable: false,
-        sideEffectStatus: "none",
-      },
-      evidence: null,
-    });
-  });
+      expect(runnerCalls).toBe(0);
+      expect(outcome).toEqual({
+        status: "failed",
+        error: {
+          code: "pi_effect_journal_unavailable",
+          message: "writable agent execution requires a durable effect journal",
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+        evidence: null,
+      });
+    },
+  );
 
   it("passes the exact model and tool allowlist to the embedded runner", async () => {
     let request: PiAgentRunRequest | undefined;

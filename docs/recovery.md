@@ -492,22 +492,32 @@ recomputes typed observations and the delta digest, binds prepare/settlement to 
 id, and requires cleanup before check completion when candidate evidence says retained.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
-`flow.effects/v1`. Before an atomic edit rename, Flow syncs `node_effect_prepared` with a stable
-effect identity, target, request digest, before/after hashes, and mode. It later syncs exactly one
+`flow.effects/v1`. Before an atomic edit rename or create link, Flow syncs `node_effect_prepared`
+with a stable effect identity, operation kind, target, request digest, after hash, and mode. An edit
+records its before hash. A create records a null before hash because the path is absent. Flow later syncs exactly one
 settlement: `committed/directory_synced`, `not_applied/commit_not_entered`, or
 `unknown/post_commit_failure`. A process death can therefore leave an unresolved prepared effect,
 or a settled effect without a node outcome. Inspection preserves that distinction.
 
-For each unresolved prepared edit, recovery enters the same target queue and cross-process lock as
-normal edits, rejects non-regular targets before opening them, opens without following symlinks,
-hashes the initially observed size in fixed chunks totaling no more than 8 MiB, and compares the
-regular-file SHA-256 and POSIX mode. It appends `node_effect_reconciled` while the target lock is
-still held. If the target's parent has disappeared so the sibling lock cannot exist, recovery
-rechecks the path and may publish only `target_missing` under the in-process target queue; if any
-target is observable, it publishes nothing. An exact after-state becomes
-`applied/target_matches_after`; an exact before-state
-becomes `not_applied/target_matches_before`; missing, non-regular, unreadable, oversized, divergent,
-wrong-mode, or raced targets become `unknown` with a bounded reason. The event retains a digest and
+For each unresolved prepared filesystem effect, recovery enters the same target queue and
+cross-process lock as normal mutations. It rejects non-regular targets before opening them.
+It opens without following symlinks. It hashes the initially observed size in fixed chunks.
+It then compares the regular-file SHA-256 and POSIX mode.
+
+The edit observation limit is 8 MiB. The create observation
+limit is 256 KiB. Recovery appends `node_effect_reconciled` while it holds the target lock.
+
+If the target's parent has disappeared, the sibling lock cannot exist. Recovery
+rechecks the path and can publish only `target_missing` under the in-process target queue.
+It publishes nothing if any target is observable. An exact after-state becomes
+`applied/target_matches_after`. An edit's exact before-state becomes
+`not_applied/target_matches_before`.
+
+A missing create remains unknown because recovery cannot
+distinguish a pre-commit crash from an applied file that another actor later removed.
+
+Missing, non-regular, unreadable, oversized, divergent, wrong-mode, or raced targets become
+`unknown` with a bounded reason. The event retains a digest and
 mode only for a stable regular-file observation. It stores no file bytes or raw operating-system
 error message and never changes the target.
 

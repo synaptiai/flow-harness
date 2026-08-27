@@ -17,7 +17,7 @@ import type {
   AgentDelegationReceipt,
   AgentEffectReceipt,
   ChildResultEvidence,
-  FilesystemEditEffectDescriptor,
+  FilesystemEffectDescriptor,
   NodeEffectReconciliationInput,
   NodeEffectSettlementInput,
   NodeEvidence,
@@ -250,7 +250,7 @@ export interface LeanProofDriver {
 }
 
 export interface NodeEffectJournal {
-  prepare(descriptor: FilesystemEditEffectDescriptor): Promise<PreparedNodeEffect>;
+  prepare(descriptor: FilesystemEffectDescriptor): Promise<PreparedNodeEffect>;
 }
 
 export interface PreparedNodeEffect {
@@ -341,7 +341,7 @@ export interface AgentCommandSettlementReceipt {
 
 export interface NodeEffectReconciler {
   reconcile(
-    descriptor: FilesystemEditEffectDescriptor,
+    descriptor: FilesystemEffectDescriptor,
     publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<void>;

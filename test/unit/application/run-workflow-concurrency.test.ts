@@ -434,6 +434,9 @@ describe("bounded concurrent workflow execution", () => {
     const reconciler: NodeEffectReconciler = {
       async reconcile(descriptor, publish): Promise<void> {
         observedTargets.push(descriptor.target);
+        if (descriptor.kind !== "filesystem.edit") {
+          throw new Error("expected an edit effect");
+        }
         await publish({
           outcome: "not_applied",
           reason: "target_matches_before",

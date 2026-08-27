@@ -29,7 +29,7 @@ on it.
 | Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
 | Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
-| Agent `read`, `ls`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
+| Agent `read`, `ls`, exclusive `create`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
 | Read-only semantic code queries | Linux x64 runtime proof | Limited | Current source supports an exact local LSP 3.18 server under the native sandbox. The hosted containment proof covers Linux x64. |
 | Agent `exec` | Implemented | Unavailable | Linux requires verified PID-namespace descendant containment. |
 | Detached supervisor and workers | Implemented | Implemented | Same-host and same-user only. |

@@ -69,9 +69,13 @@ import {
   MAX_AGENT_EFFECT_RECEIPTS,
 } from "../../domain/run/events.js";
 import {
+  createHashAnchoredTextFile,
   editHashAnchoredTextFile,
+  type HashAnchoredCreateRequest,
+  type HashAnchoredCreateResult,
   type HashAnchoredEditRequest,
   type HashAnchoredEditResult,
+  MAX_CREATE_INPUT_BYTES,
   MAX_EDIT_FILE_BYTES,
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
@@ -166,6 +170,21 @@ const editSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const createSchema = Type.Object(
+  {
+    path: Type.String({
+      minLength: 1,
+      maxLength: MAX_TOOL_PATH_BYTES,
+      description: "Path for one new UTF-8 file inside the Flow workspace.",
+    }),
+    content: Type.String({
+      maxLength: MAX_CREATE_INPUT_BYTES,
+      description: "Complete UTF-8 content for the new file.",
+    }),
+  },
+  { additionalProperties: false },
+);
+
 const execSchema = Type.Object(
   {
     executable: Type.String({
@@ -234,6 +253,7 @@ export interface FlowAgentToolOptions {
   readonly effectRecorder?: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
+  readonly createFile?: typeof createHashAnchoredTextFile;
   readonly capabilitySession?: AgentSkillSession;
   readonly toolPackages?: readonly ToolPackageSnapshot[];
   readonly semanticSession?: SemanticToolSession;
@@ -257,7 +277,7 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "agent-effects-per-attempt",
     MAX_AGENT_EFFECT_RECEIPTS,
     "items",
-    "Maximum flow_edit effect reservations in one agent attempt.",
+    "Maximum combined flow_edit and flow_create effect reservations in one agent attempt.",
   ),
   limit("artifact-maximum-bytes", MAX_ARTIFACT_BYTES, "bytes", "Maximum retained artifact size."),
   limit(
@@ -268,6 +288,18 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     MAX_ARTIFACT_READ_BYTES,
   ),
   limit("edit-file-bytes", MAX_EDIT_FILE_BYTES, "bytes", "Maximum UTF-8 bytes in one edited file."),
+  limit(
+    "create-input-characters",
+    MAX_CREATE_INPUT_BYTES,
+    "characters",
+    "Maximum characters in one create content schema value.",
+  ),
+  limit(
+    "create-input-bytes",
+    MAX_CREATE_INPUT_BYTES,
+    "bytes",
+    "Maximum UTF-8 bytes in one new file.",
+  ),
   limit(
     "edit-input-characters",
     MAX_EDIT_INPUT_BYTES,
@@ -510,6 +542,27 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
       "tool-path-bytes",
     ],
   }),
+  create: toolReference({
+    selector: "create",
+    name: "flow_create",
+    label: "create",
+    description:
+      "Atomically create one new UTF-8 workspace file with complete content. An existing path is never replaced.",
+    inputSchema: createSchema,
+    executionMode: "sequential",
+    authority: ["write"],
+    policyActions: [builtInAgentToolPolicyAction("create")],
+    availability: ["effect-recorder"],
+    limitIds: [
+      "create-input-characters",
+      "create-input-bytes",
+      "agent-effects-per-attempt",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "tool-path-characters",
+      "tool-path-bytes",
+    ],
+  }),
   exec: toolReference({
     selector: "exec",
     name: "flow_exec",
@@ -643,6 +696,9 @@ export async function createWorkspaceAgentTools(
         break;
       case "edit":
         definition = createEditDefinition(broker, options);
+        break;
+      case "create":
+        definition = createFileDefinition(broker, options);
         break;
       case "exec":
         definition = createExecDefinition(policy, options);
@@ -1163,6 +1219,84 @@ function editResult(result: HashAnchoredEditResult, path: string) {
   };
 }
 
+function createFileDefinition(
+  broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
+  options: FlowAgentToolOptions,
+): ToolDefinition {
+  const reference = workspaceAgentToolReference("create");
+  assertDeclaredAvailability(reference, "effect-recorder");
+  const effectRecorder = options.effectRecorder;
+  if (effectRecorder === undefined) {
+    throw new Error("Flow create requires an attempt-scoped effect recorder");
+  }
+  const policyAction = onlyPolicyAction(reference);
+  const createFile = options.createFile ?? createHashAnchoredTextFile;
+  return defineTool({
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
+    promptSnippet: "Create one new workspace file from complete UTF-8 content",
+    promptGuidelines: [
+      "Use flow_create only when the destination does not exist.",
+      "Provide the complete file content; flow_create never appends to or replaces a path.",
+      "Use flow_read and flow_edit when a destination already exists.",
+    ],
+    parameters: reference.inputSchema,
+    executionMode: "sequential",
+    async execute(_toolCallId, input, signal) {
+      validateToolPath(input.path);
+      const request: HashAnchoredCreateRequest = { content: input.content };
+      const operationDigest = calculateCreateOperationDigest(input);
+      const result = await broker.execute(
+        policyAction,
+        input.path,
+        async (target) => {
+          const reservation = effectRecorder.reserve({
+            kind: "filesystem.create",
+            target,
+            operationDigest,
+          });
+          let prepared = false;
+          try {
+            const createResult = await createFile(target, request, {
+              ...(signal === undefined ? {} : { signal }),
+              effectLifecycle: {
+                prepare: async (boundary) => {
+                  await reservation.prepare(boundary);
+                  prepared = true;
+                },
+                settle: async (settlement) => {
+                  await reservation.settle(settlement);
+                },
+              },
+            });
+            return createResult;
+          } catch (error) {
+            if (!prepared) {
+              reservation.cancel();
+            }
+            throw error;
+          }
+        },
+        { operationDigest },
+      );
+      return createResult(result, input.path);
+    },
+  }) as ToolDefinition;
+}
+
+function createResult(result: HashAnchoredCreateResult, path: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `File created for ${path}; version sha256:${result.afterSha256}`,
+      },
+    ],
+    details: result,
+  };
+}
+
 function workspaceAgentToolReference<TSelector extends AgentToolName>(
   selector: TSelector,
 ): (typeof WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR)[TSelector] {
@@ -1272,6 +1406,22 @@ function calculateEditOperationDigest(input: {
         path: input.path,
         expectedSha256: input.expectedSha256,
         edits: input.edits,
+      }),
+    )
+    .digest("hex");
+}
+
+function calculateCreateOperationDigest(input: {
+  readonly path: string;
+  readonly content: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        operation: "create",
+        path: input.path,
+        content: input.content,
       }),
     )
     .digest("hex");

@@ -9,7 +9,7 @@ The standalone harness reverses that relationship. Flow owns workflow execution 
 This document describes the target architecture unless a section is explicitly labeled as the
 current executable slice. The delivery roadmap is the source of truth for implementation status.
 Gates 1 and 2 provide compiled graphs, evidence-based completion, bounded Pi agent nodes,
-cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, hash-anchored edits,
+cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, exclusive file creation, hash-anchored edits,
 argv-only agent commands, fail-closed native command containment, exact deterministic-command
 approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
 recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh agent attempts,
@@ -950,7 +950,15 @@ A2UI-profile terminal package has its own closed contract.
 
 ### Tool broker
 
-The current broker normalizes and canonically resolves every model-requested `read`, `ls`, and `edit` filesystem operation and every argv-only `exec` request, derives its authority class, authorizes only declared operations, and emits bounded decisions tied to the exact run/node attempt. A directory listing is one logical authorization even when it returns many bounded entries. Edit authorization binds a digest of the complete model request. For writable attempts, the application supplies a narrow provider-neutral effect journal. The editor durably records the canonical target, operation digest, before/after SHA-256 values, and permission mode before rename while holding the target lock, then durably settles the effect after the commit boundary while journal publication remains available. A rejected settlement append poisons the journal and leaves the prepared effect unresolved. During recovery, a separate provider-neutral reconciler observes only an open typed edit and publishes through an application-owned callback while the same target lock remains held. It rejects non-regular targets before open and hashes only the initially observed size through bounded chunks. When missing ancestry makes the sibling lock impossible, it may publish only a rechecked `target_missing` observation under the in-process target queue; any observable target is refused. Replay matches every prepared effect, including not-applied effects, to a distinct allowed write decision. Terminal receipts are exact projections of executor-settled committed or unknown effects and must agree with their effect events; recovery observations never become terminal receipts.
+The current broker normalizes and canonically resolves every model-requested `read`, `ls`, `create`, and `edit` filesystem operation and every argv-only `exec` request. It derives the authority class, authorizes only declared operations, and emits bounded decisions tied to the exact run, node, and attempt. One read or directory listing is one logical authorization even when the implementation checks access separately or returns many bounded entries. Create and edit authorization bind a digest of the complete model request.
+
+For writable attempts, the application supplies a narrow provider-neutral effect journal. The mutation layer holds one target lock. Before commit, it records the operation kind, canonical target, operation digest, after hash, and permission mode. An edit also records the before hash. A create records a null before hash and uses fixed mode `0644`. It commits a synced temporary file through an exclusive hard link.
+
+A create cannot replace an existing path. The mutation layer settles the effect after the commit boundary while journal publication remains available. A rejected settlement append poisons the journal and leaves the prepared effect unresolved.
+
+During recovery, a provider-neutral reconciler observes only an open typed filesystem effect. It publishes through an application-owned callback while the same target lock remains held. It rejects non-regular targets before open. It hashes only the initially observed size through bounded chunks. If the sibling lock cannot exist, it can publish only a rechecked `target_missing` observation. It refuses to publish when any target is observable.
+
+An exact edit before-state proves not applied. Absence never proves a create was not applied because another actor might have removed the committed file. Replay matches each prepared effect to a distinct allowed write decision. Terminal receipts project executor-settled committed or unknown effects. They must agree with their effect events. Recovery observations never become terminal receipts.
 
 For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal arguments, and deadline. The application appends `node_agent_command_prepared` before the shared sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded command outcome. Settlement charges retained stdout/stderr immediately, including when the outer agent turn is later interrupted, and terminal agent evidence does not charge it again. Open commands block terminal publication and recovery; arbitrary execution is never treated as proof-safe read-only work. The domain contract distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph nodes.
 
@@ -1444,7 +1452,7 @@ cleanup as separate fields. A complete failure is `not_qualified`. Absent eviden
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `edit`, `exec`, `semantic`,
+- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `create`, `edit`, `exec`, `semantic`,
   and `artifact`. Nodes can also receive exact selected declarative commands while implicit
   extensions and resource discovery remain disabled.
 - Reads include an exact-byte SHA-256 version, and edits require that version and exact Unicode-scalar
@@ -1571,7 +1579,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |
 | Edit fails after atomic rename | Settle it as post-commit unknown when publication remains available, project an uncertain receipt, and fail the node with uncertain side-effect status |
 | Settlement append rejects | Poison later publication and retain the unresolved prepared effect; do not infer an outcome from target bytes |
-| Process dies between edit boundaries | Reconcile each open typed edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
+| Process dies between filesystem mutation boundaries | Reconcile each open typed create or edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
 | Sandbox unavailable or degraded | Fail before command spawn; never fall back to host execution |
 | Sandbox cleanup failure after spawn | Fail with uncertain side-effect status; never report command success |
 | Process-tree termination is unconfirmed and sandbox cleanup also fails | Preserve termination failure as the primary outcome, record cleanup failure as bounded secondary context, and retain unconfirmed termination evidence |

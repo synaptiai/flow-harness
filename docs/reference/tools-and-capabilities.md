@@ -20,6 +20,7 @@ JSON Schema dialect: `https://json-schema.org/draft/2020-12/schema`
 | Workflow selector | Model-facing name | Authority | Availability |
 | --- | --- | --- | --- |
 | `artifact` | `flow_artifact` | read | artifact-store |
+| `create` | `flow_create` | write | effect-recorder |
 | `edit` | `flow_edit` | write | effect-recorder |
 | `exec` | `flow_exec` | execute | command-recorder, production-sandbox |
 | `ls` | `flow_ls` | read | Always |
@@ -61,6 +62,41 @@ Input schema:
   },
   "required": [
     "reference"
+  ],
+  "type": "object"
+}
+```
+
+### `flow_create`
+
+Atomically create one new UTF-8 workspace file with complete content. An existing path is never replaced.
+
+- Workflow selector: `create`
+- Execution mode: `sequential`
+- Policy actions: `filesystem.write`
+- Public limits: `agent-effects-per-attempt`, `create-input-bytes`, `create-input-characters`, `policy-decisions-per-attempt`, `policy-target-bytes`, `tool-path-bytes`, `tool-path-characters`
+
+Input schema:
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "description": "Complete UTF-8 content for the new file.",
+      "maxLength": 262144,
+      "type": "string"
+    },
+    "path": {
+      "description": "Path for one new UTF-8 file inside the Flow workspace.",
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "content"
   ],
   "type": "object"
 }
@@ -309,9 +345,11 @@ Schema `default` annotations alone don't insert a value.
 | Identifier | Limit | Default | Scope |
 | --- | ---: | ---: | --- |
 | `agent-commands-per-attempt` | 32 items | — | Maximum flow_exec and command-tool-package executions started in one agent attempt. |
-| `agent-effects-per-attempt` | 32 items | — | Maximum flow_edit effect reservations in one agent attempt. |
+| `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit and flow_create effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |
+| `create-input-bytes` | 262144 bytes | — | Maximum UTF-8 bytes in one new file. |
+| `create-input-characters` | 262144 characters | — | Maximum characters in one create content schema value. |
 | `delegation-calls-per-manager` | 1 items | — | Maximum sealed delegation calls by one admitted manager attempt. |
 | `delegation-depth` | 1 items | — | Maximum child delegation depth in one bounded delegation evaluation. |
 | `delegation-evaluation-candidate-bytes` | 1048576 bytes | — | Maximum UTF-8 bytes in one bounded delegation evaluation candidate. |

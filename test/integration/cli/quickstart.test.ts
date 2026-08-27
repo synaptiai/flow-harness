@@ -297,7 +297,6 @@ describe("flow quickstart", () => {
             model: "deterministic",
             policyDecisions: [
               expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
-              expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
               expect.objectContaining({ action: "filesystem.write", outcome: "allowed" }),
             ],
             effectReceipts: [

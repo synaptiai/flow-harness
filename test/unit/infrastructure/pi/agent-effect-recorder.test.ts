@@ -45,6 +45,48 @@ describe("AgentEffectRecorder", () => {
     expect(recorder.snapshot()).toEqual([receipt]);
   });
 
+  it("projects a create receipt with an explicit absent pre-state", async () => {
+    const preparedDescriptors: unknown[] = [];
+    const recorder = new AgentEffectRecorder(attribution, journalThatRecords(preparedDescriptors));
+    const reservation = recorder.reserve({
+      kind: "filesystem.create",
+      target: "/workspace/MIGRATIONS.md",
+      operationDigest: "e".repeat(64),
+    });
+
+    await reservation.prepare({
+      beforeSha256: null,
+      afterSha256: "f".repeat(64),
+      mode: 0o644,
+    });
+    await reservation.settle({ outcome: "committed", reason: "directory_synced" });
+
+    expect(preparedDescriptors).toEqual([
+      {
+        kind: "filesystem.create",
+        target: "/workspace/MIGRATIONS.md",
+        operationDigest: "e".repeat(64),
+        beforeSha256: null,
+        afterSha256: "f".repeat(64),
+        mode: 0o644,
+      },
+    ]);
+    expect(recorder.snapshot()).toEqual([
+      expect.objectContaining({ kind: "filesystem.create", beforeSha256: null }),
+    ]);
+  });
+
+  it("rejects edit/create pre-state mismatches before journal preparation", async () => {
+    const recorder = new AgentEffectRecorder(attribution, journalThatRecords([]));
+    const create = recorder.reserve({
+      kind: "filesystem.create",
+      target: "/workspace/new.ts",
+      operationDigest: "e".repeat(64),
+    });
+
+    await expect(create.prepare(effectPreparation("a", "b"))).rejects.toThrow(/absent/i);
+  });
+
   it("records immutable, contiguous, attributable edit receipts", async () => {
     const recorder = new AgentEffectRecorder(attribution, journalThatRecords([]));
     const first = recorder.reserve(effectIdentity());

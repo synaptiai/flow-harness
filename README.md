@@ -121,7 +121,8 @@ Command tasks receive an explicit environment, a private temporary directory, no
 bounded filesystem authority.
 
 The host-side Pi runtime still runs with the invoking user's operating-system permissions. It
-receives only the Flow-owned tools declared by the workflow. Agent `exec` requires verified Linux
+receives only the Flow-owned tools declared by the workflow. The built-in file tools are `read`,
+`ls`, `create`, and `edit`. Agent `exec` requires verified Linux
 PID-namespace descendant containment.
 
 Detached supervisor controls coordinate trusted processes for one operating-system user. They are
