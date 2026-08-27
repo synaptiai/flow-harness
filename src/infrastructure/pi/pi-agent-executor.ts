@@ -300,7 +300,9 @@ export class PiAgentExecutor implements AgentExecutor {
       });
     }
     if (
-      (node.agent.tools.includes("edit") || node.agent.tools.includes("create")) &&
+      (node.agent.tools.includes("edit") ||
+        node.agent.tools.includes("create") ||
+        node.agent.tools.includes("mkdir")) &&
       context.effectJournal === undefined
     ) {
       return agentFailure(

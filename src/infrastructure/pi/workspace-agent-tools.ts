@@ -69,6 +69,10 @@ import {
   MAX_AGENT_EFFECT_RECEIPTS,
 } from "../../domain/run/events.js";
 import {
+  createExclusiveDirectory,
+  type ExclusiveDirectoryCreateResult,
+} from "../fs/exclusive-directory-create.js";
+import {
   createHashAnchoredTextFile,
   editHashAnchoredTextFile,
   type HashAnchoredCreateRequest,
@@ -185,6 +189,17 @@ const createSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const mkdirSchema = Type.Object(
+  {
+    path: Type.String({
+      minLength: 1,
+      maxLength: MAX_TOOL_PATH_BYTES,
+      description: "Path for one new directory inside the Flow workspace.",
+    }),
+  },
+  { additionalProperties: false },
+);
+
 const execSchema = Type.Object(
   {
     executable: Type.String({
@@ -254,6 +269,7 @@ export interface FlowAgentToolOptions {
   readonly commandRecorder?: AgentCommandRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
   readonly createFile?: typeof createHashAnchoredTextFile;
+  readonly createDirectory?: typeof createExclusiveDirectory;
   readonly capabilitySession?: AgentSkillSession;
   readonly toolPackages?: readonly ToolPackageSnapshot[];
   readonly semanticSession?: SemanticToolSession;
@@ -277,7 +293,7 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "agent-effects-per-attempt",
     MAX_AGENT_EFFECT_RECEIPTS,
     "items",
-    "Maximum combined flow_edit and flow_create effect reservations in one agent attempt.",
+    "Maximum combined flow_edit, flow_create, and flow_mkdir effect reservations in one agent attempt.",
   ),
   limit("artifact-maximum-bytes", MAX_ARTIFACT_BYTES, "bytes", "Maximum retained artifact size."),
   limit(
@@ -563,6 +579,25 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
       "tool-path-bytes",
     ],
   }),
+  mkdir: toolReference({
+    selector: "mkdir",
+    name: "flow_mkdir",
+    label: "mkdir",
+    description:
+      "Atomically create one new empty workspace directory with mode 0755. The parent must already exist, and an existing path is never replaced.",
+    inputSchema: mkdirSchema,
+    executionMode: "sequential",
+    authority: ["write"],
+    policyActions: [builtInAgentToolPolicyAction("mkdir")],
+    availability: ["effect-recorder"],
+    limitIds: [
+      "agent-effects-per-attempt",
+      "policy-decisions-per-attempt",
+      "policy-target-bytes",
+      "tool-path-characters",
+      "tool-path-bytes",
+    ],
+  }),
   exec: toolReference({
     selector: "exec",
     name: "flow_exec",
@@ -699,6 +734,9 @@ export async function createWorkspaceAgentTools(
         break;
       case "create":
         definition = createFileDefinition(broker, options);
+        break;
+      case "mkdir":
+        definition = createDirectoryDefinition(broker, options);
         break;
       case "exec":
         definition = createExecDefinition(policy, options);
@@ -1297,6 +1335,83 @@ function createResult(result: HashAnchoredCreateResult, path: string) {
   };
 }
 
+function createDirectoryDefinition(
+  broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
+  options: FlowAgentToolOptions,
+): ToolDefinition {
+  const reference = workspaceAgentToolReference("mkdir");
+  assertDeclaredAvailability(reference, "effect-recorder");
+  const effectRecorder = options.effectRecorder;
+  if (effectRecorder === undefined) {
+    throw new Error("Flow mkdir requires an attempt-scoped effect recorder");
+  }
+  const policyAction = onlyPolicyAction(reference);
+  const createDirectory = options.createDirectory ?? createExclusiveDirectory;
+  return defineTool({
+    name: reference.name,
+    label: reference.label,
+    description: reference.description,
+    promptSnippet: "Create one new empty workspace directory",
+    promptGuidelines: [
+      "Use flow_mkdir only when the destination does not exist and its parent already exists.",
+      "Create one directory per call; flow_mkdir never creates parents recursively.",
+      "Use flow_create after flow_mkdir to add files inside the new directory.",
+    ],
+    parameters: reference.inputSchema,
+    executionMode: "sequential",
+    async execute(_toolCallId, input, signal) {
+      validateToolPath(input.path);
+      const operationDigest = calculateMkdirOperationDigest(input);
+      const result = await broker.execute(
+        policyAction,
+        input.path,
+        async (target) => {
+          const reservation = effectRecorder.reserve({
+            kind: "filesystem.mkdir",
+            target,
+            operationDigest,
+          });
+          let prepared = false;
+          try {
+            const directoryResult = await createDirectory(target, {
+              ...(signal === undefined ? {} : { signal }),
+              effectLifecycle: {
+                prepare: async (boundary) => {
+                  await reservation.prepare(boundary);
+                  prepared = true;
+                },
+                settle: async (settlement) => {
+                  await reservation.settle(settlement);
+                },
+              },
+            });
+            return directoryResult;
+          } catch (error) {
+            if (!prepared) {
+              reservation.cancel();
+            }
+            throw error;
+          }
+        },
+        { operationDigest },
+      );
+      return directoryResult(result, input.path);
+    },
+  }) as ToolDefinition;
+}
+
+function directoryResult(result: ExclusiveDirectoryCreateResult, path: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `Directory created for ${path} with mode 0755`,
+      },
+    ],
+    details: result,
+  };
+}
+
 function workspaceAgentToolReference<TSelector extends AgentToolName>(
   selector: TSelector,
 ): (typeof WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR)[TSelector] {
@@ -1422,6 +1537,18 @@ function calculateCreateOperationDigest(input: {
         operation: "create",
         path: input.path,
         content: input.content,
+      }),
+    )
+    .digest("hex");
+}
+
+function calculateMkdirOperationDigest(input: { readonly path: string }): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        operation: "mkdir",
+        path: input.path,
       }),
     )
     .digest("hex");

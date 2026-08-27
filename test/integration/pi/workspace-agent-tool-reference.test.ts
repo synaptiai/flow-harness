@@ -38,6 +38,7 @@ describe("production workspace-agent tool reference", () => {
       "edit",
       "exec",
       "ls",
+      "mkdir",
       "read",
       "semantic",
     ]);
@@ -162,6 +163,7 @@ describe("production workspace-agent tool reference", () => {
 
     const tools = Object.fromEntries(catalog.tools.map((tool) => [tool.selector, tool]));
     expect(tools.edit?.limitIds).toContain("agent-effects-per-attempt");
+    expect(tools.mkdir?.limitIds).toContain("agent-effects-per-attempt");
     expect(tools.exec?.limitIds).toEqual(
       expect.arrayContaining([
         "agent-commands-per-attempt",
@@ -284,6 +286,19 @@ describe("production workspace-agent tool reference", () => {
         ],
       },
       {
+        selector: "mkdir",
+        authority: ["write"],
+        policyActions: ["filesystem.write"],
+        availability: ["effect-recorder"],
+        limitIds: [
+          "agent-effects-per-attempt",
+          "policy-decisions-per-attempt",
+          "policy-target-bytes",
+          "tool-path-bytes",
+          "tool-path-characters",
+        ],
+      },
+      {
         selector: "read",
         authority: ["read"],
         policyActions: ["filesystem.read"],
@@ -322,6 +337,7 @@ describe("production workspace-agent tool reference", () => {
   it.each([
     ["create", "effect recorder"],
     ["edit", "effect recorder"],
+    ["mkdir", "effect recorder"],
     ["exec", "command recorder"],
     ["semantic", "semantic service"],
     ["artifact", "artifact store"],

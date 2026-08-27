@@ -17,13 +17,13 @@ describe("library API assessment", () => {
     expect(stderr).toBe("");
     expect(JSON.parse(stdout)).toEqual({
       version: "flow.library-boundary-analysis/v1",
-      productionFiles: 322,
+      productionFiles: 323,
       exportedDeclarations: {
-        total: 2_983,
+        total: 3_002,
         application: 398,
         cli: 17,
-        domain: 1_487,
-        infrastructure: 959,
+        domain: 1_489,
+        infrastructure: 976,
         supervisor: 122,
       },
       documentedCliForms: 92,
@@ -62,7 +62,7 @@ describe("library API assessment", () => {
         {
           id: "cli-composition-root",
           entry: "src/cli/main.ts",
-          reachableModules: 291,
+          reachableModules: 292,
           layers: ["application", "cli", "domain", "infrastructure", "supervisor"],
         },
       ],

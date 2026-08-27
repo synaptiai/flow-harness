@@ -9,10 +9,10 @@ The standalone harness reverses that relationship. Flow owns workflow execution 
 This document describes the target architecture unless a section is explicitly labeled as the
 current executable slice. The delivery roadmap is the source of truth for implementation status.
 Gates 1 and 2 provide compiled graphs, evidence-based completion, bounded Pi agent nodes,
-cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, exclusive file creation, hash-anchored edits,
-argv-only agent commands, fail-closed native command containment, exact deterministic-command
+cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, exclusive file and
+directory creation, hash-anchored edits, argv-only agent commands, fail-closed native command containment, exact deterministic-command
 approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
-recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh agent attempts,
+recovery, exclusive local ownership, typed filesystem-effect reconciliation, proof-safe fresh agent attempts,
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
@@ -174,6 +174,7 @@ flowchart TB
     subgraph execution["3. Execution plane — performs bounded work"]
         direction LR
         agents["Agent router and adapters<br/>Pi · local ACP · OMP · Prime"]
+        workspaceTools["Workspace tool broker and mutation adapters<br/>Read · list · create · mkdir · edit"]
         acpProcess["Isolated local ACP agent<br/>Fresh process · fresh session · prompt-only"]
         semantic["Semantic query service<br/>Short-lived LSP · read-only projection"]
         commands["Command sandboxes<br/>SRT · Docker"]
@@ -274,6 +275,7 @@ flowchart TB
     engine -->|"Derives one read-only snapshot"| workContext
     workContext -->|"Supplies pacing guidance"| agents
     rules -->|"Authorizes bounded agent work"| agents
+    rules -->|"Authorizes exact filesystem effects"| workspaceTools
     rules -->|"Authorizes bounded commands"| commands
     rules -->|"Requires exact human approval and proof identities"| proofAppliance
     agents -->|"Makes bounded model requests"| models
@@ -295,7 +297,8 @@ flowchart TB
     rolling -->|"Appends checks and checkpoints"| sessions
     rolling -->|"Counts the serialized request"| models
     sessions -->|"Supplies one fresh untrusted-data turn"| agents
-    agents -->|"Uses workspace tools through Flow policy"| project
+    agents -->|"Requests declared workspace tools"| workspaceTools
+    workspaceTools -->|"Reads or changes one authorized target"| project
     agents -->|"Requests bounded code context"| semantic
     semantic -->|"Reads an isolated project projection"| project
     semantic -->|"Uses the selected containment profile"| commands
@@ -314,6 +317,7 @@ flowchart TB
     supervisor -->|"Records queues and ownership"| stores
     presentation -->|"Reads a sanitized public projection"| ledgers
     agents -->|"Returns evidence for durable append"| ledgers
+    workspaceTools -->|"Returns durable effect evidence"| ledgers
     semantic -->|"Returns settled query receipts"| ledgers
     commands -->|"Returns effect receipts for durable append"| ledgers
     proofAppliance -->|"Returns compiler, checker, and cleanup evidence"| ledgers
@@ -381,6 +385,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
+| Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets, performs exclusive file creation, hash-bound editing, and nonrecursive directory creation under one target-lock and effect-journal contract, and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
 | ACP interoperability qualification | `src/domain/evaluation/plan.ts`, `src/domain/evaluation/agent-result-verifier.ts`, `src/domain/evaluation/records.ts`, `src/domain/evaluation/aggregate.ts`, `src/application/evaluation-adapter.ts`, `src/application/run-evaluation.ts`, `src/infrastructure/fs/local-evaluation-plan.ts`, and `src/infrastructure/fs/local-evaluation-store.ts` | Admits two distinct exact ACP executors for one closed workflow, verifies each canonical typed result privately, persists identity-bound observations, and derives complete paired qualification verdicts offline. |
@@ -956,15 +961,38 @@ A2UI-profile terminal package has its own closed contract.
 
 ### Tool broker
 
-The current broker normalizes and canonically resolves every model-requested `read`, `ls`, `create`, and `edit` filesystem operation and every argv-only `exec` request. It derives the authority class, authorizes only declared operations, and emits bounded decisions tied to the exact run, node, and attempt. One read or directory listing is one logical authorization even when the implementation checks access separately or returns many bounded entries. Create and edit authorization bind a digest of the complete model request.
+The current broker normalizes and canonically resolves every model-requested `read`, `ls`,
+`create`, `mkdir`, and `edit` filesystem operation and every argv-only `exec` request. It derives
+the authority class, authorizes only declared operations, and emits bounded decisions tied to the
+exact run, node, and attempt. One read or directory listing is one logical authorization even when
+the implementation checks access separately or returns many bounded entries. Create, directory
+create, and edit authorization bind a digest of the complete model request.
 
-For writable attempts, the application supplies a narrow provider-neutral effect journal. The mutation layer holds one target lock. Before commit, it records the operation kind, canonical target, operation digest, after hash, and permission mode. An edit also records the before hash. A create records a null before hash and uses fixed mode `0644`. It commits a synced temporary file through an exclusive hard link.
+For writable attempts, the application supplies a narrow provider-neutral effect journal. The
+mutation layer holds one target lock. Before mutation, it records the operation kind, canonical
+target, operation digest, after hash, and permission mode. An edit also records the before hash.
 
-A create cannot replace an existing path. The mutation layer settles the effect after the commit boundary while journal publication remains available. A rejected settlement append poisons the journal and leaves the prepared effect unresolved.
+A file create records a null before hash and uses fixed mode `0644`. It commits a synced temporary
+file through an exclusive hard link. A directory create records a null before hash, the canonical
+empty-directory digest, and fixed mode `0755`. It calls nonrecursive `mkdir`, verifies the exact
+empty state, and synchronizes the new directory and its parent.
 
-During recovery, a provider-neutral reconciler observes only an open typed filesystem effect. It publishes through an application-owned callback while the same target lock remains held. It rejects non-regular targets before open. It hashes only the initially observed size through bounded chunks. If the sibling lock cannot exist, it can publish only a rechecked `target_missing` observation. It refuses to publish when any target is observable.
+A create cannot replace or accept an existing path. The mutation layer settles the effect after
+the durability boundary while journal publication remains available. A rejected settlement append
+poisons the journal and leaves the prepared effect unresolved.
 
-An exact edit before-state proves not applied. Absence never proves a create was not applied because another actor might have removed the committed file. Replay matches each prepared effect to a distinct allowed write decision. Terminal receipts project executor-settled committed or unknown effects. They must agree with their effect events. Recovery observations never become terminal receipts.
+During recovery, a provider-neutral reconciler observes only an open typed filesystem effect. It
+publishes through an application-owned callback while the same target lock remains held. For a file
+effect, it rejects non-regular targets before open and hashes only the initially observed size
+through bounded chunks. For a directory effect, it requires a stable directory identity, empty
+listing, and exact mode. If the sibling lock cannot exist, it can publish only a rechecked
+`target_missing` observation. It refuses to publish when any target is observable.
+
+An exact edit before-state proves not applied. Absence never proves a file or directory create was
+not applied because another actor might have removed the committed object. Replay matches each
+prepared effect to a distinct allowed write decision. Terminal receipts project executor-settled
+committed or unknown effects. They must agree with their effect events. Recovery observations never
+become terminal receipts.
 
 For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal arguments, and deadline. The application appends `node_agent_command_prepared` before the shared sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded command outcome. Settlement charges retained stdout/stderr immediately, including when the outer agent turn is later interrupted, and terminal agent evidence does not charge it again. Open commands block terminal publication and recovery; arbitrary execution is never treated as proof-safe read-only work. The domain contract distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph nodes.
 
@@ -1458,13 +1486,14 @@ cleanup as separate fields. A complete failure is `not_qualified`. Absent eviden
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `create`, `edit`, `exec`, `semantic`,
+- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `create`, `mkdir`, `edit`, `exec`, `semantic`,
   and `artifact`. Nodes can also receive exact selected declarative commands while implicit
   extensions and resource discovery remain disabled.
-- Reads include an exact-byte SHA-256 version, and edits require that version and exact Unicode-scalar
-  replacements. Same-host Flow processes coordinate same-file mutations and atomically replace one
-  existing UTF-8 target. Flow protects sensitive project paths at every depth and rejects stale
-  versions without fuzzy or three-way recovery.
+- Reads include an exact-byte SHA-256 version, and edits require that version and exact
+  Unicode-scalar replacements. Same-host Flow processes coordinate same-target file and directory
+  mutations. A file or directory create never replaces an existing target, and directory creation
+  is nonrecursive. Flow protects sensitive project paths at every depth and rejects stale versions
+  without fuzzy or three-way recovery.
 - Every command node and descendant executes inside SRT on Linux or macOS. Agent commands execute only after Linux SRT binds a canonical root-owned Bubblewrap executable outside the workspace and proves PID-namespace lifecycle containment; process-group-only macOS preparation is denied before spawn. Flow preserves argv boundaries through an audited POSIX encoder, passes an explicit environment allowlist, denies network and undeclared Unix sockets, and protects the actual run-store path. Linux execution canonically resolves and re-exposes only SRT's required seccomp helper read-only when the harness installation is outside the selected workspace.
 - Missing dependencies, seccomp degradation, unsupported platforms, initialization errors, and invalid launch descriptors fail closed with no command spawn. There is no unsandboxed fallback.
 - Each new command result records the backend, exact backend version, named profile, and semantic policy digest. Backend and profile values use bounded machine identifiers rather than an SRT-only persisted union, preserving the event shape for future adapters. Generic command-node replay keeps the added field optional for older ledgers; protocol-v1 agent-command settlements require it, independently bind retained stdout/stderr prefixes by hash and UTF-8 byte count, and persist distinct timeout, abort, and termination observations.
@@ -1585,7 +1614,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |
 | Edit fails after atomic rename | Settle it as post-commit unknown when publication remains available, project an uncertain receipt, and fail the node with uncertain side-effect status |
 | Settlement append rejects | Poison later publication and retain the unresolved prepared effect; do not infer an outcome from target bytes |
-| Process dies between filesystem mutation boundaries | Reconcile each open typed create or edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
+| Process dies between filesystem mutation boundaries | Reconcile each open typed file create, directory create, or edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
 | Sandbox unavailable or degraded | Fail before command spawn; never fall back to host execution |
 | Sandbox cleanup failure after spawn | Fail with uncertain side-effect status; never report command success |
 | Process-tree termination is unconfirmed and sandbox cleanup also fails | Preserve termination failure as the primary outcome, record cleanup failure as bounded secondary context, and retain unconfirmed termination evidence |

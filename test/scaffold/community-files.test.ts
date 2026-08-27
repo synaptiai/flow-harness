@@ -460,7 +460,7 @@ describe("public repository contracts", () => {
     ]);
 
     expect(readme).toMatch(/hash-anchored/i);
-    expect(readme).toContain("`read`, `ls`, `create`, and `edit`");
+    expect(readme).toMatch(/`read`,\s+`ls`, `create`, `mkdir`, and `edit`/);
     expect(readme).toContain("`node_effect_prepared`");
     expect(architecture).toContain("`node_effect_prepared`");
     expect(workflowSpec).toContain("expectedSha256");
@@ -470,9 +470,9 @@ describe("public repository contracts", () => {
     expect(recovery).toMatch(/same target queue.*cross-process lock/is);
     expect(sourcing).toMatch(/Pi's built-in edit/i);
     expect(roadmap).toMatch(
-      /workspace edits persist typed prepare\/settle evidence.*Implemented/is,
+      /workspace file and directory mutations persist typed prepare and settlement evidence.*Implemented/is,
     );
-    expect(roadmap).toMatch(/Supported open edits are reconciled.*Implemented/is);
+    expect(roadmap).toMatch(/Supported open filesystem effects are reconciled.*Implemented/is);
     expect(security).toMatch(/replay rejects terminalization while an effect remains\s+unresolved/);
     expect(security).toMatch(/opens without following symlinks.*8 MiB/is);
     expect(testing).toMatch(/edit crashes before rename.*settlement rejection/is);

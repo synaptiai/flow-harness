@@ -1544,7 +1544,9 @@ async function continueWorkflow(
 function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
   return (
     node.type === "agent" &&
-    (node.agent.tools.includes("edit") || node.agent.tools.includes("create"))
+    (node.agent.tools.includes("edit") ||
+      node.agent.tools.includes("create") ||
+      node.agent.tools.includes("mkdir"))
   );
 }
 
