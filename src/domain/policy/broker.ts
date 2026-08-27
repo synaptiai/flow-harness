@@ -26,12 +26,19 @@ const AUTHORITY_BY_ACTION: Readonly<Record<PolicyAction, PolicyAuthority>> = Obj
 export class PolicyBroker {
   readonly attribution: PolicyAttribution;
   readonly #allowedActions: ReadonlySet<PolicyAction>;
+  readonly #onAuditLimitReached: ((error: PolicyAuditLimitError) => void) | undefined;
   readonly #decisions: PolicyDecision[] = [];
+  #auditLimitReached = false;
   #closed = false;
 
-  constructor(attribution: PolicyAttribution, allowedActions: readonly PolicyAction[]) {
+  constructor(
+    attribution: PolicyAttribution,
+    allowedActions: readonly PolicyAction[],
+    onAuditLimitReached?: (error: PolicyAuditLimitError) => void,
+  ) {
     this.attribution = Object.freeze({ ...attribution });
     this.#allowedActions = new Set(allowedActions);
+    this.#onAuditLimitReached = onAuditLimitReached;
   }
 
   authorize(operation: PolicyOperation): PolicyDecision {
@@ -41,7 +48,12 @@ export class PolicyBroker {
     validateTarget(operation.target);
     validateOperationDigest(operation.action, operation.operationDigest);
     if (this.#decisions.length >= MAX_POLICY_DECISIONS) {
-      throw new PolicyAuditLimitError(MAX_POLICY_DECISIONS);
+      const error = new PolicyAuditLimitError(MAX_POLICY_DECISIONS);
+      if (!this.#auditLimitReached) {
+        this.#auditLimitReached = true;
+        this.#onAuditLimitReached?.(error);
+      }
+      throw error;
     }
 
     const authority = classifyPolicyAction(operation.action);

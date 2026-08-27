@@ -193,7 +193,10 @@ describe("PolicyBroker", () => {
   });
 
   it("fails closed once the bounded audit is full", () => {
-    const broker = new PolicyBroker(attribution, ["filesystem.read"]);
+    const exhausted: PolicyAuditLimitError[] = [];
+    const broker = new PolicyBroker(attribution, ["filesystem.read"], (error) => {
+      exhausted.push(error);
+    });
     for (let index = 0; index < MAX_POLICY_DECISIONS; index += 1) {
       broker.authorize({
         action: "filesystem.read",
@@ -209,7 +212,16 @@ describe("PolicyBroker", () => {
         boundary: "inside",
       }),
     ).toThrowError(PolicyAuditLimitError);
+    expect(() =>
+      broker.authorize({
+        action: "filesystem.read",
+        target: "/workspace/second-overflow",
+        boundary: "inside",
+      }),
+    ).toThrowError(PolicyAuditLimitError);
     expect(broker.snapshot()).toHaveLength(MAX_POLICY_DECISIONS);
+    expect(exhausted).toHaveLength(1);
+    expect(exhausted[0]?.limit).toBe(MAX_POLICY_DECISIONS);
   });
 
   it("closes immutably and rejects late authorizations", () => {

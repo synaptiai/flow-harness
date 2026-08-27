@@ -1312,7 +1312,28 @@ as the primary truth and appends only bounded cleanup context to its message.
 
 After policy authorization, Flow reserves bounded evidence capacity, acquires a target-local exclusive lock, re-reads and preflights the complete request, writes a same-directory exclusive temporary file, preserves permission bits, syncs it, and rechecks the live target bytes and mode. While still holding the lock and before rename, it syncs a `node_effect_prepared` event containing an event-derived identity, attempt-local sequence, canonical target, operation digest, before/after hashes, and mode. Only then may it atomically rename. After directory sync it settles committed; a post-prepare failure before rename settles not applied; a failure after rename settles unknown when publication remains available. The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
 
-The lock is a cooperative local coordination mechanism, not a security boundary or distributed lease. This application-level check is not atomic against a concurrently hostile process changing path components after canonical authorization; the current release retains its trusted-workspace requirement until agent/tool process isolation lands. Pi's built-in tools are disabled, so Flow does not inherit Pi's fuzzy edit rules, direct-write semantics, or optional executable-download behavior. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Agent output is capped at 64 KiB; the ledger retains the bounded text, the complete SHA-256 stream hash, truncation status, ordered policy decisions, and ordered effect receipts, and classifies overflow as `pi_agent_output_limit`. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace and waits for the provider runner plus active edit and command reservations. A runner, effect, or command reservation that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely. Closed audits deny late authorization, receipt publication, or command execution.
+The target lock coordinates cooperating Flow processes on one host. It is not a security boundary or
+a distributed lease. Authorization and mutation are separate application operations. A hostile
+process can change path components between them. This release therefore requires a trusted
+workspace until agent and tool process isolation is available.
+
+Flow disables Pi's built-in tools. Flow therefore doesn't inherit Pi's fuzzy edits, direct writes,
+or optional executable downloads. The node session also disables Pi extensions, skills, prompt
+templates, themes, context files, and project discovery.
+
+Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agent output has a 64
+KiB limit. The ledger retains the bounded text, complete stream hash, truncation status, policy
+decisions, and effect receipts. It classifies output overflow as `pi_agent_output_limit`.
+
+Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason can make the node
+succeed. Reaching the policy-audit limit aborts the session and produces
+`pi_agent_policy_audit_exhausted`. A later normal provider stop can't replace that failure.
+
+Flow permits a bounded cleanup grace after timeout, audit exhaustion, or operator cancellation. It
+waits for the provider runner and active edit and command reservations. An operation that doesn't
+settle produces the applicable terminal error with uncertain side-effect status. It doesn't block
+the scheduler indefinitely. Closed audits deny late authorization, receipt publication, or command
+execution.
 
 `recovery` is optional and is accepted only on agent nodes. The only current mode is `fresh`.
 `maxAttempts` includes the initial attempt, is required when recovery is present, and must be an

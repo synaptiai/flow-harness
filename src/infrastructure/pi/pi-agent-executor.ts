@@ -44,7 +44,7 @@ import {
 import type { LanguageServerSnapshot } from "../../domain/capability/language-server.js";
 import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
 import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
-import { PolicyBroker } from "../../domain/policy/broker.js";
+import { type PolicyAuditLimitError, PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
 import {
@@ -317,9 +317,21 @@ export class PiAgentExecutor implements AgentExecutor {
       attempt: context.attempt,
     } as const;
     const protectedPaths = context.protectedPaths ?? [];
+    const policyAuditController = new AbortController();
+    let policyAuditError: PolicyAuditLimitError | undefined;
+    let resolvePolicyAuditExhaustion: () => void = () => undefined;
+    const policyAuditExhaustion = new Promise<void>((resolve) => {
+      resolvePolicyAuditExhaustion = resolve;
+    });
     const policyBroker = new PolicyBroker(
       attribution,
       policyActionsForTools(node.agent.tools, toolPackages.length > 0),
+      (error) => {
+        if (policyAuditError !== undefined) return;
+        policyAuditError = error;
+        policyAuditController.abort(error);
+        resolvePolicyAuditExhaustion();
+      },
     );
     const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
     const commandBudgetController = new AbortController();
@@ -429,12 +441,14 @@ export class PiAgentExecutor implements AgentExecutor {
       context.signal === undefined
         ? AbortSignal.any([
             timeoutController.signal,
+            policyAuditController.signal,
             commandBudgetController.signal,
             commandSafetyController.signal,
           ])
         : AbortSignal.any([
             context.signal,
             timeoutController.signal,
+            policyAuditController.signal,
             commandBudgetController.signal,
             commandSafetyController.signal,
           ]);
@@ -442,6 +456,25 @@ export class PiAgentExecutor implements AgentExecutor {
     let timeoutHandle: NodeJS.Timeout | undefined;
     let removeExternalAbortListener: () => void = () => undefined;
     let activeRunPromise: Promise<PiAgentRunResult> | undefined;
+    const policyAuditFailure = async (): Promise<NodeExecutionOutcome> => {
+      const cleanupSettled =
+        activeRunPromise === undefined
+          ? true
+          : await settlesAgentCleanupWithin(
+              activeRunPromise,
+              effectRecorder,
+              commandRecorder,
+              this.abortGraceMs,
+            );
+      return agentFailure(
+        "pi_agent_policy_audit_exhausted",
+        cleanupSettled
+          ? `agent reached policy audit limit of ${policyAuditError?.limit ?? "unknown"} decisions`
+          : `agent reached policy audit limit of ${policyAuditError?.limit ?? "unknown"} decisions and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+        currentSideEffectStatus(!cleanupSettled),
+        policyFailureEvidence(),
+      );
+    };
     const systemPrompt = appendSupplementalMemory(
       appendGoalWorkspace(
         appendModelWorkProfile(context.agentSystemPrompt, context.modelWorkProfile),
@@ -565,6 +598,7 @@ export class PiAgentExecutor implements AgentExecutor {
         runPromise.then((result) => ({ kind: "result" as const, result })),
         timeout.then(() => ({ kind: "timeout" as const })),
         externalAbort.then(() => ({ kind: "external_abort" as const })),
+        policyAuditExhaustion.then(() => ({ kind: "policy_audit" as const })),
         commandBudgetExhaustion.then(() => ({ kind: "artifact_budget" as const })),
         commandTerminationUnconfirmedSignal.then(() => ({
           kind: "command_termination_unconfirmed" as const,
@@ -636,6 +670,9 @@ export class PiAgentExecutor implements AgentExecutor {
           policyFailureEvidence(),
         );
       }
+      if (settled.kind === "policy_audit") {
+        return await policyAuditFailure();
+      }
       const result = settled.result;
       if (commandTerminationUnconfirmed) {
         const cleanupSettled = await settlesAgentCleanupWithin(
@@ -668,6 +705,9 @@ export class PiAgentExecutor implements AgentExecutor {
           currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
+      }
+      if (policyAuditError !== undefined) {
+        return await policyAuditFailure();
       }
       if (isAborted(context.signal)) {
         const cleanupSettled = await settlesAgentCleanupWithin(
@@ -807,6 +847,9 @@ export class PiAgentExecutor implements AgentExecutor {
           currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
+      }
+      if (policyAuditError !== undefined) {
+        return await policyAuditFailure();
       }
       if (timedOut) {
         const cleanupSettled =

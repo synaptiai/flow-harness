@@ -23,7 +23,11 @@ import {
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../../src/domain/capability/agent-skills.js";
-import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
+import {
+  MAX_POLICY_DECISIONS,
+  PolicyAuditLimitError,
+  PolicyBroker,
+} from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
 import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../../src/domain/run/work-profile.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
@@ -46,6 +50,48 @@ const context: NodeExecutionContext = {
 };
 
 describe("PiAgentExecutor", () => {
+  it("fails an attempt when policy audit exhaustion is followed by a normal model stop", async () => {
+    let observedAbort = false;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        for (let index = 0; index < MAX_POLICY_DECISIONS; index += 1) {
+          input.policyBroker.authorize({
+            action: "filesystem.read",
+            target: `${input.cwd}/file-${index}.txt`,
+            boundary: "inside",
+          });
+        }
+        expect(() =>
+          input.policyBroker.authorize({
+            action: "filesystem.read",
+            target: `${input.cwd}/overflow.txt`,
+            boundary: "inside",
+          }),
+        ).toThrowError(PolicyAuditLimitError);
+        observedAbort = input.signal?.aborted === true;
+        return { text: "Unable to continue after the tool limit.", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(observedAbort).toBe(true);
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_policy_audit_exhausted",
+        message: `agent reached policy audit limit of ${MAX_POLICY_DECISIONS} decisions`,
+        sideEffectStatus: "none",
+      },
+      evidence: {
+        text: "",
+        policyDecisions: expect.arrayContaining([
+          expect.objectContaining({ sequence: MAX_POLICY_DECISIONS }),
+        ]),
+      },
+    });
+  });
+
   it("overrides a terminal model result after durable command output exhausts the artifact budget", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
