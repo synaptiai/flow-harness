@@ -373,10 +373,10 @@ export interface AgentEffectReceipt {
   readonly workflowId: string;
   readonly nodeId: string;
   readonly attempt: number;
-  readonly kind: "filesystem.edit";
+  readonly kind: "filesystem.edit" | "filesystem.create";
   readonly target: string;
   readonly operationDigest: string;
-  readonly beforeSha256: string;
+  readonly beforeSha256: string | null;
   readonly afterSha256: string;
   readonly outcome: "committed" | "uncertain";
 }
@@ -920,13 +920,26 @@ export interface FilesystemEditEffectDescriptor {
   readonly mode: number;
 }
 
+export interface FilesystemCreateEffectDescriptor {
+  readonly kind: "filesystem.create";
+  readonly target: string;
+  readonly operationDigest: string;
+  readonly beforeSha256: null;
+  readonly afterSha256: string;
+  readonly mode: number;
+}
+
+export type FilesystemEffectDescriptor =
+  | FilesystemEditEffectDescriptor
+  | FilesystemCreateEffectDescriptor;
+
 export interface NodeEffectPreparedEvent extends RunEventBase {
   readonly type: "node_effect_prepared";
   readonly nodeId: string;
   readonly attempt: number;
   readonly effectId: string;
   readonly effectSequence: number;
-  readonly descriptor: FilesystemEditEffectDescriptor;
+  readonly descriptor: FilesystemEffectDescriptor;
 }
 
 export interface NodeAgentCommandPreparedEvent extends RunEventBase {
@@ -1540,7 +1553,7 @@ export interface NodeAgentCommandRunState {
 export interface NodeEffectRunState {
   readonly effectId: string;
   readonly effectSequence: number;
-  readonly descriptor: FilesystemEditEffectDescriptor;
+  readonly descriptor: FilesystemEffectDescriptor;
   readonly preparedAt: string;
   readonly settlement: NodeEffectSettlement | null;
   readonly reconciliation: NodeEffectReconciliation | null;
@@ -1634,10 +1647,92 @@ const modelRequestMismatchCategorySchema = z.enum([
   "authority",
   "portable_history",
   "runtime_surface",
+  "routing",
   "attempt",
   "turn",
   "request",
 ] satisfies readonly ModelRequestMismatchCategory[]);
+const modelRequestCapacityOperationSummarySchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("task"),
+      turn: z.number().int().positive().safe(),
+      request: z.number().int().positive().safe(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("summary"),
+      epoch: z.number().int().positive().safe(),
+      generationAttempt: z.number().int().min(1).max(2).safe(),
+    })
+    .strict(),
+]);
+const publicModelCapacityCheckSchema = z
+  .object({
+    check: z.number().int().positive().safe(),
+    attempt: z.number().int().positive().safe(),
+    operation: modelRequestCapacityOperationSummarySchema,
+    apiAdapter: z.string().min(1).max(128),
+    providerPayloadSha256: sha256Schema,
+    providerPayloadBytes: z.number().int().nonnegative().safe(),
+    status: z.enum(["measured", "unavailable"]),
+    method: z.enum(["provider_exact", "provider_estimate"]).nullable(),
+    uncertainty: z.enum(["exact", "estimate", "unavailable"]),
+    failureCategory: z
+      .enum([
+        "unsupported_adapter",
+        "request_invalid",
+        "request_failed",
+        "response_status",
+        "response_media_type",
+        "response_too_large",
+        "response_invalid",
+      ])
+      .nullable(),
+    contextWindowTokens: z.number().int().positive().safe().nullable(),
+    outputAllowanceTokens: z.number().int().positive().safe().nullable(),
+    safetyReserveTokens: z.number().int().nonnegative().safe().nullable(),
+    usableInputTokens: z.number().int().positive().safe().nullable(),
+    pressureThresholdPercent: z.number().int().min(50).max(95).nullable(),
+    measuredInputTokens: z.number().int().nonnegative().safe().nullable(),
+    absoluteSafe: z.boolean().nullable(),
+    underPressure: z.boolean().nullable(),
+    decision: z.enum(["admitted", "reduction_required", "over_capacity"]).nullable(),
+  })
+  .strict();
+const publicRollingContextEpochSchema = z
+  .object({
+    attempt: z.number().int().positive().safe(),
+    epoch: z.number().int().positive().safe(),
+    generationAttempt: z.number().int().min(1).max(2).safe(),
+    task: z
+      .object({
+        turn: z.number().int().positive().safe(),
+        request: z.number().int().positive().safe(),
+      })
+      .strict(),
+    outputTokenLimit: z.number().int().positive().safe(),
+    cumulativeSourceSha256: sha256Schema,
+    deltaSourceSha256: sha256Schema,
+    bindingsSha256: sha256Schema,
+    policySha256: sha256Schema,
+  })
+  .strict();
+const publicRollingContextCheckpointSchema = z
+  .object({
+    summarySha256: sha256Schema,
+    summaryBytes: z.number().int().nonnegative().safe(),
+    sourceSha256: sha256Schema,
+    sourceFirstSequence: z.number().int().positive().safe(),
+    sourceLastSequence: z.number().int().positive().safe(),
+    sourceEventCount: z.number().int().positive().safe(),
+    renderedSurfaceSha256: sha256Schema,
+    renderedSurfaceBytes: z.number().int().positive().safe(),
+    bindingsSha256: sha256Schema,
+    policySha256: sha256Schema,
+  })
+  .strict();
 const modelSessionSummarySchema = z
   .object({
     version: z.literal(1),
@@ -1655,6 +1750,14 @@ const modelSessionSummarySchema = z
     compactionCount: z.number().int().nonnegative().safe().default(0),
     acceptedCompactionCount: z.number().int().nonnegative().safe().default(0),
     interruptedCompactionCount: z.number().int().nonnegative().safe().default(0),
+    capacityCheckCount: z.number().int().nonnegative().safe().default(0),
+    latestCapacityCheck: publicModelCapacityCheckSchema.nullable().default(null),
+    rollingEpochCount: z.number().int().nonnegative().safe().default(0),
+    rollingGenerationCount: z.number().int().nonnegative().safe().default(0),
+    acceptedRollingEpochCount: z.number().int().nonnegative().safe().default(0),
+    interruptedRollingEpochCount: z.number().int().nonnegative().safe().default(0),
+    activeRollingEpoch: publicRollingContextEpochSchema.nullable().default(null),
+    currentRollingCheckpoint: publicRollingContextCheckpointSchema.nullable().default(null),
     activeCompaction: z
       .object({
         attempt: z.number().int().positive().safe(),
@@ -1684,7 +1787,7 @@ const modelSessionSummarySchema = z
       })
       .strict()
       .nullable(),
-    mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(13),
+    mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(14),
   })
   .strict();
 
@@ -1919,6 +2022,28 @@ const filesystemEditEffectDescriptorSchema = z
     message: "effect before and after digests must differ",
   });
 
+const filesystemCreateEffectDescriptorSchema = z
+  .object({
+    kind: z.literal("filesystem.create"),
+    target: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES)
+      .refine((value) => isAbsolute(value) && !value.includes("\0") && normalize(value) === value, {
+        message: "effect target must be an absolute normalized NUL-free path",
+      }),
+    operationDigest: sha256Schema,
+    beforeSha256: z.null(),
+    afterSha256: sha256Schema,
+    mode: z.number().int().min(0).max(0o777),
+  })
+  .strict();
+
+const filesystemEffectDescriptorSchema = z.discriminatedUnion("kind", [
+  filesystemEditEffectDescriptorSchema,
+  filesystemCreateEffectDescriptorSchema,
+]);
+
 const commandEvidenceSchema = z
   .object({
     kind: z.literal("command"),
@@ -2015,17 +2140,33 @@ const agentEvidenceSchema = z
             workflowId: identifierSchema,
             nodeId: identifierSchema,
             attempt: z.number().int().positive(),
-            kind: z.literal("filesystem.edit"),
+            kind: z.enum(["filesystem.edit", "filesystem.create"]),
             target: z
               .string()
               .min(1)
               .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES),
             operationDigest: z.string().regex(/^[a-f0-9]{64}$/),
-            beforeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+            beforeSha256: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .nullable(),
             afterSha256: z.string().regex(/^[a-f0-9]{64}$/),
             outcome: z.enum(["committed", "uncertain"]),
           })
-          .strict(),
+          .strict()
+          .superRefine((receipt, context) => {
+            const validBefore =
+              receipt.kind === "filesystem.edit"
+                ? receipt.beforeSha256 !== null && receipt.beforeSha256 !== receipt.afterSha256
+                : receipt.beforeSha256 === null;
+            if (!validBefore) {
+              context.addIssue({
+                code: "custom",
+                path: ["beforeSha256"],
+                message: `${receipt.kind} has an invalid before digest`,
+              });
+            }
+          }),
       )
       .max(MAX_AGENT_EFFECT_RECEIPTS)
       .default([]),
@@ -3540,7 +3681,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       effectId: effectIdSchema,
       effectSequence: z.number().int().positive().max(MAX_AGENT_EFFECT_RECEIPTS),
-      descriptor: filesystemEditEffectDescriptorSchema,
+      descriptor: filesystemEffectDescriptorSchema,
     })
     .strict(),
   z
@@ -9427,6 +9568,12 @@ function validateEffectReconciliation(
       }
       break;
     case "target_matches_before":
+      if (descriptor.kind !== "filesystem.edit") {
+        throw new RunReplayError(
+          eventIndex,
+          "create effect reconciliation cannot claim an existing before state",
+        );
+      }
       if (
         event.observedSha256 !== descriptor.beforeSha256 ||
         event.observedMode !== descriptor.mode

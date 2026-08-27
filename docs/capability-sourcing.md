@@ -41,7 +41,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Concurrent tool calls | Reference implementation only | Pi may run independent tool calls concurrently, but Flow owns graph admission, quiescent waves, durable ordering, failure, and recovery semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
 | Exact tool allowlists | Current defense in depth | The adapter passes the exact allowlist to Pi; Flow's broker remains the per-call authorization boundary |
-| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, hash-anchored `edit`, and sandboxed argv-only `exec` definitions built on Pi's custom-tool interface | Pi's built-in edit and bash tools, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic replacement, command/effect journals, containment, and evidence |
+| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, exclusive `create`, hash-anchored `edit`, and sandboxed argv-only `exec` definitions built on Pi's custom-tool interface | Pi's built-in edit and bash tools, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic creation and replacement, command/effect journals, containment, and evidence |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
@@ -59,6 +59,33 @@ through a separate, explicit catalog. Those manifests can arrange only the close
 that both first-party hosts project. Catalog v2 can also supply bounded static note literals. The
 manifests cannot supply actions, data bindings, functions, themes, links, assets, code, remote
 resources, or dynamic children.
+
+## Learned from DeepSeek harness
+
+Flow reviewed DeepSeek Harness's current
+[compaction subsystem](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/compaction.md)
+and its related design records on August 27, 2026. The review covered the
+[capability seam](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-06-18-compaction-capability-seam.md),
+[routed capacity policy](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-07-20-routed-model-context-and-compaction-policy.md),
+[prefix-cache strategy](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/bug-fix/2026-07-21-compaction-summary-prefix-cache-reuse.md),
+and
+[overflow recovery](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-07-10-after-call-compaction-pressure-and-overflow-recovery.md).
+
+| Pattern | Flow treatment | Reason |
+| --- | --- | --- |
+| Append-only source log with a smaller derived surface | **Adopted independently** | Flow's private model-session record remains complete. A rolling checkpoint changes only the provider projection. |
+| Durable compaction start and end markers | **Adopted independently** | Rolling epoch start and settlement events make interrupted summary work detectable and replayable. |
+| Exact retained tail and balanced tool pairs | **Adopted independently** | Flow keeps two recent requests and their complete tool-call/result pairs exact. |
+| Separate capacity facts from compaction policy | **Adopted independently** | The selected model owns its capacity. Domain policy owns thresholds, reserves, and limits. |
+| Model-free reduction before summarization | **Adopted with a different mechanism** | Flow uses verified artifact references. It doesn't replace primary tool-result events with pruned text. |
+| Direct replacement of the conversation surface | **Not adopted** | Flow derives a projection and never rewrites or shadows authoritative source events. |
+| Manual `/compact` command | **Deferred** | Current workflows use explicit automatic policy. Add manual control only after independent operator demand. |
+| Retry after provider-confirmed overflow | **Deferred** | Exact OpenAI counting prevents ordinary overflow. Anthropic remains estimated, but Flow doesn't add a provider retry without a separate proof-safe design. |
+| Prefix-cache-aware summary requests | **Evaluate later** | Replaying a warm prefix can reduce cost. Flow must first prove that the internal checkpoint tool and domain validation remain unchanged. |
+
+DeepSeek's compaction events are log-only, while one replacement user message changes its model
+surface. Flow uses a stricter two-plane boundary. The primary model-session record never loses or
+shadows a source event. This difference preserves Flow's recovery and evidence rules.
 
 ## Imported containment primitive
 

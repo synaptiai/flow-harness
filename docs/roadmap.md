@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 includes policy, approvals, hash-anchored edits, durable effect
+Gates 0–2 are implemented. Gate 3 includes policy, approvals, exclusive file creation, hash-anchored edits, durable effect
 receipts, and sandboxed argument-vector command execution.
 
 Gate 4 includes recovery, same-host ownership, effect reconciliation, durable budgets, detached
@@ -85,6 +85,7 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Timeouts terminate Linux PID-namespace process trees or POSIX process groups and record partial output.
 - Side-effect uncertainty blocks automatic retry.
 - Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
+- Exclusive creation records an absent pre-state and after hash for one new UTF-8 file. It coordinates with edits on the same target. It never replaces an existing path. Recovery fails closed when it cannot distinguish non-application from later deletion. *(Implemented.)*
 - A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT and the operator-selected container command profile.)*
 - The initial fixed profile denies network and ambient credentials. It permits workspace work,
   protects durable state, and records provenance. *(Implemented for native SRT and
@@ -661,6 +662,32 @@ The immutable alpha.3 release doesn't gain this command retroactively.
 Alpha.4 is the first package governed by Slice 11.1. It doesn't add a supported library import,
 expand the corpus without release-produced evidence, or claim stable compatibility.
 
+### Slice 11.3: Keep long model sessions within safe provider capacity
+
+- **Implemented in current source:** Add one explicit rolling context policy for embedded Pi agent
+  nodes. Omission preserves existing behavior. The published alpha.4 package remains unchanged.
+- **Implemented in current source:** Intercept Pi's exact serialized OpenAI Responses or Anthropic
+  Messages payload before inference. Use the same-origin provider count endpoint. Preserve exact
+  versus estimated uncertainty. Reject unavailable measurement without a token heuristic fallback.
+- **Implemented in current source:** Record write-ahead capacity checks and rolling epoch starts and
+  settlements in the private append-only model-session record. Bind cumulative and delta source
+  ranges. Also bind payload, surface, runtime, policy, and public-state identities.
+- **Implemented in current source:** Preserve the objective, Flow authority, current instructions,
+  tools, protected constraints, and complete tool pairs. Keep the two most recent completed
+  requests exact. Project only eligible older artifact-backed results and closed history.
+- **Implemented in current source:** Limit one epoch to two internal checkpoint-tool summary
+  attempts. Limit one session to eight epochs and 16 summary calls. Require a 4,096-byte minimum
+  reduction. Add summary usage to node and run budgets.
+- **Implemented in current source:** Reconstruct only complete accepted checkpoints after restart.
+  Settle unmatched starts as interrupted and verify bindings against original events. Require the
+  inference payload to match the admitted serialized payload.
+- **Implemented in current source:** Fail an opted-in ACP node and unsupported Pi adapter closed.
+  Keep provider-native persistence, automatic opt-in, approximate capacity, and library exports
+  outside this slice.
+
+Read [Keep long model sessions within provider capacity](guides/rolling-context.md) for operator
+guidance and [Architecture](architecture.md#rolling-context-admission) for ownership and non-goals.
+
 ### Possible later slices
 
 - Expand the immutable corpus only with reviewed release-produced artifacts that add meaningful
@@ -671,6 +698,9 @@ expand the corpus without release-produced evidence, or claim stable compatibili
 - Design a versioned Flow process protocol before providing a typed execution client. Define
   negotiation, request identity, framing, backpressure, cancellation, reconnect, errors, binary
   identity, and cleanup before implementation.
+- Evaluate prefix-cache-aware rolling summaries against the current internal checkpoint tool. Keep
+  the domain validator, protected constraints, payload admission, and provider-neutral evidence
+  unchanged. Adopt only after paired measurements show a material cache or cost benefit.
 - Define a stable support window, migration tooling, and channel promotion only as a separately
   approved program backed by multi-release evidence.
 
@@ -694,19 +724,16 @@ Read the [Compatibility policy](compatibility.md) for the current contract and t
   parent-owned process evidence.
 - A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
   OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
-- Three bounded uses of public alpha.4 against one issue in an established separate repository
-  failed safely. Two attempts ended before an edit. A separately authorized rerun committed four
-  partial edits, then failed before dependent verification and goal acceptance. No attempt produced
-  a commit or pull request. This one-task result is product evidence, but it isn't a benchmark or a
-  model-quality conclusion. Read the
-  [alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md).
+- Nine bounded attempts against one issue in a separate repository produced one accepted
+  implementation. The series also exposed one false acceptance and seven nonaccepted attempts.
+  Every failure remains in the denominator. This adaptive one-task result is product evidence, but
+  it isn't a benchmark or a model-quality conclusion. Read the
+  [digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md).
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
-Before extending that field sequence, add a reviewed field-task corpus, bounded source-location
-support, a nonsecret retryability category for provider failures, one effect-free retry rule, and
-an explicit operator disposition for failed attempts with committed effects. Rerun the pinned first
-issue to acceptance before attempting later issues. Preserve failures in the denominator and report
-every human intervention.
+Before extending that field sequence, publish the accepted patch through ordinary review and hosted
+CI. Freeze each later task's base, workflow, and external holdout before execution. Preserve every
+failure in the denominator and report every human intervention.
 
 The standalone harness is compared against the legacy plugin on held-out repository tasks using equivalent model configurations. Record:
 

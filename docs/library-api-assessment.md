@@ -1,8 +1,9 @@
 # Library API assessment
 
 This document assesses whether Flow should expose a supported JavaScript or TypeScript library API.
-It reflects the source prepared for `@synapti/flow-harness@0.1.0-alpha.4` and the package boundary
-introduced in Issue #184.
+It began with the source prepared for `@synapti/flow-harness@0.1.0-alpha.4` and the package boundary
+introduced in Issue #184. The evidence baseline now reflects current source after Issue #190.
+The immutable alpha.4 release notes retain that release's historical counts.
 
 ## Decision
 
@@ -36,13 +37,13 @@ declaration is independently callable.
 
 | Observation | Result | Why it matters |
 | --- | --- | --- |
-| Production TypeScript files | 320 | A broad root export would expose most of the product, not a small SDK. |
-| Exported top-level declarations | 2,938 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
-| Domain declarations | 1,460 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
+| Production TypeScript files | 322 | A broad root export would expose most of the product, not a small SDK. |
+| Exported top-level declarations | 2,983 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
+| Domain declarations | 1,487 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
 | Application declarations | 398 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
-| Infrastructure declarations | 941 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
+| Infrastructure declarations | 959 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
 | Supervisor declarations | 122 | These declarations own queues, worker processes, control requests, and shutdown. |
-| CLI declarations | 17 | The CLI composes 289 of 320 production modules and is the intentional product boundary. |
+| CLI declarations | 17 | The CLI composes 291 of 322 production modules and is the intentional product boundary. |
 | Documented CLI forms | 92 | A future client can't safely wrap every form until their machine outputs and error categories are inventoried. |
 | Direct JSON-to-standard-output sites | 97 | Machine-readable output exists, but many commands own distinct result shapes rather than one versioned automation protocol. |
 
@@ -50,12 +51,12 @@ Reachability shows that a candidate's apparent simplicity can hide a much larger
 
 | Candidate entry | Reachable modules | Layer spread | Assessment |
 | --- | ---: | --- | --- |
-| Workflow compiler | 16 | Domain only | Best extraction candidate, but its compiled graph is still an internal representation. |
-| Run-event parser and reducer | 67 | Domain only | Useful for inspection, but tightly coupled to durable evidence and recovery invariants. |
-| Workflow runner | 75 | Application and domain | High authority through injected stores, executors, artifacts, workspaces, sessions, and approvals. |
-| Local run store | 72 | Infrastructure, application, and domain | Owns filesystem identity, append durability, run ownership, and replay. |
-| Supervisor service | 84 | All non-CLI layers | Owns worker lifecycle, queues, admission, process control, and durable records. |
-| CLI composition root | 289 | All five layers | Correct executable boundary; unsuitable as an in-process API. |
+| Workflow compiler | 18 | Domain only | Best extraction candidate, but its compiled graph is still an internal representation. |
+| Run-event parser and reducer | 69 | Domain only | Useful for inspection, but tightly coupled to durable evidence and recovery invariants. |
+| Workflow runner | 76 | Application and domain | High authority through injected stores, executors, artifacts, workspaces, sessions, and approvals. |
+| Local run store | 73 | Infrastructure, application, and domain | Owns filesystem identity, append durability, run ownership, and replay. |
+| Supervisor service | 85 | All non-CLI layers | Owns worker lifecycle, queues, admission, process control, and durable records. |
+| CLI composition root | 291 | All five layers | Correct executable boundary; unsuitable as an in-process API. |
 
 The exact counts are a point-in-time audit. The conclusion doesn't depend on one count: the current
 module tree crosses multiple authority and lifecycle boundaries and has no curated export surface.
@@ -148,7 +149,7 @@ are process-shaped because they require one owner for resources and durable sett
 ### Workflow validation
 
 The current compiler accepts text, parses YAML, validates graph rules, expands bounded constructs,
-and returns `CompiledWorkflow`. It reaches only 16 domain modules, which makes it the strongest
+and returns `CompiledWorkflow`. It reaches only 18 domain modules, which makes it the strongest
 extraction candidate.
 
 The current return value isn't suitable as a public API. It exposes the complete internal executable
@@ -171,7 +172,7 @@ identity, cancellation, and error contract.
 
 ### Run inspection
 
-The current reducer is deterministic and valuable, but it reaches 67 domain modules. Run events
+The current reducer is deterministic and valuable, but it reaches 69 domain modules. Run events
 cover graphs, approvals, budgets, capabilities, artifacts, model sessions, semantic queries,
 delegation, proof evidence, and recovery.
 

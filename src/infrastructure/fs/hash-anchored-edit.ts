@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import {
   lstat,
+  link as linkFile,
   open,
   readFile,
   rename as renameFile,
@@ -13,12 +14,15 @@ import { dirname, join } from "node:path";
 
 import type {
   FilesystemEditEffectDescriptor,
+  FilesystemEffectDescriptor,
   NodeEffectReconciliationInput,
 } from "../../domain/run/events.js";
 
 export const MAX_EDIT_REPLACEMENTS = 32;
 export const MAX_EDIT_INPUT_BYTES = 262_144;
 export const MAX_EDIT_FILE_BYTES = 8 * 1024 * 1024;
+export const MAX_CREATE_INPUT_BYTES = 262_144;
+export const CREATE_FILE_MODE = 0o644;
 const RECONCILIATION_READ_CHUNK_BYTES = 64 * 1024;
 
 export interface ExactTextEdit {
@@ -34,6 +38,19 @@ export interface HashAnchoredEditRequest {
 export interface HashAnchoredEditResult {
   readonly beforeSha256: string;
   readonly afterSha256: string;
+}
+
+export interface HashAnchoredCreateRequest {
+  readonly content: string;
+}
+
+export interface HashAnchoredCreateResult {
+  readonly afterSha256: string;
+}
+
+export interface HashAnchoredCreateBoundary extends HashAnchoredCreateResult {
+  readonly beforeSha256: null;
+  readonly mode: number;
 }
 
 export interface HashAnchoredEditBoundary extends HashAnchoredEditResult {
@@ -55,6 +72,17 @@ export interface HashAnchoredEditOptions {
   readonly effectLifecycle?: HashAnchoredEditEffectLifecycle;
   readonly removeTemporary?: (path: string) => Promise<void>;
   readonly rename?: (temporaryPath: string, targetPath: string) => Promise<void>;
+  readonly syncDirectory?: (directory: string) => Promise<void>;
+}
+
+export interface HashAnchoredCreateOptions {
+  readonly signal?: AbortSignal;
+  readonly effectLifecycle?: {
+    prepare(boundary: HashAnchoredCreateBoundary): Promise<void>;
+    settle(settlement: HashAnchoredEditBoundarySettlement): Promise<void>;
+  };
+  readonly commit?: (temporaryPath: string, targetPath: string) => Promise<void>;
+  readonly removeTemporary?: (path: string) => Promise<void>;
   readonly syncDirectory?: (directory: string) => Promise<void>;
 }
 
@@ -106,6 +134,42 @@ export class HashAnchoredEditUncertainError extends HashAnchoredEditError {
   }
 }
 
+export type HashAnchoredCreateErrorCode =
+  | "aborted"
+  | "effect_uncertain"
+  | "invalid_input"
+  | "invalid_target"
+  | "io_failure"
+  | "target_busy"
+  | "target_exists";
+
+export class HashAnchoredCreateError extends Error {
+  override readonly name: string = "HashAnchoredCreateError";
+
+  constructor(
+    readonly code: HashAnchoredCreateErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
+
+export class HashAnchoredCreateUncertainError extends HashAnchoredCreateError {
+  override readonly name = "HashAnchoredCreateUncertainError";
+
+  constructor(
+    readonly result: HashAnchoredCreateResult,
+    cause: unknown,
+  ) {
+    super(
+      "effect_uncertain",
+      `file creation committed but durability acknowledgement is uncertain: ${errorMessage(cause)}`,
+      { cause },
+    );
+  }
+}
+
 const mutationQueues = new Map<string, Promise<void>>();
 
 export async function editHashAnchoredTextFile(
@@ -121,8 +185,29 @@ export async function editHashAnchoredTextFile(
   });
 }
 
+export async function createHashAnchoredTextFile(
+  target: string,
+  request: HashAnchoredCreateRequest,
+  options: HashAnchoredCreateOptions = {},
+): Promise<HashAnchoredCreateResult> {
+  validateCreateRequest(request);
+  throwIfCreateAborted(options.signal);
+  return await withMutationQueue(target, async () => {
+    throwIfCreateAborted(options.signal);
+    return await createInQueue(target, request, options);
+  });
+}
+
 export async function reconcileHashAnchoredEditEffect(
   descriptor: FilesystemEditEffectDescriptor,
+  publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
+  options: HashAnchoredEditReconciliationOptions = {},
+): Promise<void> {
+  await reconcileHashAnchoredFilesystemEffect(descriptor, publish, options);
+}
+
+export async function reconcileHashAnchoredFilesystemEffect(
+  descriptor: FilesystemEffectDescriptor,
   publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
   options: HashAnchoredEditReconciliationOptions = {},
 ): Promise<void> {
@@ -213,6 +298,168 @@ async function editInQueue(
     throw new HashAnchoredEditError("io_failure", "edit completed without a result");
   }
   return result;
+}
+
+async function createInQueue(
+  target: string,
+  request: HashAnchoredCreateRequest,
+  options: HashAnchoredCreateOptions,
+): Promise<HashAnchoredCreateResult> {
+  let lock: CrossProcessEditLock;
+  try {
+    lock = await acquireCrossProcessEditLock(target);
+  } catch (error) {
+    throw createFailure("could not acquire file-creation lock", error);
+  }
+
+  let result: HashAnchoredCreateResult | undefined;
+  let operationError: unknown;
+  try {
+    result = await createWhileLocked(target, request, options);
+  } catch (error) {
+    operationError = error;
+  }
+
+  try {
+    await lock.release();
+  } catch (releaseError) {
+    const committedResult =
+      result ??
+      (operationError instanceof HashAnchoredCreateUncertainError
+        ? operationError.result
+        : undefined);
+    if (committedResult !== undefined) {
+      throw new HashAnchoredCreateUncertainError(
+        committedResult,
+        new AggregateError(
+          operationError === undefined ? [releaseError] : [operationError, releaseError],
+          "file-creation lock release failed after target commit",
+        ),
+      );
+    }
+    throw createFailure(
+      `file creation failed and its cross-process lock could not be released (${errorMessage(operationError)})`,
+      releaseError,
+    );
+  }
+
+  if (operationError !== undefined) {
+    throw operationError;
+  }
+  if (result === undefined) {
+    throw new HashAnchoredCreateError("io_failure", "file creation completed without a result");
+  }
+  return result;
+}
+
+async function createWhileLocked(
+  target: string,
+  request: HashAnchoredCreateRequest,
+  options: HashAnchoredCreateOptions,
+): Promise<HashAnchoredCreateResult> {
+  await requireAbsentCreateTarget(target);
+  throwIfCreateAborted(options.signal);
+
+  const content = Buffer.from(request.content, "utf8");
+  const result = Object.freeze({ afterSha256: sha256(content) });
+  const temporaryPath = join(
+    dirname(target),
+    `.flow-create-${sha256(Buffer.from(target)).slice(0, 16)}-${process.pid}-${randomUUID()}.tmp`,
+  );
+  let temporaryCreated = false;
+  let committed = false;
+  let prepared = false;
+  let settlementAttempted = false;
+
+  try {
+    const handle = await openTemporaryFile(temporaryPath, CREATE_FILE_MODE);
+    temporaryCreated = true;
+    await writeAndSyncTemporary(handle, content, CREATE_FILE_MODE);
+    throwIfCreateAborted(options.signal);
+    await requireAbsentCreateTarget(target);
+
+    if (options.effectLifecycle !== undefined) {
+      await options.effectLifecycle.prepare({
+        beforeSha256: null,
+        afterSha256: result.afterSha256,
+        mode: CREATE_FILE_MODE,
+      });
+      prepared = true;
+      throwIfCreateAborted(options.signal);
+    }
+
+    await (options.commit ?? linkFile)(temporaryPath, target);
+    committed = true;
+  } catch (error) {
+    let failure = error;
+    if (temporaryCreated) {
+      try {
+        await removeCreateTemporaryFile(temporaryPath, error, options.removeTemporary ?? unlink);
+      } catch (cleanupError) {
+        failure = cleanupError;
+      }
+    }
+    if (prepared && !committed && options.effectLifecycle !== undefined) {
+      settlementAttempted = true;
+      try {
+        await options.effectLifecycle.settle({
+          outcome: "not_applied",
+          reason: "commit_not_entered",
+        });
+      } catch (settlementError) {
+        failure = createFailure(
+          `file creation failed before commit and its effect settlement also failed (${errorMessage(failure)})`,
+          new AggregateError(
+            [failure, settlementError],
+            "pre-commit file-creation failure and effect settlement both failed",
+          ),
+        );
+      }
+    }
+    throw createFailure("could not commit new file exclusively", failure);
+  }
+
+  try {
+    await (options.removeTemporary ?? unlink)(temporaryPath);
+    temporaryCreated = false;
+    throwIfCreateAborted(options.signal);
+    await (options.syncDirectory ?? syncDirectory)(dirname(target));
+    if (options.effectLifecycle !== undefined) {
+      settlementAttempted = true;
+      await options.effectLifecycle.settle({
+        outcome: "committed",
+        reason: "directory_synced",
+      });
+    }
+    return result;
+  } catch (error) {
+    let cause = error;
+    if (temporaryCreated) {
+      try {
+        await removeCreateTemporaryFile(temporaryPath, error, options.removeTemporary ?? unlink);
+      } catch (cleanupError) {
+        cause = new AggregateError(
+          [cause, cleanupError],
+          "post-commit file-creation failure and temporary cleanup both failed",
+        );
+      }
+    }
+    if (prepared && !settlementAttempted && options.effectLifecycle !== undefined) {
+      settlementAttempted = true;
+      try {
+        await options.effectLifecycle.settle({
+          outcome: "unknown",
+          reason: "post_commit_failure",
+        });
+      } catch (settlementError) {
+        cause = new AggregateError(
+          [cause, settlementError],
+          "post-commit file-creation failure and effect settlement both failed",
+        );
+      }
+    }
+    throw new HashAnchoredCreateUncertainError(result, cause);
+  }
 }
 
 async function editWhileLocked(
@@ -377,7 +624,7 @@ async function editWhileLocked(
 }
 
 async function observeEffectTarget(
-  descriptor: FilesystemEditEffectDescriptor,
+  descriptor: FilesystemEffectDescriptor,
   options: HashAnchoredEditReconciliationOptions,
 ): Promise<NodeEffectReconciliationInput> {
   let pathBefore: BigIntStats;
@@ -389,7 +636,9 @@ async function observeEffectTarget(
   if (!pathBefore.isFile()) {
     return { outcome: "unknown", reason: "target_not_regular" };
   }
-  if (pathBefore.size > BigInt(MAX_EDIT_FILE_BYTES)) {
+  const maximumBytes =
+    descriptor.kind === "filesystem.create" ? MAX_CREATE_INPUT_BYTES : MAX_EDIT_FILE_BYTES;
+  if (pathBefore.size > BigInt(maximumBytes)) {
     return { outcome: "unknown", reason: "target_too_large" };
   }
 
@@ -416,7 +665,7 @@ async function observeEffectTarget(
       observation = { outcome: "unknown", reason: "target_changed_during_observation" };
     } else if (!before.isFile()) {
       observation = { outcome: "unknown", reason: "target_changed_during_observation" };
-    } else if (before.size > BigInt(MAX_EDIT_FILE_BYTES)) {
+    } else if (before.size > BigInt(maximumBytes)) {
       observation = { outcome: "unknown", reason: "target_too_large" };
     } else {
       const expectedBytes = Number(before.size);
@@ -525,7 +774,7 @@ function sameObservedIdentity(left: BigIntStats, right: BigIntStats): boolean {
 }
 
 function classifyRegularTarget(
-  descriptor: FilesystemEditEffectDescriptor,
+  descriptor: FilesystemEffectDescriptor,
   observedSha256: string,
   observedMode: number,
 ): NodeEffectReconciliationInput {
@@ -552,7 +801,7 @@ function classifyRegularTarget(
       observedMode,
     };
   }
-  if (observedSha256 === descriptor.beforeSha256) {
+  if (descriptor.kind === "filesystem.edit" && observedSha256 === descriptor.beforeSha256) {
     return {
       outcome: "not_applied",
       reason: "target_matches_before",
@@ -599,6 +848,21 @@ function validateRequest(request: HashAnchoredEditRequest): void {
     throw new HashAnchoredEditError(
       "invalid_input",
       `edit replacements exceed ${MAX_EDIT_INPUT_BYTES} UTF-8 bytes`,
+    );
+  }
+}
+
+function validateCreateRequest(request: HashAnchoredCreateRequest): void {
+  if (!hasOnlyValidUnicodeScalars(request.content)) {
+    throw new HashAnchoredCreateError(
+      "invalid_input",
+      "file content must contain valid Unicode scalar values",
+    );
+  }
+  if (Buffer.byteLength(request.content, "utf8") > MAX_CREATE_INPUT_BYTES) {
+    throw new HashAnchoredCreateError(
+      "invalid_input",
+      `file content exceeds ${MAX_CREATE_INPUT_BYTES} UTF-8 bytes`,
     );
   }
 }
@@ -678,6 +942,21 @@ async function readRegularFileMetadata(target: string): Promise<{ size: number; 
   }
 }
 
+async function requireAbsentCreateTarget(target: string): Promise<void> {
+  try {
+    await lstat(target);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return;
+    }
+    throw createFailure("could not inspect file-creation target", error);
+  }
+  throw new HashAnchoredCreateError(
+    "target_exists",
+    "file-creation target already exists and will not be replaced",
+  );
+}
+
 function decodeUtf8(content: Buffer): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(content);
@@ -730,6 +1009,23 @@ async function removeTemporaryFile(
     if (!isMissingPath(cleanupError)) {
       throw ioFailure(
         `edit failed and temporary cleanup also failed (${errorMessage(originalError)})`,
+        cleanupError,
+      );
+    }
+  }
+}
+
+async function removeCreateTemporaryFile(
+  path: string,
+  originalError: unknown,
+  remove: (path: string) => Promise<void>,
+): Promise<void> {
+  try {
+    await remove(path);
+  } catch (cleanupError) {
+    if (!isMissingPath(cleanupError)) {
+      throw createFailure(
+        `file creation failed and temporary cleanup also failed (${errorMessage(originalError)})`,
         cleanupError,
       );
     }
@@ -910,6 +1206,40 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
       cause: signal.reason,
     });
   }
+}
+
+function throwIfCreateAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new HashAnchoredCreateError("aborted", "file-creation operation was cancelled", {
+      cause: signal.reason,
+    });
+  }
+}
+
+function createFailure(message: string, cause: unknown): HashAnchoredCreateError {
+  if (cause instanceof HashAnchoredCreateError) {
+    return cause;
+  }
+  if (cause instanceof HashAnchoredEditError && cause.code === "target_busy") {
+    return new HashAnchoredCreateError("target_busy", cause.message, { cause });
+  }
+  if (isNodeError(cause) && cause.code === "EEXIST") {
+    return new HashAnchoredCreateError(
+      "target_exists",
+      "file-creation target already exists and will not be replaced",
+      { cause },
+    );
+  }
+  if (isNodeError(cause) && (cause.code === "ENOENT" || cause.code === "ENOTDIR")) {
+    return new HashAnchoredCreateError(
+      "invalid_target",
+      `${message}: the target parent directory is unavailable`,
+      { cause },
+    );
+  }
+  return new HashAnchoredCreateError("io_failure", `${message}: ${errorMessage(cause)}`, {
+    cause,
+  });
 }
 
 function ioFailure(message: string, cause: unknown): HashAnchoredEditError {

@@ -171,7 +171,6 @@ describe("embedded Pi SDK integration", () => {
         textTruncated: false,
         policyDecisions: [
           expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
-          expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
           expect.objectContaining({ action: "filesystem.write", outcome: "allowed" }),
         ],
         effectReceipts: [

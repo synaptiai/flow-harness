@@ -19,7 +19,7 @@ nodes:
   - id: implement
     type: agent
     agent:
-      prompt: Implement the requested repository change. Read before editing, use exact hash-anchored edits, and do not claim completion without the downstream verifier.
+      prompt: Implement the requested repository change. Use create only for a missing file. Read before editing, use exact hash-anchored edits, and do not claim completion without the downstream verifier.
       model:
         provider: anthropic
         id: claude-sonnet-4-5
@@ -27,6 +27,7 @@ nodes:
       tools:
         - read
         - ls
+        - create
         - edit
       recovery:
         mode: fresh

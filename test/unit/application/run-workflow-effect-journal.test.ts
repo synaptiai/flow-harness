@@ -468,14 +468,19 @@ function executorFrom(
 
 function successfulAgentOutcome(
   effectReceipts: readonly AgentEffectReceipt[],
-  authorizedEffects: readonly ReturnType<typeof descriptor>[] = effectReceipts.map((receipt) => ({
-    kind: receipt.kind,
-    target: receipt.target,
-    operationDigest: receipt.operationDigest,
-    beforeSha256: receipt.beforeSha256,
-    afterSha256: receipt.afterSha256,
-    mode: 0o644,
-  })),
+  authorizedEffects: readonly ReturnType<typeof descriptor>[] = effectReceipts.map((receipt) => {
+    if (receipt.kind !== "filesystem.edit" || receipt.beforeSha256 === null) {
+      throw new Error("expected an edit effect receipt");
+    }
+    return {
+      kind: receipt.kind,
+      target: receipt.target,
+      operationDigest: receipt.operationDigest,
+      beforeSha256: receipt.beforeSha256,
+      afterSha256: receipt.afterSha256,
+      mode: 0o644,
+    };
+  }),
 ) {
   const policy = new PolicyBroker(
     {

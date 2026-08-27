@@ -6,6 +6,7 @@ import { publicDocumentationFiles } from "./public-documentation-files.mjs";
 const properHeadingWords = new Set([
   "ACP",
   "Bun",
+  "DeepSeek",
   "Docker",
   "Flow",
   "GitHub",

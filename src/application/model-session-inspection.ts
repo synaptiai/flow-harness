@@ -17,6 +17,7 @@ const MISMATCH_CATEGORIES = Object.freeze([
   "authority",
   "portable_history",
   "runtime_surface",
+  "routing",
   "attempt",
   "turn",
   "request",

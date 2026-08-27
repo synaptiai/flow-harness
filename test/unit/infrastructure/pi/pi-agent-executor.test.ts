@@ -23,7 +23,11 @@ import {
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../../src/domain/capability/agent-skills.js";
-import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
+import {
+  MAX_POLICY_DECISIONS,
+  PolicyAuditLimitError,
+  PolicyBroker,
+} from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
 import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../../src/domain/run/work-profile.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
@@ -46,6 +50,48 @@ const context: NodeExecutionContext = {
 };
 
 describe("PiAgentExecutor", () => {
+  it("fails an attempt when policy audit exhaustion is followed by a normal model stop", async () => {
+    let observedAbort = false;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        for (let index = 0; index < MAX_POLICY_DECISIONS; index += 1) {
+          input.policyBroker.authorize({
+            action: "filesystem.read",
+            target: `${input.cwd}/file-${index}.txt`,
+            boundary: "inside",
+          });
+        }
+        expect(() =>
+          input.policyBroker.authorize({
+            action: "filesystem.read",
+            target: `${input.cwd}/overflow.txt`,
+            boundary: "inside",
+          }),
+        ).toThrowError(PolicyAuditLimitError);
+        observedAbort = input.signal?.aborted === true;
+        return { text: "Unable to continue after the tool limit.", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(observedAbort).toBe(true);
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_policy_audit_exhausted",
+        message: `agent reached policy audit limit of ${MAX_POLICY_DECISIONS} decisions`,
+        sideEffectStatus: "none",
+      },
+      evidence: {
+        text: "",
+        policyDecisions: expect.arrayContaining([
+          expect.objectContaining({ sequence: MAX_POLICY_DECISIONS }),
+        ]),
+      },
+    });
+  });
+
   it("overrides a terminal model result after durable command output exhausts the artifact budget", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
@@ -143,32 +189,35 @@ describe("PiAgentExecutor", () => {
     });
   });
 
-  it("rejects a writable attempt without a durable effect journal before starting Pi", async () => {
-    let runnerCalls = 0;
-    const runner: PiAgentRunner = {
-      async run() {
-        runnerCalls += 1;
-        return { text: "should not run", stopReason: "stop" };
-      },
-    };
+  it.each(["edit", "create"] as const)(
+    "rejects a %s attempt without a durable effect journal before starting Pi",
+    async (tool) => {
+      let runnerCalls = 0;
+      const runner: PiAgentRunner = {
+        async run() {
+          runnerCalls += 1;
+          return { text: "should not run", stopReason: "stop" };
+        },
+      };
 
-    const outcome = await new PiAgentExecutor(runner).execute(
-      agentNode(300_000, ["edit"]),
-      context,
-    );
+      const outcome = await new PiAgentExecutor(runner).execute(
+        agentNode(300_000, [tool]),
+        context,
+      );
 
-    expect(runnerCalls).toBe(0);
-    expect(outcome).toEqual({
-      status: "failed",
-      error: {
-        code: "pi_effect_journal_unavailable",
-        message: "writable agent execution requires a durable effect journal",
-        retryable: false,
-        sideEffectStatus: "none",
-      },
-      evidence: null,
-    });
-  });
+      expect(runnerCalls).toBe(0);
+      expect(outcome).toEqual({
+        status: "failed",
+        error: {
+          code: "pi_effect_journal_unavailable",
+          message: "writable agent execution requires a durable effect journal",
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+        evidence: null,
+      });
+    },
+  );
 
   it("passes the exact model and tool allowlist to the embedded runner", async () => {
     let request: PiAgentRunRequest | undefined;
@@ -321,6 +370,56 @@ describe("PiAgentExecutor", () => {
         protectedConstraints: ["Never change release policy."],
         minimumReductionBytes: 1_024,
         outputTokenLimits: [512, 256],
+      },
+    });
+  });
+
+  it("passes rolling-context settings to the runner", async () => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "Rolling context configured.", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), {
+      ...context,
+      contextCompaction: {
+        mode: "rolling",
+        pressureThresholdPercent: 85,
+        protectedConstraints: ["Keep the acceptance criteria exact."],
+      },
+    });
+
+    expect(outcome.status).toBe("succeeded");
+    expect(request).toMatchObject({
+      contextCompactionMode: "rolling",
+      rollingContext: {
+        pressureThresholdPercent: 85,
+        protectedConstraints: ["Keep the acceptance criteria exact."],
+      },
+    });
+  });
+
+  it("preserves a stable rolling-context failure code from the runner", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "",
+          stopReason: "error",
+          failureCode: "pi_model_context_measurement_unavailable",
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_model_context_measurement_unavailable",
+        retryable: false,
       },
     });
   });
@@ -1583,6 +1682,28 @@ describe("EmbeddedPiAgentRunner", () => {
     );
 
     await expect(runner.run(agentRequest())).rejects.toThrowError(/cost.*finite/i);
+  });
+
+  it("rounds every positive provider charge up to at least one micro-dollar", async () => {
+    const fakeSession = {
+      state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      getSessionStats: () => ({ ...sessionStats(), cost: 1e-22 }),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    await expect(runner.run(agentRequest())).resolves.toMatchObject({
+      usage: { costUsdMicros: 1 },
+    });
   });
 
   it("does not create a session when cancellation arrives during runtime setup", async () => {

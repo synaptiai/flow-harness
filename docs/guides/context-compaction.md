@@ -8,6 +8,12 @@ This feature is experimental in Flow `0.1.0-alpha.4` and the current source tree
 inspect evaluations, but you cannot activate a compaction mode for ordinary production runs. A
 favorable report is evidence for review, not authority to change runtime defaults.
 
+The current source separately provides rolling context as a production opt-in for embedded Pi
+agents. That policy uses exact serialized-request measurement, pressure-triggered durable epochs,
+and different fixed limits. It doesn't activate from an evaluation report. Read
+[Keep long model sessions within provider capacity](rolling-context.md) when you need the ordinary
+runtime policy.
+
 Install the [Flow preview](install-preview.md) before you use this guide. Run commands that name the
 included `examples/...` plan from a Flow checkout that matches the installed version.
 

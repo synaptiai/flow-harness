@@ -10,14 +10,14 @@ import type {
   LeanProofModelRoute,
   LeanProofRequest,
 } from "../domain/proof/lean-proof-verification.js";
-import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
+import type { RuntimeContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import type {
   AgentCommandApprovalReference,
   AgentCommandSettlementOutcome,
   AgentDelegationReceipt,
   AgentEffectReceipt,
   ChildResultEvidence,
-  FilesystemEditEffectDescriptor,
+  FilesystemEffectDescriptor,
   NodeEffectReconciliationInput,
   NodeEffectSettlementInput,
   NodeEvidence,
@@ -195,7 +195,7 @@ export interface NodeExecutionContext {
   readonly modelWorkProfile?: ModelWorkProfileContext;
   readonly phaseRouting?: PhaseRoutingDecision;
   readonly modelSession?: ModelSessionJournal;
-  readonly contextCompaction?: ContextCompactionPolicy;
+  readonly contextCompaction?: RuntimeContextCompactionPolicy;
   readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
   readonly agentMaxOutputTokens?: number;
@@ -250,7 +250,7 @@ export interface LeanProofDriver {
 }
 
 export interface NodeEffectJournal {
-  prepare(descriptor: FilesystemEditEffectDescriptor): Promise<PreparedNodeEffect>;
+  prepare(descriptor: FilesystemEffectDescriptor): Promise<PreparedNodeEffect>;
 }
 
 export interface PreparedNodeEffect {
@@ -341,7 +341,7 @@ export interface AgentCommandSettlementReceipt {
 
 export interface NodeEffectReconciler {
   reconcile(
-    descriptor: FilesystemEditEffectDescriptor,
+    descriptor: FilesystemEffectDescriptor,
     publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<void>;

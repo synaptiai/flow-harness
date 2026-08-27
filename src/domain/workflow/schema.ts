@@ -14,6 +14,12 @@ import {
 } from "../capability/workflow-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
 import {
+  DEFAULT_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT,
+  MAX_PROTECTED_CONTEXT_CONSTRAINTS,
+  MAX_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT,
+  MIN_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT,
+} from "../run/context-compaction.js";
+import {
   AGENT_TOOL_NAMES,
   type CompiledResultSchema,
   FLOW_WORKFLOW_API_VERSION,
@@ -66,6 +72,35 @@ const agentRecoverySchema = z
   .object({
     mode: z.literal("fresh"),
     maxAttempts: z.number().int().min(2).max(16),
+  })
+  .strict();
+
+const rollingContextCompactionSchema = z
+  .object({
+    mode: z.literal("rolling"),
+    pressureThresholdPercent: z
+      .number()
+      .int()
+      .min(MIN_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT)
+      .max(MAX_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT)
+      .default(DEFAULT_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT),
+    protectedConstraints: z
+      .array(z.string().min(1).max(4_096))
+      .max(MAX_PROTECTED_CONTEXT_CONSTRAINTS)
+      .refine(
+        (constraints) => new Set(constraints).size === constraints.length,
+        "protected context constraints must be unique",
+      )
+      .refine(
+        (constraints) =>
+          constraints.reduce(
+            (total, constraint) => total + Buffer.byteLength(constraint, "utf8"),
+            0,
+          ) <=
+          64 * 1024,
+        "protected context constraints must not exceed 65536 UTF-8 bytes",
+      )
+      .default([]),
   })
   .strict();
 
@@ -228,6 +263,7 @@ const agentConfigSchema = z
       .default([]),
     toolApproval: agentToolApprovalSchema.optional(),
     recovery: agentRecoverySchema.optional(),
+    contextCompaction: rollingContextCompactionSchema.optional(),
     timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
   })
   .strict()

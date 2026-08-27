@@ -587,7 +587,7 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.tools.0");
   });
 
-  it("accepts an agent node with the hash-anchored edit tool explicitly declared", () => {
+  it("accepts an agent node with hash-anchored edit and create tools explicitly declared", () => {
     const source = workflowWithNodes(`
   - id: analyze
     type: agent
@@ -597,7 +597,7 @@ nodes:
         provider: anthropic
         id: claude-sonnet-4-5
         thinking: medium
-      tools: [read, ls, edit]
+      tools: [read, ls, edit, create]
   - id: verify
     type: command
     dependsOn: [analyze]
@@ -610,7 +610,7 @@ nodes:
       id: "analyze",
       type: "agent",
       agent: {
-        tools: ["read", "ls", "edit"],
+        tools: ["read", "ls", "edit", "create"],
         timeoutMs: 300000,
       },
     });
@@ -911,6 +911,106 @@ nodes:
 
     expect(node?.type).toBe("agent");
     expect(node?.type === "agent" ? node.agent.recovery : undefined).toBeUndefined();
+  });
+
+  it("compiles and digest-binds an immutable rolling context policy with explicit defaults", () => {
+    const rollingSource = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a long repository session without losing durable history.
+      model: { provider: openai, id: gpt-5.6 }
+      contextCompaction: { mode: rolling }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+    const omittedSource = rollingSource.replace("      contextCompaction: { mode: rolling }\n", "");
+
+    const rolling = compileWorkflowText(rollingSource, "rolling-context.workflow.yaml");
+    const omitted = compileWorkflowText(omittedSource);
+    const node = rolling.nodes[0];
+
+    expect(node).toMatchObject({
+      type: "agent",
+      agent: {
+        contextCompaction: {
+          mode: "rolling",
+          pressureThresholdPercent: 85,
+          protectedConstraints: [],
+        },
+      },
+    });
+    expect(node?.type === "agent" && Object.isFrozen(node.agent.contextCompaction)).toBe(true);
+    expect(
+      node?.type === "agent" && Object.isFrozen(node.agent.contextCompaction?.protectedConstraints),
+    ).toBe(true);
+    expect(calculateWorkflowDigest(rolling)).not.toBe(calculateWorkflowDigest(omitted));
+  });
+
+  it("keeps rolling context disabled when the workflow omits the policy", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze without rolling context.
+      model: { provider: openai, id: gpt-5.6 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`),
+    );
+    const node = workflow.nodes[0];
+
+    expect(node?.type).toBe("agent");
+    expect(node?.type === "agent" ? node.agent.contextCompaction : undefined).toBeUndefined();
+  });
+
+  it.each([
+    ["unsupported mode", "{ mode: eager }", "nodes.0.agent.contextCompaction.mode"],
+    [
+      "threshold below the safe range",
+      "{ mode: rolling, pressureThresholdPercent: 49 }",
+      "nodes.0.agent.contextCompaction.pressureThresholdPercent",
+    ],
+    [
+      "threshold above the safe range",
+      "{ mode: rolling, pressureThresholdPercent: 96 }",
+      "nodes.0.agent.contextCompaction.pressureThresholdPercent",
+    ],
+    [
+      "fractional threshold",
+      "{ mode: rolling, pressureThresholdPercent: 84.5 }",
+      "nodes.0.agent.contextCompaction.pressureThresholdPercent",
+    ],
+    [
+      "duplicate protected constraint",
+      "{ mode: rolling, protectedConstraints: [Keep tests green., Keep tests green.] }",
+      "nodes.0.agent.contextCompaction.protectedConstraints",
+    ],
+    [
+      "unknown field",
+      "{ mode: rolling, pressureThresholdPercent: 85, providerFallback: true }",
+      "nodes.0.agent.contextCompaction",
+    ],
+  ])("rejects a rolling context policy with %s", (_case, policy, path) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a long repository session.
+      model: { provider: openai, id: gpt-5.6 }
+      contextCompaction: ${policy}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", path);
   });
 
   it("rejects fresh recovery for an agent with arbitrary command execution", () => {

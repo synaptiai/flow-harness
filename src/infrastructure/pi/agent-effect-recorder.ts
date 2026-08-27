@@ -3,14 +3,20 @@ import type { NodeEffectJournal, PreparedNodeEffect } from "../../application/po
 import { MAX_POLICY_TARGET_BYTES } from "../../domain/policy/broker.js";
 import type { PolicyAttribution } from "../../domain/policy/types.js";
 
-export interface AgentEffectIdentity {
-  readonly kind: "filesystem.edit";
-  readonly target: string;
-  readonly operationDigest: string;
-}
+export type AgentEffectIdentity =
+  | {
+      readonly kind: "filesystem.edit";
+      readonly target: string;
+      readonly operationDigest: string;
+    }
+  | {
+      readonly kind: "filesystem.create";
+      readonly target: string;
+      readonly operationDigest: string;
+    };
 
 export interface AgentEffectPreparation {
-  readonly beforeSha256: string;
+  readonly beforeSha256: string | null;
   readonly afterSha256: string;
   readonly mode: number;
 }
@@ -65,11 +71,11 @@ export class AgentEffectRecorder {
         if (this.journal === undefined) {
           throw new AgentEffectJournalUnavailableError();
         }
-        validatePreparation(preparation);
+        validatePreparation(identity, preparation);
         const durablePreparation = Object.freeze(structuredClone(preparation));
         preparing = true;
         try {
-          prepared = await this.journal.prepare({ ...identity, ...durablePreparation });
+          prepared = await this.journal.prepare(effectDescriptor(identity, durablePreparation));
           acceptedPreparation = durablePreparation;
           this.#unpreparedReservationCount -= 1;
           this.#preparedEffectCount += 1;
@@ -212,25 +218,55 @@ function validateIdentity(identity: AgentEffectIdentity): void {
 }
 
 function validateEffectHashes(effect: {
-  readonly beforeSha256: string;
+  readonly kind: AgentEffectIdentity["kind"];
+  readonly beforeSha256: string | null;
   readonly afterSha256: string;
 }): void {
-  validateSha256(effect.beforeSha256, "effect before digest");
   validateSha256(effect.afterSha256, "effect after digest");
-  if (effect.beforeSha256 === effect.afterSha256) {
-    throw new RangeError("effect before and after digests must differ");
+  if (effect.kind === "filesystem.edit") {
+    if (effect.beforeSha256 === null) {
+      throw new RangeError("filesystem.edit requires an effect before digest");
+    }
+    validateSha256(effect.beforeSha256, "effect before digest");
+    if (effect.beforeSha256 === effect.afterSha256) {
+      throw new RangeError("effect before and after digests must differ");
+    }
+  } else if (effect.beforeSha256 !== null) {
+    throw new RangeError("filesystem.create requires an absent before state");
   }
 }
 
-function validatePreparation(preparation: AgentEffectPreparation): void {
-  validateSha256(preparation.beforeSha256, "effect before digest");
-  validateSha256(preparation.afterSha256, "effect after digest");
-  if (preparation.beforeSha256 === preparation.afterSha256) {
-    throw new RangeError("effect before and after digests must differ");
-  }
+function validatePreparation(
+  identity: AgentEffectIdentity,
+  preparation: AgentEffectPreparation,
+): void {
+  validateEffectHashes({ kind: identity.kind, ...preparation });
   if (!Number.isInteger(preparation.mode) || preparation.mode < 0 || preparation.mode > 0o777) {
     throw new RangeError("effect mode must be an integer between 0 and 0777");
   }
+}
+
+function effectDescriptor(identity: AgentEffectIdentity, preparation: AgentEffectPreparation) {
+  if (identity.kind === "filesystem.edit") {
+    if (preparation.beforeSha256 === null) {
+      throw new AgentEffectReservationError();
+    }
+    return {
+      ...identity,
+      beforeSha256: preparation.beforeSha256,
+      afterSha256: preparation.afterSha256,
+      mode: preparation.mode,
+    } as const;
+  }
+  if (preparation.beforeSha256 !== null) {
+    throw new AgentEffectReservationError();
+  }
+  return {
+    ...identity,
+    beforeSha256: null,
+    afterSha256: preparation.afterSha256,
+    mode: preparation.mode,
+  } as const;
 }
 
 function validateJournalReceipt(

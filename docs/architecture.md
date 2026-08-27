@@ -9,7 +9,7 @@ The standalone harness reverses that relationship. Flow owns workflow execution 
 This document describes the target architecture unless a section is explicitly labeled as the
 current executable slice. The delivery roadmap is the source of truth for implementation status.
 Gates 1 and 2 provide compiled graphs, evidence-based completion, bounded Pi agent nodes,
-cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, hash-anchored edits,
+cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, exclusive file creation, hash-anchored edits,
 argv-only agent commands, fail-closed native command containment, exact deterministic-command
 approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
 recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh agent attempts,
@@ -78,6 +78,10 @@ eligible fresh recovery.
 Gate 9 also adds a dedicated reference-first compaction experiment. It projects verified artifact
 references before one optional bounded summary and compares three modes on held-out tasks. It does
 not enable a production compaction policy.
+Current source separately adds an explicit rolling-context policy for embedded Pi agents. It
+measures the exact serialized provider request, records durable capacity and checkpoint evidence,
+and derives repeated bounded projections without changing the primary-event ledger. The published
+alpha.4 package doesn't include this later source capability.
 Gate 9 also lets an operator attach a bounded, evidence-backed relationship sidecar to reviewed
 supplemental memory. Relationship admission resolves exact run events, while execution uses only
 the immutable effective runtime. Contradictions remain explicit and unresolved. No live graph or
@@ -162,6 +166,7 @@ flowchart TB
         delegation["Bounded delegation evaluation<br/>One sealed local child · no activation"]
         proofQualification["Proof qualification<br/>Coverage · faithfulness · tests · lifecycle"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
+        rolling["Rolling context admission<br/>Exact count · durable projection · fail closed"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
     end
@@ -251,6 +256,7 @@ flowchart TB
     delegation -->|"Runs paired task classes"| engine
     proofQualification -->|"Checks the complete declared denominator"| engine
     compaction -->|"Runs held-out trials"| engine
+    engine -->|"Selects one explicit Pi policy"| rolling
     adaptation -->|"Stages one atomic entry and relationship change"| memory
     memory -->|"Supplies exact target context"| engine
     goals -->|"Supplies bounded cross-run context"| engine
@@ -283,6 +289,11 @@ flowchart TB
     acpProcess -->|"Returns evidence"| agents
     agents -->|"Appends completed portable events"| sessions
     sessions -->|"Supplies measured context history"| compaction
+    sessions -->|"Supplies append-only source history"| rolling
+    artifacts -->|"Proves older tool-result references"| rolling
+    rolling -->|"Returns one measured request surface"| agents
+    rolling -->|"Appends checks and checkpoints"| sessions
+    rolling -->|"Counts the serialized request"| models
     sessions -->|"Supplies one fresh untrusted-data turn"| agents
     agents -->|"Uses workspace tools through Flow policy"| project
     agents -->|"Requests bounded code context"| semantic
@@ -336,13 +347,17 @@ Read the diagram from top to bottom:
    without one sealed foreground child, and it never creates activation authority. Proof
    qualification keeps mathematical coverage, human statement
    faithfulness, ordinary tests, policy, cost, latency, and cleanup as separate complete fields.
+   An explicitly selected rolling-context policy admits only a provider request that has a durable
+   count decision and matching serialized identity.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state. A selected ACP attempt gets a fresh process, private
    directory, session binding, provider-domain network route, and credential lease. The semantic
    service starts one exact language server for one request against a read-only, network-denied
    project projection. The Lean appliance compiles one exact statement in a disposable container,
-   then requires SafeVerify and Nanoda to agree before it returns proof evidence.
+   then requires SafeVerify and Nanoda to agree before it returns proof evidence. Embedded Pi can
+   derive a smaller rolling request from private source events, but local ACP, OMP, and Prime
+   adapters don't receive that production policy.
 
 4. Durable project state records events, evidence, private model context, goal revisions,
    ownership, installed capabilities, evaluations, and isolated workspace identity. Flow replays
@@ -381,6 +396,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
 | Portable model-session boundary | `src/domain/run/model-session.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/fs/jsonl-model-session-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Records completed provider-neutral context and write-ahead request identities privately, renders bounded fresh-turn recovery context, and exposes only redacted integrity metadata. |
+| Rolling context admission | `src/domain/run/model-request-capacity.ts`, `src/domain/run/context-compaction.ts`, `src/domain/run/model-session.ts`, `src/domain/workflow/schema.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/pi/provider-input-token-counter.ts`, `src/infrastructure/pi/pi-agent-executor.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Compiles one explicit policy, measures Pi's exact serialized provider payload, derives bounded reference and summary projections from append-only history, persists restart-safe checkpoints, and fails unsupported or changed request surfaces before inference. |
 | Context compaction experiment | `src/domain/run/context-compaction.ts`, `src/domain/evaluation/context-compaction-evaluation.ts`, `src/application/evaluation-adapter.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-plan.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Projects verified artifact references, records bounded summary lifecycle evidence, runs the balanced three-mode evaluation, and prevents production activation. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
@@ -424,6 +440,7 @@ Architecture is derived from these flows.
 | Maintain long-horizon context | An operator initializes or updates the project goal workspace | One complete immutable revision or a no-change conflict; a new run can freeze the current revision explicitly |
 | Query code semantics | A user selects one exact language server for a workflow that declares `semantic` | Bounded diagnostics or navigation context plus a private canonical receipt; no file mutation or workflow authority |
 | Manage retained command artifacts | An operator inspects a reference or previews an exact prune plan | Bounded same-run reads, explicit retention state, or reviewed byte removal while immutable run provenance remains |
+| Keep one long model session within capacity | A workflow explicitly enables rolling context for an embedded Pi agent | Every inference request has a provider count decision and matching serialized identity; pressure can produce a restart-safe derived checkpoint without rewriting source history |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
@@ -465,7 +482,10 @@ flowchart TD
     scheduler --> context["Minimal node context<br/>Profile · remaining budget guidance"]
     context --> executor["Agent executor"]
     executor --> pi["Pi AgentSession"]
-    pi --> provider["Selected model provider"]
+    pi -->|"Default request"| provider["Selected model provider"]
+    pi -->|"Explicit rolling policy"| rollingAdmission["Exact count and rolling admission"]
+    rollingAdmission -->|"Count, then matched inference"| provider
+    rollingAdmission <-->|"Checks, source events, and checkpoints"| privateSession[("Private model-session record")]
     pi --> broker["Flow tool broker"]
     broker --> policy["Policy, approval, and sandbox"]
     policy --> environment["Repository, shell, Git, browser, and APIs"]
@@ -773,6 +793,56 @@ mismatch categories. The projection doesn't return private values. Read
 the [Workflow specification](workflow-spec.md#portable-model-session-record) for the persisted
 contract.
 
+### Rolling context admission
+
+Production rolling context reuses the private model-session record but not the evaluation store or
+activation mechanism. The workflow compiler owns the explicit policy and defaults. The production
+executor permits it only for an embedded Pi agent. The Pi adapter owns final-payload interception,
+provider counting, reference projection, summary generation, and the matching reserialization gate.
+The domain owns capacity arithmetic, checkpoint validation, cumulative and delta ranges, limits,
+and content-free public projection.
+
+For every rolling task request, Pi serializes the actual request and Flow intercepts it before
+network I/O. The adapter sends a closed filtered copy to the same-origin provider count endpoint.
+OpenAI Responses returns an exact count. Anthropic Messages returns an estimate, so the durable
+record preserves that uncertainty. Unsupported adapters and ACP executors fail closed. Flow
+doesn't substitute byte arithmetic or a token heuristic.
+
+The append-only record is the source plane. A checkpoint is a derived projection plane. At
+pressure, the projection can replace eligible old large command results with proven retained
+artifact references and summarize a closed older range. The source event still contains the
+complete tool result.
+
+Summary generation uses one Pi-internal `flow_context_checkpoint` tool with a closed JSON Schema.
+The provider adapter can use that schema to improve output reliability, but it doesn't decide
+admission. Pi removes reasoning content, accepts only one unmixed call with the exact three
+arguments, canonicalizes those arguments, and passes the result to the domain validator. The tool
+doesn't execute a workspace action and isn't added to the agent's workflow authority.
+
+Flow revalidates each compact reference before count admission and inference.
+It keeps the original objective, current instructions, tools, authority, protected constraints,
+and two most recent completed requests exact. A later epoch receives the previous accepted summary
+plus only its new eligible delta. The checkpoint binds the complete cumulative source range.
+
+Before summary inference, `rolling_context_epoch_started` records the range, reference surface,
+output allowance, policy, and runtime bindings. `rolling_context_epoch_settled` records rejection,
+interruption, or one complete accepted checkpoint. `model_request_capacity_checked` records every
+summary and task admission. After task admission, Pi serializes the request again. Only the same
+endpoint, payload digest, and byte count can reach inference.
+
+On restart, replay uses only complete accepted settlements. It reconstructs the projection from the
+original events and verifies all bindings. A bounded content-free bootstrap initializes Pi without
+rendering complete pre-checkpoint history. Replay marks an unmatched start interrupted before it
+closes the attempt. Summary text and tool arguments are private and untrusted. They never become
+policy, approval, budget, effect, verification, scheduling, or completion authority.
+
+This boundary deliberately excludes automatic opt-in, provider-owned history, opaque remote
+checkpoints, approximate capacity fallback, unsupported adapters, and ACP approximation. Read
+[Keep long model sessions within provider capacity](guides/rolling-context.md) for use and limits.
+See the [Workflow specification](workflow-spec.md#rolling-context-policy) for exact fields and
+events. See [Recovery and interruption safety](recovery.md#rolling-context-epoch-recovery) for
+restart ordering.
+
 ### Portable Agent Skills
 
 The infrastructure scanner discovers strict local Agent Skills metadata below `.flow/skills`, but
@@ -886,7 +956,15 @@ A2UI-profile terminal package has its own closed contract.
 
 ### Tool broker
 
-The current broker normalizes and canonically resolves every model-requested `read`, `ls`, and `edit` filesystem operation and every argv-only `exec` request, derives its authority class, authorizes only declared operations, and emits bounded decisions tied to the exact run/node attempt. A directory listing is one logical authorization even when it returns many bounded entries. Edit authorization binds a digest of the complete model request. For writable attempts, the application supplies a narrow provider-neutral effect journal. The editor durably records the canonical target, operation digest, before/after SHA-256 values, and permission mode before rename while holding the target lock, then durably settles the effect after the commit boundary while journal publication remains available. A rejected settlement append poisons the journal and leaves the prepared effect unresolved. During recovery, a separate provider-neutral reconciler observes only an open typed edit and publishes through an application-owned callback while the same target lock remains held. It rejects non-regular targets before open and hashes only the initially observed size through bounded chunks. When missing ancestry makes the sibling lock impossible, it may publish only a rechecked `target_missing` observation under the in-process target queue; any observable target is refused. Replay matches every prepared effect, including not-applied effects, to a distinct allowed write decision. Terminal receipts are exact projections of executor-settled committed or unknown effects and must agree with their effect events; recovery observations never become terminal receipts.
+The current broker normalizes and canonically resolves every model-requested `read`, `ls`, `create`, and `edit` filesystem operation and every argv-only `exec` request. It derives the authority class, authorizes only declared operations, and emits bounded decisions tied to the exact run, node, and attempt. One read or directory listing is one logical authorization even when the implementation checks access separately or returns many bounded entries. Create and edit authorization bind a digest of the complete model request.
+
+For writable attempts, the application supplies a narrow provider-neutral effect journal. The mutation layer holds one target lock. Before commit, it records the operation kind, canonical target, operation digest, after hash, and permission mode. An edit also records the before hash. A create records a null before hash and uses fixed mode `0644`. It commits a synced temporary file through an exclusive hard link.
+
+A create cannot replace an existing path. The mutation layer settles the effect after the commit boundary while journal publication remains available. A rejected settlement append poisons the journal and leaves the prepared effect unresolved.
+
+During recovery, a provider-neutral reconciler observes only an open typed filesystem effect. It publishes through an application-owned callback while the same target lock remains held. It rejects non-regular targets before open. It hashes only the initially observed size through bounded chunks. If the sibling lock cannot exist, it can publish only a rechecked `target_missing` observation. It refuses to publish when any target is observable.
+
+An exact edit before-state proves not applied. Absence never proves a create was not applied because another actor might have removed the committed file. Replay matches each prepared effect to a distinct allowed write decision. Terminal receipts project executor-settled committed or unknown effects. They must agree with their effect events. Recovery observations never become terminal receipts.
 
 For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal arguments, and deadline. The application appends `node_agent_command_prepared` before the shared sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded command outcome. Settlement charges retained stdout/stderr immediately, including when the outer agent turn is later interrupted, and terminal agent evidence does not charge it again. Open commands block terminal publication and recovery; arbitrary execution is never treated as proof-safe read-only work. The domain contract distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph nodes.
 
@@ -1380,7 +1458,7 @@ cleanup as separate fields. A complete failure is `not_qualified`. Absent eviden
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `edit`, `exec`, `semantic`,
+- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `create`, `edit`, `exec`, `semantic`,
   and `artifact`. Nodes can also receive exact selected declarative commands while implicit
   extensions and resource discovery remain disabled.
 - Reads include an exact-byte SHA-256 version, and edits require that version and exact Unicode-scalar
@@ -1507,7 +1585,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |
 | Edit fails after atomic rename | Settle it as post-commit unknown when publication remains available, project an uncertain receipt, and fail the node with uncertain side-effect status |
 | Settlement append rejects | Poison later publication and retain the unresolved prepared effect; do not infer an outcome from target bytes |
-| Process dies between edit boundaries | Reconcile each open typed edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
+| Process dies between filesystem mutation boundaries | Reconcile each open typed create or edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
 | Sandbox unavailable or degraded | Fail before command spawn; never fall back to host execution |
 | Sandbox cleanup failure after spawn | Fail with uncertain side-effect status; never report command success |
 | Process-tree termination is unconfirmed and sandbox cleanup also fails | Preserve termination failure as the primary outcome, record cleanup failure as bounded secondary context, and retain unconfirmed termination evidence |

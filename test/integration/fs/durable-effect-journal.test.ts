@@ -111,7 +111,101 @@ describe("durable filesystem effect journal", () => {
       },
     });
   });
+
+  it("reopens a created run with its absent pre-state and terminal receipt intact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-durable-create-"));
+    temporaryDirectories.push(root);
+    const workspace = join(root, "workspace");
+    const runs = join(root, "runs");
+    const target = join(workspace, "MIGRATIONS.md");
+    const content = "# Migrations\n";
+    await mkdir(workspace, { recursive: true });
+    const runId = "durable-create-run";
+
+    const state = await runWorkflow(createWorkflow(), {
+      runId,
+      cwd: workspace,
+      protectedPaths: [],
+      store: new JsonlRunStore(runs),
+      executor: creatingExecutor(target, content),
+      now: incrementingClock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(await readFile(target, "utf8")).toBe(content);
+    const reopenedEvents = await new JsonlRunStore(runs).read(runId);
+    expect(reopenedEvents[2]).toMatchObject({
+      type: "node_effect_prepared",
+      descriptor: {
+        kind: "filesystem.create",
+        target: await realpath(target),
+        beforeSha256: null,
+        afterSha256: sha256(content),
+        mode: 0o644,
+      },
+    });
+    expect(reduceRunEvents(reopenedEvents).nodes.implement?.evidence).toMatchObject({
+      effectReceipts: [
+        {
+          kind: "filesystem.create",
+          beforeSha256: null,
+          afterSha256: sha256(content),
+          outcome: "committed",
+        },
+      ],
+    });
+  });
 });
+
+function creatingExecutor(target: string, content: string): NodeExecutor {
+  return {
+    execute: async (node, context) => {
+      if (node.type === "command") {
+        return await executeEdit(node, context, target, "unused");
+      }
+      if (context.effectJournal === undefined) {
+        throw new Error("integration workflow did not supply a writable agent journal");
+      }
+      const attribution = {
+        runId: context.runId,
+        workflowId: context.workflowId,
+        nodeId: node.id,
+        attempt: context.attempt,
+      } as const;
+      const policy = new PolicyBroker(attribution, ["filesystem.write"]);
+      const effects = new AgentEffectRecorder(attribution, context.effectJournal);
+      const tools = await createWorkspaceAgentTools(context.cwd, ["create"], policy, {
+        effectRecorder: effects,
+      });
+      const create = tools.definitions[0];
+      if (create === undefined) {
+        throw new Error("Flow create tool was not registered");
+      }
+      await create.execute(
+        "integration-create",
+        { path: target, content },
+        undefined,
+        undefined,
+        {} as never,
+      );
+      const text = "create complete";
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "agent",
+          provider: "test",
+          model: "deterministic",
+          text,
+          textHash: sha256(text),
+          textTruncated: false,
+          durationMs: 1,
+          policyDecisions: policy.close(),
+          effectReceipts: effects.close(),
+        },
+      };
+    },
+  };
+}
 
 function editingExecutor(target: string, before: string): NodeExecutor {
   return {
@@ -205,6 +299,25 @@ nodes:
       prompt: Update the exported value.
       model: { provider: test, id: deterministic }
       tools: [edit]
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function createWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: durable-create-workflow }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Create the migration guide.
+      model: { provider: test, id: deterministic }
+      tools: [create]
   - id: verify
     type: command
     dependsOn: [implement]

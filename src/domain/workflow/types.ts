@@ -1,5 +1,6 @@
 import type { CompiledGoal } from "../goal/types.js";
 import type { LeanProofRuntimeIdentity } from "../proof/lean-proof-verification.js";
+import type { RollingContextCompactionPolicy } from "../run/context-compaction.js";
 
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const WORK_PROFILES = Object.freeze(["fast", "standard", "long"] as const);
@@ -24,6 +25,7 @@ export const AGENT_TOOL_NAMES = Object.freeze([
   "read",
   "ls",
   "edit",
+  "create",
   "exec",
   "semantic",
   "artifact",
@@ -160,6 +162,7 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
       readonly mode: "fresh";
       readonly maxAttempts: number;
     };
+    readonly contextCompaction?: RollingContextCompactionPolicy;
     readonly timeoutMs: number;
   };
 }

@@ -29,7 +29,7 @@ on it.
 | Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
 | Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
-| Agent `read`, `ls`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
+| Agent `read`, `ls`, exclusive `create`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
 | Read-only semantic code queries | Linux x64 runtime proof | Limited | Current source supports an exact local LSP 3.18 server under the native sandbox. The hosted containment proof covers Linux x64. |
 | Agent `exec` | Implemented | Unavailable | Linux requires verified PID-namespace descendant containment. |
 | Detached supervisor and workers | Implemented | Implemented | Same-host and same-user only. |
@@ -42,6 +42,7 @@ on it.
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
 | Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
+| Production rolling context | Implemented in current source | Implemented in current source | Explicit embedded Pi opt-in for OpenAI Responses and Anthropic Messages. Published alpha.4 doesn't include it. ACP and other adapters fail closed. |
 
 ## Implemented capability groups
 
@@ -81,26 +82,30 @@ change rules, migration, and rollback.
 - Private, bounded, provider-neutral model-session records with write-ahead request identity,
   completed user/model/tool context, redacted inspection, and fresh-turn recovery context.
 - Reference-first projection and bounded summary lifecycle with a dedicated three-mode held-out
-  evaluator. Ordinary runs don't activate compaction.
+  evaluator. Its reports don't activate a runtime policy.
+- Production rolling context in current source for explicitly opted-in embedded Pi agents. Flow
+  measures the serialized request and keeps the complete private ledger. It preserves a two-request
+  exact tail and reconstructs accepted checkpoints after restart. The published alpha.4 package
+  doesn't include this policy.
 - Content-addressed oversized command output with immutable producer references, bounded same-run
   reads, operator inspection, shared retention, and exact-plan pruning.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
 
 The coding path supports explicit Anthropic and OpenAI preview selections in an empty directory. It
-uses only read, list, and hash-bound edit tools, then requires deterministic exact-byte
+uses only read, list, exclusive create, and hash-bound edit tools, then requires deterministic
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-Three bounded alpha.4 attempts against one issue in an established separate repository produced no
-accepted result. Two ended before an edit. A separately authorized rerun committed four partial
-edits, then failed before dependent verification. Flow failed closed, but this single-task series
-doesn't establish unattended coding effectiveness. Read the
-[alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) for the fixed
-controls, evidence, limitations, and roadmap response.
+Nine bounded attempts against one issue in a separate repository produced one accepted
+implementation. The adaptive series includes one false acceptance and seven nonaccepted attempts.
+It doesn't establish general unattended coding effectiveness. Read the
+[digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) for the fixed controls,
+complete denominator, evidence, and limitations.
 
 Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),
 [Retain and inspect command artifacts](guides/retained-artifacts.md),
 [Inspect and recover portable model sessions](guides/model-sessions.md),
+[Keep long model sessions within provider capacity](guides/rolling-context.md),
 [Evaluate reference-first context compaction](guides/context-compaction.md), the
 [Workflow specification](workflow-spec.md), and [Architecture](architecture.md).
 

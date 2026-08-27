@@ -196,7 +196,7 @@ describe("workspace-confined Pi tools", () => {
     expect(policy.snapshot().map((decision) => decision.sequence)).toEqual(
       policy.snapshot().map((_, index) => index + 1),
     );
-    expect(policy.snapshot().slice(0, -1)).toHaveLength(2);
+    expect(policy.snapshot().slice(0, -1)).toHaveLength(1);
     expect(
       policy
         .snapshot()
@@ -503,6 +503,104 @@ describe("workspace-confined Pi tools", () => {
         outcome: "committed",
       }),
     ]);
+  });
+
+  it("creates a new file through policy and the durable effect journal", async () => {
+    const root = await createTemporaryDirectory();
+    const target = join(root, "MIGRATIONS.md");
+    const content = "# Migrations\n\n## v0.4\n";
+    const policy = policyBroker(["filesystem.write"]);
+    const journalEvents: unknown[] = [];
+    const journal = recordingJournal(
+      journalEvents,
+      async () => await readFile(target, "utf8").catch(() => "<missing>"),
+    );
+    const effects = effectRecorder(journal);
+    const tools = await createWorkspaceAgentTools(root, ["create"], policy, {
+      effectRecorder: effects,
+    });
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    const result = await createTool.execute(
+      "create-call",
+      { path: "MIGRATIONS.md", content },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(tools.names).toEqual(["flow_create"]);
+    expect(await readFile(target, "utf8")).toBe(content);
+    expect(result.content).toContainEqual({
+      type: "text",
+      text: expect.stringMatching(/File created.*sha256:[a-f0-9]{64}/),
+    });
+    expect(journalEvents).toEqual([
+      expect.objectContaining({
+        type: "prepared",
+        targetContent: "<missing>",
+        descriptor: expect.objectContaining({
+          kind: "filesystem.create",
+          target: await realpath(target),
+          beforeSha256: null,
+          afterSha256: sha256(content),
+          mode: 0o644,
+        }),
+      }),
+      {
+        type: "settled",
+        settlement: { outcome: "committed", reason: "directory_synced" },
+      },
+    ]);
+    expect(policy.snapshot()).toEqual([
+      expect.objectContaining({
+        action: "filesystem.write",
+        target: await realpath(target),
+        operationDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        outcome: "allowed",
+      }),
+    ]);
+    expect(effects.snapshot()).toEqual([
+      expect.objectContaining({
+        kind: "filesystem.create",
+        target: await realpath(target),
+        beforeSha256: null,
+        afterSha256: sha256(content),
+        outcome: "committed",
+      }),
+    ]);
+  });
+
+  it("refuses to replace an existing file through flow_create", async () => {
+    const root = await createTemporaryDirectory();
+    const target = join(root, "existing.md");
+    await writeFile(target, "owner\n", "utf8");
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(
+      root,
+      ["create"],
+      policyBroker(["filesystem.write"]),
+      { effectRecorder: effects },
+    );
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "create-call",
+        { path: "existing.md", content: "replacement\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toMatchObject({ code: "target_exists" });
+    expect(await readFile(target, "utf8")).toBe("owner\n");
+    expect(effects.snapshot()).toEqual([]);
   });
 
   it("rejects a stale edit without recording an effect", async () => {

@@ -1274,7 +1274,13 @@ a failed semantic request or fall back to an uncontained server. See
 [Use read-only semantic code queries](guides/semantic-code.md) for operator steps and fixed failure
 categories.
 
-`flow_read` preserves Pi's bounded paging behavior and adds a full-file version marker of the form `sha256:<64-lowercase-hex>`. The digest covers the exact bytes read, not only the displayed page. `flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
+`flow_read` preserves Pi's bounded paging behavior and adds a full-file version marker of the form `sha256:<64-lowercase-hex>`. The digest covers the exact bytes read, not only the displayed page. One read call makes one policy decision even though the underlying reader checks access and then reads the bytes.
+
+`flow_create` accepts `path` and the complete `content` for one new UTF-8 file. Content can be empty and can contain at most 256 KiB of UTF-8 data. It must contain valid Unicode scalar values. The parent directory must already exist. Flow creates the file with mode `0644`.
+
+The tool doesn't create directories, append, or replace any existing filesystem object. A successful call returns the SHA-256 version of the exact created bytes.
+
+`flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
 
 `flow_exec` accepts only `executable`, optional literal `args`, and optional `timeoutMs`. It defaults
 to 120000 ms and caps the deadline at 600000 ms, the executable at 1024 UTF-8 bytes, 64 arguments,
@@ -1310,9 +1316,36 @@ publishing terminal success. If termination cannot be confirmed and sandbox clea
 also fails, the settlement keeps `command_termination_failed` and `terminationStatus: unconfirmed`
 as the primary truth and appends only bounded cleanup context to its message.
 
-After policy authorization, Flow reserves bounded evidence capacity, acquires a target-local exclusive lock, re-reads and preflights the complete request, writes a same-directory exclusive temporary file, preserves permission bits, syncs it, and rechecks the live target bytes and mode. While still holding the lock and before rename, it syncs a `node_effect_prepared` event containing an event-derived identity, attempt-local sequence, canonical target, operation digest, before/after hashes, and mode. Only then may it atomically rename. After directory sync it settles committed; a post-prepare failure before rename settles not applied; a failure after rename settles unknown when publication remains available. The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
+After policy authorization, Flow reserves bounded evidence capacity and acquires a target-local exclusive lock. An edit re-reads and preflights the complete request, writes and syncs a same-directory exclusive temporary file, and rechecks the live target bytes and mode. It preserves the existing permission bits. A create verifies that the target is absent, writes and syncs a same-directory exclusive temporary file, and rechecks absence. It then uses an exclusive hard-link commit so a concurrent filesystem object cannot be overwritten.
 
-The lock is a cooperative local coordination mechanism, not a security boundary or distributed lease. This application-level check is not atomic against a concurrently hostile process changing path components after canonical authorization; the current release retains its trusted-workspace requirement until agent/tool process isolation lands. Pi's built-in tools are disabled, so Flow does not inherit Pi's fuzzy edit rules, direct-write semantics, or optional executable-download behavior. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Agent output is capped at 64 KiB; the ledger retains the bounded text, the complete SHA-256 stream hash, truncation status, ordered policy decisions, and ordered effect receipts, and classifies overflow as `pi_agent_output_limit`. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace and waits for the provider runner plus active edit and command reservations. A runner, effect, or command reservation that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely. Closed audits deny late authorization, receipt publication, or command execution.
+While still holding the lock and before the commit, Flow syncs a `node_effect_prepared` event. The event contains an effect identity, sequence, operation kind, canonical target, request digest, after hash, and mode. An edit also contains its before hash. A create records `beforeSha256: null`. This value distinguishes an absent path from an empty file. Only then can Flow rename an edit or link a create.
+
+Flow settles an effect as committed after directory sync. A post-prepare failure before commit settles as not applied. A failure after commit settles as unknown when journal publication remains available. Creates and edits share the 32-effect attempt limit.
+
+The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
+
+The target lock coordinates cooperating Flow processes on one host. It is not a security boundary or
+a distributed lease. Authorization and mutation are separate application operations. A hostile
+process can change path components between them. This release therefore requires a trusted
+workspace until agent and tool process isolation is available.
+
+Flow disables Pi's built-in tools. Flow therefore doesn't inherit Pi's fuzzy edits, direct writes,
+or optional executable downloads. The node session also disables Pi extensions, skills, prompt
+templates, themes, context files, and project discovery.
+
+Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agent output has a 64
+KiB limit. The ledger retains the bounded text, complete stream hash, truncation status, policy
+decisions, and effect receipts. It classifies output overflow as `pi_agent_output_limit`.
+
+Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason can make the node
+succeed. Reaching the policy-audit limit aborts the session and produces
+`pi_agent_policy_audit_exhausted`. A later normal provider stop can't replace that failure.
+
+Flow permits a bounded cleanup grace after timeout, audit exhaustion, or operator cancellation. It
+waits for the provider runner and active edit and command reservations. An operation that doesn't
+settle produces the applicable terminal error with uncertain side-effect status. It doesn't block
+the scheduler indefinitely. Closed audits deny late authorization, receipt publication, or command
+execution.
 
 `recovery` is optional and is accepted only on agent nodes. The only current mode is `fresh`.
 `maxAttempts` includes the initial attempt, is required when recovery is present, and must be an
@@ -1339,6 +1372,87 @@ command-capable attempt is never replayed automatically.
 Flow disables both Pi assistant-turn retries and provider retries in the embedded session. This
 keeps retry ownership at the Flow attempt layer. Normal model/tool turns inside one live session
 remain possible and stay bounded by the node timeout.
+
+### Rolling context policy
+
+An agent can explicitly enable production rolling context:
+
+```yaml
+contextCompaction:
+  mode: rolling
+  pressureThresholdPercent: 85
+  protectedConstraints:
+    - Preserve failed attempts in the evaluation denominator.
+```
+
+`contextCompaction` is optional, closed, and accepted only on an agent node. Omission preserves
+nonrolling behavior. When present, `mode` must be `rolling`.
+
+`pressureThresholdPercent` is an integer from 50 through 95 and defaults to 85.
+`protectedConstraints` defaults to an empty list. It contains at most 32 unique, nonempty strings.
+One string contains at most 4,096 characters. The complete list contains at most 65,536 UTF-8
+bytes.
+
+The compiler copies and freezes the list. The workflow digest binds the normalized policy.
+Defaults apply only inside an explicitly authored `contextCompaction` object.
+
+The production executor admits rolling context only for the embedded Pi path. A node routed to an
+Agent Client Protocol (ACP) executor fails with `rolling_context_unsupported_acp` before agent
+execution because ACP doesn't expose the exact serialized-request boundary. Within Pi, only the
+`openai-responses` and `anthropic-messages` API adapters have a token-count contract. Any other
+adapter fails closed before inference.
+
+Before each rolling task request, Pi serializes the exact provider request through its selected
+adapter and Flow intercepts it before network I/O. Flow sends a closed filtered request to the same
+origin's token-count endpoint. OpenAI Responses uses `/responses/input_tokens` and records
+`provider_exact`. Anthropic Messages uses `/messages/count_tokens` and records
+`provider_estimate`. Flow rejects redirects, request bodies larger than 1 MiB, responses larger
+than 8 KiB, non-JSON responses, invalid counts, and operations longer than 15 seconds. The private
+record contains the captured payload digest and byte count, not the payload, credential, or raw
+response.
+
+The captured payload supplies its exact serialized output allowance. Flow evaluates:
+
+```text
+usableInputTokens = contextWindowTokens - outputAllowanceTokens - 16384
+absoluteSafe = measuredInputTokens <= usableInputTokens
+underPressure = measuredInputTokens * 100 >=
+                usableInputTokens * pressureThresholdPercent
+```
+
+The comparison uses safe integers and integer cross-multiplication. Flow doesn't use byte counts or
+a token heuristic as a provider-capacity proof. A measured request is `admitted`,
+`reduction_required`, or `over_capacity`.
+
+At pressure, Flow first projects only eligible older oversized command results to validated
+same-attempt artifact references. The two most recent completed requests, including complete tool
+call/result pairs, remain exact. If an older closed range remains eligible, Flow can start one
+rolling epoch with two summary-generation attempts. The attempts serialize output allowances of
+4,096 and 2,048 tokens, respectively, with reasoning disabled.
+
+Each attempt exposes only the internal `flow_context_checkpoint` summary tool. Its closed arguments
+are `version`, `summary`, and `protectedConstraints`. Flow requests provider-side JSON Schema
+constrained sampling when the adapter supports it. That request isn't an admission proof. Flow
+ignores reasoning content, rejects mixed or multiple calls and any missing or extra argument,
+canonicalizes the exact arguments, and applies the domain validator. The internal tool doesn't run
+against the workspace and doesn't extend the node's declared tool authority.
+
+The canonical candidate can contain at most 65,536 UTF-8 bytes. It must retain every protected
+constraint exactly and reduce the provider surface by at least 4,096 UTF-8 bytes. An exact legacy
+text candidate remains valid when it already satisfies the same canonical domain contract.
+
+One session can start at most eight rolling epochs and 16 summary calls. Summary usage contributes
+to node and run token and reported-cost budgets. After an accepted checkpoint, Flow reserializes
+the task request. Its endpoint, payload SHA-256 digest, and byte count must equal the admitted
+request before inference. Serialization drift fails with
+`pi_model_context_checkpoint_invalid`.
+
+Rolling context changes only the provider projection. The private primary-event history remains
+append-only. The original objective, current system instructions, tool catalog, authority, budgets,
+approvals, effects, protected constraints, and two-request exact tail remain outside generated
+summary authority. Read
+[Keep long model sessions within provider capacity](guides/rolling-context.md) for operator
+guidance.
 
 Command nodes are supported on Linux and macOS. Flow rejects them before spawning on Windows until the command adapter can contain and terminate the full descendant process tree.
 
@@ -1531,6 +1645,9 @@ canonical event. The closed event vocabulary is:
 - `resume_surface_prepared`
 - `context_compaction_started`
 - `context_compaction_settled`
+- `model_request_capacity_checked`
+- `rolling_context_epoch_started`
+- `rolling_context_epoch_settled`
 
 The primary prompt is committed exactly once on attempt 1. A request must prepare before its model
 message, tool calls, tool results, and settlement. Tool results must match a prior tool call in the
@@ -1579,13 +1696,65 @@ keeps the prior surface.
 
 Recovery settles an unmatched compaction start as interrupted before it closes the interrupted
 model attempt. A second generation reconstructs its source from committed primary events. It does
-not continue provider-native state. No ordinary workflow field selects a compaction mode, and no
-evaluation report can activate one.
+not continue provider-native state. No ordinary workflow field selects an evaluation compaction
+mode, and no evaluation report can activate one.
+
+The separate production rolling policy uses `model_request_capacity_checked` as a write-ahead
+admission record for each task and summary payload. Checks are contiguous and bind their operation,
+attempt, adapter, payload identity, measurement status, provider method or fixed failure category,
+capacity arithmetic, and decision. A successful task check must match the next
+`model_request_prepared` event's provider-payload identity.
+
+`rolling_context_epoch_started` binds the task request, epoch, generation attempt, and cumulative
+and delta primary-event ranges. It binds the reference surface, output allowance, provider, model,
+adapter, and declared model capacity. It also binds the thinking level, runtime, instructions,
+tools, authority, routing, and policy identities before summary provider I/O.
+
+`rolling_context_epoch_settled` closes the same start. Its outcome is accepted, rejected, or
+interrupted. An accepted private settlement contains the summary text, checkpoint identities, and
+range. It also contains reduction, constraint, binding, policy, and usage evidence.
+
+Rejected and interrupted settlements contain no recoverable summary text.
+
+An eligible private `tool_result_committed` event can contain a bounded `referenceProjection`. The
+event always retains the complete result text. The projection binds its exact original and
+projected UTF-8 byte counts and one or two unique artifact references. The projected JSON must have
+version `1`, kind `flow.reference-tool-result`, contain every bound reference, and be smaller than
+the complete result. Summary serialization uses it only after the artifact store confirms that
+every bound reference is retained, available, and identical.
+
+Replay requires contiguous checks, at most eight epochs, at most two generation attempts in each
+epoch, and a 4,096-token then 2,048-token allowance sequence. Cumulative ranges can grow only over
+original committed primary events, and each later delta begins after the prior accepted cumulative
+range. A current checkpoint is valid only when its source, bindings, policy, protected-constraint
+identity, rendered surface, and accepted settlement agree. The public summary projects only counts,
+capacity arithmetic, uncertainty, digests, byte counts, fixed failure categories, and active state.
+It doesn't project payloads, summary text, constraints, prompts, tool output, credentials, error
+bodies, or private paths.
+
+A recovered session with an accepted checkpoint uses a bounded
+`flow.rolling-context-bootstrap`. The bootstrap contains protocol, session, source, summary,
+binding, and policy identities. It contains no objective, summary text, tool result, or complete
+pre-checkpoint event list. Flow restores the exact objective, checkpoint summary, and committed
+tail before it serializes the provider request.
 
 One encoded event, including its newline, is at most 2 MiB. One record is at most 16 MiB and 1,024
-events. One rendered resume surface is at most 1 MiB and must fit the selected model. Request
-admission reserves 16,384 output tokens and 16,384 safety tokens. Flow subtracts both reserves from
-the selected model's declared context window.
+events. One rendered resume surface is at most 1 MiB and must fit the selected model. Nonrolling
+request admission reserves 16,384 output tokens and 16,384 safety tokens. Rolling admission uses
+the exact output allowance serialized in the provider payload and the same 16,384-token safety
+reserve.
+
+Flow checks the safe zero-input capacity for the fixed 4,096-token summary allowance before it
+starts an epoch. The selected model must also permit at least 4,096 output tokens. Each settled
+summary provider response with valid usage contributes its returned token and cost usage. This
+rule also applies when Flow rejects the candidate. Positive provider costs round up to at least one
+micro-dollar.
+
+Invalid provider usage closes the active epoch with a content-free `provider_error` settlement
+before Flow returns the validation error.
+
+Cancellation during count or summary inference closes the active epoch with an interrupted
+settlement. It doesn't produce an ordinary rejected settlement.
 
 Flow then applies the smaller remaining numeric capacity and global byte limit. The conservative
 byte comparison isn't a provider tokenizer.
@@ -2424,7 +2593,7 @@ or package, change active runs, or delete artifacts.
   hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - Linux PID namespaces contain agent-command descendants; macOS agent commands fail before spawn because process groups are insufficient. The native sandbox does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
-- Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
+- Agent mutation supports one exclusive UTF-8 file creation or exact edit per call. Agents can also use explicitly selected argv-only sandboxed commands. Flow exposes no delete, rename, shell, network, or fuzzy patch tool. It also exposes no environment override, working-directory override, interactive process, background job, directory creation, or multi-file transaction.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
 - Adaptive candidates support root-agent prompt overlays and selected-resource changes in one

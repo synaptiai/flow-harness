@@ -492,22 +492,32 @@ recomputes typed observations and the delta digest, binds prepare/settlement to 
 id, and requires cleanup before check completion when candidate evidence says retained.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
-`flow.effects/v1`. Before an atomic edit rename, Flow syncs `node_effect_prepared` with a stable
-effect identity, target, request digest, before/after hashes, and mode. It later syncs exactly one
+`flow.effects/v1`. Before an atomic edit rename or create link, Flow syncs `node_effect_prepared`
+with a stable effect identity, operation kind, target, request digest, after hash, and mode. An edit
+records its before hash. A create records a null before hash because the path is absent. Flow later syncs exactly one
 settlement: `committed/directory_synced`, `not_applied/commit_not_entered`, or
 `unknown/post_commit_failure`. A process death can therefore leave an unresolved prepared effect,
 or a settled effect without a node outcome. Inspection preserves that distinction.
 
-For each unresolved prepared edit, recovery enters the same target queue and cross-process lock as
-normal edits, rejects non-regular targets before opening them, opens without following symlinks,
-hashes the initially observed size in fixed chunks totaling no more than 8 MiB, and compares the
-regular-file SHA-256 and POSIX mode. It appends `node_effect_reconciled` while the target lock is
-still held. If the target's parent has disappeared so the sibling lock cannot exist, recovery
-rechecks the path and may publish only `target_missing` under the in-process target queue; if any
-target is observable, it publishes nothing. An exact after-state becomes
-`applied/target_matches_after`; an exact before-state
-becomes `not_applied/target_matches_before`; missing, non-regular, unreadable, oversized, divergent,
-wrong-mode, or raced targets become `unknown` with a bounded reason. The event retains a digest and
+For each unresolved prepared filesystem effect, recovery enters the same target queue and
+cross-process lock as normal mutations. It rejects non-regular targets before opening them.
+It opens without following symlinks. It hashes the initially observed size in fixed chunks.
+It then compares the regular-file SHA-256 and POSIX mode.
+
+The edit observation limit is 8 MiB. The create observation
+limit is 256 KiB. Recovery appends `node_effect_reconciled` while it holds the target lock.
+
+If the target's parent has disappeared, the sibling lock cannot exist. Recovery
+rechecks the path and can publish only `target_missing` under the in-process target queue.
+It publishes nothing if any target is observable. An exact after-state becomes
+`applied/target_matches_after`. An edit's exact before-state becomes
+`not_applied/target_matches_before`.
+
+A missing create remains unknown because recovery cannot
+distinguish a pre-commit crash from an applied file that another actor later removed.
+
+Missing, non-regular, unreadable, oversized, divergent, wrong-mode, or raced targets become
+`unknown` with a bounded reason. The event retains a digest and
 mode only for a stable regular-file observation. It stores no file bytes or raw operating-system
 error message and never changes the target.
 
@@ -590,6 +600,69 @@ silently changing this behavior.
 
 Fresh retry is also distinct from completion proof. The retried agent must still produce its own
 terminal evidence, and downstream deterministic verifier nodes still decide criterion acceptance.
+
+### Rolling context epoch recovery
+
+An opted-in rolling context epoch adds a private write-ahead boundary inside the model-session
+record. `rolling_context_epoch_started` must become durable before a summary provider call.
+`rolling_context_epoch_settled` closes that exact epoch and generation attempt as accepted,
+rejected, or interrupted. Only one complete accepted settlement can become the current checkpoint.
+
+Recovery applies this order:
+
+1. Claim and validate the private model-session record under its exclusive owner.
+2. Repair only an unterminated final JSONL fragment under the existing committed-prefix rule.
+3. If the record ends with an unmatched rolling context epoch start, append an interrupted
+   settlement with `process_interrupted`.
+4. Append the private `attempt_interrupted` boundary.
+5. Apply the authoritative workflow proof gate and append `node_attempt_interrupted` only when the
+   attempt is safe to repeat.
+6. Start a fresh in-memory Pi session with a bounded, content-free checkpoint bootstrap.
+7. Reconstruct the latest complete accepted checkpoint from original primary events.
+8. Restore the exact objective and committed tail inside the request-admission boundary.
+9. Remeasure the exact next serialized task request before inference.
+
+Recovery never promotes an unmatched start, rejected candidate, partial provider response, or
+in-memory summary. It doesn't continue provider-native conversation state. A later rolling epoch
+uses the prior accepted summary plus newly eligible exact events, while its cumulative range still
+binds the complete original source prefix.
+
+The internal `flow_context_checkpoint` call is only candidate transport. Recovery replays the
+accepted canonical checkpoint from the model-session record. It doesn't replay or re-execute the
+tool call, reasoning content, or provider-native response item.
+
+The private event keeps the complete tool result when it also contains a compact artifact
+projection. Recovery revalidates every referenced artifact before each summary serialization. It
+uses the complete result when a reference is unavailable before count admission. If the reference
+surface changes between admission and inference serialization, payload identity verification
+blocks inference with `pi_model_context_checkpoint_invalid`.
+
+| Recovered state | Result |
+| --- | --- |
+| No accepted rolling checkpoint | Keep the complete exact source history and apply the normal fresh-session rules. |
+| One complete accepted checkpoint with matching source, policy, model capacity, and runtime bindings | Reconstruct the checkpoint and retain the two most recent completed requests exactly. |
+| Complete pre-checkpoint history exceeds the generic resume-surface limit | Use the bounded checkpoint bootstrap. Don't render the complete pre-checkpoint history into Pi. |
+| Unmatched epoch start | Record one interrupted settlement before the attempt interruption. Don't infer a summary result. |
+| Rejected or interrupted settlement after an older accepted checkpoint | Keep the older accepted checkpoint current. |
+| Changed policy, route, runtime, model context window, model maximum output, instructions, tools, authority, source range, protected constraints, or rendered identity | Fail with `pi_model_context_checkpoint_invalid` before provider I/O. |
+| Missing, corrupt, oversized, unsafe, or live-owned private record | Block recovery and preserve the record for diagnosis. |
+| Provider count unavailable after restart | Record content-free measurement failure and fail with `pi_model_context_measurement_unavailable` before inference. |
+| Artifact projection unavailable before summary admission | Use the complete committed tool result and measure that exact summary payload. |
+| Artifact projection changes after summary admission | Fail with `pi_model_context_checkpoint_invalid` before summary inference. |
+
+Inspect the run before and after the ordinary resume command:
+
+```sh
+flow inspect <run-id>
+flow resume <workflow.yaml> --run-id <run-id>
+flow inspect <run-id>
+```
+
+Don't edit checkpoint text, ranges, digests, or bindings. Don't delete an unmatched start or copy a
+checkpoint between sessions. Preserve an invalid run for audit and start a new reviewed run when
+the exact replay proof cannot pass. Read
+[Keep long model sessions within provider capacity](guides/rolling-context.md) for configuration,
+inspection fields, and failure-code actions.
 
 ## Ownership and crash handling
 
@@ -864,6 +937,12 @@ diagnosis.
 | `corrupt` | Committed ledger or ownership data is invalid or ambiguous | Preserve the run directory and diagnose it; do not hand-edit authoritative events |
 | `policy_mismatch` | The client and durable/live supervisor generation resolved different effective capacity policies | Inspect `flow config show` and `flow supervisor status`; let work become idle, then explicitly shut down the old generation. If it already exited, temporarily restore its prior values so it can restart and be shut down safely |
 | `queue_full` | Active and queued detached capacity are both exhausted | Retry later with the same persisted command id, or deliberately change operator capacity after an idle shutdown |
+| `pi_model_context_floor_exhausted` | The exact protected model surface has no safe input floor or no older range is eligible | Preserve the run; select a larger-capacity model or reduce authored exact input in a new reviewed workflow |
+| `pi_model_context_epochs_exhausted` | Rolling pressure would require more than eight epochs | Preserve and inspect the run; start a reviewed new run |
+| `pi_model_context_measurement_unavailable` | Provider token counting is unsupported or failed its bounded contract | Inspect the content-free failure category and exact adapter route; don't bypass measurement |
+| `pi_model_context_capacity_exceeded` | Bounded rolling attempts didn't produce an admitted task request | Inspect capacity evidence; use a larger-capacity model or a smaller reviewed exact surface |
+| `pi_model_context_checkpoint_invalid` | The admitted payload, checkpoint, range, policy, or runtime binding doesn't replay exactly | Preserve the record and compare reviewed inputs; start a new run when the proof cannot pass |
+| `rolling_context_unsupported_acp` | The opted-in node selected an ACP executor without an exact serialization boundary | Use embedded Pi or remove the opt-in in a separately reviewed workflow |
 
 ## Guarantees and non-guarantees
 

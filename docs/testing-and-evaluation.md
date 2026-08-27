@@ -117,7 +117,7 @@ For publication authority and recovery, read
 | Application unit | Typed-result publication and condition/approval/verifier/loop/child/optimization composition, post-admission work-profile context and non-authority, isolated candidate scheduling, accept/reject/stagnation/omission, tree-wide budget reservation/accounting including artifact ceilings and exact child roll-up, cancellation, sibling overlap, terminal and pre-ledger crash recovery, fail-closed missing-workspace recovery, promotion prepare/settlement/cleanup interruption, typed promotion reconciliation without reapply, unknown-state blocking, quiescent-wave admission and bounded artifact overshoot, overlap bounds, reverse completion with declaration order, selected-branch and loop-body concurrency, sequential iteration barriers, command and evidence-bound approval/control barriers, cancellation and failure quiescence, settlement-ceiling precedence, scheduler ordering, omission propagation, serialized write-ahead effect and agent-command publication, command-output settlement accounting, ordered multi-attempt recovery observation/disposition, crash boundaries around result/loop/approval transitions and the resume marker, partial reconciliation progress, recovery compatibility, budget stop boundaries and timeout clamping, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
 | Presentation unit | Strict document bounds, deterministic public projection, terminal-safe text, cursor replay, steering identity, renderer lifecycle, and primary/cleanup failure precedence | Injected event, control, and terminal ports; no process terminal |
 | Source dependency contract | Application modules import application ports and domain contracts but no infrastructure implementation | Repository source scan; no external effects |
-| Infrastructure integration | Same-policy concurrent SRT session reference counting, cancellable cross-workspace session serialization, portable reflink-or-copy child snapshots with protected-path exclusion and manifest-bound recovery, bounded candidate capture, additions/modifications/deletions/modes/directories/symlinks, stale affected-path and removed-directory-closure refusal, write-ahead promotion and rollback blobs, live compensation, durable-temporary/applied-step/local-commit crash reconciliation, hostile-divergence classification, mutually waiting production command branches, atomic hash-anchored edits, chunk-bounded no-follow effect observation under target growth, portable non-regular and missing-ancestry classification, shared edit/reconciliation target coordination, real JSONL effect-journal reopening and fresh-attempt continuation, same-host edit-lock recovery, exact-byte versions, protected paths, process and approval-decision ownership, immutable atomic agent-command decision sidecars, attached/detached live grant consumption, attached live denial without preparation or spawn, strict project/operator config, owner-only supervisor records, typed detached recovery refusal/success, atomic claims and command journals, admission replay/compaction, torn-tail repair, and real child processes | Temporary directories and local processes |
+| Infrastructure integration | Same-policy concurrent SRT session reference counting, cancellable cross-workspace session serialization, portable reflink-or-copy child snapshots with protected-path exclusion and manifest-bound recovery, bounded candidate capture, additions/modifications/deletions/modes/directories/symlinks, stale affected-path and removed-directory-closure refusal, write-ahead promotion and rollback blobs, live compensation, durable-temporary/applied-step/local-commit crash reconciliation, hostile-divergence classification, mutually waiting production command branches, exclusive atomic file creation, atomic hash-anchored edits, chunk-bounded no-follow effect observation under target growth, portable non-regular and missing-ancestry classification, shared mutation/reconciliation target coordination, real JSONL effect-journal reopening and fresh-attempt continuation, same-host mutation-lock recovery, exact-byte versions, protected paths, process and approval-decision ownership, immutable atomic agent-command decision sidecars, attached/detached live grant consumption, attached live denial without preparation or spawn, strict project/operator config, owner-only supervisor records, typed detached recovery refusal/success, atomic claims and command journals, admission replay/compaction, torn-tail repair, and real child processes | Temporary directories and local processes |
 | CLI integration | Init, config inspection, validate, run, work-profile selection/conflict/public output, typed-result publication/inspection, attached/detached artifact-budget exhaustion and inspection, attached and detached child ledgers/workspaces, detached accepted/queued/rejected submission, events, terminal presentation, active/queued cancel, supervisor status/shutdown, wait, approve/deny, exhaust, committed-boundary resume, proof-safe fresh resume, persist, and inspect through production composition | Temporary run ledgers, private local sockets, and local processes |
 | Compiled-process integration | Direct-entry signal handling, Linux x64 pseudo-terminal startup and restoration, local browser presentation delivery, process-group termination, edit crashes before rename, after rename, after directory sync, on settlement rejection, and after settlement persistence, cross-process run claiming, live agent-command denial from a separate CLI process, detached client exit with exact work-profile replay, bounded concurrent admission, queued cancellation without execution, policy mismatch/rebinding, supervisor restart/adoption, and real sandbox boundaries | Built CLI, temporary run ledgers, pseudo-terminals, local process groups, native sandbox primitives, Unix sockets, and loopback networking |
 | Browser presentation | Fragment removal, tab-scoped capability retention for reload, terminal capability removal, capability authentication, fixed-resource policy, complete-document streaming and reload, keyboard steering, storage denial, text-only DOM insertion, attributed package notes, responsive layout, focus visibility, and console/network closure | Pinned Playwright Chromium, explicit loopback listener, and 1280×720, 768×1024, and 375×812 viewports |
@@ -128,7 +128,7 @@ For publication authority and recovery, read
 | Lean proof supervisor | Strict request and source policy, bounded artifacts and diagnostics, compiler and checker process setup, and effective Linux containment checks | Go unit tests on supported contributor hosts; no proof image or provider credential |
 | Hosted Lean proof appliance | Three clean builds, matching final image identities, exact image labels and probe, effective seccomp, capability, mount, cgroup, environment, network, accepted and negative proofs, checker authority, recovery, cancellation, and confirmed cleanup | Real Docker Engine and cgroup v2 on hosted Linux x64; separate required CI job |
 | Pi adapter contract | Exact model/tool request translation, fixed bounded work-profile rendering, explicit zero turn/provider retries, versioned workspace and immutable `skill://` reads, selected package/read receipts, edit receipts, argv-only command authorization/journaling and shared sandbox delegation, bounded approval-denial propagation, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
-| Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, production tool-error conversion back into the next model turn, and streaming | Deterministic in-process provider; no network or credentials |
+| Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_create`/`flow_edit` tool turns, production tool-error conversion back into the next model turn, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
 
 The agent-command matrix uses the real router, Pi executor, durable recorder, command executor, and
@@ -163,6 +163,50 @@ prove deterministic nonrecursive context and selected-model capacity refusal.
 Application and CLI tests prove that session creation precedes `node_started`. They verify private
 interruption before workflow disposition, detached-worker composition, legacy-run compatibility,
 and content-free inspection.
+
+## Verify production rolling context
+
+Production rolling context uses deterministic provider seams so the default and hosted test suites
+need no credential. Run the focused contract before the complete quality gate:
+
+```sh
+npm test -- --run \
+  test/unit/workflow/compiler.test.ts \
+  test/unit/run/model-request-capacity.test.ts \
+  test/unit/infrastructure/pi/provider-input-token-counter.test.ts \
+  test/unit/run/model-session.test.ts \
+  test/integration/fs/jsonl-model-session-store.test.ts \
+  test/unit/application/model-session-inspection.test.ts \
+  test/unit/infrastructure/pi/pi-agent-session.test.ts \
+  test/unit/infrastructure/pi/pi-agent-executor.test.ts \
+  test/unit/infrastructure/runtime/production-node-executor.test.ts
+```
+
+The compiler tests cover explicit opt-in, defaults, immutability, digest binding, limits, and
+unknown-field rejection. Capacity tests prove threshold boundaries and one-token overflow with
+integer arithmetic. Provider tests execute the closed same-origin OpenAI and Anthropic count
+contracts, header and body filtering, timeout, redirect, media type, response size, and content-free
+failure categories. They require OpenAI to record `provider_exact` and Anthropic to record
+`provider_estimate`. The tests don't relabel the Anthropic estimate as exact.
+
+Reducer tests cover write-ahead ordering, eight epochs, two generation attempts, cumulative and
+delta ranges, and exact recent-tail preservation. Filesystem, application, and inspection tests
+cover atomic checkpoints, torn-tail repair, restart reconstruction, and public redaction.
+
+Pi tests serialize the pinned OpenAI Responses and Anthropic Messages payloads through local
+provider doubles. They prove that measurement precedes inference. They also prove payload
+reserialization, summary controls, usage accounting, failure-code propagation, and ACP refusal.
+The OpenAI Responses regression fixture uses the adapter's actual server-sent event format with a
+reasoning item followed by a `flow_context_checkpoint` function call. It proves that Flow admits
+the exact closed arguments, rejects schema-expanded arguments before retry, and keeps provider
+constrained sampling subordinate to the domain validator.
+
+After the focused contract passes, run `npm run ci:local` and the hosted Linux x64 pull-request
+checks. A live provider run is optional evidence, not a replacement for deterministic tests. When
+you perform one, freeze the workflow, model catalog, provider route, expected count method, and
+holdout before execution. Preserve failed and interrupted attempts in the denominator, compare
+public inspection with private test evidence under the same disclosure rules. Require independent
+task verification before claiming success.
 
 Test doubles are permitted only in tests at explicit ports. Production modules contain no mock executor, fake provider, fallback success, or sample result.
 
@@ -515,6 +559,18 @@ cover closed ranges, one accepted summary, two generations at most, a smaller re
 interrupted lifecycle settlement. Pi tests also keep the exact objective, protected constraints,
 system instructions, tools, and authority outside summary authority. They verify zero-tool summary
 requests, usage accounting, ambient-compaction disablement, and durable crash reconstruction.
+
+Production rolling-context tests add exact serialized task and summary admission, capacity
+thresholds, the `provider_exact` and `provider_estimate` uncertainty labels, two-request exact-tail
+preservation, repeated checkpoints, and fresh-process reconstruction. They also cover epoch and
+summary-call limits, fail-closed measurement, payload drift, and content-free public state.
+
+Usage tests include rejected candidates, fractional micro-dollar cost, and invalid provider values.
+Artifact tests verify durable byte identity, admission-time revalidation, exact fallback, and a
+change between count and inference. Capacity tests verify the fixed summary allowance before an
+epoch starts. Recovery tests verify the bounded checkpoint bootstrap and exact reconstructed tail.
+They also require malformed summary usage to close its epoch. The evaluation-only three-mode
+schedule cannot activate this policy.
 
 Specialized evaluation tests cover holdout-only plans, one verifier assertion per protected
 constraint, all six mode orders, root-workflow-only measurement, and the 4,096-trial limit. Report
