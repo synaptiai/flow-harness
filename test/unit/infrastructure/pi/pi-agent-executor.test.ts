@@ -1635,6 +1635,28 @@ describe("EmbeddedPiAgentRunner", () => {
     await expect(runner.run(agentRequest())).rejects.toThrowError(/cost.*finite/i);
   });
 
+  it("rounds every positive provider charge up to at least one micro-dollar", async () => {
+    const fakeSession = {
+      state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      getSessionStats: () => ({ ...sessionStats(), cost: 1e-22 }),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    await expect(runner.run(agentRequest())).resolves.toMatchObject({
+      usage: { costUsdMicros: 1 },
+    });
+  });
+
   it("does not create a session when cancellation arrives during runtime setup", async () => {
     const controller = new AbortController();
     let releaseRuntime: () => void = () => undefined;

@@ -29,8 +29,10 @@ Rolling context changes a provider request projection. It doesn't change Flow au
 
 Flow never rewrites or deletes the source events. An accepted checkpoint records a private summary
 surface, the cumulative source range, content identities, capacity evidence, and replay bindings.
-A later checkpoint summarizes only the new eligible range together with the previous accepted
-summary. This design prevents recursive rendering of complete historical surfaces.
+The bindings include the provider, model, adapter, declared context window, declared maximum
+output, thinking level, runtime, instructions, tools, authority, and route. A later checkpoint
+summarizes only the new eligible range together with the previous accepted summary. This design
+prevents recursive rendering of complete historical surfaces.
 
 ## Enable rolling context
 
@@ -109,11 +111,19 @@ estimate as a safety fallback.
   epoch.
 - Flow first applies verified references to eligible older tool results. If the request still needs
   reduction, Flow asks the selected provider for a zero-tool summary.
+- Flow retains the complete tool result in the private ledger. It stores a bounded reference
+  projection only when the referenced artifacts are retained, available, and content-addressed.
+- Flow rechecks each reference before the counted summary request and before summary inference. It
+  uses the complete result when a reference is no longer valid. A change after admission blocks
+  inference because the serialized payload identity no longer matches.
 - Flow tries a 4,096-token summary allowance, then a 2,048-token allowance if the first candidate
-  is rejected.
+  is rejected. It doesn't start an epoch when the first allowance has no safe zero-input capacity.
+  It also doesn't start when the selected model's output limit is below 4,096 tokens.
 - Flow accepts only canonical closed-schema JSON. The summary must preserve every protected
   constraint and reduce the rendered request surface by at least 4,096 UTF-8 bytes.
-- Flow counts summary input, output, cache, and cost usage against the node and run budgets.
+- Flow counts valid returned summary input, output, cache, and cost usage against the node and run
+  budgets. This rule also applies when Flow rejects the summary candidate. Every positive returned
+  cost consumes at least one micro-dollar of budget.
 - Flow serializes the admitted task request again. The endpoint, payload SHA-256 digest, and byte
   count must match before inference.
 
@@ -159,14 +169,24 @@ before it closes the interrupted model attempt. A later attempt reconstructs the
 checkpoint from the append-only source events. It doesn't continue provider-native conversation
 state or trust an in-memory candidate.
 
-Don't edit a private checkpoint, copy one between runs, or delete the source range. Binding,
-policy, range, request, or hash mismatch makes the checkpoint invalid and blocks provider I/O.
+Cancellation during summary count or inference also closes the active epoch as interrupted. Flow
+doesn't record cancellation as an ordinary rejected candidate.
+
+When an accepted checkpoint exists, Flow initializes the new Pi session with a bounded bootstrap.
+The bootstrap contains only protocol and checkpoint identities. Flow reconstructs the exact
+objective, accepted summary, and committed tail inside the request-admission boundary. It doesn't
+copy the complete pre-checkpoint history into the bootstrap.
+
+Don't edit a private checkpoint, copy one between runs, or delete the source range. A changed
+provider, model, adapter, context window, maximum output, thinking level, or runtime makes the
+checkpoint invalid. A changed instruction, tool catalog, authority, route, policy, range, request,
+or hash also makes it invalid. Flow blocks provider I/O in either case.
 
 ## Handle failures
 
 | Failure code | Meaning | Action |
 | --- | --- | --- |
-| `pi_model_context_floor_exhausted` | The protected exact surface has no safe usable input floor, or no older completed range is eligible. | Select a model with more capacity, reduce authored exact inputs in a new reviewed workflow, or start a new run. |
+| `pi_model_context_floor_exhausted` | The protected exact surface has no safe usable input floor, the model output limit is below 4,096 tokens, or no older completed range is eligible. | Select a model with more capacity, reduce authored exact inputs in a new reviewed workflow, or start a new run. |
 | `pi_model_context_epochs_exhausted` | The session would require a ninth rolling epoch. | Preserve the run for inspection and start a reviewed new run. |
 | `pi_model_context_measurement_unavailable` | The adapter is unsupported, or the count request failed validation, transport, status, media-type, size, or response checks. | Inspect the public failure category and verify the exact adapter, provider endpoint, credentials, and network path. Don't bypass measurement. |
 | `pi_model_context_capacity_exceeded` | Two bounded summary attempts didn't produce an admitted task surface. | Inspect capacity evidence. Use a larger-capacity model or reduce exact authored inputs in a new workflow. |
@@ -190,7 +210,8 @@ A failed task admission doesn't fall back to an unmeasured inference request.
 - A compatible proxy works only when the captured origin implements the selected adapter's count
   contract.
 - Recovery can preserve exact committed history without being able to recreate a former live
-  artifact projection. Flow keeps exact data when it can't revalidate the reference surface.
+  artifact projection. Flow keeps the complete result when it can't revalidate the reference
+  surface. If availability changes after count admission, Flow blocks inference instead.
 - Public inspection is redacted metadata, not access control against the same operating-system
   user or root. Protect the private run directory accordingly.
 

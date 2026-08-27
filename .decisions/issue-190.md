@@ -26,7 +26,9 @@ under pressure.
 - DeepSeek Harness keeps source history append-only and derives compacted state through a durable
   projection. Flow adopts that ledger/projection separation, but not provider-owned persistence.
 - OpenAI Responses exposes `/responses/input_tokens`, which returns an input-token count for a
-  filtered Responses request.
+  filtered Responses request. The supported response has the
+  `response.input_tokens` discriminator and one nonnegative `input_tokens` value. The filtered
+  request includes the documented `personality` field when Pi serializes it.
 - Anthropic Messages exposes `/messages/count_tokens`. Anthropic documents the result as an
   estimate that can differ slightly from final usage, so Flow records the uncertainty and retains a
   fixed reserve.
@@ -66,10 +68,21 @@ untrusted summary of the older eligible range. The objective, current system ins
 catalog, Flow-owned authority and budgets, approvals and effects, protected constraints, complete
 tool-call/result pairs, and two most recent completed requests remain exact.
 
+The ledger stores the complete tool result and an optional bounded reference projection. Before
+each summary serialization, Flow revalidates every projection reference against the retained
+artifact store. It uses the projection only while every artifact remains retained, available, and
+identical. It otherwise uses the complete result. A change between count admission and inference
+serialization changes the payload identity and blocks summary inference.
+
 An accepted rolling settlement atomically stores the exact private summary surface and all replay
-bindings. A later epoch receives the previous accepted summary plus only the newly eligible exact
-range. The checkpoint covers the cumulative source range so replay can verify it against the
-original append-only events.
+bindings. The bindings include the provider, model, adapter, declared context window, declared
+maximum output, thinking level, runtime, instructions, tools, authority, and route. A later epoch
+receives the previous accepted summary plus only the newly eligible exact range. The checkpoint
+covers the cumulative source range so replay can verify it against the original append-only events.
+
+A recovered accepted checkpoint initializes Pi with a bounded content-free bootstrap. Flow then
+reconstructs the provider context from the exact objective, checkpoint, and committed tail inside
+the admission boundary. It doesn't render the complete pre-checkpoint history into the bootstrap.
 
 ### Fixed limits
 
@@ -127,7 +140,8 @@ Rolling mode adds three event families without changing the evaluation-only comp
 - `model_request_capacity_checked` records an ordered check identity, operation, adapter, payload
   identity, measurement method and uncertainty, capacity arithmetic, and decision.
 - `rolling_context_epoch_started` records the epoch and generation attempt, cumulative and delta
-  source ranges, reference surface, output allowance, policy digest, and replay bindings.
+  source ranges, reference surface, output allowance, policy digest, and replay bindings. Capacity
+  bindings include the model's declared context window and maximum output.
 - `rolling_context_epoch_settled` records an accepted, rejected, or interrupted outcome. Only an
   accepted private settlement contains the recoverable summary surface.
 
@@ -146,6 +160,14 @@ and settlements.
 - If a rejected candidate leaves the previous surface below absolute capacity, Flow can admit that
   unchanged surface and try a later epoch on a later request.
 - Summary usage is added to node and run token and cost budgets.
+- Valid usage from every settled summary response is charged, including a response whose candidate
+  is later rejected. Any positive provider cost rounds up to at least one micro-dollar.
+- Invalid provider usage closes the active epoch as `provider_error` before the validation error
+  leaves the rolling boundary.
+- Flow verifies that the fixed 4,096-token summary allowance has a safe zero-input floor before it
+  starts an epoch.
+- Flow also verifies that the selected model permits the fixed 4,096-token summary output before
+  it starts an epoch.
 - Stable non-retryable failures are `pi_model_context_floor_exhausted`,
   `pi_model_context_epochs_exhausted`, `pi_model_context_measurement_unavailable`,
   `pi_model_context_capacity_exceeded`, and `pi_model_context_checkpoint_invalid`.
@@ -188,9 +210,12 @@ credentials, provider error bodies, or private paths.
 - **Irreducible floor** — Fail when protected exact content alone cannot fit.
 - **Epoch exhaustion** — Fail when pressure requires a ninth epoch.
 - **Candidate rejection or interruption** — Keep the prior checkpoint current.
+- **Cancellation during count or inference** — Close the active epoch as interrupted; don't convert
+  cancellation into an ordinary candidate rejection.
 - **Restart or torn tail** — Replay only complete durable settlements; existing store recovery owns
   torn final-line handling and single-writer enforcement.
 - **Checkpoint, order, range, tool-pair, or binding drift** — Reject replay; never repair or guess.
+  Binding drift includes a changed declared context window or maximum output for the same model ID.
 - **Summary output expansion** — Explicitly disable summary reasoning and verify the serialized output
   allowance before inference.
 - **Unsupported ACP or adapter** — Fail only the explicitly opted-in node before provider inference.
@@ -211,4 +236,3 @@ credentials, provider error bodies, or private paths.
 | Field proof | Fresh pinned digital-twin Issue #4 replicate | Frozen controls, red holdout, Flow verifiers, independent checks, ledger inspection, diff review, and draft-PR gate all pass |
 
 All digital-twin attempts remain in the denominator, including failed and incomplete attempts.
-

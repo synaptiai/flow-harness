@@ -21,6 +21,8 @@ const bindings = {
   provider: "openai",
   model: "gpt-5.6",
   apiAdapter: "openai-responses",
+  contextWindowTokens: 272_000,
+  maxOutputTokens: 128_000,
   thinking: "high",
   runtimeVersion: "pi-0.84.0",
   system: { sha256: "1".repeat(64), bytes: 100 },
@@ -45,6 +47,59 @@ describe("rolling context ledger", () => {
         allowErrorToolResults: true,
       })?.lastRequest,
     ).toBe(2);
+  });
+
+  it("rejects a reference projection whose byte identity does not match the tool result", () => {
+    let state = sessionWithSettledRequests(0);
+    state = append(state, {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      identity: requestIdentity(state, 1),
+    });
+    state = append(state, {
+      type: "model_message_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      text: "Inspect the command evidence.",
+      stopReason: "toolUse",
+    });
+    state = append(state, {
+      type: "tool_call_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "command-1",
+      toolName: "flow_exec",
+      argumentsJson: "{}",
+    });
+    const reference = `artifact:${"a".repeat(64)}`;
+    const projectedText = JSON.stringify({
+      version: 1,
+      kind: "flow.reference-tool-result",
+      artifact: reference,
+    });
+
+    expect(() =>
+      append(state, {
+        type: "tool_result_committed",
+        attempt: 1,
+        turn: 1,
+        request: 1,
+        toolCallId: "command-1",
+        toolName: "flow_exec",
+        text: "full result ".repeat(100),
+        isError: false,
+        referenceProjection: {
+          text: projectedText,
+          originalBytes: 1,
+          projectedBytes: Buffer.byteLength(projectedText),
+          artifactReferences: [reference],
+        },
+      }),
+    ).toThrow(/reference projection byte identity/i);
   });
 
   it("atomically accepts and reconstructs a private rolling checkpoint", () => {

@@ -23,7 +23,9 @@ import {
   modelSessionSummary,
   reduceModelSessionEvents,
   selectContextCompactionRange,
+  selectRollingContextRange,
 } from "../../../src/domain/run/model-session.js";
+import { evaluateModelRequestCapacity } from "../../../src/domain/run/model-request-capacity.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow model session coordination", () => {
@@ -185,6 +187,40 @@ describe("runWorkflow model session coordination", () => {
 
     expect(state.nodes.implement).toMatchObject({ status: "succeeded", attempt: 2 });
     expect(operations.indexOf("session:context_compaction_settled")).toBeLessThan(
+      operations.indexOf("session:attempt_interrupted"),
+    );
+    expect(operations.indexOf("session:attempt_interrupted")).toBeLessThan(
+      operations.indexOf("run:node_attempt_interrupted"),
+    );
+  });
+
+  it("interrupts an unmatched rolling epoch before closing its model attempt", async () => {
+    const operations: string[] = [];
+    const compiled = rollingWorkflow();
+    const sessions = new MemoryModelSessionStore(operations);
+    const openSession = openRollingSessionState(identity("run-rolling-recovery"));
+    sessions.states.set(openSession.sessionId, openSession);
+    const store = new MemoryRunStore(openAttemptEvents(compiled, openSession), operations);
+    const executor = recordingExecutor(operations, (context) => {
+      if (context.attempt !== 2) return;
+      expect(context.modelSession?.state.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "rolling_context_epoch_settled",
+            settlement: { outcome: "interrupted", reason: "process_interrupted" },
+          }),
+          expect.objectContaining({ type: "attempt_interrupted", attempt: 1 }),
+        ]),
+      );
+    });
+
+    const state = await resumeWorkflow(compiled, {
+      ...runOptions(store, executor, sessions),
+      runId: "run-rolling-recovery",
+    });
+
+    expect(state.nodes.implement).toMatchObject({ status: "succeeded", attempt: 2 });
+    expect(operations.indexOf("session:rolling_context_epoch_settled")).toBeLessThan(
       operations.indexOf("session:attempt_interrupted"),
     );
     expect(operations.indexOf("session:attempt_interrupted")).toBeLessThan(
@@ -470,6 +506,7 @@ nodes:
         mode: rolling
         pressureThresholdPercent: 85
         protectedConstraints: [Keep the acceptance criteria exact.]
+      recovery: { mode: fresh, maxAttempts: 3 }
   - id: verify
     type: command
     dependsOn: [implement]
@@ -603,6 +640,106 @@ function openCompactionSessionState(identity: ModelSessionIdentity): ModelSessio
       outputTokenLimit: 512,
     },
     9,
+  );
+}
+
+function openRollingSessionState(identity: ModelSessionIdentity): ModelSessionState {
+  let state = openSessionState(identity);
+  let sequence = 3;
+  for (let request = 1; request <= 3; request += 1) {
+    state = appendState(
+      state,
+      {
+        type: "model_request_prepared",
+        attempt: 1,
+        turn: request,
+        request,
+        identity: requestIdentity(state, request, request),
+      },
+      sequence++,
+    );
+    state = appendState(
+      state,
+      {
+        type: "model_message_committed",
+        attempt: 1,
+        turn: request,
+        request,
+        text: `Response ${request}.`,
+        stopReason: "stop",
+      },
+      sequence++,
+    );
+    state = appendState(
+      state,
+      {
+        type: "model_request_settled",
+        attempt: 1,
+        turn: request,
+        request,
+        outcome: "completed",
+      },
+      sequence++,
+    );
+  }
+  state = appendState(
+    state,
+    {
+      type: "model_request_capacity_checked",
+      check: 1,
+      attempt: 1,
+      operation: { kind: "task", turn: 4, request: 4 },
+      apiAdapter: "openai-responses",
+      providerPayload: { sha256: "5".repeat(64), bytes: 1_000 },
+      measurement: {
+        status: "measured",
+        method: "provider_exact",
+        evaluation: evaluateModelRequestCapacity({
+          contextWindowTokens: 100_000,
+          outputAllowanceTokens: 4_096,
+          safetyReserveTokens: 16_384,
+          pressureThresholdPercent: 85,
+          measuredInputTokens: 70_000,
+        }),
+      },
+    },
+    sequence++,
+  );
+  const selection = selectRollingContextRange(state);
+  if (selection === null) throw new Error("test session has no rolling range");
+  return appendState(
+    state,
+    {
+      type: "rolling_context_epoch_started",
+      attempt: 1,
+      epoch: 1,
+      generationAttempt: 1,
+      task: { turn: 4, request: 4 },
+      sourceHead: state.head,
+      cumulativeRange: selection.cumulativeRange,
+      deltaRange: selection.deltaRange,
+      referenceSurface: { sha256: "6".repeat(64), bytes: 10_000, estimatedTokens: 2_500 },
+      outputTokenLimit: 4_096,
+      bindings: {
+        provider: "test",
+        model: "deterministic",
+        apiAdapter: "openai-responses",
+        contextWindowTokens: 100_000,
+        maxOutputTokens: 4_096,
+        thinking: "off",
+        runtimeVersion: "test",
+        system: { sha256: "1".repeat(64), bytes: 1 },
+        toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
+        authority: { sha256: "3".repeat(64) },
+        routingSha256: null,
+      },
+      policy: {
+        sha256: "4".repeat(64),
+        pressureThresholdPercent: 85,
+        protectedConstraints: { sha256: "7".repeat(64), count: 1 },
+      },
+    },
+    sequence,
   );
 }
 

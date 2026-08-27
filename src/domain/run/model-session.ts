@@ -195,6 +195,13 @@ export interface ModelSessionToolCallEvent extends ModelSessionEventBase {
   readonly argumentsJson: string;
 }
 
+export interface ModelSessionReferenceProjection {
+  readonly text: string;
+  readonly originalBytes: number;
+  readonly projectedBytes: number;
+  readonly artifactReferences: readonly string[];
+}
+
 export interface ModelSessionToolResultEvent extends ModelSessionEventBase {
   readonly type: "tool_result_committed";
   readonly attempt: number;
@@ -204,6 +211,7 @@ export interface ModelSessionToolResultEvent extends ModelSessionEventBase {
   readonly toolName: string;
   readonly text: string;
   readonly isError: boolean;
+  readonly referenceProjection?: ModelSessionReferenceProjection;
 }
 
 export interface ModelSessionRequestSettledEvent extends ModelSessionEventBase {
@@ -325,6 +333,8 @@ export interface RollingContextBindings {
   readonly provider: string;
   readonly model: string;
   readonly apiAdapter: string;
+  readonly contextWindowTokens: number;
+  readonly maxOutputTokens: number;
   readonly thinking: string;
   readonly runtimeVersion: string;
   readonly system: { readonly sha256: string; readonly bytes: number };
@@ -476,6 +486,7 @@ export type ModelSessionEventInput =
       readonly toolName: string;
       readonly text: string;
       readonly isError: boolean;
+      readonly referenceProjection?: ModelSessionReferenceProjection;
     }
   | {
       readonly type: "model_request_settled";
@@ -902,6 +913,8 @@ const rollingContextBindingsSchema = z
     provider: boundedIdentitySchema,
     model: boundedIdentitySchema,
     apiAdapter: boundedIdentitySchema,
+    contextWindowTokens: positiveSafeIntegerSchema,
+    maxOutputTokens: positiveSafeIntegerSchema,
     thinking: boundedIdentitySchema,
     runtimeVersion: boundedIdentitySchema,
     system: z.object({ sha256: sha256Schema, bytes: nonNegativeSafeIntegerSchema }).strict(),
@@ -937,6 +950,17 @@ const rollingContextCheckpointSchema = z
     bindings: rollingContextBindingsSchema,
     policy: rollingContextPolicyIdentitySchema,
     usage: usageSchema,
+  })
+  .strict();
+const modelSessionReferenceProjectionSchema = z
+  .object({
+    text: z.string().min(1).max(MAX_ROLLING_CONTEXT_SUMMARY_BYTES),
+    originalBytes: positiveSafeIntegerSchema.max(MAX_MODEL_SESSION_EVENT_BYTES),
+    projectedBytes: positiveSafeIntegerSchema.max(MAX_ROLLING_CONTEXT_SUMMARY_BYTES),
+    artifactReferences: z
+      .array(z.string().regex(/^artifact:[a-f0-9]{64}$/u))
+      .min(1)
+      .max(2),
   })
   .strict();
 const rollingContextSettlementSchema = z.discriminatedUnion("outcome", [
@@ -1029,6 +1053,7 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
       toolName: boundedIdentitySchema,
       text: z.string(),
       isError: z.boolean(),
+      referenceProjection: modelSessionReferenceProjectionSchema.optional(),
     })
     .strict(),
   eventBaseSchema
@@ -1321,6 +1346,50 @@ export function renderModelSessionResumeCapsule(
   return deepFreeze({
     renderVersion: MODEL_SESSION_RESUME_RENDER_VERSION,
     sourceHead,
+    digest: sha256(text),
+    bytes,
+    text,
+  });
+}
+
+export function renderRollingContextResumeBootstrap(
+  state: ModelSessionState,
+): ModelSessionResumeCapsule {
+  if (!state.primaryPromptCommitted || state.currentRollingCheckpoint === null) {
+    throw new ModelSessionReplayError(
+      "rolling resume bootstrap requires a committed objective and checkpoint",
+    );
+  }
+  const sourceEvent = [...state.events].reverse().find(isResumeSourceEvent);
+  if (sourceEvent === undefined) {
+    throw new ModelSessionReplayError("rolling resume bootstrap has no source head");
+  }
+  const checkpoint = state.currentRollingCheckpoint;
+  const text = canonicalJson({
+    version: MODEL_SESSION_RESUME_RENDER_VERSION,
+    instruction: MODEL_SESSION_RESUME_INSTRUCTION,
+    source: {
+      protocol: state.protocol,
+      sessionId: state.sessionId,
+      head: sourceEvent.head,
+    },
+    rollingContext: {
+      kind: "flow.rolling-context-bootstrap",
+      sourceSha256: checkpoint.cumulativeRange.sha256,
+      summarySha256: checkpoint.summary.sha256,
+      bindingsSha256: sha256(canonicalJson(checkpoint.bindings)),
+      policySha256: checkpoint.policy.sha256,
+    },
+  });
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_MODEL_SESSION_RESUME_BYTES) {
+    throw new RangeError(
+      `rolling resume bootstrap exceeds ${MAX_MODEL_SESSION_RESUME_BYTES} UTF-8 bytes`,
+    );
+  }
+  return deepFreeze({
+    renderVersion: MODEL_SESSION_RESUME_RENDER_VERSION,
+    sourceHead: sourceEvent.head,
     digest: sha256(text),
     bytes,
     text,
@@ -2107,6 +2176,9 @@ function applyTransition(
           "tool result name does not match its committed tool call",
         );
       }
+      if (event.referenceProjection !== undefined) {
+        validateModelSessionReferenceProjection(event);
+      }
       return {
         activeRequest: deepFreeze({
           ...active,
@@ -2245,6 +2317,10 @@ function validateRollingContextRange(
 
 function validateRollingContextBindings(bindings: RollingContextBindings): void {
   if (
+    !Number.isSafeInteger(bindings.contextWindowTokens) ||
+    bindings.contextWindowTokens <= 0 ||
+    !Number.isSafeInteger(bindings.maxOutputTokens) ||
+    bindings.maxOutputTokens <= 0 ||
     !/^[a-f0-9]{64}$/u.test(bindings.system.sha256) ||
     !/^[a-f0-9]{64}$/u.test(bindings.toolCatalog.sha256) ||
     !/^[a-f0-9]{64}$/u.test(bindings.authority.sha256) ||
@@ -2552,11 +2628,49 @@ function projectResumeEvent(
         toolName: event.toolName,
         text: event.text,
         isError: event.isError,
+        ...(event.referenceProjection === undefined
+          ? {}
+          : { referenceProjection: event.referenceProjection }),
       };
     case "attempt_interrupted":
       return { type: event.type, attempt: event.attempt, reason: event.reason };
     default:
       return assertNever(event);
+  }
+}
+
+function validateModelSessionReferenceProjection(event: ModelSessionToolResultEvent): void {
+  const projection = event.referenceProjection;
+  if (projection === undefined) return;
+  if (
+    projection.originalBytes !== Buffer.byteLength(event.text, "utf8") ||
+    projection.projectedBytes !== Buffer.byteLength(projection.text, "utf8") ||
+    projection.projectedBytes >= projection.originalBytes
+  ) {
+    throw new ModelSessionReplayError("tool result reference projection byte identity is invalid");
+  }
+  if (new Set(projection.artifactReferences).size !== projection.artifactReferences.length) {
+    throw new ModelSessionReplayError(
+      "tool result reference projection contains duplicate artifacts",
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(projection.text);
+  } catch (error) {
+    throw new ModelSessionReplayError("tool result reference projection must be strict JSON", {
+      cause: error,
+    });
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    (parsed as Readonly<Record<string, unknown>>).version !== 1 ||
+    (parsed as Readonly<Record<string, unknown>>).kind !== "flow.reference-tool-result" ||
+    projection.artifactReferences.some((reference) => !projection.text.includes(reference))
+  ) {
+    throw new ModelSessionReplayError("tool result reference projection identity is invalid");
   }
 }
 

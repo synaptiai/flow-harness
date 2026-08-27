@@ -559,8 +559,14 @@ requests, usage accounting, ambient-compaction disablement, and durable crash re
 Production rolling-context tests add exact serialized task and summary admission, capacity
 thresholds, the `provider_exact` and `provider_estimate` uncertainty labels, two-request exact-tail
 preservation, repeated checkpoints, and fresh-process reconstruction. They also cover epoch and
-summary-call limits, fail-closed measurement, payload drift, usage, and content-free public state.
-The evaluation-only three-mode schedule cannot activate this policy.
+summary-call limits, fail-closed measurement, payload drift, and content-free public state.
+
+Usage tests include rejected candidates, fractional micro-dollar cost, and invalid provider values.
+Artifact tests verify durable byte identity, admission-time revalidation, exact fallback, and a
+change between count and inference. Capacity tests verify the fixed summary allowance before an
+epoch starts. Recovery tests verify the bounded checkpoint bootstrap and exact reconstructed tail.
+They also require malformed summary usage to close its epoch. The evaluation-only three-mode
+schedule cannot activate this policy.
 
 Specialized evaluation tests cover holdout-only plans, one verifier assertion per protected
 constraint, all six mode orders, root-workflow-only measurement, and the 4,096-trial limit. Report

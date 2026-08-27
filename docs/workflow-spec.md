@@ -1666,13 +1666,22 @@ capacity arithmetic, and decision. A successful task check must match the next
 `model_request_prepared` event's provider-payload identity.
 
 `rolling_context_epoch_started` binds the task request, epoch, generation attempt, and cumulative
-and delta primary-event ranges. It also binds the reference surface, output allowance, provider,
-runtime, routing, and policy identities before summary provider I/O.
+and delta primary-event ranges. It binds the reference surface, output allowance, provider, model,
+adapter, and declared model capacity. It also binds the thinking level, runtime, instructions,
+tools, authority, routing, and policy identities before summary provider I/O.
+
 `rolling_context_epoch_settled` closes the same start. Its outcome is accepted, rejected, or
 interrupted. An accepted private settlement contains the summary text, checkpoint identities, and
 range. It also contains reduction, constraint, binding, policy, and usage evidence.
 
 Rejected and interrupted settlements contain no recoverable summary text.
+
+An eligible private `tool_result_committed` event can contain a bounded `referenceProjection`. The
+event always retains the complete result text. The projection binds its exact original and
+projected UTF-8 byte counts and one or two unique artifact references. The projected JSON must have
+version `1`, kind `flow.reference-tool-result`, contain every bound reference, and be smaller than
+the complete result. Summary serialization uses it only after the artifact store confirms that
+every bound reference is retained, available, and identical.
 
 Replay requires contiguous checks, at most eight epochs, at most two generation attempts in each
 epoch, and a 4,096-token then 2,048-token allowance sequence. Cumulative ranges can grow only over
@@ -1683,11 +1692,29 @@ capacity arithmetic, uncertainty, digests, byte counts, fixed failure categories
 It doesn't project payloads, summary text, constraints, prompts, tool output, credentials, error
 bodies, or private paths.
 
+A recovered session with an accepted checkpoint uses a bounded
+`flow.rolling-context-bootstrap`. The bootstrap contains protocol, session, source, summary,
+binding, and policy identities. It contains no objective, summary text, tool result, or complete
+pre-checkpoint event list. Flow restores the exact objective, checkpoint summary, and committed
+tail before it serializes the provider request.
+
 One encoded event, including its newline, is at most 2 MiB. One record is at most 16 MiB and 1,024
 events. One rendered resume surface is at most 1 MiB and must fit the selected model. Nonrolling
 request admission reserves 16,384 output tokens and 16,384 safety tokens. Rolling admission uses
 the exact output allowance serialized in the provider payload and the same 16,384-token safety
 reserve.
+
+Flow checks the safe zero-input capacity for the fixed 4,096-token summary allowance before it
+starts an epoch. The selected model must also permit at least 4,096 output tokens. Each settled
+summary provider response with valid usage contributes its returned token and cost usage. This
+rule also applies when Flow rejects the candidate. Positive provider costs round up to at least one
+micro-dollar.
+
+Invalid provider usage closes the active epoch with a content-free `provider_error` settlement
+before Flow returns the validation error.
+
+Cancellation during count or summary inference closes the active epoch with an interrupted
+settlement. It doesn't produce an ordinary rejected settlement.
 
 Flow then applies the smaller remaining numeric capacity and global byte limit. The conservative
 byte comparison isn't a provider tokenizer.

@@ -8,6 +8,7 @@ const OPENAI_COUNT_FIELDS = Object.freeze([
   "instructions",
   "model",
   "parallel_tool_calls",
+  "personality",
   "previous_response_id",
   "reasoning",
   "text",
@@ -104,7 +105,7 @@ export async function countProviderInputTokens(input: {
     throw new ProviderInputTokenCountError("response_media_type");
   }
   const responseText = await readBoundedResponse(response, MAX_PROVIDER_COUNT_RESPONSE_BYTES);
-  const inputTokens = parseInputTokenCount(responseText);
+  const inputTokens = parseInputTokenCount(responseText, input.apiAdapter);
   return Object.freeze({ inputTokens, method: contract.method });
 }
 
@@ -205,17 +206,27 @@ async function readBoundedResponse(response: Response, maximumBytes: number): Pr
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-function parseInputTokenCount(source: string): number {
+function parseInputTokenCount(source: string, apiAdapter: string): number {
   let parsed: unknown;
   try {
     parsed = JSON.parse(source) as unknown;
   } catch {
     throw new ProviderInputTokenCountError("response_invalid");
   }
+  if (!isRecord(parsed)) {
+    throw new ProviderInputTokenCountError("response_invalid");
+  }
+  const keys = Object.keys(parsed);
+  const shapeIsValid =
+    apiAdapter === "openai-responses"
+      ? keys.length === 2 &&
+        parsed.object === "response.input_tokens" &&
+        Object.hasOwn(parsed, "input_tokens")
+      : apiAdapter === "anthropic-messages"
+        ? keys.length === 1 && Object.hasOwn(parsed, "input_tokens")
+        : false;
   if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).length !== 1 ||
-    !Object.hasOwn(parsed, "input_tokens") ||
+    !shapeIsValid ||
     !Number.isSafeInteger(parsed.input_tokens) ||
     (parsed.input_tokens as number) < 0
   ) {

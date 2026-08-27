@@ -2263,6 +2263,21 @@ async function disposeProofSafeInterruptedAttempt(
             options.signal,
           );
         }
+        if (session.activeRollingEpoch !== null) {
+          const active = session.activeRollingEpoch;
+          session = await options.modelSessionStore.append(
+            identity,
+            {
+              type: "rolling_context_epoch_settled",
+              attempt: active.attempt,
+              epoch: active.epoch,
+              generationAttempt: active.generationAttempt,
+              settlement: { outcome: "interrupted", reason: "process_interrupted" },
+            },
+            now().toISOString(),
+            options.signal,
+          );
+        }
         const lastEvent = session.events.at(-1);
         if (!(lastEvent?.type === "attempt_interrupted" && lastEvent.attempt === node.attempt)) {
           session = await options.modelSessionStore.append(

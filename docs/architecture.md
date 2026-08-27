@@ -810,10 +810,13 @@ doesn't substitute byte arithmetic or a token heuristic.
 
 The append-only record is the source plane. A checkpoint is a derived projection plane. At
 pressure, the projection can replace eligible old large command results with proven retained
-artifact references and summarize a closed older range. It keeps the original objective, current
-instructions, tools, authority, protected constraints, and two most recent completed requests
-exact. A later epoch receives the previous accepted summary plus only its new eligible delta, while
-the checkpoint binds the complete cumulative source range.
+artifact references and summarize a closed older range. The source event still contains the
+complete tool result.
+
+Flow revalidates each compact reference before count admission and inference.
+It keeps the original objective, current instructions, tools, authority, protected constraints,
+and two most recent completed requests exact. A later epoch receives the previous accepted summary
+plus only its new eligible delta. The checkpoint binds the complete cumulative source range.
 
 Before summary inference, `rolling_context_epoch_started` records the range, reference surface,
 output allowance, policy, and runtime bindings. `rolling_context_epoch_settled` records rejection,
@@ -822,9 +825,10 @@ summary and task admission. After task admission, Pi serializes the request agai
 endpoint, payload digest, and byte count can reach inference.
 
 On restart, replay uses only complete accepted settlements. It reconstructs the projection from the
-original events, verifies all bindings, and marks an unmatched start interrupted before closing the
-attempt. Summary text is private and untrusted. It never becomes policy, approval, budget, effect,
-verification, scheduling, or completion authority.
+original events and verifies all bindings. A bounded content-free bootstrap initializes Pi without
+rendering complete pre-checkpoint history. Replay marks an unmatched start interrupted before it
+closes the attempt. Summary text is private and untrusted. It never becomes policy, approval,
+budget, effect, verification, scheduling, or completion authority.
 
 This boundary deliberately excludes automatic opt-in, provider-owned history, opaque remote
 checkpoints, approximate capacity fallback, unsupported adapters, and ACP approximation. Read

@@ -19,10 +19,11 @@ describe("provider input-token counter", () => {
       expect(JSON.parse(String(init?.body))).toEqual({
         input: [{ role: "user", content: "hello" }],
         model: "gpt-5.6",
+        personality: "pragmatic",
         reasoning: { effort: "high" },
         tools: [],
       });
-      return Response.json({ input_tokens: 42 });
+      return Response.json({ object: "response.input_tokens", input_tokens: 42 });
     });
 
     await expect(
@@ -37,6 +38,7 @@ describe("provider input-token counter", () => {
         inferencePayload: {
           model: "gpt-5.6",
           input: [{ role: "user", content: "hello" }],
+          personality: "pragmatic",
           reasoning: { effort: "high" },
           tools: [],
           stream: true,
@@ -123,10 +125,15 @@ describe("provider input-token counter", () => {
     ],
     [
       "unknown response field",
-      async () => Response.json({ input_tokens: 1, prompt: "private" }),
+      async () =>
+        Response.json({ object: "response.input_tokens", input_tokens: 1, prompt: "private" }),
       "response_invalid",
     ],
-    ["fractional count", async () => Response.json({ input_tokens: 1.5 }), "response_invalid"],
+    [
+      "fractional count",
+      async () => Response.json({ object: "response.input_tokens", input_tokens: 1.5 }),
+      "response_invalid",
+    ],
   ])("returns a content-free failure for an %s", async (_case, response, code) => {
     let failure: unknown;
     try {

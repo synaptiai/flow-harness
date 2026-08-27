@@ -22,6 +22,7 @@ import {
   type ModelSessionIdentity,
   type ModelSessionState,
   reduceModelSessionEvents,
+  renderRollingContextResumeBootstrap,
   selectContextCompactionRange,
 } from "../../../../src/domain/run/model-session.js";
 import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
@@ -71,7 +72,7 @@ describe("Pi provider-neutral model session", () => {
       const url = captured.url;
       if (url.endsWith("/responses/input_tokens")) {
         expect(journal.state.events.at(-1)?.type).toBe("user_message_committed");
-        return Response.json({ input_tokens: 42 });
+        return openAIInputTokenCount(42);
       }
       expect(url).toBe("https://provider.example/v1/responses");
       expect(journal.state.events.at(-1)?.type).toBe("model_request_prepared");
@@ -160,7 +161,7 @@ describe("Pi provider-neutral model session", () => {
       async (input, init) => {
         const request = new Request(input, init);
         if (request.url.endsWith("/responses/input_tokens")) {
-          return Response.json({ input_tokens: 42 });
+          return openAIInputTokenCount(42);
         }
         inferenceCalls += 1;
         return new Response(null, { status: 500 });
@@ -188,11 +189,37 @@ describe("Pi provider-neutral model session", () => {
 
   it("accepts a durable rolling checkpoint and retries the task with the exact tail", async () => {
     const model = openAIModel();
-    const journal = rollingPressureJournal();
+    const fullToolResult = `FULL_ROLLING_TOOL_RESULT:${"z".repeat(12_000)}`;
+    const artifactReference = createArtifactReference({
+      descriptor: {
+        digest: `sha256:${sha256(fullToolResult)}`,
+        size: Buffer.byteLength(fullToolResult),
+        mediaType: "application/octet-stream",
+      },
+      producer: {
+        kind: "agent-command",
+        ...identity,
+        attempt: 1,
+        commandId: "rolling-command-1",
+        commandSequence: 1,
+        stream: "stdout",
+      },
+    });
+    const projectedToolResult = JSON.stringify({
+      version: 1,
+      kind: "flow.reference-tool-result",
+      artifact: artifactReference.reference,
+    });
+    const journal = rollingPressureJournal({
+      fullText: fullToolResult,
+      projectedText: projectedToolResult,
+      artifactReferences: [artifactReference.reference],
+    });
     let countCalls = 0;
     const inferenceAllowances: number[] = [];
     let taskCount = 0;
     let finalInferenceBody: Readonly<Record<string, unknown>> | undefined;
+    let summaryBody: Readonly<Record<string, unknown>> | undefined;
     const runner = openAIRunner(model, async (input, init) => {
       const request = new Request(input, init);
       const body = (await request.json()) as Readonly<Record<string, unknown>>;
@@ -200,10 +227,11 @@ describe("Pi provider-neutral model session", () => {
       if (request.url.endsWith("/responses/input_tokens")) {
         countCalls += 1;
         taskCount += 1;
-        return Response.json({ input_tokens: taskCount === 1 ? 108_474 : 42 });
+        return openAIInputTokenCount(taskCount === 1 ? 108_474 : 42);
       }
       inferenceAllowances.push(allowance);
       if (allowance === 4_096) {
+        summaryBody = body;
         return openAITextStream(
           JSON.stringify({
             version: 1,
@@ -216,7 +244,10 @@ describe("Pi provider-neutral model session", () => {
       return openAITextStream("Rolling context admitted.");
     });
 
-    const result = await runner.run(rollingRequest(model, journal));
+    const result = await runner.run({
+      ...rollingRequest(model, journal),
+      artifactStore: availableArtifactStore(artifactReference),
+    });
 
     expect(result).toMatchObject({ stopReason: "stop", text: "Rolling context admitted." });
     expect(countCalls).toBe(3);
@@ -233,6 +264,8 @@ describe("Pi provider-neutral model session", () => {
     expect(JSON.stringify(finalInferenceBody)).not.toContain("OLD_ROLLING_CONTEXT");
     expect(JSON.stringify(finalInferenceBody)).toContain("RECENT_ROLLING_CONTEXT_2");
     expect(JSON.stringify(finalInferenceBody)).toContain("RECENT_ROLLING_CONTEXT_3");
+    expect(JSON.stringify(summaryBody)).toContain(artifactReference.reference);
+    expect(JSON.stringify(summaryBody)).not.toContain("FULL_ROLLING_TOOL_RESULT");
     expect(journal.state).toMatchObject({
       rollingEpochCount: 1,
       rollingGenerationCount: 1,
@@ -243,6 +276,22 @@ describe("Pi provider-neutral model session", () => {
         surface: { minimumReductionBytes: 4_096 },
       },
     });
+    const acceptedSettlement = journal.state.events.find(
+      (event) =>
+        event.type === "rolling_context_epoch_settled" && event.settlement.outcome === "accepted",
+    );
+    if (
+      acceptedSettlement?.type !== "rolling_context_epoch_settled" ||
+      acceptedSettlement.settlement.outcome !== "accepted"
+    ) {
+      throw new Error("accepted rolling settlement is missing");
+    }
+    expect(acceptedSettlement.settlement.checkpoint.usage.costUsdMicros).toBe(1);
+    const bootstrap = renderRollingContextResumeBootstrap(journal.state);
+    expect(bootstrap.bytes).toBeLessThan(1_024);
+    expect(bootstrap.text).toContain("flow.rolling-context-bootstrap");
+    expect(bootstrap.text).not.toContain("OLD_ROLLING_CONTEXT");
+    expect(bootstrap.text).not.toContain("The first historical request completed.");
     expect(journal.state.events.map((event) => event.type)).toEqual(
       expect.arrayContaining([
         "rolling_context_epoch_started",
@@ -250,6 +299,32 @@ describe("Pi provider-neutral model session", () => {
         "model_request_capacity_checked",
       ]),
     );
+
+    let driftState = append(
+      journal.state,
+      { type: "attempt_interrupted", attempt: 2, reason: "process_interrupted" },
+      journal.state.eventCount + 1,
+    );
+    driftState = append(
+      driftState,
+      { type: "attempt_started", attempt: 3 },
+      driftState.eventCount + 1,
+    );
+    const driftJournal = new InMemoryJournal(driftState);
+    const driftModel = { ...model, contextWindow: model.contextWindow + 1 } as typeof model;
+    let driftProviderCalls = 0;
+    const driftRunner = openAIRunner(driftModel, async () => {
+      driftProviderCalls += 1;
+      return openAIInputTokenCount(42);
+    });
+
+    const drifted = await driftRunner.run(rollingRequest(driftModel, driftJournal));
+
+    expect(drifted).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_checkpoint_invalid",
+    });
+    expect(driftProviderCalls).toBe(0);
 
     journal.state = append(
       journal.state,
@@ -266,7 +341,7 @@ describe("Pi provider-neutral model session", () => {
       const request = new Request(input, init);
       const body = (await request.json()) as Readonly<Record<string, unknown>>;
       if (request.url.endsWith("/responses/input_tokens")) {
-        return Response.json({ input_tokens: 42 });
+        return openAIInputTokenCount(42);
       }
       recoveredInferenceBody = body;
       return openAITextStream("Recovered checkpoint admitted.");
@@ -281,6 +356,156 @@ describe("Pi provider-neutral model session", () => {
     expect(JSON.stringify(recoveredInferenceBody)).not.toContain("OLD_ROLLING_CONTEXT");
     expect(JSON.stringify(recoveredInferenceBody)).toContain("flow.context-summary");
     expect(journal.state.rollingEpochCount).toBe(1);
+    const latestResume = [...journal.state.events]
+      .reverse()
+      .find((event) => event.type === "resume_surface_prepared" && event.attempt === 3);
+    expect(latestResume).toMatchObject({ type: "resume_surface_prepared", attempt: 3 });
+    if (latestResume?.type !== "resume_surface_prepared") {
+      throw new Error("attempt three rolling resume surface is missing");
+    }
+    expect(latestResume.bytes).toBeLessThan(1_024);
+  });
+
+  it("fails closed when a rolling artifact changes after summary admission", async () => {
+    const model = openAIModel();
+    const fullToolResult = `DRIFTING_ROLLING_TOOL_RESULT:${"z".repeat(12_000)}`;
+    const artifactReference = createArtifactReference({
+      descriptor: {
+        digest: `sha256:${sha256(fullToolResult)}`,
+        size: Buffer.byteLength(fullToolResult),
+        mediaType: "application/octet-stream",
+      },
+      producer: {
+        kind: "agent-command",
+        ...identity,
+        attempt: 1,
+        commandId: "rolling-command-drift",
+        commandSequence: 1,
+        stream: "stdout",
+      },
+    });
+    const projectedToolResult = JSON.stringify({
+      version: 1,
+      kind: "flow.reference-tool-result",
+      artifact: artifactReference.reference,
+    });
+    const journal = rollingPressureJournal({
+      fullText: fullToolResult,
+      projectedText: projectedToolResult,
+      artifactReferences: [artifactReference.reference],
+    });
+    let inspections = 0;
+    const artifactStore: ArtifactStore = {
+      ...availableArtifactStore(artifactReference),
+      async inspect(reference) {
+        expect(reference).toBe(artifactReference.reference);
+        inspections += 1;
+        return {
+          reference: artifactReference,
+          retention: "retained",
+          availability: inspections === 1 ? "available" : "changed",
+        };
+      },
+    };
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      inferenceCalls += 1;
+      return openAITextStream("must not infer from a changed artifact projection");
+    });
+
+    const result = await runner.run({
+      ...rollingRequest(model, journal),
+      artifactStore,
+    });
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_checkpoint_invalid",
+    });
+    expect(inspections).toBe(2);
+    expect(countCalls).toBe(2);
+    expect(inferenceCalls).toBe(0);
+  });
+
+  it("uses complete tool text when a durable rolling artifact is unavailable before admission", async () => {
+    const model = openAIModel();
+    const fullToolResult = `MISSING_ROLLING_ARTIFACT_RESULT:${"z".repeat(12_000)}`;
+    const artifactReference = createArtifactReference({
+      descriptor: {
+        digest: `sha256:${sha256(fullToolResult)}`,
+        size: Buffer.byteLength(fullToolResult),
+        mediaType: "application/octet-stream",
+      },
+      producer: {
+        kind: "agent-command",
+        ...identity,
+        attempt: 1,
+        commandId: "rolling-command-missing",
+        commandSequence: 1,
+        stream: "stdout",
+      },
+    });
+    const projectedToolResult = JSON.stringify({
+      version: 1,
+      kind: "flow.reference-tool-result",
+      artifact: artifactReference.reference,
+    });
+    const journal = rollingPressureJournal({
+      fullText: fullToolResult,
+      projectedText: projectedToolResult,
+      artifactReferences: [artifactReference.reference],
+    });
+    let inspections = 0;
+    const artifactStore: ArtifactStore = {
+      ...availableArtifactStore(artifactReference),
+      async inspect(reference) {
+        expect(reference).toBe(artifactReference.reference);
+        inspections += 1;
+        return {
+          reference: artifactReference,
+          retention: "retained",
+          availability: "missing",
+        };
+      },
+    };
+    let countCalls = 0;
+    let summaryBody: Readonly<Record<string, unknown>> | undefined;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      if (Number(body.max_output_tokens) === 4_096) {
+        summaryBody = body;
+        return openAITextStream(
+          JSON.stringify({
+            version: 1,
+            summary: "The exact historical result was summarized.",
+            protectedConstraints: [],
+          }),
+        );
+      }
+      return openAITextStream("Exact fallback admitted.");
+    });
+
+    const result = await runner.run({
+      ...rollingRequest(model, journal),
+      artifactStore,
+    });
+
+    expect(result).toMatchObject({ stopReason: "stop", text: "Exact fallback admitted." });
+    expect(inspections).toBe(2);
+    expect(countCalls).toBe(3);
+    expect(JSON.stringify(summaryBody)).toContain("MISSING_ROLLING_ARTIFACT_RESULT");
+    expect(JSON.stringify(summaryBody)).not.toContain("flow.reference-tool-result");
   });
 
   it("retries one rejected rolling summary with the smaller exact allowance", async () => {
@@ -294,7 +519,7 @@ describe("Pi provider-neutral model session", () => {
       const allowance = Number(body.max_output_tokens);
       if (request.url.endsWith("/responses/input_tokens")) {
         countCalls += 1;
-        return Response.json({ input_tokens: countCalls === 1 ? 108_474 : 42 });
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
       }
       inferenceAllowances.push(allowance);
       if (allowance === 4_096) return openAITextStream("not canonical summary JSON");
@@ -327,6 +552,187 @@ describe("Pi provider-neutral model session", () => {
         .filter((event) => event.type === "rolling_context_epoch_settled")
         .map((event) => event.settlement.reason),
     ).toEqual(["invalid_output", "accepted"]);
+  });
+
+  it("charges rejected rolling summary usage to the failed node", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      const body = (await request.json()) as Readonly<Record<string, unknown>>;
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      const allowance = Number(body.max_output_tokens);
+      if (allowance === 4_096 || allowance === 2_048) {
+        return openAITextStream("not canonical summary JSON");
+      }
+      throw new Error("failed compaction must not reach task inference");
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_capacity_exceeded",
+      usage: {
+        inputTokens: 200,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 2,
+      },
+    });
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement.reason),
+    ).toEqual(["invalid_output", "invalid_output"]);
+  });
+
+  it("settles the rolling epoch when summary usage is invalid", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      inferenceCalls += 1;
+      return openAITextStream(
+        JSON.stringify({
+          version: 1,
+          summary: "This candidate has invalid provider usage.",
+          protectedConstraints: [],
+        }),
+        0.5,
+      );
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({ stopReason: "error" });
+    expect(inferenceCalls).toBe(1);
+    expect(journal.state.activeRollingEpoch).toBeNull();
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement),
+    ).toEqual([{ outcome: "rejected", reason: "provider_error" }]);
+  });
+
+  it("interrupts the rolling epoch when cancellation reaches summary counting", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    const controller = new AbortController();
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input) => {
+      const request = new Request(input);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        if (countCalls === 1) return openAIInputTokenCount(108_474);
+        controller.abort(new Error("cancelled during summary count"));
+        throw new Error("summary count transport stopped");
+      }
+      inferenceCalls += 1;
+      return openAITextStream("unexpected inference");
+    });
+
+    const result = await runner.run({
+      ...rollingRequest(model, journal),
+      signal: controller.signal,
+    });
+
+    expect(result).toMatchObject({ stopReason: "aborted" });
+    expect(result).not.toHaveProperty("failureCode");
+    expect(countCalls).toBe(2);
+    expect(inferenceCalls).toBe(0);
+    expect(journal.state.activeRollingEpoch).toBeNull();
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement),
+    ).toEqual([{ outcome: "interrupted", reason: "process_interrupted" }]);
+  });
+
+  it("fails before an epoch when the fixed summary allowance has no safe floor", async () => {
+    const baseModel = openAIModel();
+    const model = {
+      ...baseModel,
+      contextWindow: 20_000,
+      maxTokens: 128_000,
+    } as unknown as typeof baseModel;
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(
+      model,
+      async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/responses/input_tokens")) {
+          countCalls += 1;
+          return openAIInputTokenCount(2_204);
+        }
+        inferenceCalls += 1;
+        return openAITextStream("unexpected inference");
+      },
+      (payload, serialization) =>
+        serialization === 1 && typeof payload === "object" && payload !== null
+          ? { ...payload, max_output_tokens: 1_024 }
+          : payload,
+    );
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_floor_exhausted",
+    });
+    expect(countCalls).toBe(1);
+    expect(inferenceCalls).toBe(0);
+    expect(journal.state.activeRollingEpoch).toBeNull();
+    expect(
+      journal.state.events.filter((event) => event.type.startsWith("rolling_context_epoch_")),
+    ).toEqual([]);
+  });
+
+  it("fails before an epoch when the model output limit is below the fixed summary allowance", async () => {
+    const baseModel = openAIModel();
+    const model = {
+      ...baseModel,
+      maxTokens: 1_024,
+    } as unknown as typeof baseModel;
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input) => {
+      const request = new Request(input);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(220_000);
+      }
+      inferenceCalls += 1;
+      return openAITextStream("unexpected inference");
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_model_context_floor_exhausted",
+    });
+    expect(countCalls).toBe(1);
+    expect(inferenceCalls).toBe(0);
+    expect(journal.state.activeRollingEpoch).toBeNull();
+    expect(
+      journal.state.events.filter((event) => event.type.startsWith("rolling_context_epoch_")),
+    ).toEqual([]);
   });
 
   it("disables Anthropic summary thinking and preserves exact summary allowances", async () => {
@@ -392,7 +798,7 @@ describe("Pi provider-neutral model session", () => {
       const body = (await request.json()) as Readonly<Record<string, unknown>>;
       if (request.url.endsWith("/responses/input_tokens")) {
         firstCount += 1;
-        return Response.json({ input_tokens: firstCount === 1 ? 108_474 : 42 });
+        return openAIInputTokenCount(firstCount === 1 ? 108_474 : 42);
       }
       return Number(body.max_output_tokens) === 4_096
         ? openAITextStream(
@@ -425,7 +831,7 @@ describe("Pi provider-neutral model session", () => {
       const body = (await request.json()) as Readonly<Record<string, unknown>>;
       if (request.url.endsWith("/responses/input_tokens")) {
         secondCount += 1;
-        return Response.json({ input_tokens: secondCount === 1 ? 108_474 : 42 });
+        return openAIInputTokenCount(secondCount === 1 ? 108_474 : 42);
       }
       if (Number(body.max_output_tokens) === 4_096) {
         secondSummaryBody = body;
@@ -1122,7 +1528,7 @@ function openAIModel() {
     baseUrl: "https://provider.example/v1",
     reasoning: true,
     input: ["text"] as ("text" | "image")[],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0.001, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 272_000,
     maxTokens: 128_000,
   } as const;
@@ -1223,7 +1629,7 @@ function rollingRequest(
   };
 }
 
-function openAITextStream(text: string): Response {
+function openAITextStream(text: string, inputTokens = 100): Response {
   const item = {
     id: "message-1",
     type: "message",
@@ -1236,9 +1642,9 @@ function openAITextStream(text: string): Response {
     status: "completed",
     output: [item],
     usage: {
-      input_tokens: 100,
+      input_tokens: inputTokens,
       output_tokens: 10,
-      total_tokens: 110,
+      total_tokens: inputTokens + 10,
       input_tokens_details: { cached_tokens: 0 },
       output_tokens_details: { reasoning_tokens: 0 },
     },
@@ -1252,6 +1658,10 @@ function openAITextStream(text: string): Response {
   ];
   const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function openAIInputTokenCount(inputTokens: number): Response {
+  return Response.json({ object: "response.input_tokens", input_tokens: inputTokens });
 }
 
 function runnerFor(
@@ -1319,7 +1729,13 @@ function attemptOneUnseededJournal(): InMemoryJournal {
   return new InMemoryJournal(state);
 }
 
-function rollingPressureJournal(): InMemoryJournal {
+function rollingPressureJournal(
+  projection?: Readonly<{
+    fullText: string;
+    projectedText: string;
+    artifactReferences: readonly string[];
+  }>,
+): InMemoryJournal {
   let state = attemptOneJournal().state;
   for (const [request, text] of [
     [1, `OLD_ROLLING_CONTEXT:${"o".repeat(24_000)}`],
@@ -1364,6 +1780,41 @@ function rollingPressureJournal(): InMemoryJournal {
       },
       state.eventCount + 1,
     );
+    if (request === 1 && projection !== undefined) {
+      state = append(
+        state,
+        {
+          type: "tool_call_committed",
+          attempt: 1,
+          turn: request,
+          request,
+          toolCallId: "rolling-tool-call-1",
+          toolName: "flow_exec",
+          argumentsJson: "{}",
+        },
+        state.eventCount + 1,
+      );
+      state = append(
+        state,
+        {
+          type: "tool_result_committed",
+          attempt: 1,
+          turn: request,
+          request,
+          toolCallId: "rolling-tool-call-1",
+          toolName: "flow_exec",
+          text: projection.fullText,
+          isError: false,
+          referenceProjection: {
+            text: projection.projectedText,
+            originalBytes: Buffer.byteLength(projection.fullText),
+            projectedBytes: Buffer.byteLength(projection.projectedText),
+            artifactReferences: projection.artifactReferences,
+          },
+        },
+        state.eventCount + 1,
+      );
+    }
     state = append(
       state,
       {

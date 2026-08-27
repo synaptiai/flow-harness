@@ -607,24 +607,34 @@ Recovery applies this order:
 4. Append the private `attempt_interrupted` boundary.
 5. Apply the authoritative workflow proof gate and append `node_attempt_interrupted` only when the
    attempt is safe to repeat.
-6. Start a fresh in-memory Pi session and reconstruct the latest complete accepted checkpoint from
-   original primary events.
-7. Remeasure the exact next serialized task request before inference.
+6. Start a fresh in-memory Pi session with a bounded, content-free checkpoint bootstrap.
+7. Reconstruct the latest complete accepted checkpoint from original primary events.
+8. Restore the exact objective and committed tail inside the request-admission boundary.
+9. Remeasure the exact next serialized task request before inference.
 
 Recovery never promotes an unmatched start, rejected candidate, partial provider response, or
 in-memory summary. It doesn't continue provider-native conversation state. A later rolling epoch
 uses the prior accepted summary plus newly eligible exact events, while its cumulative range still
 binds the complete original source prefix.
 
+The private event keeps the complete tool result when it also contains a compact artifact
+projection. Recovery revalidates every referenced artifact before each summary serialization. It
+uses the complete result when a reference is unavailable before count admission. If the reference
+surface changes between admission and inference serialization, payload identity verification
+blocks inference with `pi_model_context_checkpoint_invalid`.
+
 | Recovered state | Result |
 | --- | --- |
 | No accepted rolling checkpoint | Keep the complete exact source history and apply the normal fresh-session rules. |
-| One complete accepted checkpoint with matching source, policy, and runtime bindings | Reconstruct the checkpoint and retain the two most recent completed requests exactly. |
+| One complete accepted checkpoint with matching source, policy, model capacity, and runtime bindings | Reconstruct the checkpoint and retain the two most recent completed requests exactly. |
+| Complete pre-checkpoint history exceeds the generic resume-surface limit | Use the bounded checkpoint bootstrap. Don't render the complete pre-checkpoint history into Pi. |
 | Unmatched epoch start | Record one interrupted settlement before the attempt interruption. Don't infer a summary result. |
 | Rejected or interrupted settlement after an older accepted checkpoint | Keep the older accepted checkpoint current. |
-| Changed policy, route, runtime, instructions, tools, authority, source range, protected constraints, or rendered identity | Fail with `pi_model_context_checkpoint_invalid` before provider I/O. |
+| Changed policy, route, runtime, model context window, model maximum output, instructions, tools, authority, source range, protected constraints, or rendered identity | Fail with `pi_model_context_checkpoint_invalid` before provider I/O. |
 | Missing, corrupt, oversized, unsafe, or live-owned private record | Block recovery and preserve the record for diagnosis. |
 | Provider count unavailable after restart | Record content-free measurement failure and fail with `pi_model_context_measurement_unavailable` before inference. |
+| Artifact projection unavailable before summary admission | Use the complete committed tool result and measure that exact summary payload. |
+| Artifact projection changes after summary admission | Fail with `pi_model_context_checkpoint_invalid` before summary inference. |
 
 Inspect the run before and after the ordinary resume command:
 
