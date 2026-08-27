@@ -1,4 +1,8 @@
-import { MAX_AGENT_EFFECT_RECEIPTS, type AgentEffectReceipt } from "../../domain/run/events.js";
+import {
+  EMPTY_DIRECTORY_STATE_SHA256,
+  MAX_AGENT_EFFECT_RECEIPTS,
+  type AgentEffectReceipt,
+} from "../../domain/run/events.js";
 import type { NodeEffectJournal, PreparedNodeEffect } from "../../application/ports.js";
 import { MAX_POLICY_TARGET_BYTES } from "../../domain/policy/broker.js";
 import type { PolicyAttribution } from "../../domain/policy/types.js";
@@ -11,6 +15,11 @@ export type AgentEffectIdentity =
     }
   | {
       readonly kind: "filesystem.create";
+      readonly target: string;
+      readonly operationDigest: string;
+    }
+  | {
+      readonly kind: "filesystem.mkdir";
       readonly target: string;
       readonly operationDigest: string;
     };
@@ -232,7 +241,12 @@ function validateEffectHashes(effect: {
       throw new RangeError("effect before and after digests must differ");
     }
   } else if (effect.beforeSha256 !== null) {
-    throw new RangeError("filesystem.create requires an absent before state");
+    throw new RangeError(`${effect.kind} requires an absent before state`);
+  } else if (
+    effect.kind === "filesystem.mkdir" &&
+    effect.afterSha256 !== EMPTY_DIRECTORY_STATE_SHA256
+  ) {
+    throw new RangeError("filesystem.mkdir requires the empty-directory state digest");
   }
 }
 
@@ -243,6 +257,9 @@ function validatePreparation(
   validateEffectHashes({ kind: identity.kind, ...preparation });
   if (!Number.isInteger(preparation.mode) || preparation.mode < 0 || preparation.mode > 0o777) {
     throw new RangeError("effect mode must be an integer between 0 and 0777");
+  }
+  if (identity.kind === "filesystem.mkdir" && preparation.mode !== 0o755) {
+    throw new RangeError("filesystem.mkdir requires mode 0755");
   }
 }
 
@@ -260,6 +277,17 @@ function effectDescriptor(identity: AgentEffectIdentity, preparation: AgentEffec
   }
   if (preparation.beforeSha256 !== null) {
     throw new AgentEffectReservationError();
+  }
+  if (identity.kind === "filesystem.mkdir") {
+    if (preparation.afterSha256 !== EMPTY_DIRECTORY_STATE_SHA256 || preparation.mode !== 0o755) {
+      throw new AgentEffectReservationError();
+    }
+    return {
+      ...identity,
+      beforeSha256: null,
+      afterSha256: EMPTY_DIRECTORY_STATE_SHA256,
+      mode: 0o755,
+    } as const;
   }
   return {
     ...identity,

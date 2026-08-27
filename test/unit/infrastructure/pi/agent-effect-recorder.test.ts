@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { NodeEffectJournal } from "../../../../src/application/ports.js";
-import { MAX_AGENT_EFFECT_RECEIPTS } from "../../../../src/domain/run/events.js";
+import {
+  EMPTY_DIRECTORY_STATE_SHA256,
+  MAX_AGENT_EFFECT_RECEIPTS,
+} from "../../../../src/domain/run/events.js";
 import {
   AgentEffectAuditClosedError,
   AgentEffectAuditLimitError,
@@ -74,6 +77,53 @@ describe("AgentEffectRecorder", () => {
     expect(recorder.snapshot()).toEqual([
       expect.objectContaining({ kind: "filesystem.create", beforeSha256: null }),
     ]);
+  });
+
+  it("projects only the fixed empty-directory state for mkdir", async () => {
+    const preparedDescriptors: unknown[] = [];
+    const recorder = new AgentEffectRecorder(attribution, journalThatRecords(preparedDescriptors));
+    const reservation = recorder.reserve({
+      kind: "filesystem.mkdir",
+      target: "/workspace/src/new-package",
+      operationDigest: "d".repeat(64),
+    });
+
+    await reservation.prepare({
+      beforeSha256: null,
+      afterSha256: EMPTY_DIRECTORY_STATE_SHA256,
+      mode: 0o755,
+    });
+    await reservation.settle({ outcome: "committed", reason: "directory_synced" });
+
+    expect(preparedDescriptors).toEqual([
+      {
+        kind: "filesystem.mkdir",
+        target: "/workspace/src/new-package",
+        operationDigest: "d".repeat(64),
+        beforeSha256: null,
+        afterSha256: EMPTY_DIRECTORY_STATE_SHA256,
+        mode: 0o755,
+      },
+    ]);
+    expect(recorder.snapshot()).toEqual([
+      expect.objectContaining({ kind: "filesystem.mkdir", beforeSha256: null }),
+    ]);
+  });
+
+  it.each([
+    { afterSha256: "f".repeat(64), mode: 0o755 },
+    { afterSha256: EMPTY_DIRECTORY_STATE_SHA256, mode: 0o700 },
+  ])("rejects an invalid mkdir state before journal preparation", async (preparation) => {
+    const recorder = new AgentEffectRecorder(attribution, journalThatRecords([]));
+    const reservation = recorder.reserve({
+      kind: "filesystem.mkdir",
+      target: "/workspace/src/new-package",
+      operationDigest: "d".repeat(64),
+    });
+
+    await expect(reservation.prepare({ beforeSha256: null, ...preparation })).rejects.toThrow(
+      /filesystem\.mkdir/i,
+    );
   });
 
   it("rejects edit/create pre-state mismatches before journal preparation", async () => {

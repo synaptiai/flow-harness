@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { resumeWorkflow } from "../../../src/application/run-workflow.js";
-import { reduceRunEvents } from "../../../src/domain/run/events.js";
+import { EMPTY_DIRECTORY_STATE_SHA256, reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
@@ -163,6 +163,69 @@ describe("durable effect reconciliation", () => {
       observedMode: 0o644,
     });
   });
+
+  it("reopens an exact empty created directory and classifies it as applied", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-reconcile-mkdir-jsonl-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const target = join(directory, "synthesize");
+    await mkdir(target, { mode: 0o755 });
+    await chmod(target, 0o755);
+    const compiled = mkdirWorkflow();
+    const runId = "durable-mkdir-reconciliation";
+    const store = new JsonlRunStore(runsDirectory);
+    await store.append({
+      ...base(compiled.id, runId, 1),
+      type: "run_started",
+      nodeIds: compiled.nodes.map((node) => node.id),
+      workflowApiVersion: compiled.apiVersion,
+      workflowDigest: createHash("sha256").update(JSON.stringify(compiled)).digest("hex"),
+      executionCwd: resolve(directory),
+    });
+    await store.append({
+      ...base(compiled.id, runId, 2),
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+      effectProtocol: "flow.effects/v1",
+    });
+    await store.append({
+      ...base(compiled.id, runId, 3),
+      type: "node_effect_prepared",
+      nodeId: "implement",
+      attempt: 1,
+      effectId: "effect-3",
+      effectSequence: 1,
+      descriptor: {
+        kind: "filesystem.mkdir",
+        target,
+        operationDigest: "b".repeat(64),
+        beforeSha256: null,
+        afterSha256: EMPTY_DIRECTORY_STATE_SHA256,
+        mode: 0o755,
+      },
+    });
+    await store.release(runId);
+
+    await expect(
+      resumeWorkflow(compiled, {
+        cwd: directory,
+        protectedPaths: [runsDirectory],
+        runId,
+        store: new JsonlRunStore(runsDirectory),
+        executor: forbiddenExecutor(),
+        effectReconciler: createProductionNodeEffectReconciler(),
+      }),
+    ).rejects.toMatchObject({ code: "uncertain_operation" });
+
+    const events = await new JsonlRunStore(runsDirectory).read(runId);
+    expect(reduceRunEvents(events).nodes.implement?.effects[0]?.reconciliation).toMatchObject({
+      outcome: "applied",
+      reason: "target_matches_after",
+      observedSha256: EMPTY_DIRECTORY_STATE_SHA256,
+      observedMode: 0o755,
+    });
+  });
 });
 
 function forbiddenExecutor(): NodeExecutor {
@@ -204,6 +267,25 @@ nodes:
       prompt: Create the migration guide.
       model: { provider: test, id: deterministic }
       tools: [create]
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function mkdirWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: durable-mkdir-reconciliation }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Create the package directory.
+      model: { provider: test, id: deterministic }
+      tools: [mkdir]
   - id: verify
     type: command
     dependsOn: [implement]

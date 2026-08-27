@@ -271,6 +271,44 @@
       ]
     },
     {
+      "selector": "mkdir",
+      "name": "flow_mkdir",
+      "label": "mkdir",
+      "description": "Atomically create one new empty workspace directory with mode 0755. The parent must already exist, and an existing path is never replaced.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Path for one new directory inside the Flow workspace.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "write"
+      ],
+      "policyActions": [
+        "filesystem.write"
+      ],
+      "availability": [
+        "effect-recorder"
+      ],
+      "limitIds": [
+        "agent-effects-per-attempt",
+        "policy-decisions-per-attempt",
+        "policy-target-bytes",
+        "tool-path-bytes",
+        "tool-path-characters"
+      ]
+    },
+    {
       "selector": "read",
       "name": "flow_read",
       "label": "read",
@@ -401,7 +439,7 @@
       "id": "agent-effects-per-attempt",
       "value": 32,
       "unit": "items",
-      "scope": "Maximum combined flow_edit and flow_create effect reservations in one agent attempt."
+      "scope": "Maximum combined flow_edit, flow_create, and flow_mkdir effect reservations in one agent attempt."
     },
     {
       "id": "artifact-maximum-bytes",

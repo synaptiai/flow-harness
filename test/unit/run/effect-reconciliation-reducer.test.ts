@@ -83,6 +83,8 @@ describe("durable effect reconciliation replay", () => {
   it.each([
     "target_missing",
     "target_not_regular",
+    "target_not_directory",
+    "target_not_empty",
     "target_unreadable",
     "target_too_large",
     "target_changed_during_observation",

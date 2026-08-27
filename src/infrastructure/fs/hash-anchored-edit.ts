@@ -13,10 +13,14 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 
 import type {
+  FilesystemCreateEffectDescriptor,
   FilesystemEditEffectDescriptor,
-  FilesystemEffectDescriptor,
   NodeEffectReconciliationInput,
 } from "../../domain/run/events.js";
+
+type FilesystemFileEffectDescriptor =
+  | FilesystemCreateEffectDescriptor
+  | FilesystemEditEffectDescriptor;
 
 export const MAX_EDIT_REPLACEMENTS = 32;
 export const MAX_EDIT_INPUT_BYTES = 262_144;
@@ -207,7 +211,7 @@ export async function reconcileHashAnchoredEditEffect(
 }
 
 export async function reconcileHashAnchoredFilesystemEffect(
-  descriptor: FilesystemEffectDescriptor,
+  descriptor: FilesystemFileEffectDescriptor,
   publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
   options: HashAnchoredEditReconciliationOptions = {},
 ): Promise<void> {
@@ -624,7 +628,7 @@ async function editWhileLocked(
 }
 
 async function observeEffectTarget(
-  descriptor: FilesystemEffectDescriptor,
+  descriptor: FilesystemFileEffectDescriptor,
   options: HashAnchoredEditReconciliationOptions,
 ): Promise<NodeEffectReconciliationInput> {
   let pathBefore: BigIntStats;
@@ -762,7 +766,7 @@ async function observeCurrentPath(target: string): Promise<BigIntStats | "change
   }
 }
 
-function sameObservedIdentity(left: BigIntStats, right: BigIntStats): boolean {
+export function sameObservedIdentity(left: BigIntStats, right: BigIntStats): boolean {
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
@@ -774,7 +778,7 @@ function sameObservedIdentity(left: BigIntStats, right: BigIntStats): boolean {
 }
 
 function classifyRegularTarget(
-  descriptor: FilesystemEffectDescriptor,
+  descriptor: FilesystemFileEffectDescriptor,
   observedSha256: string,
   observedMode: number,
 ): NodeEffectReconciliationInput {
@@ -1032,7 +1036,7 @@ async function removeCreateTemporaryFile(
   }
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+export async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, "r");
   let operationError: unknown;
   try {
@@ -1050,7 +1054,7 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
-interface CrossProcessEditLock {
+export interface CrossProcessEditLock {
   release(): Promise<void>;
 }
 
@@ -1061,7 +1065,7 @@ interface EditLockOwner {
   readonly token: string;
 }
 
-async function acquireCrossProcessEditLock(target: string): Promise<CrossProcessEditLock> {
+export async function acquireCrossProcessEditLock(target: string): Promise<CrossProcessEditLock> {
   const directory = dirname(target);
   const lockPath = join(directory, `.flow-edit-${sha256(Buffer.from(target))}.lock`);
   const token = randomUUID();
@@ -1181,7 +1185,7 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function withMutationQueue<T>(target: string, effect: () => Promise<T>): Promise<T> {
+export async function withMutationQueue<T>(target: string, effect: () => Promise<T>): Promise<T> {
   const previous = mutationQueues.get(target) ?? Promise.resolve();
   let release: () => void = () => undefined;
   const current = new Promise<void>((resolve) => {

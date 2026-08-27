@@ -145,7 +145,7 @@ flow resume <workflow.yaml|workflow:name@version> --run-id <run-id> [--work-prof
 Flow compiles the workflow before claiming the run. It then acquires exclusive local ownership,
 replays committed events, and checks compatibility before observing any target. At a safe boundary,
 it appends `run_resumed`. Successful nodes remain successful and are not executed again. Flow first
-reconciles an open typed edit. The unfinished node remains refused unless its
+reconciles an open typed filesystem effect. The unfinished node remains refused unless its
 persisted recovery policy and the resulting replay state satisfy every fresh-retry proof.
 Pending nodes retain their normal dependency order and use the lesser of their declared timeout
 and remaining active-execution budget. The command prints the same JSON `RunState` shape as
@@ -431,7 +431,7 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | `workflow_approval_requested` is pending | Append `run_resumed`, retain the exact request and `waiting_for_approval`, and execute nothing |
 | `workflow_approval_approved` is durable | Append `run_resumed` and apply only the next graph-declared transition |
 | `workflow_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
-| One or more opted-in agent `node_started` events are below their attempt caps, have accountable start capacity, and have no effects or only effects proven not applied | Reconcile every open typed edit and append each `node_attempt_interrupted` in declaration order; append one `run_resumed`, then admit fresh attempts under the persisted concurrency limit |
+| One or more opted-in agent `node_started` events are below their attempt caps, have accountable start capacity, and have no effects or only effects proven not applied | Reconcile every open typed filesystem effect and append each `node_attempt_interrupted` in declaration order; append one `run_resumed`, then admit fresh attempts under the persisted concurrency limit |
 | An opted-in agent `node_started` has an applied, committed, unknown, open, legacy writable, attempt-exhausted, or unaccountable budget state | Preserve any reconciliation prefix, refuse with `recovery_retry_ineligible`, and invoke no executor |
 | A command or model verifier `node_started` has no matching outcome | Refuse with `uncertain_operation`; don't repeat its command or model invocation |
 | A Lean proof verifier `node_started` has no matching outcome or a prior proof-container lease | Reconcile only the exact leased container, require confirmed absence, refuse with `uncertain_operation`, and don't repeat the proof attempt |
@@ -492,20 +492,27 @@ recomputes typed observations and the delta digest, binds prepare/settlement to 
 id, and requires cleanup before check completion when candidate evidence says retained.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
-`flow.effects/v1`. Before an atomic edit rename or create link, Flow syncs `node_effect_prepared`
-with a stable effect identity, operation kind, target, request digest, after hash, and mode. An edit
-records its before hash. A create records a null before hash because the path is absent. Flow later syncs exactly one
-settlement: `committed/directory_synced`, `not_applied/commit_not_entered`, or
+`flow.effects/v1`. Before an atomic edit rename, file-create link, or nonrecursive `mkdir`, Flow
+syncs `node_effect_prepared` with a stable effect identity, operation kind, target, request digest,
+after hash, and mode. An edit records its before hash. A file or directory create records a null
+before hash because the path is absent. Flow later syncs exactly one settlement:
+`committed/directory_synced`, `not_applied/commit_not_entered`, or
 `unknown/post_commit_failure`. A process death can therefore leave an unresolved prepared effect,
 or a settled effect without a node outcome. Inspection preserves that distinction.
 
 For each unresolved prepared filesystem effect, recovery enters the same target queue and
-cross-process lock as normal mutations. It rejects non-regular targets before opening them.
-It opens without following symlinks. It hashes the initially observed size in fixed chunks.
-It then compares the regular-file SHA-256 and POSIX mode.
+cross-process lock as normal mutations. For a file effect, it rejects non-regular targets before
+opening them. It opens without following symbolic links and hashes the initially observed size in
+fixed chunks. It then compares the regular-file SHA-256 and POSIX mode.
+
+For a directory effect, recovery rejects a non-directory target. It reads the directory entries
+only until it finds the first entry and then rechecks the target identity. A nonempty directory
+becomes `unknown/target_not_empty`. Only an unchanged empty directory with mode `0755` matches the
+prepared after-state.
 
 The edit observation limit is 8 MiB. The create observation
-limit is 256 KiB. Recovery appends `node_effect_reconciled` while it holds the target lock.
+limit is 256 KiB. Directory observation uses a bounded empty-state comparison. Recovery appends
+`node_effect_reconciled` while it holds the target lock.
 
 If the target's parent has disappeared, the sibling lock cannot exist. Recovery
 rechecks the path and can publish only `target_missing` under the in-process target queue.
@@ -513,12 +520,12 @@ It publishes nothing if any target is observable. An exact after-state becomes
 `applied/target_matches_after`. An edit's exact before-state becomes
 `not_applied/target_matches_before`.
 
-A missing create remains unknown because recovery cannot
-distinguish a pre-commit crash from an applied file that another actor later removed.
+A missing file or directory create remains unknown because recovery cannot distinguish a
+pre-mutation crash from an applied object that another actor later removed.
 
-Missing, non-regular, unreadable, oversized, divergent, wrong-mode, or raced targets become
-`unknown` with a bounded reason. The event retains a digest and
-mode only for a stable regular-file observation. It stores no file bytes or raw operating-system
+Missing, wrong-type, unreadable, oversized, divergent, wrong-mode, or raced targets become
+`unknown` with a bounded reason. The event retains a digest and mode only for a stable file or
+directory observation. It stores no file bytes, directory entry names, or raw operating-system
 error message and never changes the target.
 
 Recovery provenance is separate from execution settlement. Observing the after-state does not
@@ -552,7 +559,7 @@ The reducer permits `node_attempt_interrupted` only when all of these statements
 - no `maxModelTokens`, `maxCostUsd`, or `maxExecutionMs` limit is declared, because consumption by
   the interrupted attempt is incomplete;
 - a read-only policy has no effect protocol and no effects; or
-- an edit-capable policy used `flow.effects/v1` and every effect has executor settlement
+- a writable policy used `flow.effects/v1` and every effect has executor settlement
   `not_applied` or recovery reconciliation `not_applied`.
 
 An empty effect list is sufficient only for a persisted read-only policy or a writable attempt that

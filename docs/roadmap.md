@@ -2,8 +2,9 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 includes policy, approvals, exclusive file creation, hash-anchored edits, durable effect
-receipts, and sandboxed argument-vector command execution.
+Gates 0–2 are implemented. Gate 3 includes policy, approvals, exclusive file and directory
+creation, hash-anchored edits, durable effect receipts, and sandboxed argument-vector command
+execution.
 
 Gate 4 includes recovery, same-host ownership, effect reconciliation, durable budgets, detached
 workers, bounded queueing, cancellation, replay, and worker adoption.
@@ -86,6 +87,9 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Side-effect uncertainty blocks automatic retry.
 - Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
 - Exclusive creation records an absent pre-state and after hash for one new UTF-8 file. It coordinates with edits on the same target. It never replaces an existing path. Recovery fails closed when it cannot distinguish non-application from later deletion. *(Implemented.)*
+- Explicit nonrecursive directory creation records an absent pre-state, canonical empty-directory
+  digest, and mode `0755`. It requires an existing parent, shares the target lock and effect limit,
+  and never accepts or replaces an existing path. *(Implemented.)*
 - A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT and the operator-selected container command profile.)*
 - The initial fixed profile denies network and ambient credentials. It permits workspace work,
   protects durable state, and records provenance. *(Implemented for native SRT and
@@ -100,9 +104,15 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 
 - Runs resume from authoritative events after process interruption. *(Implemented at committed node boundaries.)*
 - Only one same-host process owns append and execution for a run; exited ownership is recoverable. *(Implemented.)*
-- Flow-owned workspace edits persist typed prepare/settle evidence across interruption. *(Implemented.)*
-- Supported open edits are reconciled before any future retry decision. *(Implemented for exact hash/mode observation under the shared target lock.)*
-- Interrupted agent attempts may start a fresh numbered attempt only under a persisted opt-in, bounded attempt cap, and replay proof that every effect was not applied. *(Implemented for read-only and `flow.effects/v1` edit attempts; applied, unknown, open, legacy writable, and unaccountable resource states remain blocked.)*
+- Flow-owned workspace file and directory mutations persist typed prepare and settlement evidence
+  across interruption. *(Implemented.)*
+- Supported open filesystem effects are reconciled before any future retry decision. *(Implemented
+  for exact file hash and mode or empty-directory and mode observation under the shared target
+  lock.)*
+- Interrupted agent attempts can start a fresh numbered attempt only after a persisted opt-in and
+  within a bounded attempt cap. Replay must prove that every effect was not applied. *(Implemented
+  for read-only and `flow.effects/v1` writable attempts. Applied, unknown, open, legacy writable,
+  and unaccountable resource states remain blocked.)*
 - A supervisor owns detached workers, health, cancellation, and event replay. *(Implemented with strict project/operator capacity configuration, durable bounded FIFO admission, explicit accepted/queued/rejected outcomes, queued cancellation without execution, authenticated restart adoption, policy binding, and bounded cursor replay.)*
 - Budgets cover attempts/node starts, model tokens, reported cost, active execution time, and retained
   executor-output artifacts. *(Implemented.)* Replay derives exact UTF-8 accounting and terminal

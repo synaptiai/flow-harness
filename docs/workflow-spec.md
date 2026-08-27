@@ -1280,6 +1280,11 @@ categories.
 
 The tool doesn't create directories, append, or replace any existing filesystem object. A successful call returns the SHA-256 version of the exact created bytes.
 
+`flow_mkdir` accepts only `path`. It creates exactly one empty directory with mode `0755`. The
+parent directory must already exist. The tool doesn't create parent directories recursively and
+doesn't accept or replace an existing file, directory, or symbolic link. Use `flow_create` in a
+later call to add each file inside the new directory.
+
 `flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
 
 `flow_exec` accepts only `executable`, optional literal `args`, and optional `timeoutMs`. It defaults
@@ -1316,11 +1321,26 @@ publishing terminal success. If termination cannot be confirmed and sandbox clea
 also fails, the settlement keeps `command_termination_failed` and `terminationStatus: unconfirmed`
 as the primary truth and appends only bounded cleanup context to its message.
 
-After policy authorization, Flow reserves bounded evidence capacity and acquires a target-local exclusive lock. An edit re-reads and preflights the complete request, writes and syncs a same-directory exclusive temporary file, and rechecks the live target bytes and mode. It preserves the existing permission bits. A create verifies that the target is absent, writes and syncs a same-directory exclusive temporary file, and rechecks absence. It then uses an exclusive hard-link commit so a concurrent filesystem object cannot be overwritten.
+After policy authorization, Flow reserves bounded evidence capacity and acquires a target-local
+exclusive lock. An edit re-reads and preflights the complete request, writes and syncs a
+same-directory exclusive temporary file, and rechecks the live target bytes and mode. It preserves
+the existing permission bits. A file create verifies that the target is absent, writes and syncs a
+same-directory exclusive temporary file, and rechecks absence. It then uses an exclusive hard-link
+commit so a concurrent filesystem object cannot be overwritten. A directory create verifies
+absence, calls nonrecursive `mkdir`, sets and verifies mode `0755`, verifies that the directory is
+empty, and synchronizes the new directory and its parent.
 
-While still holding the lock and before the commit, Flow syncs a `node_effect_prepared` event. The event contains an effect identity, sequence, operation kind, canonical target, request digest, after hash, and mode. An edit also contains its before hash. A create records `beforeSha256: null`. This value distinguishes an absent path from an empty file. Only then can Flow rename an edit or link a create.
+While still holding the lock and before the mutation, Flow syncs a `node_effect_prepared` event. The
+event contains an effect identity, sequence, operation kind, canonical target, request digest, after
+hash, and mode. An edit also contains its before hash. A file or directory create records
+`beforeSha256: null`. This value distinguishes an absent path from an empty object. Only then can
+Flow rename an edit, link a file create, or call `mkdir`.
 
-Flow settles an effect as committed after directory sync. A post-prepare failure before commit settles as not applied. A failure after commit settles as unknown when journal publication remains available. Creates and edits share the 32-effect attempt limit.
+Flow settles a file effect as committed after parent-directory synchronization. It settles a
+directory effect as committed only after synchronizing both the new directory and its parent. A
+post-prepare failure before mutation settles as not applied. A failure after mutation settles as
+unknown when journal publication remains available. File creates, directory creates, and edits
+share the 32-effect attempt limit.
 
 The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
 
@@ -1356,7 +1376,7 @@ Fresh recovery is evaluated only when `resume` finds a durable `node_started` wi
 outcome. Flow starts a new in-memory Pi session with the current instructions, tools, authority,
 and workspace. It supplies completed provider-neutral history as one new untrusted-data user turn.
 It doesn't continue a dangling tool call, partial model output, provider stream, or opaque provider
-handle. Read-only attempts qualify only with no effect protocol and no effects. An edit-capable
+handle. Read-only attempts qualify only with no effect protocol and no effects. A writable
 attempt qualifies only when it declared `flow.effects/v1` and every effect is proven not applied by
 executor settlement or recovery reconciliation. Any committed, applied, unknown, open, or legacy
 writable state blocks. The retry also requires an attempt below `maxAttempts` and capacity under
@@ -1849,7 +1869,22 @@ Fresh and recovered execution publish complete ownership metadata atomically bef
 
 Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
-The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and typed command or graph approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A safe-boundary recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Recovery of an open typed edit first appends its observation under target coordination. It then refuses the unfinished node unless the persisted opt-in and complete replay prove every effect not applied and all attempt and resource limits permit a separate `node_attempt_interrupted` disposition. Model transcripts and implementation rationale are never consulted during replay.
+The reducer accepts only legal state transitions. It reconstructs run state together with immutable
+resources, budget, goal, criterion, and approval state. Run state can be `running`,
+`waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted`.
+
+Cancellation before a run claim creates no ledger. Cancellation during a node creates a failed
+node attempt and retains settled evidence. Cancellation between attempts appends `run_cancelled`
+without starting more work. A committed settlement limit or a blocked start can instead require
+durable `resource_exhausted` state.
+
+Safe-boundary recovery appends `run_resumed`, preserves committed outcomes and approval state, and
+skips successful nodes. It can continue the next ready node, return to an operator wait, or finalize
+a committed failure or exhausted settlement. Recovery first observes each open typed filesystem
+effect under target coordination. Flow refuses the unfinished node unless replay proves every
+effect was not applied. The persisted opt-in and all attempt and resource limits must also permit a
+separate `node_attempt_interrupted` disposition. Replay never consults model transcripts or
+implementation rationale.
 
 ## Foreground and detached execution
 
@@ -2593,7 +2628,11 @@ or package, change active runs, or delete artifacts.
   hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - Linux PID namespaces contain agent-command descendants; macOS agent commands fail before spawn because process groups are insufficient. The native sandbox does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
-- Agent mutation supports one exclusive UTF-8 file creation or exact edit per call. Agents can also use explicitly selected argv-only sandboxed commands. Flow exposes no delete, rename, shell, network, or fuzzy patch tool. It also exposes no environment override, working-directory override, interactive process, background job, directory creation, or multi-file transaction.
+- Agent mutation supports one exclusive UTF-8 file creation, nonrecursive empty directory creation,
+  or exact edit per call. Agents can also use explicitly selected argv-only sandboxed commands.
+  Flow exposes no delete, rename, shell, network, or fuzzy patch tool. It also exposes no
+  environment override, working-directory override, interactive process, background job, or
+  multi-file transaction.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
 - Adaptive candidates support root-agent prompt overlays and selected-resource changes in one

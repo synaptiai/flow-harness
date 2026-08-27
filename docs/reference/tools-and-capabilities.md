@@ -24,6 +24,7 @@ JSON Schema dialect: `https://json-schema.org/draft/2020-12/schema`
 | `edit` | `flow_edit` | write | effect-recorder |
 | `exec` | `flow_exec` | execute | command-recorder, production-sandbox |
 | `ls` | `flow_ls` | read | Always |
+| `mkdir` | `flow_mkdir` | write | effect-recorder |
 | `read` | `flow_read` | read | Always |
 | `semantic` | `flow_semantic` | read | language-server |
 
@@ -241,6 +242,35 @@ Input schema:
 }
 ```
 
+### `flow_mkdir`
+
+Atomically create one new empty workspace directory with mode 0755. The parent must already exist, and an existing path is never replaced.
+
+- Workflow selector: `mkdir`
+- Execution mode: `sequential`
+- Policy actions: `filesystem.write`
+- Public limits: `agent-effects-per-attempt`, `policy-decisions-per-attempt`, `policy-target-bytes`, `tool-path-bytes`, `tool-path-characters`
+
+Input schema:
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "description": "Path for one new directory inside the Flow workspace.",
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "object"
+}
+```
+
 ### `flow_read`
 
 Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.
@@ -345,7 +375,7 @@ Schema `default` annotations alone don't insert a value.
 | Identifier | Limit | Default | Scope |
 | --- | ---: | ---: | --- |
 | `agent-commands-per-attempt` | 32 items | — | Maximum flow_exec and command-tool-package executions started in one agent attempt. |
-| `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit and flow_create effect reservations in one agent attempt. |
+| `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit, flow_create, and flow_mkdir effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |
 | `create-input-bytes` | 262144 bytes | — | Maximum UTF-8 bytes in one new file. |

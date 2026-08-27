@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,7 @@ import type {
 import { runWorkflow } from "../../../src/application/run-workflow.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
+import { EMPTY_DIRECTORY_STATE_SHA256 } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
@@ -155,7 +156,101 @@ describe("durable filesystem effect journal", () => {
       ],
     });
   });
+
+  it("reopens a directory-created run with its empty-state receipt intact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-durable-mkdir-"));
+    temporaryDirectories.push(root);
+    const workspace = join(root, "workspace");
+    const runs = join(root, "runs");
+    const target = join(workspace, "synthesize");
+    await mkdir(workspace, { recursive: true });
+    const runId = "durable-mkdir-run";
+
+    const state = await runWorkflow(mkdirWorkflow(), {
+      runId,
+      cwd: workspace,
+      protectedPaths: [],
+      store: new JsonlRunStore(runs),
+      executor: mkdirExecutor(target),
+      now: incrementingClock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(await readdir(target)).toEqual([]);
+    expect((await stat(target)).mode & 0o777).toBe(0o755);
+    const reopenedEvents = await new JsonlRunStore(runs).read(runId);
+    expect(reopenedEvents[2]).toMatchObject({
+      type: "node_effect_prepared",
+      descriptor: {
+        kind: "filesystem.mkdir",
+        target: await realpath(target),
+        beforeSha256: null,
+        afterSha256: EMPTY_DIRECTORY_STATE_SHA256,
+        mode: 0o755,
+      },
+    });
+    expect(reduceRunEvents(reopenedEvents).nodes.implement?.evidence).toMatchObject({
+      effectReceipts: [
+        {
+          kind: "filesystem.mkdir",
+          beforeSha256: null,
+          afterSha256: EMPTY_DIRECTORY_STATE_SHA256,
+          outcome: "committed",
+        },
+      ],
+    });
+  });
 });
+
+function mkdirExecutor(target: string): NodeExecutor {
+  return {
+    execute: async (node, context) => {
+      if (node.type === "command") {
+        return await executeEdit(node, context, target, "unused");
+      }
+      if (context.effectJournal === undefined) {
+        throw new Error("integration workflow did not supply a writable agent journal");
+      }
+      const attribution = {
+        runId: context.runId,
+        workflowId: context.workflowId,
+        nodeId: node.id,
+        attempt: context.attempt,
+      } as const;
+      const policy = new PolicyBroker(attribution, ["filesystem.write"]);
+      const effects = new AgentEffectRecorder(attribution, context.effectJournal);
+      const tools = await createWorkspaceAgentTools(context.cwd, ["mkdir"], policy, {
+        effectRecorder: effects,
+      });
+      const mkdirTool = tools.definitions[0];
+      if (mkdirTool === undefined) {
+        throw new Error("Flow mkdir tool was not registered");
+      }
+      await mkdirTool.execute(
+        "integration-mkdir",
+        { path: target },
+        undefined,
+        undefined,
+        {} as never,
+      );
+      const text = "mkdir complete";
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "agent",
+          provider: "test",
+          model: "deterministic",
+          text,
+          textHash: sha256(text),
+          textTruncated: false,
+          durationMs: 1,
+          policyDecisions: policy.close(),
+          effectReceipts: effects.close(),
+        },
+      };
+    },
+  };
+}
 
 function creatingExecutor(target: string, content: string): NodeExecutor {
   return {
@@ -318,6 +413,25 @@ nodes:
       prompt: Create the migration guide.
       model: { provider: test, id: deterministic }
       tools: [create]
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function mkdirWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: durable-mkdir }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Create the package directory.
+      model: { provider: test, id: deterministic }
+      tools: [mkdir]
   - id: verify
     type: command
     dependsOn: [implement]

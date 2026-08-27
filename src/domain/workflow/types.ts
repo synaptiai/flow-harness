@@ -26,6 +26,7 @@ export const AGENT_TOOL_NAMES = Object.freeze([
   "ls",
   "edit",
   "create",
+  "mkdir",
   "exec",
   "semantic",
   "artifact",

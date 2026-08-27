@@ -365,6 +365,8 @@ export const MAX_AGENT_EFFECT_RECEIPTS = 32;
 export const MAX_AGENT_COMMANDS_PER_ATTEMPT = 32;
 export const MAX_RUN_EVENT_BYTES = 20 * 1024 * 1024;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
+export const EMPTY_DIRECTORY_STATE_SHA256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" as const;
 
 export interface AgentEffectReceipt {
   readonly version: 1;
@@ -373,7 +375,7 @@ export interface AgentEffectReceipt {
   readonly workflowId: string;
   readonly nodeId: string;
   readonly attempt: number;
-  readonly kind: "filesystem.edit" | "filesystem.create";
+  readonly kind: "filesystem.edit" | "filesystem.create" | "filesystem.mkdir";
   readonly target: string;
   readonly operationDigest: string;
   readonly beforeSha256: string | null;
@@ -929,9 +931,19 @@ export interface FilesystemCreateEffectDescriptor {
   readonly mode: number;
 }
 
+export interface FilesystemMkdirEffectDescriptor {
+  readonly kind: "filesystem.mkdir";
+  readonly target: string;
+  readonly operationDigest: string;
+  readonly beforeSha256: null;
+  readonly afterSha256: typeof EMPTY_DIRECTORY_STATE_SHA256;
+  readonly mode: 0o755;
+}
+
 export type FilesystemEffectDescriptor =
   | FilesystemEditEffectDescriptor
-  | FilesystemCreateEffectDescriptor;
+  | FilesystemCreateEffectDescriptor
+  | FilesystemMkdirEffectDescriptor;
 
 export interface NodeEffectPreparedEvent extends RunEventBase {
   readonly type: "node_effect_prepared";
@@ -1030,6 +1042,8 @@ export type NodeEffectReconciliationInput =
       readonly reason:
         | "target_missing"
         | "target_not_regular"
+        | "target_not_directory"
+        | "target_not_empty"
         | "target_unreadable"
         | "target_too_large"
         | "target_changed_during_observation";
@@ -2039,9 +2053,27 @@ const filesystemCreateEffectDescriptorSchema = z
   })
   .strict();
 
+const filesystemMkdirEffectDescriptorSchema = z
+  .object({
+    kind: z.literal("filesystem.mkdir"),
+    target: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES)
+      .refine((value) => isAbsolute(value) && !value.includes("\0") && normalize(value) === value, {
+        message: "effect target must be an absolute normalized NUL-free path",
+      }),
+    operationDigest: sha256Schema,
+    beforeSha256: z.null(),
+    afterSha256: z.literal(EMPTY_DIRECTORY_STATE_SHA256),
+    mode: z.literal(0o755),
+  })
+  .strict();
+
 const filesystemEffectDescriptorSchema = z.discriminatedUnion("kind", [
   filesystemEditEffectDescriptorSchema,
   filesystemCreateEffectDescriptorSchema,
+  filesystemMkdirEffectDescriptorSchema,
 ]);
 
 const commandEvidenceSchema = z
@@ -2140,7 +2172,7 @@ const agentEvidenceSchema = z
             workflowId: identifierSchema,
             nodeId: identifierSchema,
             attempt: z.number().int().positive(),
-            kind: z.enum(["filesystem.edit", "filesystem.create"]),
+            kind: z.enum(["filesystem.edit", "filesystem.create", "filesystem.mkdir"]),
             target: z
               .string()
               .min(1)
@@ -2164,6 +2196,16 @@ const agentEvidenceSchema = z
                 code: "custom",
                 path: ["beforeSha256"],
                 message: `${receipt.kind} has an invalid before digest`,
+              });
+            }
+            if (
+              receipt.kind === "filesystem.mkdir" &&
+              receipt.afterSha256 !== EMPTY_DIRECTORY_STATE_SHA256
+            ) {
+              context.addIssue({
+                code: "custom",
+                path: ["afterSha256"],
+                message: "filesystem.mkdir has an invalid empty-directory state digest",
               });
             }
           }),
@@ -3723,6 +3765,8 @@ export const runEventSchema = z.discriminatedUnion("type", [
         "target_matches_before",
         "target_missing",
         "target_not_regular",
+        "target_not_directory",
+        "target_not_empty",
         "target_unreadable",
         "target_too_large",
         "target_content_diverged",
@@ -9571,7 +9615,7 @@ function validateEffectReconciliation(
       if (descriptor.kind !== "filesystem.edit") {
         throw new RunReplayError(
           eventIndex,
-          "create effect reconciliation cannot claim an existing before state",
+          "absent-state effect reconciliation cannot claim an existing before state",
         );
       }
       if (

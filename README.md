@@ -122,7 +122,7 @@ bounded filesystem authority.
 
 The host-side Pi runtime still runs with the invoking user's operating-system permissions. It
 receives only the Flow-owned tools declared by the workflow. The built-in file tools are `read`,
-`ls`, `create`, and `edit`. Agent `exec` requires verified Linux
+`ls`, `create`, `mkdir`, and `edit`. Agent `exec` requires verified Linux
 PID-namespace descendant containment.
 
 Detached supervisor controls coordinate trusted processes for one operating-system user. They are
