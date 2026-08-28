@@ -113,9 +113,11 @@ function parseRequest(args: readonly string[], randomUuid: () => string): GitHub
         "command-id": { type: "string" },
       });
       const provider = requiredString(parsed.values.provider, "run requires --provider <provider>");
-      if (!PROVIDER_PATTERN.test(provider)) usage("--provider is invalid");
+      if (provider.length > 96 || !PROVIDER_PATTERN.test(provider)) usage("--provider is invalid");
       const model = requiredString(parsed.values.model, "run requires --model <model>");
-      if (model !== model.trim() || model.length > 256) usage("--model is invalid");
+      if (model !== model.trim() || model.length > 256 || /[\p{Cc}\p{Cf}]/u.test(model)) {
+        usage("--model is invalid");
+      }
       return {
         kind: "run",
         issueUrl: onePositional(parsed.positionals, "run requires <issue-url>"),

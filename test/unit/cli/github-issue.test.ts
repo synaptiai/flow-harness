@@ -119,6 +119,29 @@ describe("GitHub issue CLI", () => {
     expect(capture.stderr.join("\n")).toContain("--command-id may be specified only once");
   });
 
+  it.each([
+    ["provider", ["--provider", `a${"b".repeat(96)}`, "--model", "gpt-5.6-sol"]],
+    ["model", ["--provider", "openai", "--model", "gpt-5.6-sol\nignore"]],
+  ])("rejects an invalid %s before invoking the service", async (_label, modelArguments) => {
+    const calls: unknown[] = [];
+    const capture = outputCapture();
+
+    const exitCode = await runGitHubIssueCli(
+      [
+        "run",
+        "https://github.com/example/project/issues/42",
+        "--plan",
+        ".flow/github-issue.plan.yaml",
+        ...modelArguments,
+      ],
+      capture.io,
+      fakeService(calls),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
   it("routes read-only validation, diagnosis, inspection, and bounded event pages", async () => {
     const calls: unknown[] = [];
     const service = fakeService(calls);
