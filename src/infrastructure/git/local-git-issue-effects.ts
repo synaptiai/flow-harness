@@ -17,24 +17,28 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type {
   CleanupIssueGitWorkspaceRequest,
   CommitIssueGitCandidateRequest,
+  FetchIssueGitPullRequestHeadRequest,
   FetchIssueGitRemoteBranchRequest,
   InspectIssueGitCandidateRequest,
   InspectIssueGitCommitRequest,
-  InspectIssueGitFrozenBaseRequest,
   InspectIssueGitPatchSeriesRequest,
   InspectIssueGitRemoteBranchRequest,
+  InspectIssueGitVerificationCandidateRequest,
+  InspectIssueGitVerificationWorktreeRequest,
   IssueGitCandidateObservation,
   IssueGitCommitObservation,
   IssueGitCommitResult,
-  IssueGitFrozenBaseObservation,
   IssueGitPatchSeriesObservation,
+  IssueGitPullRequestHeadObservation,
   IssueGitPushResult,
   IssueGitReachabilityRequest,
   IssueGitRemoteBranchObservation,
+  IssueGitVerificationWorktreeObservation,
   IssueGitWorkspace,
   IssueLocalGitPort,
   PrepareIssueGitWorkspaceRequest,
   PushIssueGitCandidateRequest,
+  ResetIssueGitVerificationWorktreeRequest,
 } from "../../application/issue-local-git-port.js";
 import { canonicalGitHubRepositoryIdentity } from "../../domain/issue-lifecycle/identity.js";
 import { isValidExactGitBranchName } from "../../domain/issue-lifecycle/plan.js";
@@ -187,7 +191,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     if (await pathExists(normalized.workspaceRoot)) {
       throw new LocalGitIssueError("workspace_not_owned");
     }
-    if (await pathExists(normalized.frozenBaseRoot)) {
+    if (await pathExists(normalized.verificationRoot)) {
       throw new LocalGitIssueError("workspace_not_owned");
     }
     if ((await this.#readLocalRef(normalized.sourceRoot, normalized.branch, signal)) !== null) {
@@ -222,14 +226,14 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     if (result.exitCode !== 0 && !(await pathExists(normalized.workspaceRoot))) {
       throw new LocalGitIssueError("workspace_state_uncertain");
     }
-    const frozenBaseResult = await this.#git({
+    const verificationResult = await this.#git({
       cwd: normalized.sourceRoot,
       arguments: [
         "worktree",
         "add",
         "--quiet",
         "--detach",
-        normalized.frozenBaseRoot,
+        normalized.verificationRoot,
         normalized.baseCommit,
       ],
       allowNonZero: true,
@@ -239,7 +243,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     try {
       workspace = await this.#observeWorkspace(normalized, signal);
     } catch (error) {
-      if (result.exitCode !== 0 || frozenBaseResult.exitCode !== 0) {
+      if (result.exitCode !== 0 || verificationResult.exitCode !== 0) {
         throw new LocalGitIssueError("workspace_state_uncertain", { cause: error });
       }
       throw error;
@@ -305,7 +309,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       }
       await assertCandidatePathContained(workspace.root, path, prefixes);
     }
-    await this.#assertNoFilters(workspace, changedPaths, request.signal);
+    await this.#assertNoFilters(workspace.root, changedPaths, request.signal);
     const preliminaryBytes = await candidateLogicalBytes(workspace.root, changedPaths);
     if (preliminaryBytes > this.#maxCandidateBytes) {
       throw new LocalGitIssueError("candidate_byte_limit_exceeded");
@@ -343,6 +347,67 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       head,
       baseCommit: request.baseCommit,
       tree,
+      changedPaths: Object.freeze(changedPaths),
+      logicalBytes,
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+    });
+  }
+
+  async inspectVerificationCandidate(
+    request: InspectIssueGitVerificationCandidateRequest,
+  ): Promise<IssueGitCandidateObservation> {
+    const prefixes = validateAllowedPrefixes(request.allowedWritePrefixes);
+    assertCommit(request.baseCommit);
+    assertCommit(request.candidateHead);
+    const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
+    if (
+      request.baseCommit !== workspace.baseCommit ||
+      !(await this.#isAncestorAtRoot(
+        workspace.sourceRoot,
+        request.baseCommit,
+        request.candidateHead,
+        request.signal,
+      ))
+    ) {
+      throw new LocalGitIssueError("base_drift");
+    }
+    const verification = await this.#inspectCleanVerificationWorktree(
+      workspace,
+      request.candidateHead,
+      "command-postcondition",
+      request.signal,
+    );
+    const commit = await this.inspectCommit({
+      workspace,
+      commit: request.candidateHead,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    if (verification.tree !== commit.tree) {
+      throw new LocalGitIssueError("candidate_tree_drift");
+    }
+    const exactDelta = await this.#readTreeDeltaAtRoot(
+      workspace.verificationRoot,
+      request.baseCommit,
+      commit.tree,
+      request.signal,
+    );
+    const changedPaths = exactDelta.map((entry) => entry.path).sort(compareStrings);
+    await this.#validateExactCandidatePaths(
+      workspace,
+      changedPaths,
+      prefixes,
+      request.signal,
+      workspace.verificationRoot,
+    );
+    const logicalBytes = await this.#treeDeltaLogicalBytes(workspace, exactDelta, request.signal);
+    if (logicalBytes > this.#maxCandidateBytes) {
+      throw new LocalGitIssueError("candidate_byte_limit_exceeded");
+    }
+    return Object.freeze({
+      branch: workspace.branch,
+      head: request.candidateHead,
+      baseCommit: request.baseCommit,
+      tree: commit.tree,
       changedPaths: Object.freeze(changedPaths),
       logicalBytes,
       workspaceIdentityDigest: workspace.workspaceIdentityDigest,
@@ -486,13 +551,12 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     assertCommit(request.ancestor);
     assertCommit(request.descendant);
     const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
-    const result = await this.#git({
-      cwd: workspace.root,
-      arguments: ["merge-base", "--is-ancestor", request.ancestor, request.descendant],
-      acceptedExitCodes: [0, 1],
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
-    });
-    return result.exitCode === 0;
+    return await this.#isAncestorAtRoot(
+      workspace.root,
+      request.ancestor,
+      request.descendant,
+      request.signal,
+    );
   }
 
   async inspectRemoteBranch(
@@ -532,6 +596,36 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
     return after;
+  }
+
+  async fetchPullRequestHead(
+    request: FetchIssueGitPullRequestHeadRequest,
+  ): Promise<IssueGitPullRequestHeadObservation> {
+    if (!Number.isSafeInteger(request.pullRequestNumber) || request.pullRequestNumber <= 0) {
+      throw new LocalGitIssueError("invalid_request");
+    }
+    assertCommit(request.expectedHead);
+    const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
+    await this.#assertOrigin(workspace, request.signal);
+    const remoteRef = `refs/pull/${request.pullRequestNumber}/head`;
+    const before = await this.#readExactRemoteRefAtRoot(workspace.root, remoteRef, request.signal);
+    if (before !== request.expectedHead) throw new LocalGitIssueError("remote_drift");
+    await this.#git({
+      cwd: workspace.root,
+      arguments: ["fetch", "--no-tags", "--no-write-fetch-head", "origin", remoteRef],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    const after = await this.#readExactRemoteRefAtRoot(workspace.root, remoteRef, request.signal);
+    if (after !== request.expectedHead) throw new LocalGitIssueError("remote_drift");
+    await this.inspectCommit({
+      workspace,
+      commit: request.expectedHead,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    return Object.freeze({
+      pullRequestNumber: request.pullRequestNumber,
+      head: request.expectedHead,
+    });
   }
 
   async inspectPatchSeries(
@@ -607,35 +701,44 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     });
   }
 
-  async inspectFrozenBase(
-    request: InspectIssueGitFrozenBaseRequest,
-  ): Promise<IssueGitFrozenBaseObservation> {
+  async inspectVerificationWorktree(
+    request: InspectIssueGitVerificationWorktreeRequest,
+  ): Promise<IssueGitVerificationWorktreeObservation> {
+    assertCommit(request.commit);
     const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
-    return await this.#inspectCleanFrozenBase(workspace, request.signal);
+    await this.#assertAdmittedVerificationCommit(workspace, request.commit, request.signal);
+    return await this.#inspectCleanVerificationWorktree(
+      workspace,
+      request.commit,
+      request.cleanliness,
+      request.signal,
+    );
   }
 
-  async resetFrozenBase(
-    request: InspectIssueGitFrozenBaseRequest,
-  ): Promise<IssueGitFrozenBaseObservation> {
+  async resetVerificationWorktree(
+    request: ResetIssueGitVerificationWorktreeRequest,
+  ): Promise<IssueGitVerificationWorktreeObservation> {
+    assertCommit(request.commit);
     const record = await this.#assertOwnedWorkspaceRecord(request.workspace);
     const workspace = record.workspace;
     if (workspace === undefined) throw new LocalGitIssueError("workspace_not_owned");
-    if (await pathExists(workspace.frozenBaseRoot)) {
-      const frozenBase = await this.#observeFrozenBaseWorktree(
+    await this.#assertAdmittedVerificationCommit(workspace, request.commit, request.signal);
+    if (await pathExists(workspace.verificationRoot)) {
+      const verificationWorktree = await this.#observeVerificationWorktree(
         record.request,
         workspace.commonGitDirectory,
         request.signal,
       );
-      if (frozenBase.gitDirectory !== workspace.frozenBaseGitDirectory) {
+      if (verificationWorktree.gitDirectory !== workspace.verificationGitDirectory) {
         throw new LocalGitIssueError("workspace_state_uncertain");
       }
       await this.#git({
         cwd: workspace.sourceRoot,
-        arguments: ["worktree", "remove", "--force", workspace.frozenBaseRoot],
+        arguments: ["worktree", "remove", "--force", workspace.verificationRoot],
         allowNonZero: true,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
-      if (await pathExists(workspace.frozenBaseRoot)) {
+      if (await pathExists(workspace.verificationRoot)) {
         throw new LocalGitIssueError("workspace_state_uncertain");
       }
     }
@@ -646,8 +749,8 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
         "add",
         "--quiet",
         "--detach",
-        workspace.frozenBaseRoot,
-        workspace.baseCommit,
+        workspace.verificationRoot,
+        request.commit,
       ],
       allowNonZero: true,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
@@ -663,7 +766,12 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     if (!sameWorkspace(observed, workspace)) {
       throw new LocalGitIssueError("workspace_state_uncertain");
     }
-    return await this.#inspectCleanFrozenBase(observed, request.signal);
+    return await this.#inspectCleanVerificationWorktree(
+      observed,
+      request.commit,
+      "pristine",
+      request.signal,
+    );
   }
 
   async cleanupWorkspace(request: CleanupIssueGitWorkspaceRequest): Promise<void> {
@@ -707,22 +815,22 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
         throw new LocalGitIssueError("workspace_state_uncertain");
       }
     }
-    if (await pathExists(workspace.frozenBaseRoot)) {
-      const frozenBase = await this.#observeFrozenBaseWorktree(
+    if (await pathExists(workspace.verificationRoot)) {
+      const verificationWorktree = await this.#observeVerificationWorktree(
         record.request,
         workspace.commonGitDirectory,
         request.signal,
       );
-      if (frozenBase.gitDirectory !== workspace.frozenBaseGitDirectory) {
+      if (verificationWorktree.gitDirectory !== workspace.verificationGitDirectory) {
         throw new LocalGitIssueError("workspace_state_uncertain");
       }
       await this.#git({
         cwd: workspace.sourceRoot,
-        arguments: ["worktree", "remove", "--force", workspace.frozenBaseRoot],
+        arguments: ["worktree", "remove", "--force", workspace.verificationRoot],
         allowNonZero: true,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
-      if (await pathExists(workspace.frozenBaseRoot)) {
+      if (await pathExists(workspace.verificationRoot)) {
         throw new LocalGitIssueError("workspace_state_uncertain");
       }
     }
@@ -760,15 +868,15 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
   ): Promise<PrepareIssueGitWorkspaceRequest> {
     const sourceRoot = await canonicalDirectory(request.sourceRoot, "source_unavailable");
     const workspaceRoot = await normalizeOwnedWorkspacePath(request.workspaceRoot);
-    const frozenBaseRoot = await normalizeOwnedWorkspacePath(request.frozenBaseRoot);
+    const verificationRoot = await normalizeOwnedWorkspacePath(request.verificationRoot);
     if (
       sourceRoot === workspaceRoot ||
-      sourceRoot === frozenBaseRoot ||
-      workspaceRoot === frozenBaseRoot
+      sourceRoot === verificationRoot ||
+      workspaceRoot === verificationRoot
     ) {
       throw new LocalGitIssueError("workspace_not_owned");
     }
-    return Object.freeze({ ...request, sourceRoot, workspaceRoot, frozenBaseRoot });
+    return Object.freeze({ ...request, sourceRoot, workspaceRoot, verificationRoot });
   }
 
   async #reconcileExistingWorkspace(
@@ -802,7 +910,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
           ...(signal === undefined ? {} : { signal }),
         });
       }
-      if (!(await pathExists(request.frozenBaseRoot))) {
+      if (!(await pathExists(request.verificationRoot))) {
         await this.#git({
           cwd: request.sourceRoot,
           arguments: [
@@ -810,7 +918,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
             "add",
             "--quiet",
             "--detach",
-            request.frozenBaseRoot,
+            request.verificationRoot,
             request.baseCommit,
           ],
           allowNonZero: true,
@@ -818,7 +926,10 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
         });
       }
     }
-    const workspace = await this.#observeWorkspace(request, signal);
+    const workspace =
+      record.status === "active"
+        ? await this.#observeActiveWorkspace(request, signal)
+        : await this.#observeWorkspace(request, signal);
     if (record.workspace !== undefined && !sameWorkspace(record.workspace, workspace)) {
       throw new LocalGitIssueError("workspace_state_uncertain");
     }
@@ -940,11 +1051,11 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       ownershipId: request.ownershipId,
       sourceRoot: request.sourceRoot,
       root,
-      frozenBaseRoot: request.frozenBaseRoot,
+      verificationRoot: request.verificationRoot,
       commonGitDirectory: canonicalCommon,
       gitDirectory,
-      frozenBaseGitDirectory: (
-        await this.#observeFrozenBaseWorktree(request, canonicalCommon, signal)
+      verificationGitDirectory: (
+        await this.#observeVerificationWorktree(request, canonicalCommon, signal)
       ).gitDirectory,
       repositoryIdentity: request.repositoryIdentity,
       originCanonicalUrl: observedOrigin.canonicalUrl,
@@ -1048,11 +1159,11 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       ownershipId: request.ownershipId,
       sourceRoot: request.sourceRoot,
       root,
-      frozenBaseRoot: request.frozenBaseRoot,
+      verificationRoot: request.verificationRoot,
       commonGitDirectory,
       gitDirectory,
-      frozenBaseGitDirectory: (
-        await this.#observeFrozenBaseWorktree(request, commonGitDirectory, signal)
+      verificationGitDirectory: (
+        await this.#observeVerificationWorktree(request, commonGitDirectory, signal)
       ).gitDirectory,
       repositoryIdentity: request.repositoryIdentity,
       originCanonicalUrl: observedOrigin.canonicalUrl,
@@ -1066,13 +1177,14 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     });
   }
 
-  async #observeFrozenBaseWorktree(
+  async #observeVerificationWorktree(
     request: PrepareIssueGitWorkspaceRequest,
     expectedCommonGitDirectory: string,
     signal?: AbortSignal,
   ): Promise<{ readonly gitDirectory: string; readonly head: string; readonly tree: string }> {
-    const root = await canonicalDirectory(request.frozenBaseRoot, "workspace_state_uncertain");
-    if (root !== request.frozenBaseRoot) throw new LocalGitIssueError("workspace_state_uncertain");
+    const root = await canonicalDirectory(request.verificationRoot, "workspace_state_uncertain");
+    if (root !== request.verificationRoot)
+      throw new LocalGitIssueError("workspace_state_uncertain");
     const gitFile = join(root, ".git");
     const metadata = await lstat(gitFile).catch(() => undefined);
     if (metadata === undefined || !metadata.isFile() || metadata.isSymbolicLink()) {
@@ -1116,7 +1228,6 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       !isWithin(commonGitDirectory, gitDirectory) ||
       detached.exitCode !== 1 ||
       detached.stdout.length !== 0 ||
-      head !== request.baseCommit ||
       observedOrigin.repositoryIdentity !== request.repositoryIdentity
     ) {
       throw new LocalGitIssueError("workspace_state_uncertain");
@@ -1124,16 +1235,18 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     return Object.freeze({ gitDirectory, head: parseCommit(head), tree: parseCommit(tree) });
   }
 
-  async #inspectCleanFrozenBase(
+  async #inspectCleanVerificationWorktree(
     workspace: IssueGitWorkspace,
+    expectedCommit: string,
+    cleanliness: "pristine" | "command-postcondition",
     signal?: AbortSignal,
-  ): Promise<IssueGitFrozenBaseObservation> {
-    const observed = await this.#observeFrozenBaseWorktree(
+  ): Promise<IssueGitVerificationWorktreeObservation> {
+    const observed = await this.#observeVerificationWorktree(
       {
         ownershipId: workspace.ownershipId,
         sourceRoot: workspace.sourceRoot,
         workspaceRoot: workspace.root,
-        frozenBaseRoot: workspace.frozenBaseRoot,
+        verificationRoot: workspace.verificationRoot,
         repositoryIdentity: workspace.repositoryIdentity,
         baseBranch: workspace.baseBranch,
         baseCommit: workspace.baseCommit,
@@ -1142,13 +1255,16 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       workspace.commonGitDirectory,
       signal,
     );
+    if (observed.head !== expectedCommit) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
     const status = await this.#gitBuffer({
-      cwd: workspace.frozenBaseRoot,
+      cwd: workspace.verificationRoot,
       arguments: [
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
-        "--ignored=matching",
+        ...(cleanliness === "pristine" ? ["--ignored=matching"] : []),
         "--ignore-submodules=none",
       ],
       ...(signal === undefined ? {} : { signal }),
@@ -1160,6 +1276,34 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       status: "clean",
       workspaceIdentityDigest: workspace.workspaceIdentityDigest,
     });
+  }
+
+  async #assertAdmittedVerificationCommit(
+    workspace: IssueGitWorkspace,
+    commit: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (commit === workspace.baseCommit) return;
+    if (
+      !(await this.#isAncestorAtRoot(workspace.sourceRoot, workspace.baseCommit, commit, signal))
+    ) {
+      throw new LocalGitIssueError("base_drift");
+    }
+  }
+
+  async #isAncestorAtRoot(
+    root: string,
+    ancestor: string,
+    descendant: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const result = await this.#git({
+      cwd: root,
+      arguments: ["merge-base", "--is-ancestor", ancestor, descendant],
+      acceptedExitCodes: [0, 1],
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return result.exitCode === 0;
   }
 
   async #readChangedPaths(
@@ -1184,13 +1328,13 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
   }
 
   async #assertNoFilters(
-    workspace: IssueGitWorkspace,
+    root: string,
     paths: readonly string[],
     signal?: AbortSignal,
   ): Promise<void> {
     if (paths.length === 0) return;
     const result = await this.#gitBuffer({
-      cwd: workspace.root,
+      cwd: root,
       arguments: ["check-attr", "-z", "--stdin", "filter"],
       stdin: Buffer.from(`${paths.join("\0")}\0`, "utf8"),
       ...(signal === undefined ? {} : { signal }),
@@ -1280,6 +1424,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     paths: readonly string[],
     prefixes: readonly string[],
     signal?: AbortSignal,
+    root = workspace.root,
   ): Promise<void> {
     if (paths.length > this.#maxCandidatePaths) {
       throw new LocalGitIssueError("candidate_path_limit_exceeded");
@@ -1291,9 +1436,9 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       if (!prefixes.some((prefix) => isAtOrWithinProjectPath(path, prefix))) {
         throw new LocalGitIssueError("candidate_path_disallowed");
       }
-      await assertCandidatePathContained(workspace.root, path, prefixes);
+      await assertCandidatePathContained(root, path, prefixes);
     }
-    await this.#assertNoFilters(workspace, paths, signal);
+    await this.#assertNoFilters(root, paths, signal);
   }
 
   async #readTreeDelta(
@@ -1302,8 +1447,17 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     tree: string,
     signal?: AbortSignal,
   ): Promise<readonly TreeDeltaEntry[]> {
+    return await this.#readTreeDeltaAtRoot(workspace.root, baseCommit, tree, signal);
+  }
+
+  async #readTreeDeltaAtRoot(
+    root: string,
+    baseCommit: string,
+    tree: string,
+    signal?: AbortSignal,
+  ): Promise<readonly TreeDeltaEntry[]> {
     const source = await this.#gitBuffer({
-      cwd: workspace.root,
+      cwd: root,
       arguments: [
         "diff-tree",
         "--no-commit-id",
@@ -1452,16 +1606,26 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     branch: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
+    return await this.#readExactRemoteRefAtRoot(cwd, `refs/heads/${branch}`, signal);
+  }
+
+  async #readExactRemoteRefAtRoot(
+    cwd: string,
+    ref: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
     const output = await this.#gitBuffer({
       cwd,
-      arguments: ["ls-remote", "--refs", "origin", `refs/heads/${branch}`],
+      arguments: ["ls-remote", "--refs", "origin", ref],
       ...(signal === undefined ? {} : { signal }),
     });
     if (output.byteLength === 0) return null;
     const line = parseSingleLine(output);
-    const match = /^([a-f0-9]{40})\trefs\/heads\/[^\r\n\0]+$/.exec(line);
-    if (match?.[1] === undefined) throw new LocalGitIssueError("git_response_invalid");
-    return parseCommit(match[1]);
+    const separator = line.indexOf("\t");
+    if (separator !== 40 || line.slice(separator + 1) !== ref) {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    return parseCommit(line.slice(0, separator));
   }
 
   async #ownershipRecordPath(ownershipId: string): Promise<string> {
@@ -1650,11 +1814,11 @@ function validateHostEnvironment(
 function assertPrepareRequest(request: PrepareIssueGitWorkspaceRequest): void {
   assertAbsolutePath(request.sourceRoot);
   assertAbsolutePath(request.workspaceRoot);
-  assertAbsolutePath(request.frozenBaseRoot);
+  assertAbsolutePath(request.verificationRoot);
   if (
     request.sourceRoot === request.workspaceRoot ||
-    request.sourceRoot === request.frozenBaseRoot ||
-    request.workspaceRoot === request.frozenBaseRoot ||
+    request.sourceRoot === request.verificationRoot ||
+    request.workspaceRoot === request.verificationRoot ||
     !isValidExactGitBranchName(request.baseBranch) ||
     !isValidExactGitBranchName(request.branch) ||
     request.baseBranch === request.branch ||
@@ -1685,10 +1849,10 @@ function assertWorkspaceShape(workspace: IssueGitWorkspace): void {
         ownershipId: workspace.ownershipId,
         sourceRoot: workspace.sourceRoot,
         root: workspace.root,
-        frozenBaseRoot: workspace.frozenBaseRoot,
+        verificationRoot: workspace.verificationRoot,
         commonGitDirectory: workspace.commonGitDirectory,
         gitDirectory: workspace.gitDirectory,
-        frozenBaseGitDirectory: workspace.frozenBaseGitDirectory,
+        verificationGitDirectory: workspace.verificationGitDirectory,
         repositoryIdentity: workspace.repositoryIdentity,
         originCanonicalUrl: workspace.originCanonicalUrl,
         branch: workspace.branch,
@@ -1705,7 +1869,7 @@ function workspaceRequestDigest(workspace: IssueGitWorkspace): string {
     ownershipId: workspace.ownershipId,
     sourceRoot: workspace.sourceRoot,
     workspaceRoot: workspace.root,
-    frozenBaseRoot: workspace.frozenBaseRoot,
+    verificationRoot: workspace.verificationRoot,
     repositoryIdentity: workspace.repositoryIdentity,
     baseBranch: workspace.baseBranch,
     baseCommit: workspace.baseCommit,

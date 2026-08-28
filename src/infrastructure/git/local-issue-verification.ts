@@ -14,7 +14,8 @@ import type { IssueLifecycleStore } from "../../application/issue-lifecycle-stor
 import type {
   IssueGitCandidateObservation,
   IssueGitCommitObservation,
-  IssueGitFrozenBaseObservation,
+  IssueGitRemoteBranchObservation,
+  IssueGitVerificationWorktreeObservation,
   IssueGitWorkspace,
   IssueLocalGitPort,
 } from "../../application/issue-local-git-port.js";
@@ -101,6 +102,22 @@ interface CandidateProof {
   readonly candidate: IssueGitCandidateObservation;
 }
 
+interface VerificationWorktreeProof {
+  readonly commit: IssueGitCommitObservation;
+  readonly worktree: IssueGitVerificationWorktreeObservation;
+}
+
+interface CandidateCommandProof {
+  readonly authority: CandidateProof | IssueGitRemoteBranchObservation;
+  readonly candidate: IssueGitCandidateObservation;
+  readonly verification: VerificationWorktreeProof;
+}
+
+interface CandidateAuthority {
+  readonly kind: "local" | "remote";
+  readonly initial: CandidateProof | IssueGitRemoteBranchObservation;
+}
+
 interface ExecutionProof {
   readonly evidence: CommandEvidence;
   readonly succeeded: boolean;
@@ -148,18 +165,23 @@ export class LocalIssueVerification implements IssueVerificationPort {
         return fail("workspace_mismatch");
       });
     validateWorkspace(request.manifest, workspace);
-    const initial = await this.#proveCandidate(request, workspace, request.signal);
-    await this.#assertCandidateReachability(request, workspace);
-    await this.#resetBase(request, workspace);
+    const authority = await this.#admitCandidateAuthority(request, workspace);
+    await this.#resetVerificationWorktree(
+      request,
+      workspace,
+      request.manifest.base.commit,
+      "base_drift",
+    );
 
     const baseExecution = await this.#runProvenCommand({
       request,
       workspace,
       command: commands.holdout,
       nodeId: "negative-control-base",
-      cwd: workspace.frozenBaseRoot,
-      protectedPaths: baseProtectedPaths(workspace),
-      prove: async (signal) => await this.#proveBase(request, workspace, signal),
+      cwd: workspace.verificationRoot,
+      protectedPaths: verificationProtectedPaths(workspace),
+      prove: async (cleanliness, signal) =>
+        await this.#proveBase(request, workspace, cleanliness, signal),
       driftCode: "base_drift",
     });
     const baseEvidenceDigest = await this.#recordCommandEvidence({
@@ -176,14 +198,21 @@ export class LocalIssueVerification implements IssueVerificationPort {
       throw executionFailure(baseExecution, "negative_control_mismatch");
     }
 
+    await this.#resetVerificationWorktree(
+      request,
+      workspace,
+      request.candidateHead,
+      "candidate_drift",
+    );
     const candidateExecution = await this.#runProvenCommand({
       request,
       workspace,
       command: commands.holdout,
       nodeId: "negative-control-candidate",
-      cwd: workspace.root,
-      protectedPaths: candidateProtectedPaths(workspace),
-      prove: async (signal) => await this.#proveCandidate(request, workspace, signal),
+      cwd: workspace.verificationRoot,
+      protectedPaths: verificationProtectedPaths(workspace),
+      prove: async (cleanliness, signal) =>
+        await this.#proveCandidateCommand(request, workspace, authority, cleanliness, signal),
       driftCode: "candidate_drift",
     });
     const candidateEvidenceDigest = await this.#recordCommandEvidence({
@@ -216,14 +245,21 @@ export class LocalIssueVerification implements IssueVerificationPort {
     for (const requirement of request.manifest.verification) {
       const command = commands.verification.get(requirement.id);
       if (command === undefined) fail("frozen_input_mismatch");
+      await this.#resetVerificationWorktree(
+        request,
+        workspace,
+        request.candidateHead,
+        "candidate_drift",
+      );
       const execution = await this.#runProvenCommand({
         request,
         workspace,
         command,
         nodeId: `verification-${requirement.id}`,
-        cwd: workspace.root,
-        protectedPaths: candidateProtectedPaths(workspace),
-        prove: async (signal) => await this.#proveCandidate(request, workspace, signal),
+        cwd: workspace.verificationRoot,
+        protectedPaths: verificationProtectedPaths(workspace),
+        prove: async (cleanliness, signal) =>
+          await this.#proveCandidateCommand(request, workspace, authority, cleanliness, signal),
         driftCode: "candidate_drift",
       });
       const evidenceDigest = await this.#recordCommandEvidence({
@@ -247,8 +283,14 @@ export class LocalIssueVerification implements IssueVerificationPort {
       );
     }
 
-    const finalProof = await this.#proveCandidate(request, workspace, request.signal);
-    if (!sameCandidateProof(initial, finalProof)) fail("candidate_drift");
+    const finalProof = await this.#proveCandidateCommand(
+      request,
+      workspace,
+      authority,
+      "command-postcondition",
+      request.signal,
+    );
+    if (!sameProof(authority.initial, finalProof.authority)) fail("candidate_drift");
     const candidateDelta = await this.#recordCandidateDelta(request, finalProof.candidate);
     const resultWithoutDigest = {
       negativeControl,
@@ -283,37 +325,194 @@ export class LocalIssueVerification implements IssueVerificationPort {
     }
   }
 
-  async #resetBase(
+  async #admitCandidateAuthority(
     request: IssueVerificationRequest,
     workspace: IssueGitWorkspace,
-  ): Promise<IssueGitFrozenBaseObservation> {
+  ): Promise<CandidateAuthority> {
     try {
-      const base = await this.#git.resetFrozenBase({
+      const [base, localCandidate] = await Promise.all([
+        this.#git.inspectCommit({
+          workspace,
+          commit: request.manifest.base.commit,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        }),
+        this.#git.inspectCandidate({
+          workspace,
+          baseCommit: request.manifest.base.commit,
+          allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        }),
+      ]);
+      if (localCandidate.head === request.candidateHead) {
+        return Object.freeze({
+          kind: "local",
+          initial: await this.#proveCandidate(request, workspace, request.signal),
+        });
+      }
+      if (
+        localCandidate.head !== request.manifest.base.commit ||
+        localCandidate.tree !== base.tree ||
+        localCandidate.changedPaths.length !== 0 ||
+        localCandidate.logicalBytes !== 0
+      ) {
+        fail("candidate_drift");
+      }
+      const remote = await this.#git.fetchRemoteBranch({
         workspace,
+        branch: request.manifest.branch.name,
+        expectedHead: request.candidateHead,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
-      return validateBaseProof(request, workspace, base);
+      const reachable = await this.#git.isAncestor({
+        workspace,
+        ancestor: request.manifest.base.commit,
+        descendant: request.candidateHead,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      if (
+        remote.branch !== request.manifest.branch.name ||
+        remote.head !== request.candidateHead ||
+        !reachable
+      ) {
+        fail("candidate_drift");
+      }
+      return Object.freeze({ kind: "remote", initial: remote });
     } catch (error) {
       if (error instanceof LocalIssueVerificationError) throw error;
-      return fail("base_drift");
+      return fail("candidate_drift");
+    }
+  }
+
+  async #resetVerificationWorktree(
+    request: IssueVerificationRequest,
+    workspace: IssueGitWorkspace,
+    commit: string,
+    driftCode: "base_drift" | "candidate_drift",
+  ): Promise<VerificationWorktreeProof> {
+    try {
+      const worktree = await this.#git.resetVerificationWorktree({
+        workspace,
+        commit,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      return await this.#validateVerificationWorktree(workspace, commit, worktree, request.signal);
+    } catch (error) {
+      if (error instanceof LocalIssueVerificationError) throw error;
+      return fail(driftCode);
     }
   }
 
   async #proveBase(
     request: IssueVerificationRequest,
     workspace: IssueGitWorkspace,
+    cleanliness: "pristine" | "command-postcondition",
     signal?: AbortSignal,
-  ): Promise<IssueGitFrozenBaseObservation> {
+  ): Promise<VerificationWorktreeProof> {
     try {
-      const base = await this.#git.inspectFrozenBase({
+      const worktree = await this.#git.inspectVerificationWorktree({
         workspace,
+        commit: request.manifest.base.commit,
+        cleanliness,
         ...(signal === undefined ? {} : { signal }),
       });
-      return validateBaseProof(request, workspace, base);
+      return await this.#validateVerificationWorktree(
+        workspace,
+        request.manifest.base.commit,
+        worktree,
+        signal,
+      );
     } catch (error) {
       if (error instanceof LocalIssueVerificationError) throw error;
       return fail("base_drift");
     }
+  }
+
+  async #proveCandidateCommand(
+    request: IssueVerificationRequest,
+    workspace: IssueGitWorkspace,
+    authority: CandidateAuthority,
+    cleanliness: "pristine" | "command-postcondition",
+    signal?: AbortSignal,
+  ): Promise<CandidateCommandProof> {
+    try {
+      const [authorityProof, candidate, worktree] = await Promise.all([
+        this.#proveCandidateAuthority(request, workspace, authority.kind, signal),
+        this.#git.inspectVerificationCandidate({
+          workspace,
+          baseCommit: request.manifest.base.commit,
+          candidateHead: request.candidateHead,
+          allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+        this.#git.inspectVerificationWorktree({
+          workspace,
+          commit: request.candidateHead,
+          cleanliness,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      ]);
+      const verification = await this.#validateVerificationWorktree(
+        workspace,
+        request.candidateHead,
+        worktree,
+        signal,
+      );
+      if (
+        verification.commit.tree !== candidate.tree ||
+        candidate.head !== request.candidateHead ||
+        candidate.changedPaths.length === 0 ||
+        !sameProof(authority.initial, authorityProof)
+      ) {
+        fail("candidate_drift");
+      }
+      return Object.freeze({ authority: authorityProof, candidate, verification });
+    } catch (error) {
+      if (error instanceof LocalIssueVerificationError) throw error;
+      return fail("candidate_drift");
+    }
+  }
+
+  async #proveCandidateAuthority(
+    request: IssueVerificationRequest,
+    workspace: IssueGitWorkspace,
+    kind: CandidateAuthority["kind"],
+    signal?: AbortSignal,
+  ): Promise<CandidateProof | IssueGitRemoteBranchObservation> {
+    if (kind === "local") return await this.#proveCandidate(request, workspace, signal);
+    try {
+      const remote = await this.#git.inspectRemoteBranch({
+        workspace,
+        branch: request.manifest.branch.name,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      if (remote.head !== request.candidateHead) fail("candidate_drift");
+      return remote;
+    } catch (error) {
+      if (error instanceof LocalIssueVerificationError) throw error;
+      return fail("candidate_drift");
+    }
+  }
+
+  async #validateVerificationWorktree(
+    workspace: IssueGitWorkspace,
+    expectedCommit: string,
+    worktree: IssueGitVerificationWorktreeObservation,
+    signal?: AbortSignal,
+  ): Promise<VerificationWorktreeProof> {
+    const commit = await this.#git.inspectCommit({
+      workspace,
+      commit: expectedCommit,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (
+      worktree.head !== expectedCommit ||
+      worktree.tree !== commit.tree ||
+      worktree.status !== "clean" ||
+      worktree.workspaceIdentityDigest !== workspace.workspaceIdentityDigest
+    ) {
+      fail(expectedCommit === workspace.baseCommit ? "base_drift" : "candidate_drift");
+    }
+    return Object.freeze({ commit, worktree });
   }
 
   async #proveCandidate(
@@ -352,28 +551,6 @@ export class LocalIssueVerification implements IssueVerificationPort {
     }
   }
 
-  async #assertCandidateReachability(
-    request: IssueVerificationRequest,
-    workspace: IssueGitWorkspace,
-  ): Promise<void> {
-    try {
-      if (
-        request.candidateHead === request.manifest.base.commit ||
-        !(await this.#git.isAncestor({
-          workspace,
-          ancestor: request.manifest.base.commit,
-          descendant: request.candidateHead,
-          ...(request.signal === undefined ? {} : { signal: request.signal }),
-        }))
-      ) {
-        fail("candidate_drift");
-      }
-    } catch (error) {
-      if (error instanceof LocalIssueVerificationError) throw error;
-      fail("candidate_drift");
-    }
-  }
-
   async #runProvenCommand<Proof>(input: {
     readonly request: IssueVerificationRequest;
     readonly workspace: IssueGitWorkspace;
@@ -381,11 +558,14 @@ export class LocalIssueVerification implements IssueVerificationPort {
     readonly nodeId: string;
     readonly cwd: string;
     readonly protectedPaths: readonly string[];
-    readonly prove: (signal?: AbortSignal) => Promise<Proof>;
+    readonly prove: (
+      cleanliness: "pristine" | "command-postcondition",
+      signal?: AbortSignal,
+    ) => Promise<Proof>;
     readonly driftCode: "base_drift" | "candidate_drift";
   }): Promise<ExecutionProof> {
     await checkpoint(input.request);
-    const before = await input.prove(input.request.signal);
+    const before = await input.prove("pristine", input.request.signal);
     let outcome: Awaited<ReturnType<CommandNodeExecutor["execute"]>> | undefined;
     let executionThrew = false;
     try {
@@ -412,7 +592,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
     } catch {
       executionThrew = true;
     } finally {
-      const after = await input.prove();
+      const after = await input.prove("command-postcondition");
       if (!sameProof(before, after)) fail(input.driftCode);
     }
     if (executionThrew) fail("command_execution_failed");
@@ -552,28 +732,12 @@ function validateWorkspace(manifest: FrozenIssueRunManifest, workspace: IssueGit
     workspace.baseBranch !== manifest.base.branch ||
     workspace.baseCommit !== manifest.base.commit ||
     workspace.branch !== manifest.branch.name ||
-    workspace.frozenBaseRoot === workspace.root ||
-    workspace.frozenBaseRoot === workspace.sourceRoot ||
+    workspace.verificationRoot === workspace.root ||
+    workspace.verificationRoot === workspace.sourceRoot ||
     !SHA256_PATTERN.test(workspace.workspaceIdentityDigest)
   ) {
     fail("workspace_mismatch");
   }
-}
-
-function validateBaseProof(
-  request: IssueVerificationRequest,
-  workspace: IssueGitWorkspace,
-  base: IssueGitFrozenBaseObservation,
-): IssueGitFrozenBaseObservation {
-  if (
-    base.head !== request.manifest.base.commit ||
-    !GIT_COMMIT_PATTERN.test(base.tree) ||
-    base.status !== "clean" ||
-    base.workspaceIdentityDigest !== workspace.workspaceIdentityDigest
-  ) {
-    fail("base_drift");
-  }
-  return base;
 }
 
 function validateRequest(request: IssueVerificationRequest): void {
@@ -646,34 +810,17 @@ function executionFailure(
   }
 }
 
-function baseProtectedPaths(workspace: IssueGitWorkspace): readonly string[] {
+function verificationProtectedPaths(workspace: IssueGitWorkspace): readonly string[] {
   return Object.freeze(
     uniqueStrings([
       workspace.commonGitDirectory,
       workspace.gitDirectory,
-      workspace.frozenBaseGitDirectory,
-      join(workspace.frozenBaseRoot, ".git"),
+      workspace.verificationGitDirectory,
+      join(workspace.verificationRoot, ".git"),
       workspace.sourceRoot,
       workspace.root,
     ]),
   );
-}
-
-function candidateProtectedPaths(workspace: IssueGitWorkspace): readonly string[] {
-  return Object.freeze(
-    uniqueStrings([
-      workspace.commonGitDirectory,
-      workspace.gitDirectory,
-      workspace.frozenBaseGitDirectory,
-      join(workspace.root, ".git"),
-      workspace.sourceRoot,
-      workspace.frozenBaseRoot,
-    ]),
-  );
-}
-
-function sameCandidateProof(left: CandidateProof, right: CandidateProof): boolean {
-  return sameProof(left, right);
 }
 
 function sameProof(left: unknown, right: unknown): boolean {

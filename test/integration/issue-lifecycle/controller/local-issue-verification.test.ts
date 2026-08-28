@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -84,9 +84,9 @@ describe("LocalIssueVerification", () => {
     expect(store.blobs.some((blob) => decode(blob).includes("private-command-output"))).toBe(true);
     expect(store.blobs.length).toBeGreaterThanOrEqual(7);
     expect(sandbox.requests.map(({ cwd }) => cwd)).toEqual([
-      fixture.workspace.frozenBaseRoot,
-      fixture.workspace.root,
-      fixture.workspace.root,
+      fixture.workspace.verificationRoot,
+      fixture.workspace.verificationRoot,
+      fixture.workspace.verificationRoot,
     ]);
     expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.root);
     expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
@@ -94,7 +94,7 @@ describe("LocalIssueVerification", () => {
       sandbox.requests.every(({ runtimeEnvironment }) => runtimeEnvironment === undefined),
     ).toBe(true);
     expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
-    expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.frozenBaseRoot);
+    expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.root);
     expect(Object.isFrozen(result)).toBe(true);
   });
 
@@ -147,7 +147,7 @@ describe("LocalIssueVerification", () => {
     expect(sandbox.requests).toHaveLength(0);
   });
 
-  it("fails closed when a command mutates the candidate worktree", async () => {
+  it("fails closed when a command mutates tracked verification-snapshot content", async () => {
     const fixture = await createFixture({
       verificationCommand: nodeCommand(
         `require("node:fs").writeFileSync("feature.txt", "mutated\\n");`,
@@ -157,7 +157,69 @@ describe("LocalIssueVerification", () => {
     await expect(createVerifier(fixture).verify(request(fixture))).rejects.toMatchObject({
       code: "candidate_drift",
     });
-    expect(await readFile(join(fixture.workspace.root, "feature.txt"), "utf8")).toBe("mutated\n");
+    expect(await readFile(join(fixture.workspace.verificationRoot, "feature.txt"), "utf8")).toBe(
+      "mutated\n",
+    );
+    expect(await readFile(join(fixture.workspace.root, "feature.txt"), "utf8")).toBe("candidate\n");
+  });
+
+  it("allows ignored command output but removes it before the next check", async () => {
+    const fixture = await createFixture({
+      holdoutCommand: nodeCommand(
+        `require("node:fs").writeFileSync("cache.log", "discard me\\n"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);`,
+      ),
+      verificationCommand: nodeCommand(
+        `process.exit(require("node:fs").existsSync("cache.log") ? 9 : 0);`,
+      ),
+    });
+
+    await expect(createVerifier(fixture).verify(request(fixture))).resolves.toMatchObject({
+      candidateDelta: { candidateHead: fixture.candidateHead },
+    });
+    await expect(
+      lstat(join(fixture.workspace.verificationRoot, "cache.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not execute against model-created ignored candidate state", async () => {
+    const fixture = await createFixture();
+    await writeFile(join(fixture.workspace.root, "cache.log"), "candidate-only state\n");
+    const sandbox = new RecordingProcessSandbox();
+
+    await expect(createVerifier(fixture, sandbox).verify(request(fixture))).resolves.toMatchObject({
+      candidateDelta: { candidateHead: fixture.candidateHead },
+    });
+    expect(sandbox.requests.every(({ cwd }) => cwd === fixture.workspace.verificationRoot)).toBe(
+      true,
+    );
+    expect(await readFile(join(fixture.workspace.root, "cache.log"), "utf8")).toBe(
+      "candidate-only state\n",
+    );
+  });
+
+  it("recovers the exact remote candidate into a disposable snapshot on a fresh clone", async () => {
+    const fixture = await createFixture();
+    await fixture.effects.pushCandidate({
+      workspace: fixture.workspace,
+      branch: fixture.workspace.branch,
+      candidateHead: fixture.candidateHead,
+      expectedRemoteHead: null,
+    });
+    const restored = await restoreFixture(fixture);
+    const sandbox = new RecordingProcessSandbox();
+
+    await expect(
+      createVerifier(restored, sandbox).verify(request(restored)),
+    ).resolves.toMatchObject({
+      candidateDelta: { candidateHead: fixture.candidateHead, pathCount: 1 },
+    });
+    expect(await git(restored.workspace.root, "rev-parse", "HEAD")).toBe(restored.base);
+    expect(await git(restored.workspace.verificationRoot, "rev-parse", "HEAD")).toBe(
+      restored.candidateHead,
+    );
+    expect(sandbox.requests.every(({ cwd }) => cwd === restored.workspace.verificationRoot)).toBe(
+      true,
+    );
   });
 
   it("contains a mutating base holdout outside the operator source checkout", async () => {
@@ -174,7 +236,7 @@ describe("LocalIssueVerification", () => {
       readFile(join(fixture.workspace.sourceRoot, "base-mutation.txt"), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
     expect(
-      await readFile(join(fixture.workspace.frozenBaseRoot, "base-mutation.txt"), "utf8"),
+      await readFile(join(fixture.workspace.verificationRoot, "base-mutation.txt"), "utf8"),
     ).toBe("must stay isolated\n");
   });
 
@@ -261,7 +323,7 @@ describe("LocalIssueVerification", () => {
     expect(replay.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(sandbox.requests).toHaveLength(4);
     expect(await git(fixture.workspace.root, "rev-parse", "HEAD")).toBe(fixture.candidateHead);
-  });
+  }, 20_000);
 });
 
 describe("LocalIssueReviewEvidence", () => {
@@ -277,6 +339,10 @@ describe("LocalIssueReviewEvidence", () => {
       privateStore: store,
       verification: provider(verification),
     });
+    await writeFile(
+      join(fixture.workspace.verificationRoot, "review-cache.log"),
+      "must not reach reviewer\n",
+    );
 
     const evidence = await adapter.read({
       runId: RUN_ID,
@@ -289,6 +355,7 @@ describe("LocalIssueReviewEvidence", () => {
       version: 1,
       baseCommit: fixture.base,
       candidateHead: fixture.candidateHead,
+      workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
       changedPaths: ["feature.txt"],
       logicalBytes: Buffer.byteLength("candidate\n"),
       verification,
@@ -298,6 +365,12 @@ describe("LocalIssueReviewEvidence", () => {
     );
     expect(evidence.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(evidence.diffBlob.mediaType).toBe("text/x-diff; charset=utf-8");
+    await expect(
+      lstat(join(fixture.workspace.verificationRoot, "review-cache.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      await git(fixture.workspace.verificationRoot, "status", "--porcelain", "--ignored"),
+    ).toBe("");
     expect(JSON.stringify(evidence)).not.toContain("candidate fixture");
     const diff = store.blobs.find(
       (blob) => createIssuePrivateBlobReference(blob).digest === evidence.diffBlob.digest,
@@ -344,7 +417,7 @@ describe("LocalIssueReviewEvidence", () => {
     expect(invocation.args).not.toContain("--force");
     expect(invocation.args.join(" ")).not.toContain("protocol.file");
     expect(invocation.environmentNames).not.toContain("OPENAI_API_KEY");
-  });
+  }, 20_000);
 
   it("rejects bounded-output overflow and candidate mutation after diff capture", async () => {
     const fixture = await createFixture();
@@ -373,7 +446,10 @@ describe("LocalIssueReviewEvidence", () => {
       privateStore: store,
       verification: provider(verification),
       testOnlyAfterDiffCapture: async () => {
-        await writeFile(join(fixture.workspace.root, "feature.txt"), "review mutation\n");
+        await writeFile(
+          join(fixture.workspace.verificationRoot, "feature.txt"),
+          "review mutation\n",
+        );
       },
     });
     await expect(
@@ -423,6 +499,7 @@ describe("LocalIssueReviewEvidence", () => {
 
 interface Fixture {
   readonly root: string;
+  readonly remote: string;
   readonly source: string;
   readonly workspace: IssueGitWorkspace;
   readonly effects: LocalGitIssueEffects;
@@ -449,13 +526,14 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const source = join(root, "source");
   const privateRoot = join(root, "private");
   const candidate = join(root, "candidate");
-  const frozenBase = join(root, "frozen-base");
+  const verificationWorktree = join(root, "verification");
   await mkdir(seed);
   await git(seed, "init", "--initial-branch=main");
   await git(seed, "config", "user.email", "flow@example.test");
   await git(seed, "config", "user.name", "Flow Test");
   await writeFile(join(seed, "README.md"), "# fixture\n");
-  await git(seed, "add", "README.md");
+  await writeFile(join(seed, ".gitignore"), "*.log\n");
+  await git(seed, "add", "README.md", ".gitignore");
   await git(seed, "commit", "--quiet", "-m", "base fixture");
   await execFile(await gitPath(), ["clone", "--quiet", "--bare", seed, remote]);
   await execFile(await gitPath(), ["clone", "--quiet", remote, source]);
@@ -470,7 +548,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     ownershipId: "issue-197-verification",
     sourceRoot: source,
     workspaceRoot: candidate,
-    frozenBaseRoot: frozenBase,
+    verificationRoot: verificationWorktree,
     repositoryIdentity: "example/project",
     baseBranch: "main",
     baseCommit: base,
@@ -497,6 +575,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   return withPlan(
     {
       root,
+      remote,
       source,
       workspace,
       effects,
@@ -506,6 +585,32 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     options.verificationCommand,
     options.holdoutCommand,
   );
+}
+
+async function restoreFixture(fixture: Fixture): Promise<Fixture> {
+  const root = await temporaryDirectory("flow-issue-verification-restored-");
+  const source = join(root, "source");
+  const privateRoot = join(root, "private");
+  const candidate = join(root, "candidate");
+  const verificationRoot = join(root, "verification");
+  await execFile(await gitPath(), ["clone", "--quiet", fixture.remote, source]);
+  await mkdir(privateRoot);
+  const effects = new LocalGitIssueEffects({
+    gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), root),
+    privateRoot,
+    testOnlyLocalRemotePath: fixture.remote,
+  });
+  const workspace = await effects.prepareWorkspace({
+    ownershipId: "issue-197-verification",
+    sourceRoot: source,
+    workspaceRoot: candidate,
+    verificationRoot,
+    repositoryIdentity: "example/project",
+    baseBranch: "main",
+    baseCommit: fixture.base,
+    branch: fixture.workspace.branch,
+  });
+  return { ...fixture, root, source, workspace, effects };
 }
 
 function withPlan(

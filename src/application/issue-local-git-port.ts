@@ -3,10 +3,10 @@ export interface IssueGitWorkspace {
   readonly ownershipId: string;
   readonly sourceRoot: string;
   readonly root: string;
-  readonly frozenBaseRoot: string;
+  readonly verificationRoot: string;
   readonly commonGitDirectory: string;
   readonly gitDirectory: string;
-  readonly frozenBaseGitDirectory: string;
+  readonly verificationGitDirectory: string;
   readonly repositoryIdentity: string;
   readonly originCanonicalUrl: string;
   readonly branch: string;
@@ -19,7 +19,7 @@ export interface PrepareIssueGitWorkspaceRequest {
   readonly ownershipId: string;
   readonly sourceRoot: string;
   readonly workspaceRoot: string;
-  readonly frozenBaseRoot: string;
+  readonly verificationRoot: string;
   readonly repositoryIdentity: string;
   readonly baseBranch: string;
   readonly baseCommit: string;
@@ -41,6 +41,14 @@ export interface IssueGitCandidateObservation {
   readonly changedPaths: readonly string[];
   readonly logicalBytes: number;
   readonly workspaceIdentityDigest: string;
+}
+
+export interface InspectIssueGitVerificationCandidateRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly baseCommit: string;
+  readonly candidateHead: string;
+  readonly allowedWritePrefixes: readonly string[];
+  readonly signal?: AbortSignal;
 }
 
 export interface IssueGitCommitIdentity {
@@ -112,6 +120,18 @@ export interface IssueGitRemoteBranchObservation {
   readonly head: string | null;
 }
 
+export interface FetchIssueGitPullRequestHeadRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly pullRequestNumber: number;
+  readonly expectedHead: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface IssueGitPullRequestHeadObservation {
+  readonly pullRequestNumber: number;
+  readonly head: string;
+}
+
 export interface InspectIssueGitPatchSeriesRequest {
   readonly workspace: IssueGitWorkspace;
   readonly baseCommit: string;
@@ -126,12 +146,20 @@ export interface IssueGitPatchSeriesObservation {
   readonly digest: string;
 }
 
-export interface InspectIssueGitFrozenBaseRequest {
+export interface InspectIssueGitVerificationWorktreeRequest {
   readonly workspace: IssueGitWorkspace;
+  readonly commit: string;
+  readonly cleanliness: "pristine" | "command-postcondition";
   readonly signal?: AbortSignal;
 }
 
-export interface IssueGitFrozenBaseObservation {
+export interface ResetIssueGitVerificationWorktreeRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly commit: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface IssueGitVerificationWorktreeObservation {
   readonly head: string;
   readonly tree: string;
   readonly status: "clean";
@@ -150,6 +178,9 @@ export interface IssueLocalGitPort {
     signal?: AbortSignal,
   ): Promise<IssueGitWorkspace>;
   inspectCandidate(request: InspectIssueGitCandidateRequest): Promise<IssueGitCandidateObservation>;
+  inspectVerificationCandidate(
+    request: InspectIssueGitVerificationCandidateRequest,
+  ): Promise<IssueGitCandidateObservation>;
   commitCandidate(request: CommitIssueGitCandidateRequest): Promise<IssueGitCommitResult>;
   pushCandidate(request: PushIssueGitCandidateRequest): Promise<IssueGitPushResult>;
   inspectCommit(request: InspectIssueGitCommitRequest): Promise<IssueGitCommitObservation>;
@@ -160,14 +191,17 @@ export interface IssueLocalGitPort {
   fetchRemoteBranch(
     request: FetchIssueGitRemoteBranchRequest,
   ): Promise<IssueGitRemoteBranchObservation>;
+  fetchPullRequestHead(
+    request: FetchIssueGitPullRequestHeadRequest,
+  ): Promise<IssueGitPullRequestHeadObservation>;
   inspectPatchSeries(
     request: InspectIssueGitPatchSeriesRequest,
   ): Promise<IssueGitPatchSeriesObservation>;
-  inspectFrozenBase(
-    request: InspectIssueGitFrozenBaseRequest,
-  ): Promise<IssueGitFrozenBaseObservation>;
-  resetFrozenBase(
-    request: InspectIssueGitFrozenBaseRequest,
-  ): Promise<IssueGitFrozenBaseObservation>;
+  inspectVerificationWorktree(
+    request: InspectIssueGitVerificationWorktreeRequest,
+  ): Promise<IssueGitVerificationWorktreeObservation>;
+  resetVerificationWorktree(
+    request: ResetIssueGitVerificationWorktreeRequest,
+  ): Promise<IssueGitVerificationWorktreeObservation>;
   cleanupWorkspace(request: CleanupIssueGitWorkspaceRequest): Promise<void>;
 }

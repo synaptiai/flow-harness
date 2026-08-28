@@ -409,6 +409,12 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
       expectedHead: remote.outcome.observedBaseCommit,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
+    await this.#localGit.fetchPullRequestHead({
+      workspace,
+      pullRequestNumber: request.pullRequestNumber,
+      expectedHead: request.candidateHead,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
     const [candidate, merged, reachable] = await Promise.all([
       this.#localGit.inspectCommit({
         workspace,
@@ -472,7 +478,7 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     };
     switch (request.kind) {
       case "workspace": {
-        const { workspaceRoot, frozenBaseRoot } = this.#workspaceRequest(manifest);
+        const { workspaceRoot, verificationRoot } = this.#workspaceRequest(manifest);
         return parseIssueExternalEffectDescriptor({
           ...common,
           kind: "workspace",
@@ -481,7 +487,7 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
           branch: manifest.branch.name,
           workspacePathDigest: calculateIssueLifecycleDomainDigest("flow.issue.workspace-path.v1", {
             workspaceRoot,
-            frozenBaseRoot,
+            verificationRoot,
           }),
         });
       }
@@ -569,11 +575,11 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     manifest: FrozenIssueRunManifest,
   ): Promise<IssueExternalEffectObservation> {
     const request = this.#workspaceRequest(manifest);
-    const [workspaceExists, frozenBaseExists] = await Promise.all([
+    const [workspaceExists, verificationExists] = await Promise.all([
       pathExists(request.workspaceRoot),
-      pathExists(request.frozenBaseRoot),
+      pathExists(request.verificationRoot),
     ]);
-    if (!workspaceExists && !frozenBaseExists) {
+    if (!workspaceExists && !verificationExists) {
       return await this.#notApplied(descriptor);
     }
     const workspace = await this.#localGit.prepareWorkspace(request);
@@ -804,7 +810,7 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
       ownershipId,
       sourceRoot: this.#sourceRoot,
       workspaceRoot: join(this.#workspaceParent, ownershipId),
-      frozenBaseRoot: join(this.#workspaceParent, `${ownershipId}-base`),
+      verificationRoot: join(this.#workspaceParent, `${ownershipId}-verification`),
       repositoryIdentity: manifest.repository.identity,
       baseBranch: manifest.base.branch,
       baseCommit: manifest.base.commit,
@@ -814,7 +820,10 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
 
   async #requireWorkspace(manifest: FrozenIssueRunManifest): Promise<IssueGitWorkspace> {
     const request = this.#workspaceRequest(manifest);
-    if (!(await pathExists(request.workspaceRoot)) || !(await pathExists(request.frozenBaseRoot))) {
+    if (
+      !(await pathExists(request.workspaceRoot)) ||
+      !(await pathExists(request.verificationRoot))
+    ) {
       throw new IssueLifecycleHostError("effect_state_uncertain");
     }
     return await this.#localGit.prepareWorkspace(request);

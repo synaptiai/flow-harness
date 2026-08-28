@@ -109,7 +109,7 @@ describe("IssueLifecycleHost", () => {
     await fixture.host.execute(descriptor, operation());
     expect(fixture.localGit.lastPrepareRequest).toMatchObject({
       workspaceRoot: join(fixture.workspaceParent, "issue-197-test"),
-      frozenBaseRoot: join(fixture.workspaceParent, "issue-197-test-base"),
+      verificationRoot: join(fixture.workspaceParent, "issue-197-test-verification"),
     });
     await expect(fixture.host.reconcile(descriptor, operation())).resolves.toMatchObject({
       status: "applied",
@@ -267,6 +267,32 @@ describe("IssueLifecycleHost", () => {
     },
   );
 
+  it("recovers the exact pull-request head before fresh-host squash proof", async () => {
+    const fixture = await hostFixture("squash");
+    await fixture.localGit.prepareWorkspace(fixture.workspaceRequest);
+    fixture.store.events = [pullRequestAppliedEvent()];
+    fixture.github.pullRequest = { number: 198, nodeId: "PR_fixture", isDraft: false };
+    fixture.github.merged = true;
+    fixture.localGit.configureMerge("squash");
+    fixture.localGit.commits.delete(CANDIDATE);
+
+    await expect(
+      fixture.host.proveMerge({
+        runId: fixture.manifest.runId,
+        manifest: fixture.manifest,
+        pullRequestNumber: 198,
+        pullRequestNodeId: "PR_fixture",
+        candidateHead: CANDIDATE,
+        gateDigest: "9".repeat(64),
+        ...operation(),
+      }),
+    ).resolves.toMatchObject({ method: "squash", candidateHead: CANDIDATE });
+    expect(fixture.localGit.lastPullRequestFetch).toMatchObject({
+      pullRequestNumber: 198,
+      expectedHead: CANDIDATE,
+    });
+  });
+
   it("rejects a squash outcome whose merge tree differs from the approved candidate", async () => {
     const fixture = await hostFixture("squash");
     await fixture.localGit.prepareWorkspace(fixture.workspaceRequest);
@@ -360,20 +386,28 @@ class FakeLocalGit {
   commitMutations = 0;
   pushMutations = 0;
   patchDigest = "8".repeat(64);
+  lastPullRequestFetch:
+    | { readonly pullRequestNumber: number; readonly expectedHead: string }
+    | undefined;
   lastPrepareRequest: unknown;
 
   constructor(sourceRoot: string, workspaceParent: string) {
     const root = join(workspaceParent, "issue-197-test");
-    const frozenBaseRoot = join(workspaceParent, "issue-197-test-base");
+    const verificationRoot = join(workspaceParent, "issue-197-test-verification");
     this.workspace = {
       version: 1,
       ownershipId: "issue-197-test",
       sourceRoot,
       root,
-      frozenBaseRoot,
+      verificationRoot,
       commonGitDirectory: join(sourceRoot, ".git"),
       gitDirectory: join(sourceRoot, ".git", "worktrees", "issue-197-test"),
-      frozenBaseGitDirectory: join(sourceRoot, ".git", "worktrees", "issue-197-test-base"),
+      verificationGitDirectory: join(
+        sourceRoot,
+        ".git",
+        "worktrees",
+        "issue-197-test-verification",
+      ),
       repositoryIdentity: "example/project",
       originCanonicalUrl: "https://github.com/example/project",
       branch: "flow/issue-197-test",
@@ -385,7 +419,7 @@ class FakeLocalGit {
       ownershipId: this.workspace.ownershipId,
       sourceRoot,
       workspaceRoot: root,
-      frozenBaseRoot,
+      verificationRoot,
       repositoryIdentity: this.workspace.repositoryIdentity,
       baseBranch: this.workspace.baseBranch,
       baseCommit: this.workspace.baseCommit,
@@ -396,7 +430,7 @@ class FakeLocalGit {
   async prepareWorkspace(_request?: unknown) {
     this.lastPrepareRequest = _request;
     await mkdir(this.workspace.root, { recursive: true });
-    await mkdir(this.workspace.frozenBaseRoot, { recursive: true });
+    await mkdir(this.workspace.verificationRoot, { recursive: true });
     this.prepared = true;
     return this.workspace;
   }
@@ -405,6 +439,18 @@ class FakeLocalGit {
     return {
       branch: this.workspace.branch,
       head: this.branchHead,
+      baseCommit: BASE,
+      tree: TREE,
+      changedPaths: ["src/feature.ts"],
+      logicalBytes: 32,
+      workspaceIdentityDigest: this.workspace.workspaceIdentityDigest,
+    };
+  }
+
+  async inspectVerificationCandidate(request: { readonly candidateHead: string }) {
+    return {
+      branch: this.workspace.branch,
+      head: request.candidateHead,
       baseCommit: BASE,
       tree: TREE,
       changedPaths: ["src/feature.ts"],
@@ -450,6 +496,18 @@ class FakeLocalGit {
     return { branch: request.branch, head: request.expectedHead };
   }
 
+  async fetchPullRequestHead(request: {
+    readonly pullRequestNumber: number;
+    readonly expectedHead: string;
+  }) {
+    if (request.pullRequestNumber !== 198 || request.expectedHead !== CANDIDATE) {
+      throw new Error("remote pull-request head drift");
+    }
+    this.lastPullRequestFetch = request;
+    this.commits.set(CANDIDATE, { commit: CANDIDATE, tree: TREE, parents: [BASE] });
+    return { pullRequestNumber: request.pullRequestNumber, head: request.expectedHead };
+  }
+
   async inspectPatchSeries(request: { readonly baseCommit: string; readonly headCommit: string }) {
     return {
       firstParent: request.baseCommit,
@@ -459,17 +517,17 @@ class FakeLocalGit {
     } satisfies IssueGitPatchSeriesObservation;
   }
 
-  async inspectFrozenBase() {
+  async inspectVerificationWorktree(request: { readonly commit: string }) {
     return {
-      head: BASE,
-      tree: BASE_TREE,
+      head: request.commit,
+      tree: request.commit === BASE ? BASE_TREE : TREE,
       status: "clean" as const,
       workspaceIdentityDigest: this.workspace.workspaceIdentityDigest,
     };
   }
 
-  async resetFrozenBase() {
-    return await this.inspectFrozenBase();
+  async resetVerificationWorktree(request: { readonly commit: string }) {
+    return await this.inspectVerificationWorktree(request);
   }
 
   async cleanupWorkspace() {}

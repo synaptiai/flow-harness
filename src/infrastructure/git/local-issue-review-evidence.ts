@@ -3,6 +3,7 @@ import type { IssueLifecycleStore } from "../../application/issue-lifecycle-stor
 import type {
   IssueGitCandidateObservation,
   IssueGitCommitObservation,
+  IssueGitVerificationWorktreeObservation,
   IssueGitWorkspace,
   IssueLocalGitPort,
 } from "../../application/issue-local-git-port.js";
@@ -61,6 +62,7 @@ export interface LocalIssueReviewEvidenceOptions {
 interface CandidateProof {
   readonly commit: IssueGitCommitObservation;
   readonly candidate: IssueGitCandidateObservation;
+  readonly worktree: IssueGitVerificationWorktreeObservation;
 }
 
 /** Captures exact private review input without exposing Git or storage authority to the model. */
@@ -115,9 +117,9 @@ export class LocalIssueReviewEvidence implements IssueReviewEvidencePort {
   }): Promise<IssueReviewEvidence> {
     validateRequest(request);
     const verification = await this.#readVerification(request);
-    const before = await this.#proveCandidate(request, request.signal);
+    const before = await this.#proveCandidate(request, "command-postcondition", request.signal);
     const diff = await this.#diffProcess.run({
-      cwd: request.workspace.root,
+      cwd: request.workspace.verificationRoot,
       arguments: [
         "--no-optional-locks",
         "-c",
@@ -159,7 +161,7 @@ export class LocalIssueReviewEvidence implements IssueReviewEvidencePort {
     } catch {
       return fail("candidate_drift");
     }
-    const after = await this.#proveCandidate(request);
+    const after = await this.#proveCandidate(request, "command-postcondition");
     if (!sameProof(before, after)) fail("candidate_drift");
     validateDiffResult(diff);
     try {
@@ -185,13 +187,29 @@ export class LocalIssueReviewEvidence implements IssueReviewEvidencePort {
       return fail("evidence_store_failed");
     }
 
+    let pristine: CandidateProof;
+    try {
+      await this.#git.resetVerificationWorktree({
+        workspace: request.workspace,
+        commit: request.candidateHead,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      pristine = await this.#proveCandidate(request, "pristine", request.signal);
+    } catch (error) {
+      if (request.signal?.aborted === true) return fail("operation_cancelled");
+      if (error instanceof LocalIssueReviewEvidenceError) throw error;
+      return fail("candidate_drift");
+    }
+    if (!sameProof(after, pristine)) fail("candidate_drift");
+
     const evidenceWithoutDigest = {
       version: 1 as const,
       baseCommit: request.manifest.base.commit,
       candidateHead: request.candidateHead,
-      candidateTree: after.commit.tree,
-      changedPaths: Object.freeze([...after.candidate.changedPaths]),
-      logicalBytes: after.candidate.logicalBytes,
+      candidateTree: pristine.commit.tree,
+      workspaceIdentityDigest: pristine.worktree.workspaceIdentityDigest,
+      changedPaths: Object.freeze([...pristine.candidate.changedPaths]),
+      logicalBytes: pristine.candidate.logicalBytes,
       diffBlob,
       verification,
     };
@@ -231,19 +249,27 @@ export class LocalIssueReviewEvidence implements IssueReviewEvidencePort {
       readonly candidateHead: string;
       readonly workspace: IssueGitWorkspace;
     },
+    cleanliness: "pristine" | "command-postcondition",
     signal?: AbortSignal,
   ): Promise<CandidateProof> {
     try {
-      const [commit, candidate] = await Promise.all([
+      const [commit, candidate, worktree] = await Promise.all([
         this.#git.inspectCommit({
           workspace: request.workspace,
           commit: request.candidateHead,
           ...(signal === undefined ? {} : { signal }),
         }),
-        this.#git.inspectCandidate({
+        this.#git.inspectVerificationCandidate({
           workspace: request.workspace,
           baseCommit: request.manifest.base.commit,
+          candidateHead: request.candidateHead,
           allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+        this.#git.inspectVerificationWorktree({
+          workspace: request.workspace,
+          commit: request.candidateHead,
+          cleanliness,
           ...(signal === undefined ? {} : { signal }),
         }),
       ]);
@@ -252,12 +278,16 @@ export class LocalIssueReviewEvidence implements IssueReviewEvidencePort {
         candidate.head !== request.candidateHead ||
         candidate.baseCommit !== request.manifest.base.commit ||
         candidate.tree !== commit.tree ||
+        worktree.head !== request.candidateHead ||
+        worktree.tree !== commit.tree ||
+        worktree.status !== "clean" ||
         candidate.workspaceIdentityDigest !== request.workspace.workspaceIdentityDigest ||
+        worktree.workspaceIdentityDigest !== request.workspace.workspaceIdentityDigest ||
         candidate.changedPaths.length === 0
       ) {
         fail("candidate_drift");
       }
-      return Object.freeze({ commit, candidate });
+      return Object.freeze({ commit, candidate, worktree });
     } catch (error) {
       if (error instanceof LocalIssueReviewEvidenceError) throw error;
       return fail("candidate_drift");

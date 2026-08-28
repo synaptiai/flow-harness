@@ -68,7 +68,7 @@ describe("LocalGitIssueEffects", () => {
     expect(first).toMatchObject({
       sourceRoot: await realpath(fixture.source),
       root: await realpath(fixture.candidate),
-      frozenBaseRoot: await realpath(fixture.frozenBase),
+      verificationRoot: await realpath(fixture.verificationWorktree),
       branch: "codex/issue-197-test",
       baseCommit: fixture.base,
     });
@@ -77,8 +77,10 @@ describe("LocalGitIssueEffects", () => {
       "codex/issue-197-test",
     );
     expect(await git(fixture.candidate, "rev-parse", "HEAD")).toBe(fixture.base);
-    expect(await git(fixture.frozenBase, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD");
-    expect(await git(fixture.frozenBase, "rev-parse", "HEAD")).toBe(fixture.base);
+    expect(await git(fixture.verificationWorktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe(
+      "HEAD",
+    );
+    expect(await git(fixture.verificationWorktree, "rev-parse", "HEAD")).toBe(fixture.base);
   });
 
   it("does not adopt a lookalike path or a pre-existing branch", async () => {
@@ -91,7 +93,7 @@ describe("LocalGitIssueEffects", () => {
     );
 
     const basePathFixture = await createFixture();
-    await mkdir(basePathFixture.frozenBase);
+    await mkdir(basePathFixture.verificationWorktree);
     await expect(
       (await createEffects(basePathFixture)).prepareWorkspace(workspaceRequest(basePathFixture)),
     ).rejects.toMatchObject({ code: "workspace_not_owned" });
@@ -104,35 +106,85 @@ describe("LocalGitIssueEffects", () => {
     ).rejects.toMatchObject({ code: "branch_not_owned" });
   });
 
-  it("inspects and recreates the disposable frozen-base worktree without touching source state", async () => {
+  it("recreates exact disposable verification commits without cross-check contamination", async () => {
     const fixture = await createFixture();
     const effects = await createEffects(fixture);
     const workspace = await effects.prepareWorkspace(workspaceRequest(fixture));
     const beforeSource = await git(fixture.source, "rev-parse", "HEAD");
 
-    await expect(effects.inspectFrozenBase({ workspace })).resolves.toMatchObject({
+    await expect(
+      effects.inspectVerificationWorktree({
+        workspace,
+        commit: fixture.base,
+        cleanliness: "pristine",
+      }),
+    ).resolves.toMatchObject({
       head: fixture.base,
       status: "clean",
       workspaceIdentityDigest: workspace.workspaceIdentityDigest,
     });
-    await writeFile(join(workspace.frozenBaseRoot, "ignored.log"), "holdout output\n");
-    await writeFile(join(workspace.frozenBaseRoot, ".gitignore"), "*.log\n");
-    await expect(effects.inspectFrozenBase({ workspace })).rejects.toMatchObject({
-      code: "source_dirty",
-    });
+    await writeFile(join(workspace.verificationRoot, "ignored.log"), "holdout output\n");
+    await expect(
+      effects.inspectVerificationWorktree({
+        workspace,
+        commit: fixture.base,
+        cleanliness: "pristine",
+      }),
+    ).rejects.toMatchObject({ code: "source_dirty" });
+    await expect(
+      effects.inspectVerificationWorktree({
+        workspace,
+        commit: fixture.base,
+        cleanliness: "command-postcondition",
+      }),
+    ).resolves.toMatchObject({ head: fixture.base, status: "clean" });
 
-    const reset = await effects.resetFrozenBase({ workspace });
+    const reset = await effects.resetVerificationWorktree({
+      workspace,
+      commit: fixture.base,
+    });
 
     expect(reset).toMatchObject({
       head: fixture.base,
       status: "clean",
       workspaceIdentityDigest: workspace.workspaceIdentityDigest,
     });
-    await expect(lstat(join(workspace.frozenBaseRoot, "ignored.log"))).rejects.toMatchObject({
+    await expect(lstat(join(workspace.verificationRoot, "ignored.log"))).rejects.toMatchObject({
       code: "ENOENT",
     });
     expect(await git(fixture.source, "rev-parse", "HEAD")).toBe(beforeSource);
     expect(await git(workspace.root, "rev-parse", "HEAD")).toBe(fixture.base);
+
+    await writeFile(join(workspace.root, "feature.txt"), "candidate\n");
+    const candidate = await effects.inspectCandidate({
+      workspace,
+      baseCommit: fixture.base,
+      allowedWritePrefixes: ["feature.txt"],
+    });
+    const committed = await effects.commitCandidate({
+      workspace,
+      parentCommit: fixture.base,
+      candidateTree: candidate.tree,
+      allowedWritePrefixes: ["feature.txt"],
+      message: "feat: candidate\n",
+      identity: COMMIT_IDENTITY,
+    });
+    await expect(
+      effects.resetVerificationWorktree({ workspace, commit: committed.candidateHead }),
+    ).resolves.toMatchObject({ head: committed.candidateHead, status: "clean" });
+    await writeFile(join(workspace.verificationRoot, "cross-check.log"), "first check\n");
+    await expect(
+      effects.inspectVerificationWorktree({
+        workspace,
+        commit: committed.candidateHead,
+        cleanliness: "command-postcondition",
+      }),
+    ).resolves.toMatchObject({ head: committed.candidateHead, status: "clean" });
+    await effects.resetVerificationWorktree({ workspace, commit: committed.candidateHead });
+    await expect(lstat(join(workspace.verificationRoot, "cross-check.log"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(effects.prepareWorkspace(workspaceRequest(fixture))).resolves.toEqual(workspace);
   });
 
   it("rejects a substituted frozen-base Git metadata directory before reset", async () => {
@@ -143,14 +195,14 @@ describe("LocalGitIssueEffects", () => {
     const substitute = join(fixture.root, "substitute-base");
     await git(fixture.source, "worktree", "add", "--quiet", "--detach", substitute, fixture.base);
     await writeFile(
-      join(workspace.frozenBaseRoot, ".git"),
+      join(workspace.verificationRoot, ".git"),
       await readFile(join(substitute, ".git"), "utf8"),
     );
 
-    await expect(effects.resetFrozenBase({ workspace })).rejects.toMatchObject({
-      code: "workspace_state_uncertain",
-    });
-    await expect(lstat(workspace.frozenBaseRoot)).resolves.toBeDefined();
+    await expect(
+      effects.resetVerificationWorktree({ workspace, commit: fixture.base }),
+    ).rejects.toMatchObject({ code: "workspace_state_uncertain" });
+    await expect(lstat(workspace.verificationRoot)).resolves.toBeDefined();
     const invocations = (await readFile(logPath, "utf8"))
       .trim()
       .split("\n")
@@ -555,6 +607,56 @@ describe("LocalGitIssueEffects", () => {
     ).rejects.toMatchObject({ code: "remote_drift" });
   });
 
+  it("recovers only an exact pull-request head object without force authority", async () => {
+    const fixture = await createFixture();
+    const publisher = join(fixture.root, "publisher");
+    await execFile(await gitPath(), ["clone", "--quiet", fixture.remote, publisher]);
+    const candidateHead = await createDetachedCommit(publisher, fixture.base, "candidate fixture");
+    await git(publisher, "push", "origin", `${candidateHead}:refs/pull/198/head`);
+    const logPath = join(await temporaryDirectory("flow-git-pr-head-"), "argv.jsonl");
+    const effects = await createEffects(fixture, {}, await writeGitWrapper(logPath));
+    const workspace = await effects.prepareWorkspace(workspaceRequest(fixture));
+
+    await expect(
+      git(workspace.root, "cat-file", "-e", `${candidateHead}^{commit}`),
+    ).rejects.toThrow();
+    await expect(
+      effects.fetchPullRequestHead({
+        workspace,
+        pullRequestNumber: 198,
+        expectedHead: candidateHead,
+      }),
+    ).resolves.toEqual({ pullRequestNumber: 198, head: candidateHead });
+    await expect(git(workspace.root, "cat-file", "-e", `${candidateHead}^{commit}`)).resolves.toBe(
+      "",
+    );
+    await expect(
+      effects.fetchPullRequestHead({
+        workspace,
+        pullRequestNumber: 198,
+        expectedHead: "f".repeat(40),
+      }),
+    ).rejects.toMatchObject({ code: "remote_drift" });
+
+    const invocations = (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    const fetch = invocations.find(
+      (arguments_) => arguments_.includes("fetch") && arguments_.includes("refs/pull/198/head"),
+    );
+    expect(fetch?.slice(-5)).toEqual([
+      "fetch",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "origin",
+      "refs/pull/198/head",
+    ]);
+    expect(fetch).toContain("--no-optional-locks");
+    expect(fetch?.some((argument) => argument.startsWith("--force"))).toBe(false);
+    expect(invocations.flat()).not.toContain("protocol.file.allow=always");
+  }, 30_000);
+
   it("computes the same ordered stable patch digest for equivalent rewritten commits", async () => {
     const fixture = await createFixture();
     const effects = await createEffects(fixture);
@@ -789,7 +891,7 @@ describe("LocalGitIssueEffects", () => {
 
     await effects.cleanupWorkspace({ workspace, expectedBranchHead: fixture.base });
     await expect(lstat(fixture.candidate)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(lstat(fixture.frozenBase)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(fixture.verificationWorktree)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(fixture.sentinel, "utf8")).resolves.toBe("preserve\n");
     await expect(
       effects.cleanupWorkspace({ workspace, expectedBranchHead: fixture.base }),
@@ -812,7 +914,7 @@ interface Fixture {
   readonly remote: string;
   readonly privateRoot: string;
   readonly candidate: string;
-  readonly frozenBase: string;
+  readonly verificationWorktree: string;
   readonly sentinel: string;
   readonly base: string;
 }
@@ -824,14 +926,15 @@ async function createFixture(): Promise<Fixture> {
   const remote = join(root, "remote.git");
   const privateRoot = join(root, "private");
   const candidate = join(root, "candidate");
-  const frozenBase = join(root, "frozen-base");
+  const verificationWorktree = join(root, "frozen-base");
   const sentinel = join(root, "sentinel.txt");
   await mkdir(seed);
   await git(seed, "init", "--initial-branch=main");
   await git(seed, "config", "user.email", "flow@example.test");
   await git(seed, "config", "user.name", "Flow Test");
   await writeFile(join(seed, "README.md"), "# fixture\n");
-  await git(seed, "add", "README.md");
+  await writeFile(join(seed, ".gitignore"), "*.log\n");
+  await git(seed, "add", "README.md", ".gitignore");
   await git(seed, "commit", "--quiet", "-m", BASE_MESSAGE);
   await execFile(await gitPath(), ["clone", "--quiet", "--bare", seed, remote]);
   await execFile(await gitPath(), ["clone", "--quiet", remote, source]);
@@ -845,7 +948,7 @@ async function createFixture(): Promise<Fixture> {
     remote,
     privateRoot,
     candidate,
-    frozenBase,
+    verificationWorktree,
     sentinel,
     base: await git(source, "rev-parse", "HEAD"),
   };
@@ -859,7 +962,7 @@ function workspaceRequest(fixture: Fixture) {
     baseCommit: fixture.base,
     branch: "codex/issue-197-test",
     workspaceRoot: fixture.candidate,
-    frozenBaseRoot: fixture.frozenBase,
+    verificationRoot: fixture.verificationWorktree,
     ownershipId: "issue-197-test",
   } as const;
 }
