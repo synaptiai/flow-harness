@@ -121,6 +121,64 @@ describe("IssueLifecycleHost", () => {
     });
   });
 
+  it("reconstructs a ledger-authorized workspace on a fresh host", async () => {
+    const fixture = await hostFixture();
+    fixture.store.events = [
+      workspaceAppliedEvent(fixture.localGit.workspace.workspaceIdentityDigest),
+    ];
+
+    const workspace = await fixture.host.read({
+      runId: fixture.manifest.runId,
+      workspaceIdentityDigest: fixture.localGit.workspace.workspaceIdentityDigest,
+    });
+
+    expect(workspace).toEqual(fixture.localGit.workspace);
+    expect(fixture.localGit.lastPrepareRequest).toEqual(fixture.workspaceRequest);
+    await expect(
+      fixture.host.read({
+        runId: fixture.manifest.runId,
+        workspaceIdentityDigest: "f".repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: "descriptor_mismatch" });
+  });
+
+  it("rejects workspace reconstruction without append-only workspace authority", async () => {
+    const fixture = await hostFixture();
+
+    await expect(
+      fixture.host.readWorkspace({
+        runId: fixture.manifest.runId,
+        manifest: fixture.manifest,
+      }),
+    ).rejects.toMatchObject({ code: "effect_state_uncertain" });
+    expect(fixture.localGit.prepared).toBe(false);
+  });
+
+  it("rejects partial local state and a reconstructed identity mismatch", async () => {
+    const partial = await hostFixture();
+    partial.store.events = [
+      workspaceAppliedEvent(partial.localGit.workspace.workspaceIdentityDigest),
+    ];
+    await mkdir(partial.localGit.workspace.root, { recursive: true });
+
+    await expect(
+      partial.host.readWorkspace({
+        runId: partial.manifest.runId,
+        manifest: partial.manifest,
+      }),
+    ).rejects.toMatchObject({ code: "effect_state_uncertain" });
+    expect(partial.localGit.prepared).toBe(false);
+
+    const mismatched = await hostFixture();
+    mismatched.store.events = [workspaceAppliedEvent("f".repeat(64))];
+    await expect(
+      mismatched.host.readWorkspace({
+        runId: mismatched.manifest.runId,
+        manifest: mismatched.manifest,
+      }),
+    ).rejects.toMatchObject({ code: "effect_state_uncertain" });
+  });
+
   it("reconciles exact commit and push results without repeating either mutation", async () => {
     const fixture = await hostFixture();
     await fixture.localGit.prepareWorkspace(fixture.workspaceRequest);
@@ -741,6 +799,20 @@ function pullRequestAppliedEvent(): IssueLifecycleEvent {
     outcome: "applied",
     observationDigest: DIGEST,
     result: pullRequestResult("pull_request", true),
+  };
+}
+
+function workspaceAppliedEvent(workspaceIdentityDigest: string): IssueLifecycleEvent {
+  return {
+    version: 1,
+    runId: "issue-197-test",
+    sequence: 3,
+    at: "2026-08-28T11:00:02.000Z",
+    type: "external_effect_settled",
+    effectId: "workspace-fixture",
+    outcome: "applied",
+    observationDigest: DIGEST,
+    result: { kind: "workspace", workspaceIdentityDigest },
   };
 }
 

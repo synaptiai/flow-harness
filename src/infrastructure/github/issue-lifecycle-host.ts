@@ -92,8 +92,11 @@ export type IssueLifecycleHostErrorCode =
 export class IssueLifecycleHostError extends Error {
   override readonly name = "IssueLifecycleHostError";
 
-  constructor(readonly code: IssueLifecycleHostErrorCode) {
-    super(`issue lifecycle host failed: ${code}`);
+  constructor(
+    readonly code: IssueLifecycleHostErrorCode,
+    options?: ErrorOptions,
+  ) {
+    super(`issue lifecycle host failed: ${code}`, options);
   }
 }
 
@@ -119,6 +122,34 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     this.#github = options.github;
     this.#sourceRoot = resolve(options.sourceRoot);
     this.#workspaceParent = resolve(options.workspaceParent);
+  }
+
+  async read(input: {
+    readonly runId: string;
+    readonly workspaceIdentityDigest?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<IssueGitWorkspace> {
+    const manifest = await this.#store.readManifest(input.runId);
+    if (manifest.runId !== input.runId) {
+      throw new IssueLifecycleHostError("descriptor_mismatch");
+    }
+    const workspace = await this.#resolveRecordedWorkspace(manifest, input.signal);
+    if (
+      input.workspaceIdentityDigest !== undefined &&
+      input.workspaceIdentityDigest !== workspace.workspaceIdentityDigest
+    ) {
+      throw new IssueLifecycleHostError("descriptor_mismatch");
+    }
+    return workspace;
+  }
+
+  async readWorkspace(input: {
+    readonly runId: string;
+    readonly manifest: FrozenIssueRunManifest;
+    readonly signal?: AbortSignal;
+  }): Promise<IssueGitWorkspace> {
+    const manifest = await this.#exactManifest(input.manifest, input.runId);
+    return await this.#resolveRecordedWorkspace(manifest, input.signal);
   }
 
   async describe(
@@ -761,6 +792,45 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
       throw new IssueLifecycleHostError("descriptor_mismatch");
     }
     return manifest;
+  }
+
+  async #resolveRecordedWorkspace(
+    manifest: FrozenIssueRunManifest,
+    signal?: AbortSignal,
+  ): Promise<IssueGitWorkspace> {
+    const events = await this.#store.read(manifest.runId);
+    const recordedDigests = events.flatMap((event) =>
+      event.type === "external_effect_settled" &&
+      event.outcome === "applied" &&
+      event.result.kind === "workspace"
+        ? [event.result.workspaceIdentityDigest]
+        : [],
+    );
+    const recordedDigest = recordedDigests[0];
+    if (
+      recordedDigest === undefined ||
+      recordedDigests.some((digest) => digest !== recordedDigest)
+    ) {
+      throw new IssueLifecycleHostError("effect_state_uncertain");
+    }
+    const request = this.#workspaceRequest(manifest);
+    const [workspaceExists, verificationExists] = await Promise.all([
+      pathExists(request.workspaceRoot),
+      pathExists(request.verificationRoot),
+    ]);
+    if (workspaceExists !== verificationExists) {
+      throw new IssueLifecycleHostError("effect_state_uncertain");
+    }
+    let workspace: IssueGitWorkspace;
+    try {
+      workspace = await this.#localGit.prepareWorkspace(request, signal);
+    } catch (error) {
+      throw new IssueLifecycleHostError("effect_state_uncertain", { cause: error });
+    }
+    if (workspace.workspaceIdentityDigest !== recordedDigest) {
+      throw new IssueLifecycleHostError("effect_state_uncertain");
+    }
+    return workspace;
   }
 
   async #frozenIssue(manifest: FrozenIssueRunManifest): Promise<FrozenGitHubIssueSnapshot> {
