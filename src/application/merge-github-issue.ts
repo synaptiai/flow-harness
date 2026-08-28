@@ -19,11 +19,11 @@ import {
   releaseClaimedIssue,
   runExternalEffect,
 } from "./continue-github-issue.js";
-import type { IssueControllerDependencies } from "./github-issue-controller-ports.js";
+import type { IssueControllerRuntimeDependencies } from "./github-issue-controller-ports.js";
 
 export async function mergeGitHubIssue(
   input: unknown,
-  dependencies: IssueControllerDependencies,
+  dependencies: IssueControllerRuntimeDependencies,
 ): Promise<PublicIssueLifecycleState> {
   const command = parseIssueLifecycleCommand(input);
   if (command.kind !== "merge") throw new Error("mergeGitHubIssue requires a merge command");
@@ -211,7 +211,7 @@ export async function mergeGitHubIssue(
 }
 
 async function settle(
-  dependencies: IssueControllerDependencies,
+  dependencies: IssueControllerRuntimeDependencies,
   command: Extract<ReturnType<typeof parseIssueLifecycleCommand>, { readonly kind: "merge" }>,
   previous: string,
   outcome: "completed" | "failed" | "rejected",

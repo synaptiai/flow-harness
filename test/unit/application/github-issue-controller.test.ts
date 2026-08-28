@@ -244,7 +244,7 @@ describe("foreground GitHub issue controller", () => {
             version: 1,
             candidateHead: request.candidateHead,
             issueDigest: request.manifest.issue.contentDigest,
-            reviewWorkflowDigest: sha("8"),
+            reviewWorkflowDigest: request.manifest.reviewWorkflow.templateWorkflowDigest,
             acceptanceMapping: [
               {
                 criterionId: "criterion-one",
@@ -416,7 +416,7 @@ function scriptedHarness() {
             version: 1,
             candidateHead: request.candidateHead,
             issueDigest: manifest.issue.contentDigest,
-            reviewWorkflowDigest: sha("8"),
+            reviewWorkflowDigest: manifest.reviewWorkflow.templateWorkflowDigest,
             acceptanceMapping: [
               { criterionId: "criterion-one", status: "satisfied", evidence: "Verified." },
             ],

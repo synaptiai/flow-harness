@@ -24,8 +24,8 @@ import {
 } from "../domain/issue-lifecycle/private-manifest.js";
 import type {
   IssueControllerCommandRecord,
-  IssueControllerDependencies,
   IssueControllerOperation,
+  IssueControllerRuntimeDependencies,
   IssueExternalEffectPreparation,
 } from "./github-issue-controller-ports.js";
 import {
@@ -47,7 +47,7 @@ export interface ClaimedIssueController {
   readonly manifest: FrozenIssueRunManifest;
   readonly frozenContractDigest: string;
   readonly commandId: string;
-  readonly dependencies: IssueControllerDependencies;
+  readonly dependencies: IssueControllerRuntimeDependencies;
   readonly events: readonly IssueLifecycleEvent[];
   readonly state: IssueLifecycleState;
   append(typeSpecificEvent: Record<string, unknown>): Promise<void>;
@@ -82,7 +82,7 @@ class MutableClaimedIssueController implements ClaimedIssueController {
     readonly manifest: FrozenIssueRunManifest,
     events: readonly IssueLifecycleEvent[],
     readonly commandId: string,
-    readonly dependencies: IssueControllerDependencies,
+    readonly dependencies: IssueControllerRuntimeDependencies,
   ) {
     this.frozenContractDigest = calculateIssuePrivateManifestDigest(manifest);
     this.#events = [...events];
@@ -140,7 +140,7 @@ export class IssueCancellationRequested extends Error {
 export async function createClaimedIssueController(
   runId: string,
   commandId: string,
-  dependencies: IssueControllerDependencies,
+  dependencies: IssueControllerRuntimeDependencies,
 ): Promise<ClaimedIssueController> {
   const events = await dependencies.repository.claim(runId);
   try {

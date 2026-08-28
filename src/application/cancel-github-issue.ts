@@ -14,7 +14,7 @@ import {
 } from "./continue-github-issue.js";
 import type {
   IssueControllerCommandRecord,
-  IssueControllerDependencies,
+  IssueControllerRuntimeDependencies,
 } from "./github-issue-controller-ports.js";
 
 export type CancelGitHubIssueResult =
@@ -24,7 +24,7 @@ export type CancelGitHubIssueResult =
 
 export async function cancelGitHubIssue(
   input: unknown,
-  dependencies: IssueControllerDependencies,
+  dependencies: IssueControllerRuntimeDependencies,
 ): Promise<CancelGitHubIssueResult> {
   const command = parseIssueLifecycleCommand(input);
   if (command.kind !== "cancel") throw new Error("cancelGitHubIssue requires a cancel command");

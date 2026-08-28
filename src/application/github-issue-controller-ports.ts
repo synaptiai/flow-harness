@@ -222,15 +222,18 @@ export interface IssueExternalEffectsPort {
   ): Promise<void>;
 }
 
-export interface IssueControllerDependencies {
+export interface IssueControllerRuntimeDependencies {
   readonly repository: IssueControllerRepository;
-  readonly freezer: IssueRunFreezerPort;
   readonly workflows: IssueWorkflowRunnerPort;
   readonly verification: IssueVerificationPort;
   readonly github: IssueGitHubPort;
   readonly effects: IssueExternalEffectsPort;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
+}
+
+export interface IssueControllerDependencies extends IssueControllerRuntimeDependencies {
+  readonly freezer: IssueRunFreezerPort;
 }
 
 export type { ImplementationWorkflowResult, RawReviewWorkflowResult };

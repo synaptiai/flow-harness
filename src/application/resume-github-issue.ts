@@ -12,11 +12,11 @@ import {
   publicStateDigest,
   releaseClaimedIssue,
 } from "./continue-github-issue.js";
-import type { IssueControllerDependencies } from "./github-issue-controller-ports.js";
+import type { IssueControllerRuntimeDependencies } from "./github-issue-controller-ports.js";
 
 export async function resumeGitHubIssue(
   input: unknown,
-  dependencies: IssueControllerDependencies,
+  dependencies: IssueControllerRuntimeDependencies,
 ): Promise<PublicIssueLifecycleState> {
   const command = parseIssueLifecycleCommand(input);
   if (command.kind !== "resume") throw new Error("resumeGitHubIssue requires a resume command");
