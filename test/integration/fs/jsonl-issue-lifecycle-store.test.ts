@@ -542,10 +542,17 @@ function issueSnapshot(): IssueLifecycleEvent {
       kind: "issue_snapshot",
       repositoryIdentity: "owner/repo",
       issueNumber: 197,
+      issueNodeId: "I_issue197",
+      issueUpdatedAt: "2026-08-28T12:00:00.000Z",
       baseBranch: "main",
       baseCommit: "a".repeat(40),
       branch: "flow/issue-197",
       issueDigest: "b".repeat(64),
+      frozenContractDigest: "1".repeat(64),
+      planDigest: "2".repeat(64),
+      implementationTemplateWorkflowDigest: "3".repeat(64),
+      reviewTemplateWorkflowDigest: "4".repeat(64),
+      budgetDigest: "5".repeat(64),
       evidenceDigest: "c".repeat(64),
     },
   };
@@ -577,7 +584,12 @@ function workspaceSettled(): IssueLifecycleEvent {
 }
 
 function runFailed(): IssueLifecycleEvent {
-  return { ...base(2), type: "run_failed", code: "verification_failed" };
+  return {
+    ...base(2),
+    type: "run_failed",
+    code: "verification_failed",
+    evidenceDigest: "6".repeat(64),
+  };
 }
 
 function illegalTransition(): IssueLifecycleEvent {
