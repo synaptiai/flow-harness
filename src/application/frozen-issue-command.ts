@@ -6,7 +6,7 @@ export interface FrozenIssueVerificationCommand {
   readonly timeoutMs: number;
 }
 
-/** Returns the frozen identity of one exact holdout or deterministic verification vector. */
+/** Binds one exact, shell-free holdout or verification command vector. */
 export function calculateFrozenIssueVerificationCommandDigest(
   command: FrozenIssueVerificationCommand,
 ): string {

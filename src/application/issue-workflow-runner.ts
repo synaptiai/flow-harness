@@ -146,7 +146,7 @@ export function validateReviewWorkflowResult(
   const expectedIdentity = {
     candidateHead,
     issueDigest: manifest.issue.contentDigest,
-    reviewWorkflowDigest: result.executionWorkflowDigest,
+    reviewWorkflowDigest: manifest.reviewWorkflow.templateWorkflowDigest,
   };
   const report = parseIssueReviewReport(parsedJson, manifest.acceptanceCriteria, expectedIdentity);
   return deepFreeze({

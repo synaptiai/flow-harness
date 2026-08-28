@@ -11,6 +11,7 @@ export interface IssueReviewEvidence {
   readonly baseCommit: string;
   readonly candidateHead: string;
   readonly candidateTree: string;
+  readonly workspaceIdentityDigest: string;
   readonly changedPaths: readonly string[];
   readonly logicalBytes: number;
   readonly diffBlob: IssuePrivateBlobReference;

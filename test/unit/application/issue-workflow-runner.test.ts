@@ -88,7 +88,7 @@ function reviewResult(reportHead: string) {
       version: 1,
       candidateHead: reportHead,
       issueDigest: sha("b"),
-      reviewWorkflowDigest: sha("8"),
+      reviewWorkflowDigest: sha("1"),
       acceptanceMapping: [
         { criterionId: "criterion-one", status: "satisfied", evidence: "Verified." },
       ],
