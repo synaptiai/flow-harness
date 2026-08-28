@@ -83,6 +83,32 @@ describe("LocalGitIssueEffects", () => {
     expect(await git(fixture.verificationWorktree, "rev-parse", "HEAD")).toBe(fixture.base);
   });
 
+  it("reopens an owned workspace after the remote base advances without relaxing local checks", async () => {
+    const fixture = await createFixture();
+    const effects = await createEffects(fixture);
+    const request = workspaceRequest(fixture);
+    const workspace = await effects.prepareWorkspace(request);
+    const baseTree = await git(fixture.remote, "rev-parse", `${fixture.base}^{tree}`);
+    const advancedBase = await git(
+      fixture.remote,
+      "commit-tree",
+      baseTree,
+      "-p",
+      fixture.base,
+      "-m",
+      "advance remote base",
+    );
+    await git(fixture.remote, "update-ref", "refs/heads/main", advancedBase, fixture.base);
+
+    await expect(effects.prepareWorkspace(request)).rejects.toMatchObject({ code: "base_drift" });
+    await expect(effects.readOwnedWorkspace(request)).resolves.toEqual(workspace);
+
+    await writeFile(join(fixture.source, "local-drift.txt"), "not owned\n");
+    await expect(effects.readOwnedWorkspace(request)).rejects.toMatchObject({
+      code: "source_dirty",
+    });
+  });
+
   it("does not adopt a lookalike path or a pre-existing branch", async () => {
     const pathFixture = await createFixture();
     await mkdir(pathFixture.candidate);

@@ -177,6 +177,11 @@ export interface IssueLocalGitPort {
     request: PrepareIssueGitWorkspaceRequest,
     signal?: AbortSignal,
   ): Promise<IssueGitWorkspace>;
+  /** Reopens an existing owned workspace after the remote base may have advanced. */
+  readOwnedWorkspace(
+    request: PrepareIssueGitWorkspaceRequest,
+    signal?: AbortSignal,
+  ): Promise<IssueGitWorkspace>;
   inspectCandidate(request: InspectIssueGitCandidateRequest): Promise<IssueGitCandidateObservation>;
   inspectVerificationCandidate(
     request: InspectIssueGitVerificationCandidateRequest,

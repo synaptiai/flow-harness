@@ -91,6 +91,41 @@ spec:
     await expect(
       service.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
     ).resolves.toMatchObject({ status: "valid" });
+
+    const budgetRestrictedSnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          kind: "policy-package",
+          trust: "project-explicit",
+          provenance: ".flow/policies/openai-and-one-node",
+          manifest: {
+            content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata: { name: openai-and-one-node, version: 1.0.0, description: Restrictive fixture. }
+spec:
+  models:
+    allowed:
+      - { provider: openai, model: gpt-5.6-terra }
+  budget:
+    maxNodeStarts: 1
+`),
+          },
+        },
+      ],
+    );
+    const restrictedService = createProductionGitHubIssueCliService({
+      projectRoot,
+      sandboxProfile: "native",
+      capabilitySnapshot: budgetRestrictedSnapshot,
+    });
+
+    await expect(
+      restrictedService.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
+    ).rejects.toMatchObject({ code: "policy_violation", fieldPath: "budget.maxNodeStarts" });
   });
 
   it("preflights the exact provider and sandbox before resolving mutating runtime adapters", async () => {

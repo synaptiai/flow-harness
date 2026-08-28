@@ -114,6 +114,7 @@ export function createProductionGitHubIssueCliService(
 }
 
 class ProductionGitHubIssueCliService implements GitHubIssueCliService {
+  readonly #artifactRoot: string;
   readonly #durableRoot: string;
   readonly #capabilitySnapshot: CapabilitySnapshot | undefined;
   readonly #hostRoot: string;
@@ -155,6 +156,7 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
     }
     this.#testOnly = options.testOnly;
     this.#durableRoot = join(this.#projectRoot, ".flow", "issue-runs");
+    this.#artifactRoot = join(this.#durableRoot, "artifact-store");
     const projectIdentity = createHash("sha256")
       .update(this.#projectRoot)
       .digest("hex")
@@ -416,6 +418,8 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
 
   async #createRuntime(): Promise<RuntimeAdapters> {
     const hostCollection = resolve(this.#hostRoot, "..");
+    await ensureOwnedPrivateDirectory(this.#durableRoot);
+    await ensureOwnedPrivateDirectory(this.#artifactRoot);
     await ensureOwnedPrivateDirectory(hostCollection);
     await ensureOwnedPrivateDirectory(this.#hostRoot);
     await ensureOwnedPrivateDirectory(join(this.#hostRoot, "worktrees"));
@@ -474,7 +478,7 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
         ? {}
         : { capabilitySnapshot: this.#capabilitySnapshot }),
       modelSessionStore: new JsonlModelSessionStore(join(this.#durableRoot, "model-sessions")),
-      artifactStore: new LocalArtifactStore(join(this.#durableRoot, "artifact-store")),
+      artifactStore: new LocalArtifactStore(this.#artifactRoot),
       effectReconciler: createProductionNodeEffectReconciler(),
       workspaceIsolator: createProductionWorkspaceIsolator(
         join(this.#durableRoot, "nested-runs"),

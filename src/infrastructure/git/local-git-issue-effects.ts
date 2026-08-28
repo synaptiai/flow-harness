@@ -262,6 +262,33 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     return workspace;
   }
 
+  async readOwnedWorkspace(
+    request: PrepareIssueGitWorkspaceRequest,
+    signal?: AbortSignal,
+  ): Promise<IssueGitWorkspace> {
+    assertPrepareRequest(request);
+    assertNotAborted(signal);
+    const normalized = await this.#normalizePrepareRequest(request);
+    const record = await readRequiredOwnershipRecord(
+      await this.#ownershipRecordPath(normalized.ownershipId),
+    );
+    const requestDigest = digest("flow.issue.git-workspace-request.v1", normalized);
+    if (
+      record.status !== "active" ||
+      record.workspace === undefined ||
+      record.requestDigest !== requestDigest ||
+      !samePrepareRequest(record.request, normalized)
+    ) {
+      throw new LocalGitIssueError("workspace_not_owned");
+    }
+    await this.#assertFrozenLocalSource(normalized, signal);
+    const workspace = await this.#observeActiveWorkspace(normalized, signal);
+    if (!sameWorkspace(record.workspace, workspace)) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    return workspace;
+  }
+
   async inspectCandidate(
     request: InspectIssueGitCandidateRequest,
   ): Promise<IssueGitCandidateObservation> {
@@ -974,6 +1001,19 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     request: PrepareIssueGitWorkspaceRequest,
     signal?: AbortSignal,
   ): Promise<void> {
+    await this.#assertFrozenLocalSource(request, signal);
+    const remoteBase = await this.#readRemoteRefAtRoot(
+      request.sourceRoot,
+      request.baseBranch,
+      signal,
+    );
+    if (remoteBase !== request.baseCommit) throw new LocalGitIssueError("base_drift");
+  }
+
+  async #assertFrozenLocalSource(
+    request: PrepareIssueGitWorkspaceRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const branch = await this.#gitText({
       cwd: request.sourceRoot,
       arguments: ["symbolic-ref", "--short", "HEAD"],
@@ -989,7 +1029,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     if (observedOrigin.repositoryIdentity !== request.repositoryIdentity) {
       throw new LocalGitIssueError("origin_drift");
     }
-    const [head, status, baseRef, remoteBase] = await Promise.all([
+    const [head, status, baseRef] = await Promise.all([
       this.#gitText({
         cwd: request.sourceRoot,
         arguments: ["rev-parse", "--verify", "HEAD"],
@@ -1006,13 +1046,8 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
         ...(signal === undefined ? {} : { signal }),
       }),
       this.#readLocalRef(request.sourceRoot, request.baseBranch, signal),
-      this.#readRemoteRefAtRoot(request.sourceRoot, request.baseBranch, signal),
     ]);
-    if (
-      head !== request.baseCommit ||
-      baseRef !== request.baseCommit ||
-      remoteBase !== request.baseCommit
-    ) {
+    if (head !== request.baseCommit || baseRef !== request.baseCommit) {
       throw new LocalGitIssueError("base_drift");
     }
     if (status !== "") throw new LocalGitIssueError("source_dirty");
@@ -1760,7 +1795,17 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     } catch (error) {
       cleanupError = error;
     }
-    if (operationFailed) throw operationError;
+    if (operationFailed) {
+      if (cleanupError === undefined) throw operationError;
+      const cause = new AggregateError(
+        [operationError, cleanupError],
+        "Git transport operation and private temporary directory cleanup both failed",
+      );
+      if (operationError instanceof LocalGitIssueError) {
+        throw new LocalGitIssueError(operationError.code, { cause });
+      }
+      throw cause;
+    }
     if (cleanupError !== undefined) {
       throw new LocalGitIssueError("workspace_state_uncertain", { cause: cleanupError });
     }

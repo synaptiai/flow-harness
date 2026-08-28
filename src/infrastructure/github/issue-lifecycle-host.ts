@@ -444,7 +444,7 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
   ): Promise<IssueMergeProof> {
     this.#requireRemoteOutcome(outcome, manifest, descriptor);
     const remoteEvidenceDigest = await this.#storeAdapterEvidence(manifest.runId, evidence);
-    const workspace = await this.#requireWorkspace(manifest);
+    const workspace = await this.#readOwnedWorkspace(manifest, signal);
     await this.#localGit.fetchRemoteBranch({
       workspace,
       branch: manifest.base.branch,
@@ -912,6 +912,20 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
       throw new IssueLifecycleHostError("effect_state_uncertain");
     }
     return await this.#localGit.prepareWorkspace(request);
+  }
+
+  async #readOwnedWorkspace(
+    manifest: FrozenIssueRunManifest,
+    signal?: AbortSignal,
+  ): Promise<IssueGitWorkspace> {
+    const request = this.#workspaceRequest(manifest);
+    if (
+      !(await pathExists(request.workspaceRoot)) ||
+      !(await pathExists(request.verificationRoot))
+    ) {
+      throw new IssueLifecycleHostError("effect_state_uncertain");
+    }
+    return await this.#localGit.readOwnedWorkspace(request, signal);
   }
 
   #requireCommitIntent(

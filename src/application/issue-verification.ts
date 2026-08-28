@@ -4,6 +4,7 @@ import {
   parseGitHubLifecycleObservation,
 } from "../domain/issue-lifecycle/github-observation.js";
 import {
+  calculateMergeApprovalDigest,
   calculateMergeGateDigest,
   type MergeGateInput,
 } from "../domain/issue-lifecycle/merge-gate.js";
@@ -86,7 +87,10 @@ export interface BuildIssueMergeGateInput {
 
 export interface BuiltIssueMergeGate {
   readonly input: MergeGateInput;
+  /** Stable authority digest presented to an operator and reproduced by fresh verification. */
   readonly digest: string;
+  /** Exact digest of the first verification and hosted evidence instance. */
+  readonly evidenceDigest: string;
   readonly observationDigest: string;
   readonly checksDigest: string;
 }
@@ -438,7 +442,8 @@ export function buildIssueMergeGate(input: BuildIssueMergeGateInput): BuiltIssue
   };
   return deepFreeze({
     input: gate,
-    digest: calculateMergeGateDigest(gate),
+    digest: calculateMergeApprovalDigest(gate),
+    evidenceDigest: calculateMergeGateDigest(gate),
     observationDigest: calculateGitHubLifecycleObservationDigest(observation),
     checksDigest,
   });

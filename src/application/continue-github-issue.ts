@@ -221,7 +221,7 @@ async function continueClaimedIssueLoop(
             checksDigest: gate.gate.checksDigest,
             gateDigest: gate.gate.digest,
             deleteBranch: controller.manifest.merge.deleteBranch,
-            evidenceDigest: gate.gate.observationDigest,
+            evidenceDigest: gate.gate.evidenceDigest,
           },
         });
         return projectPublicIssueLifecycleState(controller.state);

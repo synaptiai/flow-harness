@@ -530,6 +530,12 @@ class FakeLocalGit {
     return this.workspace;
   }
 
+  async readOwnedWorkspace(_request?: unknown) {
+    this.lastPrepareRequest = _request;
+    if (!this.prepared) throw new Error("workspace is not owned");
+    return this.workspace;
+  }
+
   async inspectCandidate() {
     return {
       branch: this.workspace.branch,

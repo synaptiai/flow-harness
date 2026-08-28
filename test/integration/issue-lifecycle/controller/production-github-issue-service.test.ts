@@ -18,10 +18,14 @@ import type {
   GitHubIssueLifecycleEvidence,
   GitHubIssueLifecyclePort,
   GitHubOpenIssueObservation,
+  GitHubRemoteMergeOutcome,
 } from "../../../../src/application/github-issue-ports.js";
 import type { NodeExecutionOutcome, NodeExecutor } from "../../../../src/application/ports.js";
 import { createProductionGitHubIssueCliService } from "../../../../src/cli/production-github-issue-service.js";
-import type { IssueExternalEffectResult } from "../../../../src/domain/issue-lifecycle/events.js";
+import type {
+  IssueExternalEffectResult,
+  PublicIssueLifecycleState,
+} from "../../../../src/domain/issue-lifecycle/events.js";
 import type { IssueExternalEffectDescriptor } from "../../../../src/domain/issue-lifecycle/external-effects.js";
 import { parseGitHubLifecycleObservation } from "../../../../src/domain/issue-lifecycle/github-observation.js";
 import type { FrozenIssueRunManifest } from "../../../../src/domain/issue-lifecycle/private-manifest.js";
@@ -42,9 +46,9 @@ afterEach(async () => {
 });
 
 describe("production GitHub issue service", () => {
-  it("publishes through real Git and resumes from durable state in a fresh service instance", async () => {
+  it("publishes, resumes, gates, and squash-merges through real Git", async () => {
     const fixture = await createFixture();
-    const github = new DeterministicGitHub(fixture.baseCommit);
+    const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
     const executor = new DeterministicIssueNodeExecutor(fixture.projectRoot, RUN_ID);
     const sandbox = new DirectProcessSandbox();
     const options = {
@@ -109,15 +113,18 @@ describe("production GitHub issue service", () => {
     expect(sandbox.requests).toHaveLength(verificationProcessesBeforeRecovery);
     expect(github.observedHeads).toHaveLength(observationsBeforeFailedPreflight);
 
+    github.markChecksGreen();
     const secondService = createProductionGitHubIssueCliService(options);
-    const resumed = await secondService.execute({
-      kind: "resume",
-      runId: RUN_ID,
-      commandId: "223e4567-e89b-42d3-a456-426614174000",
-    });
+    const resumed = requireIssueState(
+      await secondService.execute({
+        kind: "resume",
+        runId: RUN_ID,
+        commandId: "223e4567-e89b-42d3-a456-426614174000",
+      }),
+    );
     const inspected = await secondService.execute({ kind: "inspect", runId: RUN_ID });
 
-    expect(resumed).toMatchObject({ runId: RUN_ID, phase: "waiting_for_ci" });
+    expect(resumed).toMatchObject({ runId: RUN_ID, phase: "merge_approval_required" });
     expect(inspected).toEqual(resumed);
     expect(executor.executionCount).toBe(executionsBeforeRecovery);
     expect(verificationProcessesBeforeRecovery).toBe(9);
@@ -126,6 +133,62 @@ describe("production GitHub issue service", () => {
     expect(github.readyTransitionCount).toBe(1);
     expect(github.observedHeads.length).toBeGreaterThanOrEqual(3);
     expect(new Set(github.observedHeads)).toEqual(new Set([remoteHead]));
+
+    if (resumed.mergeApproval === undefined) throw new Error("expected exact merge approval");
+    const merged = requireIssueState(
+      await secondService.execute({
+        kind: "merge",
+        runId: RUN_ID,
+        commandId: "423e4567-e89b-42d3-a456-426614174000",
+        actor: "flow-test-operator",
+        expectedPullRequest: resumed.mergeApproval.pullRequestNumber,
+        expectedHead: resumed.mergeApproval.headCommit,
+        expectedGateDigest: resumed.mergeApproval.gateDigest,
+      }),
+    );
+    if (merged.phase === "external_state_uncertain") {
+      const events = await secondService.execute({
+        kind: "events",
+        runId: RUN_ID,
+        afterSequence: Math.max(0, merged.sequence - 4),
+        limit: 10,
+      });
+      throw new Error(`merge proof remained uncertain: ${JSON.stringify(events)}`);
+    }
+
+    expect(merged).toMatchObject({ runId: RUN_ID, phase: "merged" });
+    expect(executor.executionCount).toBe(executionsBeforeRecovery);
+    expect(github.mergeCount).toBe(1);
+    expect(await git(fixture.remote, "rev-parse", "refs/heads/main")).toBe(
+      github.requiredMergeCommit(),
+    );
+    expect(await git(fixture.remote, "show", "refs/heads/main:src/implemented.txt")).toBe(
+      "implemented by the deterministic model boundary",
+    );
+    await expect(
+      git(fixture.remote, "rev-parse", `refs/heads/flow/issue-6-${COMMAND_ID.slice(0, 8)}`),
+    ).rejects.toThrow();
+    await expect(
+      import("node:fs/promises").then(
+        async ({ access }) => await access(join(fixture.projectRoot, ".flow", "artifacts")),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(
+            fixture.projectRoot,
+            ".flow",
+            "issue-runs",
+            "artifact-store",
+            ".flow",
+            "artifacts",
+            "catalog.json",
+          ),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({ version: 1, references: [{ retention: "retained" }] });
   }, 240_000);
 });
 
@@ -194,6 +257,23 @@ class DeterministicIssueNodeExecutor implements NodeExecutor {
     this.executionCount += 1;
     if (node.type === "agent") {
       if (node.id === "implement") {
+        if (context.artifactStore === undefined) {
+          throw new Error("production issue workflow omitted its private artifact store");
+        }
+        await context.artifactStore.retain({
+          bytes: new TextEncoder().encode("deterministic private artifact"),
+          mediaType: "text/plain",
+          producer: {
+            kind: "agent-command",
+            runId: context.runId,
+            workflowId: context.workflowId,
+            nodeId: node.id,
+            attempt: context.attempt,
+            commandId: "deterministic-artifact",
+            commandSequence: 1,
+            stream: "stdout",
+          },
+        });
         await mkdir(join(context.cwd, "src"), { recursive: true });
         await writeFile(
           join(context.cwd, "src", "implemented.txt"),
@@ -262,15 +342,30 @@ class DirectProcessSandbox implements CommandSandbox {
 
 class DeterministicGitHub implements GitHubIssueAdmissionPort, GitHubIssueLifecyclePort {
   draftCreationCount = 0;
+  mergeCount = 0;
   readyTransitionCount = 0;
   readonly observedHeads: string[] = [];
+  #checksGreen = false;
+  #mergeOutcome: GitHubRemoteMergeOutcome | null = null;
   #pullRequest: {
     readonly number: number;
     readonly nodeId: string;
     readonly isDraft: boolean;
   } | null = null;
 
-  constructor(private readonly baseCommit: string) {}
+  constructor(
+    private readonly remote: string,
+    private readonly baseCommit: string,
+  ) {}
+
+  markChecksGreen(): void {
+    this.#checksGreen = true;
+  }
+
+  requiredMergeCommit(): string {
+    if (this.#mergeOutcome === null) throw new Error("merge outcome is unavailable");
+    return this.#mergeOutcome.mergeCommit;
+  }
 
   async inspectOpenIssue(): Promise<GitHubOpenIssueObservation> {
     return {
@@ -311,6 +406,7 @@ class DeterministicGitHub implements GitHubIssueAdmissionPort, GitHubIssueLifecy
   }): Promise<GitHubExternalEffectResult<"pull_request">> {
     this.draftCreationCount += 1;
     this.#pullRequest = { number: 12, nodeId: "PR_issue_6", isDraft: true };
+    await git(this.remote, "update-ref", "refs/pull/12/head", input.expected.headCommit);
     return this.#draftResult(input.expected, false);
   }
 
@@ -350,18 +446,60 @@ class DeterministicGitHub implements GitHubIssueAdmissionPort, GitHubIssueLifecy
     this.observedHeads.push(expected.headCommit);
     return {
       observation: parseGitHubLifecycleObservation(
-        githubObservation(expected, this.#pullRequest?.isDraft ?? true),
+        githubObservation(expected, this.#pullRequest?.isDraft ?? true, this.#checksGreen),
       ),
       evidence: githubEvidence(),
     };
   }
 
-  async mergeExactPullRequest(): Promise<never> {
-    throw new Error("merge is outside this recovery test");
+  async mergeExactPullRequest(
+    input: Parameters<GitHubIssueLifecyclePort["mergeExactPullRequest"]>[0],
+  ) {
+    this.mergeCount += 1;
+    const tree = await git(this.remote, "rev-parse", `${input.expected.headCommit}^{tree}`);
+    const mergeCommit = await git(
+      this.remote,
+      "commit-tree",
+      tree,
+      "-p",
+      this.baseCommit,
+      "-m",
+      "Deterministic squash merge",
+    );
+    await git(this.remote, "update-ref", "refs/heads/main", mergeCommit, this.baseCommit);
+    await git(
+      this.remote,
+      "update-ref",
+      "-d",
+      `refs/heads/${input.expected.headBranch}`,
+      input.expected.headCommit,
+    );
+    this.#mergeOutcome = {
+      repositoryIdentity: input.expected.repositoryIdentity,
+      repositoryNodeId: input.expected.repositoryNodeId,
+      pullRequestNumber: input.expected.pullRequest.number,
+      pullRequestNodeId: input.expected.pullRequest.nodeId,
+      pullRequestTitleDigest: input.expected.pullRequest.titleDigest,
+      pullRequestBodyDigest: input.expected.pullRequest.bodyDigest,
+      issueNumber: input.expected.issue.number,
+      issueNodeId: input.expected.issue.nodeId,
+      issueState: "closed",
+      issueUpdatedAt: "2026-08-28T13:00:00.000Z",
+      issueContentDigest: input.expected.issue.contentDigest,
+      candidateHead: input.expected.headCommit,
+      baseBranch: input.expected.base.branch,
+      observedBaseCommit: mergeCommit,
+      mergeCommit,
+      mergedAt: "2026-08-28T13:00:00.000Z",
+      branchDeleted: true,
+    };
+    return { outcome: this.#mergeOutcome, evidence: githubEvidence(), reconciled: false };
   }
 
-  async observeMergeOutcome(): Promise<null> {
-    return null;
+  async observeMergeOutcome() {
+    return this.#mergeOutcome === null
+      ? null
+      : { outcome: this.#mergeOutcome, evidence: githubEvidence(), reconciled: true };
   }
 
   #draftResult(
@@ -408,14 +546,33 @@ function githubObservation(
     readonly pullRequest: { readonly number: number; readonly nodeId: string };
   },
   isDraft: boolean,
+  checksGreen: boolean,
 ) {
   const pages = [{ requestCursor: null, endCursor: null, hasNextPage: false, nodeCount: 0 }];
-  const collection = { totalCount: 0, nodes: [], pages };
+  const emptyCollection = { totalCount: 0, nodes: [], pages };
+  const checks = checksGreen
+    ? {
+        totalCount: 1,
+        nodes: [
+          {
+            runId: 1,
+            name: "CI / test",
+            sourceApp: { id: 15_368, slug: "github-actions" },
+            status: "completed" as const,
+            conclusion: "success" as const,
+            headCommit: expected.headCommit,
+            startedAt: "2026-08-28T12:00:00.000Z",
+            completedAt: "2026-08-28T12:01:00.000Z",
+          },
+        ],
+        pages: [{ requestCursor: null, endCursor: null, hasNextPage: false, nodeCount: 1 }],
+      }
+    : emptyCollection;
   return {
     version: 1,
     repositoryIdentity: expected.repositoryIdentity,
     repositoryNodeId: expected.repositoryNodeId,
-    observedAt: "2026-08-28T12:00:00.000Z",
+    observedAt: "2026-08-28T12:02:00.000Z",
     issue: {
       number: expected.issue.number,
       nodeId: expected.issue.nodeId,
@@ -435,8 +592,12 @@ function githubObservation(
       baseCommit: expected.base.commit,
       mergeability: "mergeable",
     },
-    checks: collection,
-    conversations: { comments: collection, reviews: collection, threads: collection },
+    checks,
+    conversations: {
+      comments: emptyCollection,
+      reviews: emptyCollection,
+      threads: emptyCollection,
+    },
   } as const;
 }
 
@@ -630,4 +791,20 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function requireIssueState(value: unknown): PublicIssueLifecycleState {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !("version" in value) ||
+    value.version !== 1 ||
+    !("runId" in value) ||
+    typeof value.runId !== "string" ||
+    !("phase" in value) ||
+    typeof value.phase !== "string"
+  ) {
+    throw new Error("production service returned an invalid public issue lifecycle state");
+  }
+  return value as PublicIssueLifecycleState;
 }
