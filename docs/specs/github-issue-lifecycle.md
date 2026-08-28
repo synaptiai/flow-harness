@@ -210,15 +210,21 @@ mutation.
 The initial frozen identity contains digests or bounded identities for:
 
 - GitHub host and repository.
-- issue node, number, state, content, and update time.
-- base branch and exact base commit.
-- plan, implementation workflow, review workflow, verification commands, holdout, and budgets.
+- issue node, number, state, content digest, and exact update time.
+- configured base branch and the exact commit observed at its remote `refs/heads/<baseBranch>` ref.
+- frozen contract, plan, implementation template workflow, review template workflow, verification
+  commands, holdout, and budgets.
 - derived Flow-owned branch.
 - run and idempotency identities.
 
 The issue must be open and belong to the expected repository. The checkout must be clean, attached,
 and at the admitted base. `origin` must resolve to the same `github.com` repository. A mismatch or
 drift must fail before worktree, branch, commit, push, pull request, or merge mutation.
+
+The admitted compiled implementation template must declare `goal`. Its ordered
+`goal.criteria[].id` values are the authoritative acceptance-criterion identifiers for review and
+merge evidence. The issue title and body provide untrusted task context, but they don't create a
+second criterion-ID source. The plan and review workflow cannot replace, add, or omit those IDs.
 
 Repository identities use the canonical lowercase `owner/name` returned by the GitHub identity
 parser. The derived Flow branch must differ from the frozen base branch. Issue numbers, pull request
@@ -302,8 +308,8 @@ The event payload depends on `type`:
 | `phase_transitioned` | `from` and `to` lifecycle phases, plus the required `receipt` |
 | `external_effect_prepared` | `effectId`, `effectKind`, and `operationDigest` |
 | `external_effect_settled` | `effectId`, `outcome` as `applied` or `not_applied`, and `observationDigest`. An `applied` settlement also requires its typed `result` |
-| `external_state_uncertain` | `effectId` and bounded `code` |
-| `run_failed` | Bounded `code` |
+| `external_state_uncertain` | `effectId`, bounded `code`, and `evidenceDigest` |
+| `run_failed` | Bounded `code` and `evidenceDigest` |
 | `run_cancelled` | `actorDigest` and optional `reasonDigest` |
 
 The closed external-effect kinds are `workspace`, `commit`, `push`, `pull_request`,
@@ -324,32 +330,38 @@ An applied settlement must bind the effect to its observed result:
 | `push` | `kind`, `candidateHead`, `branch` |
 | `pull_request` | `kind`, `repositoryIdentity`, `candidateHead`, `headBranch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `isDraft` as `true` |
 | `pull_request_ready` | `kind`, `repositoryIdentity`, `candidateHead`, `headBranch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `isDraft` as `false` |
-| `merge` | `kind`, `candidateHead`, `gateDigest`, `mergeCommit` |
+| `merge` | `kind`, `candidateHead`, `gateDigest`, `mergeCommit`, `deleteBranchRequested`, `branchDeleted` |
 
 A `not_applied` settlement has no `result`. The result kind must equal the prepared effect kind,
 and every identity must match the current frozen or approved lifecycle identity.
 
 The `commit` effect belongs to `implementing` and must settle before the transition to `verifying`.
-Publishing doesn't create the candidate commit. It must settle `push`, draft `pull_request`, and
-`pull_request_ready`, in that order, before the transition to `waiting_for_ci`. The ready result must
-bind the same repository, pull request number, node ID, head commit, head branch, and base branch as
-the draft result.
+Publishing doesn't create the candidate commit. First publication must settle `push`, draft
+`pull_request`, and `pull_request_ready`, in that order, before the transition to `waiting_for_ci`.
+The ready result must bind the same repository, pull request number, node ID, head commit, head
+branch, and base branch as the draft result.
+
+A candidate repair preserves the existing pull request number, node ID, head branch, and base
+branch. Repaired publication must settle a new `push` for the replacement candidate and then
+observe that exact existing pull request as ready. It must not prepare or settle another
+`pull_request` creation effect. The new ready observation and publication receipt bind the
+replacement candidate head.
 
 Every legal phase transition requires the matching receipt:
 
 | Transition | Receipt kind | Bounded receipt fields |
 | --- | --- | --- |
-| `preflight` to `issue_frozen` | `issue_snapshot` | `repositoryIdentity`, `issueNumber`, `baseBranch`, `baseCommit`, `branch`, `issueDigest`, `evidenceDigest` |
+| `preflight` to `issue_frozen` | `issue_snapshot` | `repositoryIdentity`, `issueNumber`, `issueNodeId`, `issueUpdatedAt`, `baseBranch`, `baseCommit`, `branch`, `issueDigest`, `frozenContractDigest`, `planDigest`, `implementationTemplateWorkflowDigest`, `reviewTemplateWorkflowDigest`, `budgetDigest`, `evidenceDigest` |
 | `issue_frozen` to `workspace_prepared` | `workspace` | `workspaceIdentityDigest`, `evidenceDigest` |
 | Any repair or initial transition to `implementing` | `implementation_started` | `iteration`, `evidenceDigest` |
-| `implementing` to `verifying` | `implementation` | `candidateHead`, `flowRunId`, `evidenceDigest` |
+| `implementing` to `verifying` | `implementation` | `candidateHead`, `flowRunId`, `executionWorkflowDigest`, `terminalSequence`, `evidenceDigest` |
 | `verifying` to `reviewing` | `verification` | `candidateHead`, `evidenceDigest` |
-| `reviewing` to `publishing` | `review` | `candidateHead`, `reportDigest`, `evidenceDigest` |
+| `reviewing` to `publishing` | `review` | `candidateHead`, `flowRunId`, `executionWorkflowDigest`, `terminalSequence`, `reportDigest`, `evidenceDigest` |
 | `publishing` to `waiting_for_ci` | `publication` | `candidateHead`, `branch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `evidenceDigest` |
-| `waiting_for_ci` to `merge_approval_required` | `merge_gate` | `repositoryIdentity`, `baseBranch`, `baseCommit`, `branch`, `pullRequestNumber`, `pullRequestNodeId`, `candidateHead`, `checksDigest`, `gateDigest`, `evidenceDigest` |
+| `waiting_for_ci` to `merge_approval_required` | `merge_gate` | `repositoryIdentity`, `baseBranch`, `baseCommit`, `branch`, `pullRequestNumber`, `pullRequestNodeId`, `candidateHead`, `checksDigest`, `gateDigest`, `deleteBranch`, `evidenceDigest` |
 | `merge_approval_required` to `verifying` | `gate_invalidated` | `candidateHead`, `gateDigest`, `evidenceDigest` |
 | `merge_approval_required` to `merging` | `merge_approval` | `candidateHead`, `gateDigest`, `actorDigest`, `evidenceDigest` |
-| `merging` to `merged` | `merge` | `candidateHead`, `gateDigest`, `mergeCommit`, `evidenceDigest` |
+| `merging` to `merged` | `merge` | `candidateHead`, `gateDigest`, `mergeCommit`, `deleteBranchRequested`, `branchDeleted`, `evidenceDigest` |
 
 An implementation iteration must be a positive integer no greater than 64. Commit identities must
 be 40-character lowercase hexadecimal values. Evidence, issue, check, report, actor, and gate
@@ -494,6 +506,11 @@ prepared identity matches. It must reject an unrelated collision. A distinct pre
 readiness effect must observe the same exact pull request with `isDraft` set to `false` before
 merge-gate creation.
 
+If review or CI requires a candidate repair after first publication, the controller must reuse the
+same ready pull request. It pushes the replacement candidate and observes the same pull request
+number, node ID, head branch, and base branch at the replacement head. It must not create a second
+pull request or move the run to another visible review identity.
+
 The hosted-check gate binds each configured check name and source GitHub App requirement to its
 GitHub run identity, conclusion, and exact pull request head. The source app identity contains a
 positive numeric `id` and a canonical lowercase `slug` of at most 256 characters. The slug starts
@@ -514,8 +531,11 @@ findings are closed. The gate binds:
 
 - repository, issue, pull request, and pull request node identities.
 - exact head and observed base commits.
-- plan and merge method.
+- frozen-contract digest, plan, merge method, and branch-deletion policy.
+- stable implementation and review template workflow digests.
 - implementation, negative-control, positive-control, and deterministic verification evidence.
+- implementation and review nested-run IDs, execution workflow digests, terminal sequences, and
+  evidence digests.
 - the exact deterministic-verification requirement set as `id` and `commandDigest` pairs.
 - exact-head review evidence and blocking-severity result.
 - the exact hosted-check requirement set as `name` and immutable source app identity pairs.
@@ -523,6 +543,10 @@ findings are closed. The gate binds:
 - current comments, reviews, unresolved review threads, and mergeability.
 - gate creation sequence and digest algorithm.
 - a SHA-256 digest over the complete closed gate document.
+
+The top-level `implementationWorkflowDigest` and `reviewWorkflowDigest` fields are the stable
+template workflow digests. Each nested `executionWorkflowDigest` identifies the compiled workflow
+that its implementation or review run executed.
 
 The pull request must be open and not draft. The observed base commit and pull request base commit
 must both equal the frozen base commit. All candidate evidence must bind the pull request head. The
@@ -551,7 +575,13 @@ merge queue, or branch-protection bypass.
 
 A successful request isn't proof of merge. The controller must observe GitHub's merged identity.
 It must also prove that the resulting base history represents the approved head under the selected
-merge method.
+merge method. The merge result and receipt must record the gate policy as
+`deleteBranchRequested` and the observed repository state as `branchDeleted`. The request must
+equal the gate's `deleteBranch` value. If deletion was requested, the branch must be observed as
+deleted before the lifecycle can enter `merged`.
+
+If deletion wasn't requested, `branchDeleted` can still be `true`. GitHub can apply a
+repository-level automatic deletion policy independently of Flow.
 
 ## Public and private data contract
 
@@ -596,7 +626,7 @@ The lifecycle fails closed under these conditions:
 | Base movement before implementation | Require a new freeze. Never silently adopt it |
 | Base movement after implementation begins | Fail and preserve the workspace |
 | Holdout, verifier, or review failure | Preserve evidence. Don't publish or merge |
-| Branch or pull-request collision | Reconcile only an exact prepared identity. Otherwise fail |
+| Branch or pull-request collision | Reconcile only an exact prepared identity. Reuse the stable ready pull request after candidate repair. Otherwise fail |
 | Lost external acknowledgement | Enter `external_state_uncertain` and reconcile before retry |
 | Missing, incomplete, stale, or failed hosted check | Don't create a merge gate |
 | Changed issue, head, base, checks, review, comments, threads, mergeability, or policy | Invalidate the gate and require new evidence and approval |
@@ -624,7 +654,7 @@ Read-only host and GitHub admission use these stable public codes:
 | `command_response_invalid` | A fixed read-only host command returned a response that failed strict admission. |
 | `github_authentication_failed` | GitHub CLI couldn't authenticate the active `github.com` account. |
 | `github_repository_not_found` | GitHub didn't return the expected repository. This result can also represent insufficient access. |
-| `github_repository_identity_mismatch` | GitHub returned repository metadata that doesn't match the requested repository. |
+| `github_repository_identity_mismatch` | GitHub returned repository metadata that doesn't match the request, or the configured qualified base ref is missing or mismatched. |
 | `github_issue_not_found` | GitHub didn't return the requested issue in the expected repository. |
 | `github_issue_not_open` | The requested issue isn't open. |
 | `github_issue_identity_mismatch` | GitHub's issue identity differs from the requested frozen identity. |

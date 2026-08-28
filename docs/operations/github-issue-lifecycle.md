@@ -139,6 +139,8 @@ Before `doctor` or `run`, require:
 
 - no staged, unstaged, or untracked changes.
 - an attached branch that matches `repository.baseBranch`.
+- the local `HEAD` matches the exact commit at the remote configured
+  `refs/heads/<baseBranch>` reference.
 - an `origin` URL that resolves to `repository.expected` on `github.com`.
 - `.flow/issue-runs/` is ignored and contains no tracked content.
 - `.flow` and `.flow/issue-runs`, when present, are real directories rather than symbolic links or
@@ -163,6 +165,8 @@ Treat the plan as trusted executable policy. Review every field before `run`:
 - Reserve `branch.prefix` for Flow-owned branches.
 - Confirm that the complete Flow-owned branch derived from the prefix differs from `baseBranch`.
 - Inspect both workflows, their model tools, budgets, and timeouts.
+- Confirm that the implementation workflow declares `goal`, and review every stable
+  `goal.criteria[].id`. Treat those IDs as the complete review mapping authority.
 - Keep `candidate.allowedPathPrefixes` no broader than the issue requires.
 - Prove that the holdout fails on the exact base for the intended reason.
 - Execute every deterministic verification command manually from a trusted checkout.
@@ -243,8 +247,8 @@ must not adopt a similarly named branch, pull request, commit, or merge.
 | Worktree or branch creation | Source checkout, worktree metadata, and run root | Exact repository, base, derived path, and branch identity |
 | Candidate commit | Candidate workspace and index | Exact candidate tree, parent, message policy, and commit identity before verification |
 | Push | Local branch and remote reference | Exact local head and remote head |
-| Draft pull request creation | Remote branch and visible pull requests | Exact canonical repository, issue, head and base branches, head and base commits, `isDraft: true`, number, node ID, and prepared identity |
-| Pull request readiness | The exact draft pull request and prepared readiness effect | The same repository, number, node ID, head commit, head branch, and base branch, with `isDraft: false` |
+| Draft pull request creation | Remote branch and visible pull requests | On first publication only: exact canonical repository, issue, head and base branches, head and base commits, `isDraft: true`, number, node ID, and prepared identity |
+| Pull request readiness | The exact draft or previously published pull request and prepared readiness effect | The same repository, number, node ID, current head commit, head branch, and base branch, with `isDraft: false`. A repaired candidate must reuse the previously published pull request |
 | Hosted-check observation | Pull request and event cursor | Exact check names, source app IDs and slugs, run identities, conclusions, and head commit |
 | Merge | Pull request, base reference, and gate | Exact PR, approved head, merge result, and base-history reachability |
 
@@ -261,10 +265,11 @@ mergeability, or repository policy changes:
 1. Don't reuse the old gate digest or command ID.
 2. Inspect the invalidation reason.
 3. Return the run through the prescribed verification and review path.
-4. Resolve current comments and review threads in GitHub.
-5. Wait for every configured check on the replacement head.
-6. Review the new exact gate.
-7. Submit a new `flow issue merge` command with a new command ID and the replacement values.
+4. Keep the existing pull request identity if the replacement candidate requires publication.
+5. Resolve current comments and review threads in GitHub.
+6. Wait for every configured check on the replacement head.
+7. Review the new exact gate.
+8. Submit a new `flow issue merge` command with a new command ID and the replacement values.
 
 GitHub CLI supports an exact expected head with `--match-head-commit`, as documented by
 [`gh pr merge`](https://cli.github.com/manual/gh_pr_merge). Flow also binds the broader gate digest
@@ -312,9 +317,12 @@ required evidence is retained, and repository policy permits removal.
 2. Confirm that no process owns the run or worktree.
 3. Confirm that the source checkout is clean and the base branch contains the expected merged
    result when the run is `merged`.
-4. Remove a Flow-owned worktree and branch only through a reviewed manual cleanup procedure after
+4. Confirm that `deleteBranchRequested` equals the gate's `deleteBranch` policy. If the request was
+   `true`, confirm that the observed `branchDeleted` outcome is also `true`. If the request was
+   `false`, an observed deletion can result from the repository's automatic branch deletion policy.
+5. Remove a Flow-owned worktree and branch only through a reviewed manual cleanup procedure after
    exact identity checks.
-5. Remove the private run root only after its retention period expires and a verified backup exists
+6. Remove the private run root only after its retention period expires and a verified backup exists
    when policy requires one.
 
 Never delete `.git`, the source checkout, a broad `.flow` directory, an unresolved run, or an

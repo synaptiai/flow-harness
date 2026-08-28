@@ -6,6 +6,7 @@ import {
   type GitHubOpenIssueObservation,
 } from "../../application/github-issue-ports.js";
 import { isValidGitHubNodeId } from "../../domain/issue-lifecycle/identity.js";
+import { isValidExactGitBranchName } from "../../domain/issue-lifecycle/plan.js";
 import type { PinnedGitHubIssueHostExecutable } from "../git/fixed-host-executables.js";
 import { assertRepositoryReference } from "../git/local-git-repository-admission.js";
 import { runStrictReadProcess, StrictReadProcessError } from "../git/strict-read-process.js";
@@ -18,6 +19,7 @@ const nodeIdSchema = z
   .refine(isValidGitHubNodeId, "must be a bounded non-whitespace GitHub node identity");
 const repositoryNameSchema = z.string().min(1).max(100);
 const ownerSchema = z.string().min(1).max(39);
+const commitSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const responseSchema = z
   .object({
     data: z
@@ -31,6 +33,13 @@ const responseSchema = z
             isArchived: z.boolean(),
             defaultBranchRef: z
               .object({ name: z.string().min(1).max(255) })
+              .strict()
+              .nullable(),
+            ref: z
+              .object({
+                name: z.string().min(1).max(255),
+                target: z.object({ oid: commitSchema }).strict(),
+              })
               .strict()
               .nullable(),
             issue: z
@@ -53,7 +62,7 @@ const responseSchema = z
   })
   .strict();
 
-const ISSUE_ADMISSION_QUERY = `query FlowIssueAdmission($owner: String!, $name: String!, $number: Int!) {
+const ISSUE_ADMISSION_QUERY = `query FlowIssueAdmission($owner: String!, $name: String!, $number: Int!, $baseRef: String!) {
   repository(owner: $owner, name: $name) {
     id
     name
@@ -61,6 +70,7 @@ const ISSUE_ADMISSION_QUERY = `query FlowIssueAdmission($owner: String!, $name: 
     url
     isArchived
     defaultBranchRef { name }
+    ref(qualifiedName: $baseRef) { name target { oid } }
     issue(number: $number) {
       id
       number
@@ -98,6 +108,9 @@ export class GitHubCliIssueAdmission implements GitHubIssueAdmissionPort {
     if (!Number.isSafeInteger(input.number) || input.number < 1 || input.number > 2_147_483_647) {
       throw new GitHubIssueHostAdmissionError("github_issue_identity_mismatch");
     }
+    if (!isValidExactGitBranchName(input.baseBranch)) {
+      throw new GitHubIssueHostAdmissionError("github_repository_identity_mismatch");
+    }
     try {
       await this.#gh(["auth", "status", "--active", "--hostname", "github.com"], undefined, signal);
     } catch (error) {
@@ -120,6 +133,7 @@ export class GitHubCliIssueAdmission implements GitHubIssueAdmissionPort {
             owner: input.repository.owner,
             name: input.repository.name,
             number: input.number,
+            baseRef: `refs/heads/${input.baseBranch}`,
           },
         }),
         signal,
@@ -146,7 +160,9 @@ export class GitHubCliIssueAdmission implements GitHubIssueAdmissionPort {
       repository.name.toLowerCase() !== input.repository.name.toLowerCase() ||
       repository.url !== `https://github.com/${repository.owner.login}/${repository.name}` ||
       repository.isArchived === true ||
-      repository.defaultBranchRef === null
+      repository.defaultBranchRef === null ||
+      repository.ref === null ||
+      repository.ref.name !== input.baseBranch
     ) {
       throw new GitHubIssueHostAdmissionError("github_repository_identity_mismatch");
     }
@@ -172,6 +188,10 @@ export class GitHubCliIssueAdmission implements GitHubIssueAdmissionPort {
         nodeId: repository.id,
         canonicalUrl: repository.url,
         defaultBranch: repository.defaultBranchRef.name,
+        configuredBase: Object.freeze({
+          branch: repository.ref.name,
+          commit: repository.ref.target.oid,
+        }),
       }),
       issue: Object.freeze({
         host: "github.com",

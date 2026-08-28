@@ -80,6 +80,7 @@ const mergeGateInputSchema = z
       })
       .strict(),
     branch: exactBranchSchema,
+    frozenContractDigest: sha256Schema,
     planDigest: sha256Schema,
     implementationWorkflowDigest: sha256Schema,
     reviewWorkflowDigest: sha256Schema,
@@ -122,6 +123,7 @@ const mergeGateInputSchema = z
     implementation: z
       .object({
         flowRunId: boundedIdentitySchema,
+        executionWorkflowDigest: sha256Schema,
         terminalSequence: positiveSafeIntegerSchema,
         evidenceDigest: sha256Schema,
         candidateHead: gitCommitSchema,
@@ -139,6 +141,10 @@ const mergeGateInputSchema = z
     deterministicVerification: z.array(verificationSchema).min(1).max(32),
     review: z
       .object({
+        flowRunId: boundedIdentitySchema,
+        executionWorkflowDigest: sha256Schema,
+        terminalSequence: positiveSafeIntegerSchema,
+        evidenceDigest: sha256Schema,
         reportDigest: sha256Schema,
         headCommit: gitCommitSchema,
         verdict: z.literal("clear"),

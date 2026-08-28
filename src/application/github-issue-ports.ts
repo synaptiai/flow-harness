@@ -56,6 +56,10 @@ export interface GitHubRepositoryObservation extends GitHubRepositoryReference {
   readonly nodeId: string;
   readonly canonicalUrl: string;
   readonly defaultBranch: string;
+  readonly configuredBase: {
+    readonly branch: string;
+    readonly commit: string;
+  };
 }
 
 export interface OpenGitHubIssueSnapshot extends GitHubRepositoryReference {
@@ -78,6 +82,7 @@ export interface GitHubIssueAdmissionPort {
     input: {
       readonly repository: GitHubRepositoryReference;
       readonly number: number;
+      readonly baseBranch: string;
     },
     signal?: AbortSignal,
   ): Promise<GitHubOpenIssueObservation>;

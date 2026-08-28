@@ -40,10 +40,17 @@ const receiptFixtures = [
     kind: "issue_snapshot",
     repositoryIdentity: "example/widgets",
     issueNumber: 42,
+    issueNodeId: "I_node",
+    issueUpdatedAt: "2026-08-28T10:30:00.000Z",
     baseBranch: "main",
     baseCommit: "a".repeat(40),
     branch: "flow/issue-42",
     issueDigest: "b".repeat(64),
+    frozenContractDigest: "d".repeat(64),
+    planDigest: "e".repeat(64),
+    implementationTemplateWorkflowDigest: "f".repeat(64),
+    reviewTemplateWorkflowDigest: "1".repeat(64),
+    budgetDigest: "2".repeat(64),
     evidenceDigest: "c".repeat(64),
   },
   {
@@ -56,6 +63,8 @@ const receiptFixtures = [
     kind: "implementation",
     candidateHead: "a".repeat(40),
     flowRunId: "implementation-run",
+    executionWorkflowDigest: "c".repeat(64),
+    terminalSequence: 21,
     evidenceDigest: "b".repeat(64),
   },
   {
@@ -66,6 +75,9 @@ const receiptFixtures = [
   {
     kind: "review",
     candidateHead: "a".repeat(40),
+    flowRunId: "review-run",
+    executionWorkflowDigest: "d".repeat(64),
+    terminalSequence: 13,
     reportDigest: "b".repeat(64),
     evidenceDigest: "c".repeat(64),
   },
@@ -89,6 +101,7 @@ const receiptFixtures = [
     candidateHead: "a".repeat(40),
     checksDigest: "b".repeat(64),
     gateDigest: "c".repeat(64),
+    deleteBranch: true,
     evidenceDigest: "d".repeat(64),
   },
   {
@@ -109,6 +122,8 @@ const receiptFixtures = [
     candidateHead: "a".repeat(40),
     gateDigest: "b".repeat(64),
     mergeCommit: "c".repeat(40),
+    deleteBranchRequested: true,
+    branchDeleted: true,
     evidenceDigest: "d".repeat(64),
   },
 ] as const satisfies readonly IssueLifecyclePhaseReceipt[];
@@ -141,6 +156,8 @@ const appliedEffectResultFixtures = [
     candidateHead: "a".repeat(40),
     gateDigest: "b".repeat(64),
     mergeCommit: "c".repeat(40),
+    deleteBranchRequested: true,
+    branchDeleted: true,
   },
 ] as const;
 
@@ -246,6 +263,41 @@ describe("GitHub issue lifecycle documentation contracts", () => {
 
       expect(documentedFields.get(result.kind), result.kind).toEqual(
         Object.keys(event.result).sort(),
+      );
+    }
+  });
+
+  it("documents every exact uncertain and failure event payload field", async () => {
+    const specification = await readDocument("docs/specs/github-issue-lifecycle.md");
+    const documentedFields = documentedEventPayloadFields(specification);
+    const fixtures = [
+      {
+        version: 1,
+        runId: "documentation-contract",
+        sequence: 1,
+        at: "2026-08-28T13:00:00.000Z",
+        type: "external_state_uncertain",
+        effectId: "effect-workspace-identity",
+        code: "acknowledgement_lost",
+        evidenceDigest: "a".repeat(64),
+      },
+      {
+        version: 1,
+        runId: "documentation-contract",
+        sequence: 1,
+        at: "2026-08-28T13:00:00.000Z",
+        type: "run_failed",
+        code: "verification_failed",
+        evidenceDigest: "b".repeat(64),
+      },
+    ] as const;
+
+    for (const fixture of fixtures) {
+      const event = parseIssueLifecycleEvent(fixture);
+      expect(documentedFields.get(event.type), event.type).toEqual(
+        Object.keys(event)
+          .filter((field) => !["version", "runId", "sequence", "at", "type"].includes(field))
+          .sort(),
       );
     }
   });
@@ -358,6 +410,23 @@ function documentedEffectResultFields(source: string): ReadonlyMap<string, reado
       [...(row[2] ?? "").matchAll(/`([^`]+)`/gu)]
         .map((match) => match[1] ?? "")
         .filter((value) => value !== "true" && value !== "false")
+        .sort(),
+    ]),
+  );
+}
+
+function documentedEventPayloadFields(source: string): ReadonlyMap<string, readonly string[]> {
+  const section = extractSection(source, "## Event and effect contract");
+  const tableStart = section.indexOf("The event payload depends on `type`");
+  const tableEnd = section.indexOf("The closed external-effect kinds", tableStart);
+  if (tableStart < 0 || tableEnd < 0) throw new Error("Event-payload table not found");
+  const rows = [...section.slice(tableStart, tableEnd).matchAll(/^\| `([^`]+)` \| ([^|]+) \|$/gmu)];
+  return new Map(
+    rows.map((row) => [
+      row[1] ?? "",
+      [...(row[2] ?? "").matchAll(/`([^`]+)`/gu)]
+        .map((match) => match[1] ?? "")
+        .filter((value) => value !== "applied" && value !== "not_applied")
         .sort(),
     ]),
   );

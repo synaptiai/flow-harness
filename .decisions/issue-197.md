@@ -87,6 +87,10 @@ then settles the push, creates the pull request with `isDraft: true`, and uses a
 `pull_request_ready` effect to observe the same exact pull request with `isDraft: false`. Only that
 ready identity can proceed to hosted checks.
 
+After first publication, a candidate repair preserves that pull request's number, node ID, head
+branch, and base branch. Repaired publication settles a replacement push and observes the same pull
+request as ready at the replacement head. It does not create a second pull request.
+
 ### Frozen identities and evidence
 
 Before repository mutation, the run binds:
@@ -94,8 +98,9 @@ Before repository mutation, the run binds:
 - GitHub host and canonical lowercase `owner/name` repository identity, including a valid
   dot-prefixed repository name such as `.github`;
 - issue node, positive safe integer number, state, content digest, and updated timestamp;
-- base branch and exact base commit;
-- plan, implementation workflow, verification commands, holdout, and budget digests;
+- configured base branch and exact commit observed at its remote qualified ref;
+- complete frozen-contract, plan, implementation template workflow, review template workflow,
+  verification command, holdout, and budget digests;
 - derived Flow-owned branch name; and
 - an idempotency identity for the run.
 
@@ -104,12 +109,20 @@ characters and cannot contain Unicode whitespace, control characters, or format 
 
 The merge gate additionally binds the pull request's positive safe integer number, bounded node ID,
 exact head and base branches, exact head and observed base commits, merge method, implementation
-evidence, deterministic verification evidence, exact-head review evidence, required-check run
+and review nested-run IDs, execution workflow digests, terminal sequences, evidence, deterministic
+verification evidence, exact-head review evidence, required-check run
 identities and conclusions, comments, reviews, unresolved threads, and the gate creation sequence.
 Each check-run ID and source GitHub App ID is a positive safe integer. Each required hosted check is
 bound to its name and source GitHub App ID and canonical slug, and the observed requirement set must
 match that trusted set exactly. Any bound-state change invalidates the gate and requires a new
 review, verification, and operator approval.
+
+The implementation workflow's compiled `goal.criteria[].id` values are the only authoritative
+acceptance-criterion IDs. Issue prose remains untrusted context and cannot replace that closed set.
+The merge gate records the `deleteBranch` policy. The applied merge result and terminal receipt
+record that policy as `deleteBranchRequested` and record the observed repository state as
+`branchDeleted`. The request must match the policy. A requested deletion requires an observed
+deletion, but GitHub repository settings can delete the branch when Flow didn't request deletion.
 
 ### Verification and review
 

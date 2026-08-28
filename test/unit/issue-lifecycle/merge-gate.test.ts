@@ -8,7 +8,7 @@ import {
 describe("merge gate digest", () => {
   it("matches the version-1 compatibility vector", () => {
     expect(calculateMergeGateDigest(mergeGate())).toBe(
-      "60757b65cab6ea737860f3a2680028b7285348573df015ac812cd8247d34e83a",
+      "2360f4d500c0f662074efca7a1d27f7c85e3b367c51e06eb3177bd0c671547ba",
     );
   });
 
@@ -61,6 +61,10 @@ describe("merge gate digest", () => {
     ],
     ["plan", (gate: MergeGateInput) => ({ ...gate, planDigest: "f".repeat(64) })],
     [
+      "frozen contract",
+      (gate: MergeGateInput) => ({ ...gate, frozenContractDigest: "f".repeat(64) }),
+    ],
+    [
       "head",
       (gate: MergeGateInput) => ({
         ...gate,
@@ -80,6 +84,30 @@ describe("merge gate digest", () => {
       (gate: MergeGateInput) => ({
         ...gate,
         review: { ...gate.review, reportDigest: "f".repeat(64) },
+      }),
+    ],
+    [
+      "implementation nested-run provenance",
+      (gate: MergeGateInput) => ({
+        ...gate,
+        implementation: {
+          ...gate.implementation,
+          executionWorkflowDigest: "f".repeat(64),
+          terminalSequence: gate.implementation.terminalSequence + 1,
+        },
+      }),
+    ],
+    [
+      "review nested-run provenance",
+      (gate: MergeGateInput) => ({
+        ...gate,
+        review: {
+          ...gate.review,
+          flowRunId: "run-review-other",
+          executionWorkflowDigest: "f".repeat(64),
+          terminalSequence: gate.review.terminalSequence + 1,
+          evidenceDigest: "e".repeat(64),
+        },
       }),
     ],
     [
@@ -424,6 +452,7 @@ function mergeGate(): MergeGateInput {
     },
     base: { branch: "main", commit: "b".repeat(40), observedCommit: "b".repeat(40) },
     branch: "flow/issue-197",
+    frozenContractDigest: "0".repeat(64),
     planDigest: "2".repeat(64),
     implementationWorkflowDigest: "3".repeat(64),
     reviewWorkflowDigest: "4".repeat(64),
@@ -451,6 +480,7 @@ function mergeGate(): MergeGateInput {
     merge: { method: "squash", deleteBranch: true },
     implementation: {
       flowRunId: "run-implementation",
+      executionWorkflowDigest: "5".repeat(64),
       terminalSequence: 41,
       evidenceDigest: "6".repeat(64),
       candidateHead: head,
@@ -476,7 +506,15 @@ function mergeGate(): MergeGateInput {
         headCommit: head,
       },
     ],
-    review: { reportDigest: "c".repeat(64), headCommit: head, verdict: "clear" },
+    review: {
+      flowRunId: "run-review",
+      executionWorkflowDigest: "6".repeat(64),
+      terminalSequence: 17,
+      evidenceDigest: "7".repeat(64),
+      reportDigest: "c".repeat(64),
+      headCommit: head,
+      verdict: "clear",
+    },
     hostedChecks: [
       {
         name: "test",

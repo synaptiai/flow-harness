@@ -70,6 +70,10 @@ budgets needed to satisfy the issue. Flow supplies the frozen issue as untrusted
 writes to the plan's `candidate.allowedPathPrefixes` entries. Keep deterministic checks out of the
 model's discretion by declaring them in the plan.
 
+Declare a `goal` in the implementation workflow. Give each entry in `goal.criteria` one stable,
+unique `id`. Those IDs are the authoritative acceptance-criterion set that the review workflow must
+map. Don't create a second criterion list in the plan or derive replacement IDs from issue prose.
+
 Create a separate review workflow that:
 
 1. Maps every frozen acceptance criterion to the exact candidate diff and evidence.
@@ -137,6 +141,11 @@ merge:
   deleteBranch: true
 ```
 
+The `deleteBranch` value controls whether Flow asks GitHub to delete the branch during merge. Flow
+records that request separately from the post-merge branch state because repository settings can
+delete a branch automatically. If the plan requests deletion, Flow must observe that the branch was
+deleted before it records the run as merged.
+
 Command entries are argument vectors, not shell text. Put one executable in `executable` and each
 argument in `args`. Shell operators, redirection, command substitution, and environment assignment
 aren't interpreted. The plan cannot name `.git` or `.flow` as a candidate write location.
@@ -177,9 +186,10 @@ flow issue doctor https://github.com/example/widgets/issues/42 \
   --plan .flow/github-issue.plan.yaml
 ```
 
-The diagnostic must succeed before you start. Flow rejects a closed or changed issue. It also
-rejects a repository mismatch, unsafe checkout, missing tool, authentication failure, unsupported
-repository policy, or unavailable model sandbox.
+The diagnostic must succeed before you start. Flow reads the exact configured remote
+`refs/heads/<baseBranch>` ref and rejects a local or remote base mismatch. It also rejects a closed
+or changed issue, repository mismatch, unsafe checkout, missing tool, authentication failure,
+unsupported repository policy, or unavailable model sandbox.
 
 Resolve the reported condition and repeat `doctor`. Don't bypass the check by changing the issue
 URL, remote, base branch, or required checks to a less restrictive value.
@@ -197,14 +207,19 @@ flow issue run https://github.com/example/widgets/issues/42 \
   --command-id <uuid>
 ```
 
-Flow freezes the issue, base commit, plan, workflows, checks, holdout, budgets, and derived branch
-before it mutates the repository. It then creates a Flow-owned isolated worktree and runs the
-bounded implementation. Before verification, Flow creates and records the exact candidate commit.
-Next, it proves both holdout results and runs every deterministic check.
+Flow freezes the issue node, update time, remote base commit, and complete contract digest. It also
+freezes the plan, template workflows, checks, holdout, budgets, and derived branch before mutation.
+It then creates a Flow-owned isolated worktree and runs the bounded implementation. Flow creates
+and records the exact candidate commit before verification. Next, it proves both holdout results.
+It also runs every deterministic check.
 
 After independent review clears, Flow pushes the Flow-owned branch and creates one draft pull
 request. A separate transition makes that exact pull request ready for review. Only the ready pull
 request can enter a merge gate.
+
+If review or CI sends a published candidate back for repair, Flow keeps that pull request identity.
+It commits and pushes the replacement candidate, then observes the same pull request as ready at the
+new head. It doesn't create another pull request for the same run.
 
 The command stops at a failure, a recoverable interruption, or `merge_approval_required`. It never
 merges as part of `run`. Preserve the returned run ID. Repeating the same command ID with different
@@ -238,8 +253,10 @@ The normal path reaches these milestones:
 
 1. `issue_frozen` binds the issue and exact base commit.
 2. `workspace_prepared` records the isolated Flow-owned worktree.
-3. `implementing` records the exact candidate commit before verification starts.
-4. `verifying` and `reviewing` produce candidate evidence bound to that commit.
+3. `implementing` records the exact candidate commit and nested implementation-run provenance before
+   verification starts.
+4. `verifying` and `reviewing` produce candidate evidence and nested review-run provenance bound to
+   that commit.
 5. `publishing` pushes the branch, creates the pull request as a draft, and makes the same exact
    pull request ready for review.
 6. `waiting_for_ci` observes every configured hosted check against that head commit.
@@ -283,9 +300,10 @@ flow issue inspect <run-id>
 flow issue events <run-id> --after 0 --limit 100
 ```
 
-Require `merged`, the approved pull request identity, the approved head commit, a proved merge
-commit, and post-merge reachability from the configured base branch. A successful GitHub response
-without that observation isn't proof of completion.
+Require `merged`, the approved pull request identity, and the approved head commit. Also require a
+proved merge commit, the planned branch-deletion request, its observed outcome, and post-merge
+reachability from the configured base branch. A successful GitHub response without those
+observations isn't proof of completion.
 
 Keep the run evidence until your retention policy permits cleanup. One successful run proves only
 the frozen issue, repository, host, provider, model, and checks that the evidence names. It doesn't

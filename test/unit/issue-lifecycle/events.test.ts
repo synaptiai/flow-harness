@@ -29,6 +29,14 @@ const BASE_BRANCH = "main";
 const BASE_COMMIT = "b".repeat(40);
 const OTHER_BASE_COMMIT = "9".repeat(40);
 const MERGE_COMMIT = "c".repeat(40);
+const ISSUE_NODE_ID = "I_node";
+const ISSUE_UPDATED_AT = "2026-08-28T10:00:00.000Z";
+const FROZEN_CONTRACT_DIGEST = "1".repeat(64);
+const PLAN_DIGEST = "2".repeat(64);
+const IMPLEMENTATION_TEMPLATE_WORKFLOW_DIGEST = "3".repeat(64);
+const REVIEW_TEMPLATE_WORKFLOW_DIGEST = "4".repeat(64);
+const BUDGET_DIGEST = "5".repeat(64);
+const EXECUTION_WORKFLOW_DIGEST = "6".repeat(64);
 
 describe("issue lifecycle events", () => {
   it("rejects phase progress without restart-safe typed evidence", () => {
@@ -50,8 +58,17 @@ describe("issue lifecycle events", () => {
       settledEffectCount: 6,
       receiptCount: 10,
       frozenBranch: BRANCH,
+      frozenIssueNumber: 1,
       frozenBaseBranch: BASE_BRANCH,
       frozenBaseCommit: BASE_COMMIT,
+      frozenIssueNodeId: ISSUE_NODE_ID,
+      frozenIssueUpdatedAt: ISSUE_UPDATED_AT,
+      frozenIssueDigest: DIGEST,
+      frozenContractDigest: FROZEN_CONTRACT_DIGEST,
+      frozenPlanDigest: PLAN_DIGEST,
+      frozenImplementationTemplateWorkflowDigest: IMPLEMENTATION_TEMPLATE_WORKFLOW_DIGEST,
+      frozenReviewTemplateWorkflowDigest: REVIEW_TEMPLATE_WORKFLOW_DIGEST,
+      frozenBudgetDigest: BUDGET_DIGEST,
       candidateHead: CANDIDATE_HEAD,
       publication: {
         candidateHead: CANDIDATE_HEAD,
@@ -379,6 +396,68 @@ describe("issue lifecycle events", () => {
     );
   });
 
+  it("reuses one ready pull request after a candidate repair without recreating it", () => {
+    let state = advanceTo("waiting_for_ci");
+    const originalPublication = state.publication;
+
+    state = reduceIssueLifecycleEvent(state, transition(state, "implementing"));
+    expect(state.publication).toEqual(originalPublication);
+    state = settleEffect(state, "commit", "applied", {
+      kind: "commit",
+      candidateHead: OTHER_HEAD,
+    });
+    state = reduceIssueLifecycleEvent(
+      state,
+      transitionWithReceipt(state, "verifying", {
+        ...receiptOfKind(state, "verifying", "implementation"),
+        candidateHead: OTHER_HEAD,
+      }),
+    );
+    state = reduceIssueLifecycleEvent(
+      state,
+      transitionWithReceipt(state, "reviewing", {
+        ...receiptOfKind(state, "reviewing", "verification"),
+        candidateHead: OTHER_HEAD,
+      }),
+    );
+    state = reduceIssueLifecycleEvent(
+      state,
+      transitionWithReceipt(state, "publishing", {
+        ...receiptOfKind(state, "publishing", "review"),
+        candidateHead: OTHER_HEAD,
+      }),
+    );
+    state = settleEffect(state, "push", "applied", {
+      kind: "push",
+      candidateHead: OTHER_HEAD,
+      branch: BRANCH,
+    });
+
+    expect(() => reduceIssueLifecycleEvent(state, prepareEffect(state, "pull_request"))).toThrow(
+      /already exists|existing pull request/i,
+    );
+    state = settleEffect(state, "pull_request_ready", "applied", {
+      ...pullRequestReadyEffectResult(),
+      candidateHead: OTHER_HEAD,
+    });
+    state = reduceIssueLifecycleEvent(
+      state,
+      transitionWithReceipt(state, "waiting_for_ci", {
+        ...receiptOfKind(state, "waiting_for_ci", "publication"),
+        candidateHead: OTHER_HEAD,
+      }),
+    );
+
+    expect(state.publication).toEqual({
+      candidateHead: OTHER_HEAD,
+      branch: BRANCH,
+      baseBranch: BASE_BRANCH,
+      pullRequestNumber: PULL_REQUEST_NUMBER,
+      pullRequestNodeId: PULL_REQUEST_NODE_ID,
+    });
+    expect(state.settledEffectCount).toBe(8);
+  });
+
   it.each([
     ["repository", { repositoryIdentity: "other/repo" }],
     ["candidate", { candidateHead: OTHER_HEAD }],
@@ -479,7 +558,14 @@ describe("issue lifecycle events", () => {
   it.each([
     [
       "candidate",
-      { kind: "merge", candidateHead: OTHER_HEAD, gateDigest: DIGEST, mergeCommit: MERGE_COMMIT },
+      {
+        kind: "merge",
+        candidateHead: OTHER_HEAD,
+        gateDigest: DIGEST,
+        mergeCommit: MERGE_COMMIT,
+        deleteBranchRequested: true,
+        branchDeleted: true,
+      },
     ],
     [
       "gate",
@@ -488,6 +574,8 @@ describe("issue lifecycle events", () => {
         candidateHead: CANDIDATE_HEAD,
         gateDigest: OTHER_DIGEST,
         mergeCommit: MERGE_COMMIT,
+        deleteBranchRequested: true,
+        branchDeleted: true,
       },
     ],
     [
@@ -497,15 +585,98 @@ describe("issue lifecycle events", () => {
         candidateHead: CANDIDATE_HEAD,
         gateDigest: DIGEST,
         mergeCommit: OTHER_HEAD,
+        deleteBranchRequested: true,
+        branchDeleted: true,
+      },
+    ],
+    [
+      "branch deletion",
+      {
+        kind: "merge",
+        candidateHead: CANDIDATE_HEAD,
+        gateDigest: DIGEST,
+        mergeCommit: MERGE_COMMIT,
+        deleteBranchRequested: true,
+        branchDeleted: false,
       },
     ],
   ] as const)("binds the merge receipt to the applied %s result", (_label, result) => {
     let state = advanceTo("merging");
+    if (_label === "branch deletion") {
+      expect(() => settleEffect(state, "merge", "applied", result)).toThrow(/branch policy/i);
+      return;
+    }
     state = settleEffect(state, "merge", "applied", result);
 
     expect(() => reduceIssueLifecycleEvent(state, transition(state, "merged"))).toThrow(
       /merge.*result/i,
     );
+  });
+
+  it("rejects a final merge receipt that misreports the branch deletion outcome", () => {
+    let state = advanceTo("merging");
+    state = settleEffect(state, "merge");
+
+    expectTransitionRejected(
+      state,
+      "merged",
+      { ...receiptOfKind(state, "merged", "merge"), branchDeleted: false },
+      /branch deletion policy|merge.*result/i,
+    );
+  });
+
+  it("records repository auto-delete without claiming that Flow requested deletion", () => {
+    let state = advanceTo("waiting_for_ci");
+    state = reduceIssueLifecycleEvent(
+      state,
+      transitionWithReceipt(state, "merge_approval_required", {
+        ...receiptOfKind(state, "merge_approval_required", "merge_gate"),
+        deleteBranch: false,
+      }),
+    );
+    state = reduceIssueLifecycleEvent(state, transition(state, "merging"));
+    state = settleEffect(state, "merge", "applied", {
+      kind: "merge",
+      candidateHead: CANDIDATE_HEAD,
+      gateDigest: DIGEST,
+      mergeCommit: MERGE_COMMIT,
+      deleteBranchRequested: false,
+      branchDeleted: true,
+    });
+
+    expect(
+      reduceIssueLifecycleEvent(
+        state,
+        transitionWithReceipt(state, "merged", {
+          ...receiptOfKind(state, "merged", "merge"),
+          deleteBranchRequested: false,
+          branchDeleted: true,
+        }),
+      ).phase,
+    ).toBe("merged");
+
+    let wrongRequestState = advanceTo("waiting_for_ci");
+    wrongRequestState = reduceIssueLifecycleEvent(
+      wrongRequestState,
+      transitionWithReceipt(wrongRequestState, "merge_approval_required", {
+        ...receiptOfKind(wrongRequestState, "merge_approval_required", "merge_gate"),
+        deleteBranch: false,
+      }),
+    );
+    const merging = reduceIssueLifecycleEvent(
+      wrongRequestState,
+      transition(wrongRequestState, "merging"),
+    );
+    expect(() =>
+      settleEffect(merging, "merge", "applied", {
+        kind: "merge",
+        candidateHead: CANDIDATE_HEAD,
+        gateDigest: DIGEST,
+        mergeCommit: MERGE_COMMIT,
+        deleteBranchRequested: true,
+        branchDeleted: true,
+      }),
+    ).toThrow(/branch policy/i);
   });
 
   it("authorizes each external effect only in its owning phase", () => {
@@ -557,6 +728,7 @@ describe("issue lifecycle events", () => {
       type: "external_state_uncertain",
       effectId: state.pendingEffect?.effectId ?? "missing",
       code: "acknowledgement_lost",
+      evidenceDigest: DIGEST,
     });
 
     expect(state.phase).toBe("external_state_uncertain");
@@ -761,11 +933,15 @@ describe("issue lifecycle events", () => {
         phase: "implementing",
         implementationIteration: 2,
         frozenBranch: BRANCH,
+        frozenIssueNumber: 1,
         frozenBaseBranch: BASE_BRANCH,
         frozenBaseCommit: BASE_COMMIT,
+        frozenIssueDigest: DIGEST,
+        frozenContractDigest: FROZEN_CONTRACT_DIGEST,
       });
       expect(repaired.candidateHead).toBeUndefined();
-      expect(repaired.publication).toBeUndefined();
+      if (repairPhase === "waiting_for_ci") expect(repaired.publication).toBeDefined();
+      else expect(repaired.publication).toBeUndefined();
       expect(repaired.mergeGate).toBeUndefined();
       expect(repaired.approvedMerge).toBeUndefined();
       expect(() => reduceIssueLifecycleEvent(repaired, transition(repaired, "verifying"))).toThrow(
@@ -971,6 +1147,7 @@ describe("issue lifecycle events", () => {
         at: "2026-08-28T10:00:01.000Z",
         type: "run_failed",
         code: "verification_failed",
+        evidenceDigest: DIGEST,
         secret: "must not pass",
       }),
     ).toThrow(/unrecognized key/i);
@@ -1001,6 +1178,27 @@ describe("issue lifecycle events", () => {
     expect(projected).not.toHaveProperty("publication");
     expect(projected).not.toHaveProperty("appliedEffects");
     expect(JSON.stringify(projected)).not.toMatch(/secret|reason|content|absolute/i);
+  });
+
+  it("requires private-evidence digests for uncertain and failed outcomes", () => {
+    let state = advanceTo("issue_frozen");
+    state = reduceIssueLifecycleEvent(state, prepareEffect(state, "workspace"));
+
+    expect(() =>
+      parseIssueLifecycleEvent({
+        ...baseEvent(state),
+        type: "external_state_uncertain",
+        effectId: state.pendingEffect?.effectId ?? "missing",
+        code: "acknowledgement_lost",
+      }),
+    ).toThrow(/evidenceDigest/i);
+    expect(() =>
+      parseIssueLifecycleEvent({
+        ...baseEvent(initialState()),
+        type: "run_failed",
+        code: "verification_failed",
+      }),
+    ).toThrow(/evidenceDigest/i);
   });
 
   it("projects an exact merge approval only while that gate is current", () => {
@@ -1050,6 +1248,9 @@ function advanceTo(target: IssueLifecyclePhase): IssueLifecycleState {
 
 function settlePublicationEffects(state: IssueLifecycleState): IssueLifecycleState {
   let current = settleEffect(state, "push");
+  if (state.publication !== undefined) {
+    return settleEffect(current, "pull_request_ready");
+  }
   current = settleEffect(current, "pull_request");
   return settleEffect(current, "pull_request_ready");
 }
@@ -1120,6 +1321,8 @@ function effectResult(effectKind: IssueExternalEffectKind) {
         candidateHead: CANDIDATE_HEAD,
         gateDigest: DIGEST,
         mergeCommit: MERGE_COMMIT,
+        deleteBranchRequested: true,
+        branchDeleted: true,
       };
   }
 }
@@ -1196,10 +1399,17 @@ function receiptFor(
       kind: "issue_snapshot",
       repositoryIdentity: "owner/repo",
       issueNumber: 1,
+      issueNodeId: ISSUE_NODE_ID,
+      issueUpdatedAt: ISSUE_UPDATED_AT,
       baseBranch: BASE_BRANCH,
       baseCommit: BASE_COMMIT,
       branch: BRANCH,
       issueDigest: DIGEST,
+      frozenContractDigest: FROZEN_CONTRACT_DIGEST,
+      planDigest: PLAN_DIGEST,
+      implementationTemplateWorkflowDigest: IMPLEMENTATION_TEMPLATE_WORKFLOW_DIGEST,
+      reviewTemplateWorkflowDigest: REVIEW_TEMPLATE_WORKFLOW_DIGEST,
+      budgetDigest: BUDGET_DIGEST,
       evidenceDigest: DIGEST,
     };
   }
@@ -1218,6 +1428,8 @@ function receiptFor(
       kind: "implementation",
       candidateHead: CANDIDATE_HEAD,
       flowRunId: "flow-run-01",
+      executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+      terminalSequence: 21,
       evidenceDigest: DIGEST,
     };
   }
@@ -1228,6 +1440,9 @@ function receiptFor(
     return {
       kind: "review",
       candidateHead: CANDIDATE_HEAD,
+      flowRunId: "review-run-01",
+      executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+      terminalSequence: 13,
       reportDigest: DIGEST,
       evidenceDigest: DIGEST,
     };
@@ -1255,6 +1470,7 @@ function receiptFor(
       candidateHead: CANDIDATE_HEAD,
       checksDigest: DIGEST,
       gateDigest: DIGEST,
+      deleteBranch: true,
       evidenceDigest: DIGEST,
     };
   }
@@ -1280,6 +1496,8 @@ function receiptFor(
     candidateHead: CANDIDATE_HEAD,
     gateDigest: DIGEST,
     mergeCommit: MERGE_COMMIT,
+    deleteBranchRequested: true,
+    branchDeleted: true,
     evidenceDigest: DIGEST,
   };
 }

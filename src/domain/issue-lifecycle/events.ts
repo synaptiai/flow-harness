@@ -79,10 +79,17 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
       kind: z.literal("issue_snapshot"),
       repositoryIdentity: repositoryIdentitySchema,
       issueNumber: positiveSafeIntegerSchema,
+      issueNodeId: githubNodeIdSchema,
+      issueUpdatedAt: timestampSchema,
       baseBranch: branchIdentitySchema,
       baseCommit: commitSchema,
       branch: branchIdentitySchema,
       issueDigest: sha256Schema,
+      frozenContractDigest: sha256Schema,
+      planDigest: sha256Schema,
+      implementationTemplateWorkflowDigest: sha256Schema,
+      reviewTemplateWorkflowDigest: sha256Schema,
+      budgetDigest: sha256Schema,
       evidenceDigest: sha256Schema,
     })
     .strict(),
@@ -105,6 +112,8 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
       kind: z.literal("implementation"),
       candidateHead: commitSchema,
       flowRunId: identifierSchema,
+      executionWorkflowDigest: sha256Schema,
+      terminalSequence: positiveSafeIntegerSchema,
       evidenceDigest: sha256Schema,
     })
     .strict(),
@@ -119,6 +128,9 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("review"),
       candidateHead: commitSchema,
+      flowRunId: identifierSchema,
+      executionWorkflowDigest: sha256Schema,
+      terminalSequence: positiveSafeIntegerSchema,
       reportDigest: sha256Schema,
       evidenceDigest: sha256Schema,
     })
@@ -146,6 +158,7 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
       candidateHead: commitSchema,
       checksDigest: sha256Schema,
       gateDigest: sha256Schema,
+      deleteBranch: z.boolean(),
       evidenceDigest: sha256Schema,
     })
     .strict(),
@@ -172,6 +185,8 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
       candidateHead: commitSchema,
       gateDigest: sha256Schema,
       mergeCommit: commitSchema,
+      deleteBranchRequested: z.boolean(),
+      branchDeleted: z.boolean(),
       evidenceDigest: sha256Schema,
     })
     .strict(),
@@ -233,6 +248,8 @@ const appliedExternalEffectResultSchema = z.discriminatedUnion("kind", [
       candidateHead: commitSchema,
       gateDigest: sha256Schema,
       mergeCommit: commitSchema,
+      deleteBranchRequested: z.boolean(),
+      branchDeleted: z.boolean(),
     })
     .strict(),
 ]);
@@ -286,9 +303,17 @@ const issueLifecycleEventSchema = z.union([
       type: z.literal("external_state_uncertain"),
       effectId: identifierSchema,
       code: errorCodeSchema,
+      evidenceDigest: sha256Schema,
     })
     .strict(),
-  z.object({ ...eventBase, type: z.literal("run_failed"), code: errorCodeSchema }).strict(),
+  z
+    .object({
+      ...eventBase,
+      type: z.literal("run_failed"),
+      code: errorCodeSchema,
+      evidenceDigest: sha256Schema,
+    })
+    .strict(),
   z
     .object({
       ...eventBase,
@@ -338,9 +363,18 @@ export interface IssueLifecycleState {
   readonly appliedEffects: readonly AppliedIssueExternalEffect[];
   readonly implementationIteration: number;
   readonly frozenRepositoryIdentity?: string;
+  readonly frozenIssueNumber?: number;
+  readonly frozenIssueNodeId?: string;
+  readonly frozenIssueUpdatedAt?: string;
+  readonly frozenIssueDigest?: string;
   readonly frozenBaseBranch?: string;
   readonly frozenBaseCommit?: string;
   readonly frozenBranch?: string;
+  readonly frozenContractDigest?: string;
+  readonly frozenPlanDigest?: string;
+  readonly frozenImplementationTemplateWorkflowDigest?: string;
+  readonly frozenReviewTemplateWorkflowDigest?: string;
+  readonly frozenBudgetDigest?: string;
   readonly candidateHead?: string;
   readonly publication?: {
     readonly candidateHead: string;
@@ -357,6 +391,7 @@ export interface IssueLifecycleState {
     readonly pullRequestNumber: number;
     readonly pullRequestNodeId: string;
     readonly gateDigest: string;
+    readonly deleteBranch: boolean;
   };
   readonly approvedMerge?: {
     readonly candidateHead: string;
@@ -368,9 +403,18 @@ type IssueLifecycleIdentityState = Pick<IssueLifecycleState, "implementationIter
   Pick<
     IssueLifecycleState,
     | "frozenRepositoryIdentity"
+    | "frozenIssueNumber"
+    | "frozenIssueNodeId"
+    | "frozenIssueUpdatedAt"
+    | "frozenIssueDigest"
     | "frozenBaseBranch"
     | "frozenBaseCommit"
     | "frozenBranch"
+    | "frozenContractDigest"
+    | "frozenPlanDigest"
+    | "frozenImplementationTemplateWorkflowDigest"
+    | "frozenReviewTemplateWorkflowDigest"
+    | "frozenBudgetDigest"
     | "candidateHead"
     | "publication"
     | "mergeGate"
@@ -498,9 +542,18 @@ export function reduceIssueLifecycleEvent(
       const {
         implementationIteration: _implementationIteration,
         frozenRepositoryIdentity: _frozenRepositoryIdentity,
+        frozenIssueNumber: _frozenIssueNumber,
+        frozenIssueNodeId: _frozenIssueNodeId,
+        frozenIssueUpdatedAt: _frozenIssueUpdatedAt,
+        frozenIssueDigest: _frozenIssueDigest,
         frozenBaseBranch: _frozenBaseBranch,
         frozenBaseCommit: _frozenBaseCommit,
         frozenBranch: _frozenBranch,
+        frozenContractDigest: _frozenContractDigest,
+        frozenPlanDigest: _frozenPlanDigest,
+        frozenImplementationTemplateWorkflowDigest: _frozenImplementationTemplateWorkflowDigest,
+        frozenReviewTemplateWorkflowDigest: _frozenReviewTemplateWorkflowDigest,
+        frozenBudgetDigest: _frozenBudgetDigest,
         candidateHead: _candidateHead,
         publication: _publication,
         mergeGate: _mergeGate,
@@ -536,12 +589,16 @@ export function reduceIssueLifecycleEvent(
           `external effect ${event.effectKind} is already applied in ${current.phase}`,
         );
       }
+      if (event.effectKind === "pull_request" && current.publication !== undefined) {
+        throw new Error("the stable pull request already exists and must not be recreated");
+      }
       if (event.effectKind === "pull_request" && appliedEffect(current, "push") === undefined) {
         throw new Error("draft pull request effect requires an applied push");
       }
       if (
         event.effectKind === "pull_request_ready" &&
-        appliedEffect(current, "pull_request") === undefined
+        appliedEffect(current, "pull_request") === undefined &&
+        current.publication === undefined
       ) {
         throw new Error("ready-for-review effect requires an applied draft pull request");
       }
@@ -590,12 +647,16 @@ export function reduceIssueLifecycleEvent(
       ) {
         if (event.result.kind === "pull_request_ready") {
           const draftPullRequest = appliedEffect(current, "pull_request");
-          if (
-            draftPullRequest === undefined ||
-            !samePullRequestIdentity(draftPullRequest.result, event.result)
-          ) {
+          const matchesDraft =
+            draftPullRequest !== undefined &&
+            samePullRequestIdentity(draftPullRequest.result, event.result);
+          const matchesExisting =
+            draftPullRequest === undefined &&
+            current.publication !== undefined &&
+            samePublishedPullRequestIdentity(current.publication, event.result);
+          if (!matchesDraft && !matchesExisting) {
             throw new Error(
-              "ready pull request result does not match the applied draft pull request identity",
+              "ready pull request result does not match the applied draft pull request identity or existing pull request identity",
             );
           }
         }
@@ -608,6 +669,15 @@ export function reduceIssueLifecycleEvent(
           event.result.baseBranch,
           "pull request result base branch",
         );
+      }
+      if (event.outcome === "applied" && event.result.kind === "merge") {
+        if (
+          current.mergeGate === undefined ||
+          event.result.deleteBranchRequested !== current.mergeGate.deleteBranch ||
+          (event.result.deleteBranchRequested && !event.result.branchDeleted)
+        ) {
+          throw new Error("merge result does not match the approved gate and branch policy");
+        }
       }
       const appliedEffects =
         event.outcome === "applied"
@@ -669,7 +739,10 @@ function requireAppliedEffectsForTransition(
   from: (typeof ISSUE_LIFECYCLE_ACTIVE_PHASES)[number],
   to: IssueLifecyclePhase,
 ): void {
-  const required = requiredEffectsByTransition[`${from}->${to}`] ?? [];
+  const required =
+    from === "publishing" && to === "waiting_for_ci" && state.publication !== undefined
+      ? (["push", "pull_request_ready"] as const)
+      : (requiredEffectsByTransition[`${from}->${to}`] ?? []);
   const missing = required.filter(
     (effectKind) => !state.appliedEffects.some((effect) => effect.effectKind === effectKind),
   );
@@ -702,18 +775,26 @@ function requireAppliedEffectResults(
     const push = appliedEffect(state, "push");
     const pullRequest = appliedEffect(state, "pull_request");
     const readyPullRequest = appliedEffect(state, "pull_request_ready");
-    if (
-      push?.result.candidateHead !== receipt.candidateHead ||
-      push.result.branch !== receipt.branch ||
-      pullRequest?.result.repositoryIdentity !== state.frozenRepositoryIdentity ||
-      pullRequest?.result.candidateHead !== receipt.candidateHead ||
-      pullRequest.result.headBranch !== receipt.branch ||
-      pullRequest.result.baseBranch !== receipt.baseBranch ||
-      pullRequest.result.pullRequestNumber !== receipt.pullRequestNumber ||
-      pullRequest.result.pullRequestNodeId !== receipt.pullRequestNodeId ||
-      readyPullRequest === undefined ||
-      !samePullRequestIdentity(pullRequest.result, readyPullRequest.result)
-    ) {
+    const commonMatches =
+      push?.result.candidateHead === receipt.candidateHead &&
+      push.result.branch === receipt.branch &&
+      readyPullRequest?.result.repositoryIdentity === state.frozenRepositoryIdentity &&
+      readyPullRequest?.result.candidateHead === receipt.candidateHead &&
+      readyPullRequest.result.headBranch === receipt.branch &&
+      readyPullRequest.result.baseBranch === receipt.baseBranch &&
+      readyPullRequest.result.pullRequestNumber === receipt.pullRequestNumber &&
+      readyPullRequest.result.pullRequestNodeId === receipt.pullRequestNodeId;
+    const creationMatches =
+      state.publication === undefined &&
+      pullRequest !== undefined &&
+      readyPullRequest !== undefined &&
+      samePullRequestIdentity(pullRequest.result, readyPullRequest.result);
+    const repairMatches =
+      state.publication !== undefined &&
+      pullRequest === undefined &&
+      readyPullRequest !== undefined &&
+      samePublishedPullRequestIdentity(state.publication, readyPullRequest.result);
+    if (!commonMatches || (!creationMatches && !repairMatches)) {
       throw new Error("publication receipt does not match the applied publication results");
     }
     return;
@@ -723,7 +804,11 @@ function requireAppliedEffectResults(
     if (
       merge?.result.candidateHead !== receipt.candidateHead ||
       merge.result.gateDigest !== receipt.gateDigest ||
-      merge.result.mergeCommit !== receipt.mergeCommit
+      merge.result.mergeCommit !== receipt.mergeCommit ||
+      merge.result.deleteBranchRequested !== receipt.deleteBranchRequested ||
+      merge.result.branchDeleted !== receipt.branchDeleted ||
+      state.mergeGate?.deleteBranch !== receipt.deleteBranchRequested ||
+      (receipt.deleteBranchRequested && !receipt.branchDeleted)
     ) {
       throw new Error("merge receipt does not match the applied merge result");
     }
@@ -739,9 +824,18 @@ function advanceLifecycleIdentity(
       return {
         implementationIteration: state.implementationIteration,
         frozenRepositoryIdentity: receipt.repositoryIdentity,
+        frozenIssueNumber: receipt.issueNumber,
+        frozenIssueNodeId: receipt.issueNodeId,
+        frozenIssueUpdatedAt: receipt.issueUpdatedAt,
+        frozenIssueDigest: receipt.issueDigest,
         frozenBaseBranch: receipt.baseBranch,
         frozenBaseCommit: receipt.baseCommit,
         frozenBranch: receipt.branch,
+        frozenContractDigest: receipt.frozenContractDigest,
+        frozenPlanDigest: receipt.planDigest,
+        frozenImplementationTemplateWorkflowDigest: receipt.implementationTemplateWorkflowDigest,
+        frozenReviewTemplateWorkflowDigest: receipt.reviewTemplateWorkflowDigest,
+        frozenBudgetDigest: receipt.budgetDigest,
       };
     case "workspace":
       return currentLifecycleIdentity(state);
@@ -755,6 +849,18 @@ function advanceLifecycleIdentity(
         ...(state.frozenRepositoryIdentity === undefined
           ? {}
           : { frozenRepositoryIdentity: state.frozenRepositoryIdentity }),
+        ...(state.frozenIssueNumber === undefined
+          ? {}
+          : { frozenIssueNumber: state.frozenIssueNumber }),
+        ...(state.frozenIssueNodeId === undefined
+          ? {}
+          : { frozenIssueNodeId: state.frozenIssueNodeId }),
+        ...(state.frozenIssueUpdatedAt === undefined
+          ? {}
+          : { frozenIssueUpdatedAt: state.frozenIssueUpdatedAt }),
+        ...(state.frozenIssueDigest === undefined
+          ? {}
+          : { frozenIssueDigest: state.frozenIssueDigest }),
         ...(state.frozenBaseBranch === undefined
           ? {}
           : { frozenBaseBranch: state.frozenBaseBranch }),
@@ -762,6 +868,25 @@ function advanceLifecycleIdentity(
           ? {}
           : { frozenBaseCommit: state.frozenBaseCommit }),
         ...(state.frozenBranch === undefined ? {} : { frozenBranch: state.frozenBranch }),
+        ...(state.frozenContractDigest === undefined
+          ? {}
+          : { frozenContractDigest: state.frozenContractDigest }),
+        ...(state.frozenPlanDigest === undefined
+          ? {}
+          : { frozenPlanDigest: state.frozenPlanDigest }),
+        ...(state.frozenImplementationTemplateWorkflowDigest === undefined
+          ? {}
+          : {
+              frozenImplementationTemplateWorkflowDigest:
+                state.frozenImplementationTemplateWorkflowDigest,
+            }),
+        ...(state.frozenReviewTemplateWorkflowDigest === undefined
+          ? {}
+          : { frozenReviewTemplateWorkflowDigest: state.frozenReviewTemplateWorkflowDigest }),
+        ...(state.frozenBudgetDigest === undefined
+          ? {}
+          : { frozenBudgetDigest: state.frozenBudgetDigest }),
+        ...(state.publication === undefined ? {} : { publication: state.publication }),
       };
     }
     case "implementation":
@@ -779,8 +904,7 @@ function advanceLifecycleIdentity(
       requireFrozenBaseBranch(state, receipt.baseBranch, "publication receipt");
       if (
         state.publication !== undefined &&
-        (state.publication.candidateHead !== receipt.candidateHead ||
-          state.publication.branch !== receipt.branch ||
+        (state.publication.branch !== receipt.branch ||
           state.publication.baseBranch !== receipt.baseBranch ||
           state.publication.pullRequestNumber !== receipt.pullRequestNumber ||
           state.publication.pullRequestNodeId !== receipt.pullRequestNodeId)
@@ -829,6 +953,7 @@ function advanceLifecycleIdentity(
           pullRequestNumber: receipt.pullRequestNumber,
           pullRequestNodeId: receipt.pullRequestNodeId,
           gateDigest: receipt.gateDigest,
+          deleteBranch: receipt.deleteBranch,
         },
       };
     }
@@ -851,6 +976,12 @@ function advanceLifecycleIdentity(
         state.approvedMerge.gateDigest !== receipt.gateDigest
       ) {
         throw new Error("merge receipt does not match the approved candidate and gate");
+      }
+      if (
+        state.mergeGate?.deleteBranch !== receipt.deleteBranchRequested ||
+        (receipt.deleteBranchRequested && !receipt.branchDeleted)
+      ) {
+        throw new Error("merge receipt does not match the approved branch deletion policy");
       }
       return currentLifecycleIdentity(state);
   }
@@ -896,6 +1027,18 @@ function samePullRequestIdentity(
   );
 }
 
+function samePublishedPullRequestIdentity(
+  left: NonNullable<IssueLifecycleState["publication"]>,
+  right: Extract<IssueExternalEffectResult, { readonly kind: "pull_request_ready" }>,
+): boolean {
+  return (
+    left.branch === right.headBranch &&
+    left.baseBranch === right.baseBranch &&
+    left.pullRequestNumber === right.pullRequestNumber &&
+    left.pullRequestNodeId === right.pullRequestNodeId
+  );
+}
+
 function appliedEffect<Kind extends IssueExternalEffectKind>(
   state: IssueLifecycleState,
   effectKind: Kind,
@@ -912,9 +1055,37 @@ function currentLifecycleIdentity(state: IssueLifecycleState): IssueLifecycleIde
     ...(state.frozenRepositoryIdentity === undefined
       ? {}
       : { frozenRepositoryIdentity: state.frozenRepositoryIdentity }),
+    ...(state.frozenIssueNumber === undefined
+      ? {}
+      : { frozenIssueNumber: state.frozenIssueNumber }),
+    ...(state.frozenIssueNodeId === undefined
+      ? {}
+      : { frozenIssueNodeId: state.frozenIssueNodeId }),
+    ...(state.frozenIssueUpdatedAt === undefined
+      ? {}
+      : { frozenIssueUpdatedAt: state.frozenIssueUpdatedAt }),
+    ...(state.frozenIssueDigest === undefined
+      ? {}
+      : { frozenIssueDigest: state.frozenIssueDigest }),
     ...(state.frozenBaseBranch === undefined ? {} : { frozenBaseBranch: state.frozenBaseBranch }),
     ...(state.frozenBaseCommit === undefined ? {} : { frozenBaseCommit: state.frozenBaseCommit }),
     ...(state.frozenBranch === undefined ? {} : { frozenBranch: state.frozenBranch }),
+    ...(state.frozenContractDigest === undefined
+      ? {}
+      : { frozenContractDigest: state.frozenContractDigest }),
+    ...(state.frozenPlanDigest === undefined ? {} : { frozenPlanDigest: state.frozenPlanDigest }),
+    ...(state.frozenImplementationTemplateWorkflowDigest === undefined
+      ? {}
+      : {
+          frozenImplementationTemplateWorkflowDigest:
+            state.frozenImplementationTemplateWorkflowDigest,
+        }),
+    ...(state.frozenReviewTemplateWorkflowDigest === undefined
+      ? {}
+      : { frozenReviewTemplateWorkflowDigest: state.frozenReviewTemplateWorkflowDigest }),
+    ...(state.frozenBudgetDigest === undefined
+      ? {}
+      : { frozenBudgetDigest: state.frozenBudgetDigest }),
     ...(state.candidateHead === undefined ? {} : { candidateHead: state.candidateHead }),
     ...(state.publication === undefined ? {} : { publication: state.publication }),
     ...(state.mergeGate === undefined ? {} : { mergeGate: state.mergeGate }),
@@ -928,9 +1099,37 @@ function lifecycleIdentityWithoutGate(state: IssueLifecycleState): IssueLifecycl
     ...(state.frozenRepositoryIdentity === undefined
       ? {}
       : { frozenRepositoryIdentity: state.frozenRepositoryIdentity }),
+    ...(state.frozenIssueNumber === undefined
+      ? {}
+      : { frozenIssueNumber: state.frozenIssueNumber }),
+    ...(state.frozenIssueNodeId === undefined
+      ? {}
+      : { frozenIssueNodeId: state.frozenIssueNodeId }),
+    ...(state.frozenIssueUpdatedAt === undefined
+      ? {}
+      : { frozenIssueUpdatedAt: state.frozenIssueUpdatedAt }),
+    ...(state.frozenIssueDigest === undefined
+      ? {}
+      : { frozenIssueDigest: state.frozenIssueDigest }),
     ...(state.frozenBaseBranch === undefined ? {} : { frozenBaseBranch: state.frozenBaseBranch }),
     ...(state.frozenBaseCommit === undefined ? {} : { frozenBaseCommit: state.frozenBaseCommit }),
     ...(state.frozenBranch === undefined ? {} : { frozenBranch: state.frozenBranch }),
+    ...(state.frozenContractDigest === undefined
+      ? {}
+      : { frozenContractDigest: state.frozenContractDigest }),
+    ...(state.frozenPlanDigest === undefined ? {} : { frozenPlanDigest: state.frozenPlanDigest }),
+    ...(state.frozenImplementationTemplateWorkflowDigest === undefined
+      ? {}
+      : {
+          frozenImplementationTemplateWorkflowDigest:
+            state.frozenImplementationTemplateWorkflowDigest,
+        }),
+    ...(state.frozenReviewTemplateWorkflowDigest === undefined
+      ? {}
+      : { frozenReviewTemplateWorkflowDigest: state.frozenReviewTemplateWorkflowDigest }),
+    ...(state.frozenBudgetDigest === undefined
+      ? {}
+      : { frozenBudgetDigest: state.frozenBudgetDigest }),
     ...(state.candidateHead === undefined ? {} : { candidateHead: state.candidateHead }),
     ...(state.publication === undefined ? {} : { publication: state.publication }),
   };

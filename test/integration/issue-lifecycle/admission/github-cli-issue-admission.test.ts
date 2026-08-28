@@ -29,6 +29,7 @@ describe("GitHub CLI issue admission", () => {
       {
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       },
       undefined,
     );
@@ -41,6 +42,7 @@ describe("GitHub CLI issue admission", () => {
         nodeId: "R_fixture",
         canonicalUrl: "https://github.com/example/project",
         defaultBranch: "main",
+        configuredBase: { branch: "main", commit: "a".repeat(40) },
       },
       issue: {
         host: "github.com",
@@ -73,6 +75,7 @@ describe("GitHub CLI issue admission", () => {
         owner: "example",
         name: "project",
         number: 197,
+        baseRef: "refs/heads/main",
       },
     });
   });
@@ -97,11 +100,53 @@ describe("GitHub CLI issue admission", () => {
       admission.inspectOpenIssue({
         repository: { host: "github.com", owner: "example", name: ".github" },
         number: 197,
+        baseBranch: "main",
       }),
     ).resolves.toMatchObject({
       repository: { name: ".github", canonicalUrl: "https://github.com/example/.github" },
       issue: { canonicalUrl: "https://github.com/example/.github/issues/197" },
     });
+  });
+
+  it("observes the exact configured non-default remote base ref and commit", async () => {
+    const response = validResponse() as ReturnType<typeof validResponse> & {
+      data: { repository: { ref: { name: string; target: { oid: string } } } };
+    };
+    response.data.repository.ref = { name: "release", target: { oid: "d".repeat(40) } };
+    const fixture = await createFakeGh({ response });
+    const admission = new GitHubCliIssueAdmission({ ghExecutable: fixture.executable });
+
+    await expect(
+      admission.inspectOpenIssue({
+        repository: { host: "github.com", owner: "example", name: "project" },
+        number: 197,
+        baseBranch: "release",
+      }),
+    ).resolves.toMatchObject({
+      repository: { configuredBase: { branch: "release", commit: "d".repeat(40) } },
+    });
+    expect(JSON.parse(await readFile(fixture.stdinLog, "utf8"))).toMatchObject({
+      variables: { baseRef: "refs/heads/release" },
+    });
+  });
+
+  it("rejects a missing or mismatched configured remote base ref", async () => {
+    for (const ref of [null, { name: "other", target: { oid: "a".repeat(40) } }] as const) {
+      const response = validResponse() as ReturnType<typeof validResponse> & {
+        data: { repository: { ref: unknown } };
+      };
+      response.data.repository.ref = ref;
+      const fixture = await createFakeGh({ response });
+      const admission = new GitHubCliIssueAdmission({ ghExecutable: fixture.executable });
+
+      await expect(
+        admission.inspectOpenIssue({
+          repository: { host: "github.com", owner: "example", name: "project" },
+          number: 197,
+          baseBranch: "main",
+        }),
+      ).rejects.toMatchObject({ code: "github_repository_identity_mismatch" });
+    }
   });
 
   it("preserves untrusted issue content as data without executing it", async () => {
@@ -116,6 +161,7 @@ describe("GitHub CLI issue admission", () => {
       {
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       },
       undefined,
     );
@@ -137,6 +183,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       );
@@ -160,6 +207,7 @@ describe("GitHub CLI issue admission", () => {
       await admission.inspectOpenIssue({
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       });
       expect(JSON.parse(await readFile(fixture.environmentLog, "utf8"))).toEqual({});
     } finally {
@@ -180,6 +228,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "owner;rm", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -197,6 +246,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -217,6 +267,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -237,6 +288,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -251,6 +303,7 @@ describe("GitHub CLI issue admission", () => {
       admission.inspectOpenIssue({
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       }),
     ).rejects.toMatchObject({ code: "github_repository_not_found" });
   });
@@ -267,6 +320,7 @@ describe("GitHub CLI issue admission", () => {
       admission.inspectOpenIssue({
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       }),
     ).rejects.toMatchObject({ code: "github_issue_not_found" });
   });
@@ -280,6 +334,7 @@ describe("GitHub CLI issue admission", () => {
       admission.inspectOpenIssue({
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       }),
     );
 
@@ -299,6 +354,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         controller.signal,
       ),
@@ -315,6 +371,7 @@ describe("GitHub CLI issue admission", () => {
       admission.inspectOpenIssue({
         repository: { host: "github.com", owner: "example", name: "project" },
         number: 197,
+        baseBranch: "main",
       }),
     ).rejects.toMatchObject({ code: "executable_unavailable" });
     await expect(readOptional(fixture.environmentLog)).resolves.toBeNull();
@@ -333,6 +390,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -352,6 +410,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -372,6 +431,7 @@ describe("GitHub CLI issue admission", () => {
         admission.inspectOpenIssue({
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         }),
       ).rejects.toMatchObject({ code: "command_response_invalid" });
     },
@@ -390,6 +450,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -405,6 +466,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -423,6 +485,7 @@ describe("GitHub CLI issue admission", () => {
         {
           repository: { host: "github.com", owner: "example", name: "project" },
           number: 197,
+          baseBranch: "main",
         },
         undefined,
       ),
@@ -499,6 +562,7 @@ function validResponse(
         url: "https://github.com/example/project",
         isArchived: false,
         defaultBranchRef: { name: "main" },
+        ref: { name: "main", target: { oid: "a".repeat(40) } },
         issue: {
           id: "I_fixture",
           number: 197,
