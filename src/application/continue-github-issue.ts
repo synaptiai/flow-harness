@@ -86,8 +86,7 @@ class MutableClaimedIssueController implements ClaimedIssueController {
   ) {
     this.frozenContractDigest = calculateIssuePrivateManifestDigest(manifest);
     this.#events = [...events];
-    this.#state = reduceEvents(manifest, events);
-    assertStateMatchesManifest(this.#state, manifest, this.frozenContractDigest);
+    this.#state = replayIssueLifecycleState(manifest, events);
   }
 
   get events(): readonly IssueLifecycleEvent[] {
@@ -607,7 +606,7 @@ export async function runExternalEffect(
   return await reconcileAndMaybeExecute(controller, descriptor);
 }
 
-async function recoverPendingEffect(controller: ClaimedIssueController): Promise<boolean> {
+export async function recoverPendingEffect(controller: ClaimedIssueController): Promise<boolean> {
   const pending = controller.state.pendingEffect;
   if (pending === undefined) {
     throw new IssueControllerError(
@@ -906,12 +905,13 @@ function requiredLatestAppliedResult<Kind extends IssueExternalEffectResult["kin
   throw new IssueControllerError("evidence_missing", `${kind} effect result is missing`);
 }
 
-function reduceEvents(
+export function replayIssueLifecycleState(
   manifest: FrozenIssueRunManifest,
   events: readonly IssueLifecycleEvent[],
 ): IssueLifecycleState {
   let state = createInitialIssueLifecycleState(manifest.runId, manifest.createdAt);
   for (const event of events) state = reduceIssueLifecycleEvent(state, event);
+  assertStateMatchesManifest(state, manifest, calculateIssuePrivateManifestDigest(manifest));
   return state;
 }
 

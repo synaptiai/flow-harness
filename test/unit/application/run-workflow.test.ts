@@ -703,6 +703,35 @@ nodes:
     expect(store.releaseCalls).toEqual(["run-terminal"]);
   });
 
+  it("validates exact workflow identity before classifying a ledger as terminal", async () => {
+    const original = threeNodeWorkflow();
+    const changed = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ordered-workflow }
+nodes:
+  - id: first
+    type: command
+    command: { executable: node, args: [--help] }
+  - id: second
+    type: command
+    dependsOn: [first]
+    command: { executable: node, args: [--version] }
+  - id: third
+    type: command
+    dependsOn: [second]
+    command: { executable: node, args: [--help] }
+`);
+    const initial = await successfulLedger(original, "run-stale-terminal");
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(changed, resumeOptions(store, executor, "run-stale-terminal")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
   it("refuses a workflow mismatch without mutating its ledger", async () => {
     const original = threeNodeWorkflow();
     const changed = compileWorkflowText(`

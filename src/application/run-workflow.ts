@@ -1920,13 +1920,6 @@ function validateRecoveryCompatibility(
   state: RunState,
   events: readonly RunEvent[],
 ): void {
-  if (state.status !== "running" && state.status !== "waiting_for_approval") {
-    throw new RunRecoveryError(
-      "terminal_run",
-      `run "${runId}" is already terminal with status "${state.status}"`,
-    );
-  }
-
   const validRelocation =
     state.executionWorkspace !== null &&
     workspaceRelocation?.fromCwd === state.executionCwd &&
@@ -2100,6 +2093,12 @@ function validateRecoveryCompatibility(
   }
 
   validateRecoveredHistory(workflow, runId, events);
+  if (state.status !== "running" && state.status !== "waiting_for_approval") {
+    throw new RunRecoveryError(
+      "terminal_run",
+      `run "${runId}" is already terminal with status "${state.status}"`,
+    );
+  }
 }
 
 async function reconcileOpenEffects(

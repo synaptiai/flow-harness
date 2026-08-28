@@ -6,10 +6,12 @@ import {
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
 import type { CompiledCriterion } from "../domain/goal/types.js";
+import { assertWorkflowSatisfiesPolicyPackages } from "../domain/policy/policy-package-admission.js";
 import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
 import type {
   CompiledAgentNode,
   CompiledNode,
+  CompiledRunBudget,
   CompiledVerifierNode,
   CompiledWorkflow,
 } from "../domain/workflow/types.js";
@@ -41,6 +43,8 @@ interface CommonIssueWorkflowAdmissionInput {
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly model: IssueWorkflowModelBinding;
   readonly context: IssueWorkflowContext;
+  /** Defers only model allow-list checks when no execution model has been selected yet. */
+  readonly policyModelBinding?: "exact" | "deferred";
 }
 
 export interface ImplementationWorkflowAdmissionInput extends CommonIssueWorkflowAdmissionInput {
@@ -89,6 +93,7 @@ export type AdmittedIssueWorkflow = AdmittedImplementationWorkflow | AdmittedRev
 
 export type IssueWorkflowAdmissionErrorCode =
   | "context_too_large"
+  | "incomplete_budget"
   | "invalid_model"
   | "invalid_result_node"
   | "invalid_write_prefix"
@@ -135,9 +140,12 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
   }
 
   if (input.role === "implementation") {
-    const allowedWritePrefixes = validateWritePrefixes(input.allowedWritePrefixes);
+    const allowedWritePrefixes = normalizeIssueWorkflowWritePrefixes(input.allowedWritePrefixes);
     validateImplementationWorkflow(workflow, allowedWritePrefixes);
     const template = bindWorkflowModel(workflow, input.model);
+    assertWorkflowSatisfiesPolicyPackages(template, capabilitySnapshot, {
+      modelBinding: input.policyModelBinding ?? "exact",
+    });
     const bound = bindWorkflowContext(template, context, input.role);
     return deepFreeze({
       role: input.role,
@@ -175,6 +183,9 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
     );
   }
   const template = bindWorkflowModel(workflow, input.model);
+  assertWorkflowSatisfiesPolicyPackages(template, capabilitySnapshot, {
+    modelBinding: input.policyModelBinding ?? "exact",
+  });
   const bound = bindWorkflowContext(template, context, input.role);
   return deepFreeze({
     role: input.role,
@@ -195,6 +206,31 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
     protectedPaths: ISSUE_WORKFLOW_PROTECTED_PATHS,
     allowedWritePrefixes: Object.freeze([]),
     resultNodeId: input.resultNodeId,
+  });
+}
+
+export function completeIssueWorkflowBudget(
+  input: CompiledRunBudget | undefined,
+  role: IssueWorkflowRole,
+): Required<CompiledRunBudget> {
+  if (
+    input?.maxNodeStarts === undefined ||
+    input.maxModelTokens === undefined ||
+    input.maxCostUsdMicros === undefined ||
+    input.maxExecutionMs === undefined ||
+    input.maxArtifactBytes === undefined
+  ) {
+    throw new IssueWorkflowAdmissionError(
+      "incomplete_budget",
+      `${role} issue workflow must declare every frozen budget limit`,
+    );
+  }
+  return Object.freeze({
+    maxNodeStarts: input.maxNodeStarts,
+    maxModelTokens: input.maxModelTokens,
+    maxCostUsdMicros: input.maxCostUsdMicros,
+    maxExecutionMs: input.maxExecutionMs,
+    maxArtifactBytes: input.maxArtifactBytes,
   });
 }
 
@@ -233,7 +269,10 @@ function validateContext(
   return Object.freeze({ kind: context.kind, content: context.content });
 }
 
-function validateWritePrefixes(prefixes: readonly string[]): readonly string[] {
+/** Returns the one canonical representation used by issue admission and later verification. */
+export function normalizeIssueWorkflowWritePrefixes(
+  prefixes: readonly string[],
+): readonly string[] {
   if (prefixes.length > MAX_ISSUE_WORKFLOW_WRITE_PREFIXES) {
     throw new IssueWorkflowAdmissionError(
       "invalid_write_prefix",

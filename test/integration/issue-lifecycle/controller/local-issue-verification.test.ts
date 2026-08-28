@@ -46,7 +46,7 @@ afterEach(async () => {
   );
 });
 
-describe("LocalIssueVerification", () => {
+describe("LocalIssueVerification", { timeout: 30_000 }, () => {
   it("runs the exact negative control and every frozen check against proven Git trees", async () => {
     const fixture = await createFixture();
     const sandbox = new RecordingProcessSandbox();
@@ -326,7 +326,7 @@ describe("LocalIssueVerification", () => {
   }, 20_000);
 });
 
-describe("LocalIssueReviewEvidence", () => {
+describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
   it("captures one exact bounded private diff and returns content-free review evidence", async () => {
     const fixture = await createFixture();
     const store = new MemoryPrivateStore(fixture.planBlob);

@@ -142,6 +142,30 @@ describe("GitHub issue CLI", () => {
     expect(calls).toEqual([]);
   });
 
+  it.each([
+    ["provider", ["--model", "gpt-5.6-sol"]],
+    ["model", ["--provider", "openai"]],
+  ])("rejects doctor without an exact %s", async (_label, modelArguments) => {
+    const calls: unknown[] = [];
+    const capture = outputCapture();
+
+    const exitCode = await runGitHubIssueCli(
+      [
+        "doctor",
+        "https://github.com/example/project/issues/42",
+        "--plan",
+        ".flow/github-issue.plan.yaml",
+        ...modelArguments,
+      ],
+      capture.io,
+      fakeService(calls),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(calls).toEqual([]);
+    expect(capture.stderr.join("\n")).toMatch(new RegExp(`doctor requires --${_label}`));
+  });
+
   it("routes read-only validation, diagnosis, inspection, and bounded event pages", async () => {
     const calls: unknown[] = [];
     const service = fakeService(calls);
@@ -152,6 +176,10 @@ describe("GitHub issue CLI", () => {
         "https://github.com/example/project/issues/42",
         "--plan",
         ".flow/github-issue.plan.yaml",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5.6-sol",
       ],
       ["inspect", "issue-run-1"],
       ["events", "issue-run-1", "--after", "7", "--limit", "20"],
@@ -166,6 +194,8 @@ describe("GitHub issue CLI", () => {
         kind: "doctor",
         issueUrl: "https://github.com/example/project/issues/42",
         planPath: ".flow/github-issue.plan.yaml",
+        provider: "openai",
+        model: "gpt-5.6-sol",
       },
       { kind: "inspect", runId: "issue-run-1" },
       { kind: "events", runId: "issue-run-1", afterSequence: 7, limit: 20 },

@@ -326,6 +326,42 @@ describe("IssueLifecycleHost", () => {
     },
   );
 
+  it("settles a merge effect only after producing an exact topology proof", async () => {
+    const fixture = await hostFixture("squash");
+    await fixture.localGit.prepareWorkspace(fixture.workspaceRequest);
+    fixture.store.events = [pullRequestAppliedEvent()];
+    fixture.github.pullRequest = { number: 198, nodeId: "PR_fixture", isDraft: false };
+    fixture.github.merged = true;
+    fixture.localGit.configureMerge("squash");
+    const descriptor = await fixture.host.describe(
+      {
+        kind: "merge",
+        commandId: "22222222-2222-4222-8222-222222222222",
+        candidateHead: CANDIDATE,
+        pullRequestNumber: 198,
+        pullRequestNodeId: "PR_fixture",
+        gateDigest: "9".repeat(64),
+      },
+      fixture.manifest,
+    );
+
+    await expect(fixture.host.reconcile(descriptor, operation())).resolves.toMatchObject({
+      status: "applied",
+      result: {
+        kind: "merge",
+        candidateHead: CANDIDATE,
+        mergeCommit: MERGE,
+        proofDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+
+    fixture.localGit.commits.set(MERGE, { commit: MERGE, tree: "f".repeat(40), parents: [BASE] });
+    await expect(fixture.host.reconcile(descriptor, operation())).resolves.toMatchObject({
+      status: "uncertain",
+      code: "merge_proof_invalid",
+    });
+  });
+
   it("recovers the exact pull-request head before fresh-host squash proof", async () => {
     const fixture = await hostFixture("squash");
     await fixture.localGit.prepareWorkspace(fixture.workspaceRequest);

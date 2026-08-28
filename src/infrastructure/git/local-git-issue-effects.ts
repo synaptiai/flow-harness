@@ -42,6 +42,8 @@ import type {
 } from "../../application/issue-local-git-port.js";
 import { canonicalGitHubRepositoryIdentity } from "../../domain/issue-lifecycle/identity.js";
 import { isValidExactGitBranchName } from "../../domain/issue-lifecycle/plan.js";
+import type { GitHubGitCredentialBroker } from "../github/github-cli-git-credential-broker.js";
+import { parseExactLocalGitOriginConfiguration } from "./exact-local-git-origin-configuration.js";
 import type { PinnedGitHubIssueHostExecutable } from "./fixed-host-executables.js";
 import { StrictHostProcess, type StrictHostProcessResult } from "./strict-host-process.js";
 
@@ -69,6 +71,7 @@ export type LocalGitIssueErrorCode =
   | "source_dirty"
   | "source_detached"
   | "source_drift"
+  | "authentication_failed"
   | "origin_drift"
   | "base_drift"
   | "workspace_not_owned"
@@ -104,6 +107,7 @@ export interface LocalGitIssueEffectsOptions {
   readonly maxCandidatePaths?: number;
   readonly maxCandidateBytes?: number;
   readonly environment?: Readonly<Record<string, string>>;
+  readonly credentialBroker?: GitHubGitCredentialBroker;
   /** @internal Permits one exact local bare remote for real-repository tests. */
   readonly testOnlyLocalRemotePath?: string;
   /** @internal Introduces a deterministic validation race in tests. */
@@ -143,6 +147,7 @@ interface TreeDeltaEntry {
 
 /** Performs controller-owned Git effects without exposing Git authority to a model. */
 export class LocalGitIssueEffects implements IssueLocalGitPort {
+  readonly #credentialBroker: GitHubGitCredentialBroker | undefined;
   readonly #environment: Readonly<Record<string, string>>;
   readonly #gitExecutable: PinnedGitHubIssueHostExecutable;
   readonly #maxCandidateBytes: number;
@@ -155,6 +160,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
   constructor(options: LocalGitIssueEffectsOptions) {
     assertAbsolutePath(options.privateRoot);
     this.#gitExecutable = options.gitExecutable;
+    this.#credentialBroker = options.credentialBroker;
     this.#privateRoot = resolve(options.privateRoot);
     this.#testOnlyLocalRemotePath =
       options.testOnlyLocalRemotePath === undefined
@@ -509,9 +515,20 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       throw new LocalGitIssueError("remote_update_rejected");
     }
     const remoteRef = `refs/heads/${request.branch}`;
-    const push = await this.#git({
-      cwd: workspace.root,
-      arguments: ["push", "--porcelain", "origin", `${request.candidateHead}:${remoteRef}`],
+    const expectedLease = request.expectedRemoteHead ?? "";
+    const push = await this.#runTransportGit({
+      url: this.#transportUrl(workspace.originCanonicalUrl),
+      arguments: [
+        "push",
+        "--porcelain",
+        "--no-verify",
+        "--no-signed",
+        "--recurse-submodules=no",
+        `--force-with-lease=${remoteRef}:${expectedLease}`,
+        this.#transportUrl(workspace.originCanonicalUrl),
+        `${request.candidateHead}:${remoteRef}`,
+      ],
+      objectDirectory: await this.#objectDirectory(workspace.root),
       allowNonZero: true,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
@@ -577,15 +594,17 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     assertCommit(request.expectedHead);
     const before = await this.inspectRemoteBranch(request);
     if (before.head !== request.expectedHead) throw new LocalGitIssueError("remote_drift");
-    await this.#git({
-      cwd: request.workspace.root,
+    await this.#runTransportGit({
+      url: this.#transportUrl(request.workspace.originCanonicalUrl),
       arguments: [
         "fetch",
         "--no-tags",
         "--no-write-fetch-head",
-        "origin",
+        "--no-recurse-submodules",
+        this.#transportUrl(request.workspace.originCanonicalUrl),
         `refs/heads/${request.branch}`,
       ],
+      objectDirectory: await this.#objectDirectory(request.workspace.root),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
     const after = await this.inspectRemoteBranch(request);
@@ -610,9 +629,17 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     const remoteRef = `refs/pull/${request.pullRequestNumber}/head`;
     const before = await this.#readExactRemoteRefAtRoot(workspace.root, remoteRef, request.signal);
     if (before !== request.expectedHead) throw new LocalGitIssueError("remote_drift");
-    await this.#git({
-      cwd: workspace.root,
-      arguments: ["fetch", "--no-tags", "--no-write-fetch-head", "origin", remoteRef],
+    await this.#runTransportGit({
+      url: this.#transportUrl(workspace.originCanonicalUrl),
+      arguments: [
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-recurse-submodules",
+        this.#transportUrl(workspace.originCanonicalUrl),
+        remoteRef,
+      ],
+      objectDirectory: await this.#objectDirectory(workspace.root),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
     const after = await this.#readExactRemoteRefAtRoot(workspace.root, remoteRef, request.signal);
@@ -1551,19 +1578,28 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
   }
 
   async #observeOrigin(cwd: string, signal?: AbortSignal): Promise<NormalizedGitHubIssueOrigin> {
-    const source = await this.#gitText({
-      cwd,
-      arguments: ["remote", "get-url", "origin"],
-      ...(signal === undefined ? {} : { signal }),
-    });
-    if (this.#testOnlyLocalRemotePath !== undefined && source === this.#testOnlyLocalRemotePath) {
+    let fetchUrl: string;
+    try {
+      fetchUrl = parseExactLocalGitOriginConfiguration(
+        (
+          await this.#git({
+            cwd,
+            arguments: ["config", "--local", "--null", "--list"],
+            ...(signal === undefined ? {} : { signal }),
+          })
+        ).stdout,
+      );
+    } catch {
+      throw new LocalGitIssueError("origin_drift");
+    }
+    if (this.#testOnlyLocalRemotePath !== undefined && fetchUrl === this.#testOnlyLocalRemotePath) {
       return Object.freeze({
         repositoryIdentity: "example/project",
         canonicalUrl: "https://github.com/example/project",
       });
     }
     try {
-      return normalizeGitHubIssueOrigin(source);
+      return normalizeGitHubIssueOrigin(fetchUrl);
     } catch {
       throw new LocalGitIssueError("origin_drift");
     }
@@ -1614,11 +1650,15 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     ref: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
-    const output = await this.#gitBuffer({
-      cwd,
-      arguments: ["ls-remote", "--refs", "origin", ref],
-      ...(signal === undefined ? {} : { signal }),
-    });
+    const origin = await this.#observeOrigin(cwd, signal);
+    const url = this.#transportUrl(origin.canonicalUrl);
+    const output = (
+      await this.#runTransportGit({
+        url,
+        arguments: ["ls-remote", "--refs", url, ref],
+        ...(signal === undefined ? {} : { signal }),
+      })
+    ).stdout;
     if (output.byteLength === 0) return null;
     const line = parseSingleLine(output);
     const separator = line.indexOf("\t");
@@ -1626,6 +1666,106 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       throw new LocalGitIssueError("git_response_invalid");
     }
     return parseCommit(line.slice(0, separator));
+  }
+
+  async #objectDirectory(cwd: string, signal?: AbortSignal): Promise<string> {
+    const commonOutput = await this.#gitText({
+      cwd,
+      arguments: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const common = await canonicalDirectory(commonOutput, "workspace_state_uncertain");
+    return await canonicalDirectory(join(common, "objects"), "workspace_state_uncertain");
+  }
+
+  #transportUrl(canonicalOriginUrl: string): string {
+    return this.#testOnlyLocalRemotePath ?? `${canonicalOriginUrl}.git`;
+  }
+
+  async #runTransportGit(options: {
+    readonly url: string;
+    readonly arguments: readonly string[];
+    readonly objectDirectory?: string;
+    readonly signal?: AbortSignal;
+    readonly allowNonZero?: boolean;
+  }): Promise<StrictHostProcessResult> {
+    const transportRoot = await this.#privateTemporaryDirectory("transport-");
+    let operationFailed = false;
+    let operationError: unknown;
+    let result: StrictHostProcessResult | undefined;
+    try {
+      const templateRoot = join(transportRoot, "template");
+      const repositoryRoot = join(transportRoot, "repository.git");
+      await mkdir(templateRoot, { mode: 0o700 });
+      await this.#git({
+        cwd: transportRoot,
+        arguments: ["init", "--bare", "--quiet", `--template=${templateRoot}`, repositoryRoot],
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+      const isLocalTest =
+        this.#testOnlyLocalRemotePath !== undefined &&
+        options.url === this.#testOnlyLocalRemotePath;
+      const arguments_: string[] = [
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        `protocol.${isLocalTest ? "file" : "https"}.allow=always`,
+        "-c",
+        "credential.helper=",
+        "-c",
+        "credential.interactive=false",
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+        "-c",
+        "http.followRedirects=false",
+      ];
+      const environment: Record<string, string> = {};
+      if (options.objectDirectory !== undefined) {
+        environment.GIT_OBJECT_DIRECTORY = options.objectDirectory;
+      }
+      if (!isLocalTest) {
+        if (`${normalizeGitHubIssueOrigin(options.url).canonicalUrl}.git` !== options.url) {
+          throw new LocalGitIssueError("origin_drift");
+        }
+        if (this.#credentialBroker === undefined) {
+          throw new LocalGitIssueError("authentication_failed");
+        }
+        let authorizationHeader: string;
+        try {
+          authorizationHeader = await this.#credentialBroker.authorizationHeader(options.signal);
+        } catch (error) {
+          throw new LocalGitIssueError("authentication_failed", { cause: error });
+        }
+        const environmentName = "FLOW_GIT_AUTHORIZATION_HEADER";
+        arguments_.push(`--config-env=http.${options.url}.extraHeader=${environmentName}`);
+        environment[environmentName] = authorizationHeader;
+      }
+      arguments_.push(...options.arguments);
+      result = await this.#git({
+        cwd: repositoryRoot,
+        arguments: arguments_,
+        environment,
+        ...(options.allowNonZero === undefined ? {} : { allowNonZero: options.allowNonZero }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
+    }
+    let cleanupError: unknown;
+    try {
+      await rm(transportRoot, { recursive: true, force: true, maxRetries: 2 });
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (operationFailed) throw operationError;
+    if (cleanupError !== undefined) {
+      throw new LocalGitIssueError("workspace_state_uncertain", { cause: cleanupError });
+    }
+    if (result === undefined) throw new LocalGitIssueError("workspace_state_uncertain");
+    return result;
   }
 
   async #ownershipRecordPath(ownershipId: string): Promise<string> {

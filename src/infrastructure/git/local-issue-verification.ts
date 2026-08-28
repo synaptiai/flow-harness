@@ -27,6 +27,10 @@ import {
   validateIssueVerificationResult,
 } from "../../application/issue-verification.js";
 import {
+  IssueWorkflowAdmissionError,
+  normalizeIssueWorkflowWritePrefixes,
+} from "../../application/issue-workflow-admission.js";
+import {
   type GitHubIssuePlan,
   parseGitHubIssuePlanText,
 } from "../../domain/issue-lifecycle/plan.js";
@@ -698,11 +702,18 @@ function bindFrozenCommands(
   readonly holdout: FrozenIssueVerificationCommand;
   readonly verification: ReadonlyMap<string, FrozenIssueVerificationCommand>;
 } {
+  let plannedWritePrefixes: readonly string[];
+  try {
+    plannedWritePrefixes = normalizeIssueWorkflowWritePrefixes(plan.candidate.allowedPathPrefixes);
+  } catch (error) {
+    if (error instanceof IssueWorkflowAdmissionError) fail("frozen_input_mismatch");
+    throw error;
+  }
   if (
     plan.repository.expected !== manifest.repository.identity ||
     plan.repository.baseBranch !== manifest.base.branch ||
     plan.branch.prefix !== manifest.branch.prefix ||
-    !sameStrings(plan.candidate.allowedPathPrefixes, manifest.allowedWritePrefixes) ||
+    !sameStrings(plannedWritePrefixes, manifest.allowedWritePrefixes) ||
     plan.holdout.command.timeoutMs !== manifest.holdout.timeoutMs ||
     calculateFrozenIssueVerificationCommandDigest(plan.holdout.command) !==
       manifest.holdout.commandDigest ||

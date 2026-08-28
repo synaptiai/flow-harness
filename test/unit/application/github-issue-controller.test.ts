@@ -327,8 +327,113 @@ describe("foreground GitHub issue controller", () => {
 
     expect(merged.phase).toBe("merged");
     expect(harness.executedEffects.at(-1)).toBe("merge");
-    expect(harness.mergeProofRequests).toHaveLength(1);
+    expect(harness.mergeProofRequests).toHaveLength(0);
     expect(harness.repository.settlements.get(command.commandId)?.outcome).toBe("completed");
+  });
+
+  it("leaves an approved gate retryable when the pre-merge observation fails", async () => {
+    const harness = scriptedHarness();
+    const waiting = await runGitHubIssue(runCommand(), harness.dependencies);
+    if (waiting.mergeApproval === undefined) throw new Error("expected merge approval checkpoint");
+    let failObservation = true;
+    const dependencies: IssueControllerDependencies = {
+      ...harness.dependencies,
+      github: {
+        ...harness.dependencies.github,
+        observe: async (request) => {
+          if (failObservation) {
+            failObservation = false;
+            throw new Error("transient GitHub observation failure");
+          }
+          return await harness.dependencies.github.observe(request);
+        },
+      },
+    };
+
+    await expect(
+      mergeGitHubIssue(
+        mergeCommand(waiting.mergeApproval, "44444444-4444-4444-8444-444444444444"),
+        dependencies,
+      ),
+    ).rejects.toThrow(/transient GitHub observation failure/i);
+    const merged = await mergeGitHubIssue(
+      mergeCommand(waiting.mergeApproval, "55555555-5555-4555-8555-555555555555"),
+      dependencies,
+    );
+
+    expect(merged.phase).toBe("merged");
+    expect(harness.repository.events.some((event) => event.type === "run_failed")).toBe(false);
+    expect(harness.executedEffects.filter((kind) => kind === "merge")).toHaveLength(1);
+  });
+
+  it("recovers proof after a remote merge without executing the merge twice", async () => {
+    const harness = scriptedHarness();
+    const waiting = await runGitHubIssue(runCommand(), harness.dependencies);
+    if (waiting.mergeApproval === undefined) throw new Error("expected merge approval checkpoint");
+    let mergeDescriptor: IssueExternalEffectDescriptor | undefined;
+    let mergeExecuted = false;
+    let proofAvailable = false;
+    let mergeExecutionCount = 0;
+    const dependencies: IssueControllerDependencies = {
+      ...harness.dependencies,
+      effects: {
+        ...harness.dependencies.effects,
+        describe: async (request, manifest) => {
+          const descriptor = await harness.dependencies.effects.describe(request, manifest);
+          if (descriptor.kind === "merge") mergeDescriptor = descriptor;
+          return descriptor;
+        },
+        recover: async () => {
+          if (mergeDescriptor === undefined) throw new Error("merge descriptor was not prepared");
+          return mergeDescriptor;
+        },
+        reconcile: async (descriptor, operation) => {
+          if (descriptor.kind !== "merge") {
+            return await harness.dependencies.effects.reconcile(descriptor, operation);
+          }
+          if (!mergeExecuted) {
+            return { status: "not_applied", observationDigest: sha("2") };
+          }
+          if (!proofAvailable) {
+            return {
+              status: "uncertain",
+              code: "merge_proof_unavailable",
+              evidenceDigest: sha("3"),
+            };
+          }
+          return {
+            status: "applied",
+            observationDigest: sha("4"),
+            result: effectResult(descriptor),
+          };
+        },
+        execute: async (descriptor, operation) => {
+          if (descriptor.kind !== "merge") {
+            await harness.dependencies.effects.execute(descriptor, operation);
+            return;
+          }
+          mergeExecutionCount += 1;
+          mergeExecuted = true;
+          throw new Error("proof read failed after the remote merge");
+        },
+      },
+    };
+
+    const uncertain = await mergeGitHubIssue(
+      mergeCommand(waiting.mergeApproval, "66666666-6666-4666-8666-666666666666"),
+      dependencies,
+    );
+    expect(uncertain.phase).toBe("external_state_uncertain");
+    proofAvailable = true;
+
+    const merged = await mergeGitHubIssue(
+      mergeCommand(waiting.mergeApproval, "77777777-7777-4777-8777-777777777777"),
+      dependencies,
+    );
+
+    expect(merged.phase).toBe("merged");
+    expect(mergeExecutionCount).toBe(1);
+    expect(harness.repository.events.some((event) => event.type === "run_failed")).toBe(false);
   });
 
   it("invalidates approval instead of merging when fresh GitHub evidence changes", async () => {
@@ -657,8 +762,25 @@ function effectResult(descriptor: IssueExternalEffectDescriptor): IssueExternalE
         mergeCommit: commit("d"),
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: sha("5"),
       } as IssueExternalEffectResult;
   }
+}
+
+function mergeCommand(
+  approval: NonNullable<Awaited<ReturnType<typeof runGitHubIssue>>["mergeApproval"]>,
+  commandId: string,
+): Extract<IssueLifecycleCommand, { readonly kind: "merge" }> {
+  return parseIssueLifecycleCommand({
+    version: 1,
+    kind: "merge",
+    commandId,
+    runId: issueRunId,
+    actor: "operator@example.test",
+    expectedPullRequest: approval.pullRequestNumber,
+    expectedHead: approval.headCommit,
+    expectedGateDigest: approval.gateDigest,
+  }) as Extract<IssueLifecycleCommand, { readonly kind: "merge" }>;
 }
 
 function pullRequestResult(kind: "pull_request" | "pull_request_ready", isDraft: boolean) {

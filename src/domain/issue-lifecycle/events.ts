@@ -250,6 +250,7 @@ const appliedExternalEffectResultSchema = z.discriminatedUnion("kind", [
       mergeCommit: commitSchema,
       deleteBranchRequested: z.boolean(),
       branchDeleted: z.boolean(),
+      proofDigest: sha256Schema,
     })
     .strict(),
 ]);
@@ -807,6 +808,7 @@ function requireAppliedEffectResults(
       merge.result.mergeCommit !== receipt.mergeCommit ||
       merge.result.deleteBranchRequested !== receipt.deleteBranchRequested ||
       merge.result.branchDeleted !== receipt.branchDeleted ||
+      merge.result.proofDigest !== receipt.evidenceDigest ||
       state.mergeGate?.deleteBranch !== receipt.deleteBranchRequested ||
       (receipt.deleteBranchRequested && !receipt.branchDeleted)
     ) {

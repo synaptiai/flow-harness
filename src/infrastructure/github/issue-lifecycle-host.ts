@@ -48,6 +48,7 @@ import {
   type FrozenGitHubIssueSnapshotContent,
 } from "../../domain/issue-lifecycle/frozen-github-issue-snapshot.js";
 import {
+  calculateIssueMergeProofDigest,
   type GitHubLifecycleObservation,
   type IssueMergeProof,
   verifyIssueMergeProof,
@@ -363,9 +364,16 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
           operation.signal,
         );
         this.#requireRemoteOutcome(result.outcome, manifest, descriptor);
+        const proof = await this.#proveObservedMerge(
+          manifest,
+          descriptor,
+          result.outcome,
+          result.evidence,
+          operation.signal,
+        );
         await this.#recordApplied(
           descriptor,
-          mergeEffectResult(descriptor, result.outcome),
+          mergeEffectResult(descriptor, result.outcome, calculateIssueMergeProofDigest(proof)),
           result.evidence,
         );
       }
@@ -418,43 +426,60 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     );
     if (remote === null) throw new IssueLifecycleHostError("merge_proof_invalid");
     this.#requireRemoteOutcome(remote.outcome, manifest, descriptor);
-    const remoteEvidenceDigest = await this.#storeAdapterEvidence(manifest.runId, remote.evidence);
+    return await this.#proveObservedMerge(
+      manifest,
+      descriptor,
+      remote.outcome,
+      remote.evidence,
+      request.signal,
+    );
+  }
+
+  async #proveObservedMerge(
+    manifest: FrozenIssueRunManifest,
+    descriptor: Extract<IssueExternalEffectDescriptor, { readonly kind: "merge" }>,
+    outcome: GitHubRemoteMergeOutcome,
+    evidence: GitHubIssueLifecycleEvidence,
+    signal?: AbortSignal,
+  ): Promise<IssueMergeProof> {
+    this.#requireRemoteOutcome(outcome, manifest, descriptor);
+    const remoteEvidenceDigest = await this.#storeAdapterEvidence(manifest.runId, evidence);
     const workspace = await this.#requireWorkspace(manifest);
     await this.#localGit.fetchRemoteBranch({
       workspace,
       branch: manifest.base.branch,
-      expectedHead: remote.outcome.observedBaseCommit,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      expectedHead: outcome.observedBaseCommit,
+      ...(signal === undefined ? {} : { signal }),
     });
     await this.#localGit.fetchPullRequestHead({
       workspace,
-      pullRequestNumber: request.pullRequestNumber,
-      expectedHead: request.candidateHead,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      pullRequestNumber: descriptor.pullRequestNumber,
+      expectedHead: descriptor.candidateHead,
+      ...(signal === undefined ? {} : { signal }),
     });
     const [candidate, merged, reachable] = await Promise.all([
       this.#localGit.inspectCommit({
         workspace,
-        commit: request.candidateHead,
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        commit: descriptor.candidateHead,
+        ...(signal === undefined ? {} : { signal }),
       }),
       this.#localGit.inspectCommit({
         workspace,
-        commit: remote.outcome.mergeCommit,
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        commit: outcome.mergeCommit,
+        ...(signal === undefined ? {} : { signal }),
       }),
       this.#localGit.isAncestor({
         workspace,
-        ancestor: remote.outcome.mergeCommit,
-        descendant: remote.outcome.observedBaseCommit,
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ancestor: outcome.mergeCommit,
+        descendant: outcome.observedBaseCommit,
+        ...(signal === undefined ? {} : { signal }),
       }),
     ]);
     if (!reachable) throw new IssueLifecycleHostError("merge_proof_invalid");
-    const proof = await this.#methodProof(manifest, workspace, candidate, merged, request.signal);
+    const proof = await this.#methodProof(manifest, workspace, candidate, merged, signal);
     const evidenceDigest = await this.#storeMergeProofEvidence(
       manifest,
-      remote.outcome,
+      outcome,
       remoteEvidenceDigest,
       { candidate, merged, reachable, proof },
     );
@@ -462,19 +487,19 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
       return verifyIssueMergeProof({
         version: 1,
         repositoryIdentity: manifest.repository.identity,
-        pullRequestNumber: request.pullRequestNumber,
-        pullRequestNodeId: request.pullRequestNodeId,
-        gateDigest: request.gateDigest,
+        pullRequestNumber: descriptor.pullRequestNumber,
+        pullRequestNodeId: descriptor.pullRequestNodeId,
+        gateDigest: descriptor.gateDigest,
         frozenBaseCommit: manifest.base.commit,
-        candidateHead: request.candidateHead,
-        mergeCommit: remote.outcome.mergeCommit,
-        observedBaseCommit: remote.outcome.observedBaseCommit,
+        candidateHead: descriptor.candidateHead,
+        mergeCommit: outcome.mergeCommit,
+        observedBaseCommit: outcome.observedBaseCommit,
         mergeCommitReachableFromObservedBase: reachable,
         evidenceDigest,
         method: manifest.merge.method,
         proof,
         deleteBranchRequested: manifest.merge.deleteBranch,
-        branchDeleted: remote.outcome.branchDeleted,
+        branchDeleted: outcome.branchDeleted,
       });
     } catch {
       throw new IssueLifecycleHostError("merge_proof_invalid");
@@ -706,9 +731,16 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     );
     if (observed === null) return await this.#notApplied(descriptor);
     this.#requireRemoteOutcome(observed.outcome, manifest, descriptor);
+    const proof = await this.#proveObservedMerge(
+      manifest,
+      descriptor,
+      observed.outcome,
+      observed.evidence,
+      signal,
+    );
     return await this.#applied(
       descriptor,
-      mergeEffectResult(descriptor, observed.outcome),
+      mergeEffectResult(descriptor, observed.outcome, calculateIssueMergeProofDigest(proof)),
       observed.evidence,
     );
   }
@@ -1213,6 +1245,7 @@ function pullRequestEffectResult(
 function mergeEffectResult(
   descriptor: Extract<IssueExternalEffectDescriptor, { readonly kind: "merge" }>,
   outcome: GitHubRemoteMergeOutcome,
+  proofDigest: string,
 ): Extract<IssueExternalEffectResult, { readonly kind: "merge" }> {
   return Object.freeze({
     kind: "merge",
@@ -1221,6 +1254,7 @@ function mergeEffectResult(
     mergeCommit: outcome.mergeCommit,
     deleteBranchRequested: descriptor.deleteBranch,
     branchDeleted: outcome.branchDeleted,
+    proofDigest,
   });
 }
 

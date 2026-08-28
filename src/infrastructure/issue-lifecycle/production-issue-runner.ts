@@ -32,6 +32,7 @@ import {
   type AdmittedImplementationWorkflow,
   type AdmittedReviewWorkflow,
   admitIssueWorkflow,
+  completeIssueWorkflowBudget,
 } from "../../application/issue-workflow-admission.js";
 import type {
   ImplementationWorkflowResult,
@@ -43,7 +44,7 @@ import type {
   NodeExecutor,
   WorkspaceIsolator,
 } from "../../application/ports.js";
-import { resumeWorkflow, runWorkflow } from "../../application/run-workflow.js";
+import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../../application/run-workflow.js";
 import type { CapabilitySnapshot } from "../../domain/capability/agent-skills.js";
 import type { IssueLifecycleCommand } from "../../domain/issue-lifecycle/commands.js";
 import {
@@ -74,7 +75,6 @@ import {
   verifyIssuePrivateBlob,
 } from "../../domain/issue-lifecycle/private-manifest.js";
 import { type RunState, reduceRunEvents } from "../../domain/run/events.js";
-import type { CompiledRunBudget } from "../../domain/workflow/types.js";
 import {
   type FrozenProjectFile,
   type FrozenProjectFileRequest,
@@ -411,7 +411,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       iteration: request.iteration,
       flowRunId,
       templateWorkflowDigest: admitted.templateWorkflowDigest,
-      executionWorkflowDigest: admitted.executionWorkflowDigest,
+      executionWorkflowDigest: state.workflowDigest,
       terminalSequence: state.lastSequence,
       evidenceDigest: await this.#evidenceDigest(flowRunId),
       workspaceIdentityDigest: workspace.workspaceIdentityDigest,
@@ -481,7 +481,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
     await request.pollCancellation();
     return await this.#reviewResult(request.manifest, request.candidateHead, flowRunId, state, {
       templateWorkflowDigest: admitted.templateWorkflowDigest,
-      executionWorkflowDigest: admitted.executionWorkflowDigest,
+      executionWorkflowDigest: state.workflowDigest,
       resultNodeId: admitted.resultNodeId,
     });
   }
@@ -542,13 +542,25 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       return await runWorkflow(admitted.workflow, { ...common, store, runId: flowRunId });
     }
     const recovered = reduceRunEvents(await store.read(flowRunId));
-    if (TERMINAL_RUN_STATUSES.has(recovered.status)) return recovered;
-    return await resumeWorkflow(admitted.workflow, {
-      ...common,
-      store,
-      runId: flowRunId,
-      ...(this.#effectReconciler === undefined ? {} : { effectReconciler: this.#effectReconciler }),
-    });
+    try {
+      return await resumeWorkflow(admitted.workflow, {
+        ...common,
+        store,
+        runId: flowRunId,
+        ...(this.#effectReconciler === undefined
+          ? {}
+          : { effectReconciler: this.#effectReconciler }),
+      });
+    } catch (error) {
+      if (
+        TERMINAL_RUN_STATUSES.has(recovered.status) &&
+        error instanceof RunRecoveryError &&
+        error.code === "terminal_run"
+      ) {
+        return recovered;
+      }
+      throw error;
+    }
   }
 
   async #readWorkspace(request: {
@@ -692,30 +704,11 @@ function issueBudgets(
   controller: readonly IssueControllerTimeout[],
 ): IssueBudgetInput {
   return {
-    implementation: completeWorkflowBudget(implementation.workflow.budget, "implementation"),
-    review: completeWorkflowBudget(review.workflow.budget, "review"),
+    implementation: completeIssueWorkflowBudget(implementation.workflow.budget, "implementation"),
+    review: completeIssueWorkflowBudget(review.workflow.budget, "review"),
     holdout: { timeoutMs: holdoutTimeoutMs },
     verification: verification.map((item) => ({ ...item })),
     controller: controller.map((item) => ({ ...item })),
-  };
-}
-
-function completeWorkflowBudget(input: CompiledRunBudget | undefined, role: string) {
-  if (
-    input?.maxNodeStarts === undefined ||
-    input.maxModelTokens === undefined ||
-    input.maxCostUsdMicros === undefined ||
-    input.maxExecutionMs === undefined ||
-    input.maxArtifactBytes === undefined
-  ) {
-    throw new Error(`${role} issue workflow must declare every frozen budget limit`);
-  }
-  return {
-    maxNodeStarts: input.maxNodeStarts,
-    maxModelTokens: input.maxModelTokens,
-    maxCostUsdMicros: input.maxCostUsdMicros,
-    maxExecutionMs: input.maxExecutionMs,
-    maxArtifactBytes: input.maxArtifactBytes,
   };
 }
 
@@ -918,7 +911,7 @@ function assertWorkflowIdentity(
   ) {
     throw new Error(`${role} workflow does not match its frozen manifest identity`);
   }
-  const budget = completeWorkflowBudget(admitted.workflow.budget, role);
+  const budget = completeIssueWorkflowBudget(admitted.workflow.budget, role);
   const frozenBudget =
     role === "implementation" ? manifest.budgets.implementation : manifest.budgets.review;
   if (JSON.stringify(budget) !== JSON.stringify(frozenBudget)) {

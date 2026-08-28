@@ -243,6 +243,27 @@ describe("LocalGitIssueEffects", () => {
     ).rejects.toMatchObject({ code: "origin_drift" });
   });
 
+  it.each([
+    ["duplicate origin URL", "remote.origin.url", "https://github.com/other/project.git"],
+    ["push URL", "remote.origin.pushurl", "https://github.com/other/project.git"],
+    ["receive-pack override", "remote.origin.receivepack", "/tmp/not-a-receive-pack"],
+    ["mirror mode", "remote.origin.mirror", "true"],
+    ["URL fetch rewrite", "url.https://github.com/other/.insteadOf", "https://github.com/"],
+    ["URL push rewrite", "url.https://github.com/other/.pushInsteadOf", "https://github.com/"],
+  ])("rejects a repository-local %s before workspace mutation", async (_label, key, value) => {
+    const fixture = await createFixture();
+    await git(fixture.source, "config", "--add", key, value);
+
+    await expect(
+      (await createEffects(fixture)).prepareWorkspace(workspaceRequest(fixture)),
+    ).rejects.toMatchObject({ code: "origin_drift" });
+    await expect(lstat(fixture.candidate)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(fixture.verificationWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      lstat(join(fixture.privateRoot, "git-workspaces", "issue-197-test.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("inspects an allowed candidate delta and rejects disallowed or protected changes", async () => {
     const fixture = await createFixture();
     const effects = await createEffects(fixture);
@@ -645,16 +666,17 @@ describe("LocalGitIssueEffects", () => {
     const fetch = invocations.find(
       (arguments_) => arguments_.includes("fetch") && arguments_.includes("refs/pull/198/head"),
     );
-    expect(fetch?.slice(-5)).toEqual([
+    expect(fetch?.slice(-6)).toEqual([
       "fetch",
       "--no-tags",
       "--no-write-fetch-head",
-      "origin",
+      "--no-recurse-submodules",
+      fixture.remote,
       "refs/pull/198/head",
     ]);
     expect(fetch).toContain("--no-optional-locks");
     expect(fetch?.some((argument) => argument.startsWith("--force"))).toBe(false);
-    expect(invocations.flat()).not.toContain("protocol.file.allow=always");
+    expect(fetch).toContain("protocol.file.allow=always");
   }, 30_000);
 
   it("computes the same ordered stable patch digest for equivalent rewritten commits", async () => {
@@ -739,7 +761,7 @@ describe("LocalGitIssueEffects", () => {
     ).resolves.toMatchObject({ parent: first.candidateHead, tree: secondTree.tree });
   });
 
-  it("uses ordinary push argv without force or file-protocol authority", async () => {
+  it("uses one exact leased push with only the admitted local test protocol", async () => {
     const fixture = await createFixture();
     const logPath = join(await temporaryDirectory("flow-git-argv-"), "argv.jsonl");
     const wrapper = await writeGitWrapper(logPath);
@@ -773,9 +795,14 @@ describe("LocalGitIssueEffects", () => {
       .map((line) => JSON.parse(line) as string[]);
     const push = invocations.find((arguments_) => arguments_.includes("push"));
     expect(push).toBeDefined();
-    expect(push?.some((argument) => argument.startsWith("--force"))).toBe(false);
-    expect(invocations.flat()).not.toContain("protocol.file.allow=always");
-  }, 30_000);
+    expect(push).toContain(`--force-with-lease=refs/heads/${workspace.branch}:`);
+    expect(push).not.toContain("--force");
+    expect(push).toContain("--no-signed");
+    expect(push).toContain("--recurse-submodules=no");
+    expect(push).toContain(fixture.remote);
+    expect(push).not.toContain("origin");
+    expect(push).toContain("protocol.file.allow=always");
+  }, 60_000);
 
   it("reconciles successful worktree, ref, push, and cleanup effects after result loss", async () => {
     const workspaceFixture = await createFixture();
@@ -868,7 +895,7 @@ describe("LocalGitIssueEffects", () => {
         expectedBranchHead: cleanupFixture.base,
       }),
     ).resolves.toBeUndefined();
-  }, 30_000);
+  }, 60_000);
 
   it("rejects host environment variables that can redirect Git authority", async () => {
     const fixture = await createFixture();

@@ -565,6 +565,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       },
     ],
     [
@@ -576,6 +577,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       },
     ],
     [
@@ -587,6 +589,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: OTHER_HEAD,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       },
     ],
     [
@@ -598,6 +601,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: false,
+        proofDigest: DIGEST,
       },
     ],
   ] as const)("binds the merge receipt to the applied %s result", (_label, result) => {
@@ -642,6 +646,7 @@ describe("issue lifecycle events", () => {
       mergeCommit: MERGE_COMMIT,
       deleteBranchRequested: false,
       branchDeleted: true,
+      proofDigest: DIGEST,
     });
 
     expect(
@@ -675,6 +680,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       }),
     ).toThrow(/branch policy/i);
   });
@@ -1323,6 +1329,7 @@ function effectResult(effectKind: IssueExternalEffectKind) {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       };
   }
 }

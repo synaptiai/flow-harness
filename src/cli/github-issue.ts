@@ -8,7 +8,13 @@ export interface GitHubIssueCliIo {
 
 export type GitHubIssueCliRequest =
   | { readonly kind: "validate"; readonly planPath: string }
-  | { readonly kind: "doctor"; readonly issueUrl: string; readonly planPath: string }
+  | {
+      readonly kind: "doctor";
+      readonly issueUrl: string;
+      readonly planPath: string;
+      readonly provider: string;
+      readonly model: string;
+    }
   | {
       readonly kind: "run";
       readonly issueUrl: string;
@@ -52,7 +58,7 @@ export interface GitHubIssueCliOptions {
 
 const HELP = `Usage:
   flow issue validate <plan.yaml>
-  flow issue doctor <issue-url> --plan <plan.yaml>
+  flow issue doctor <issue-url> --plan <plan.yaml> --provider <provider> --model <model>
   flow issue run <issue-url> --plan <plan.yaml> --provider <provider> --model <model> [--command-id <uuid>]
   flow issue inspect <run-id>
   flow issue events <run-id> [--after <sequence>] [--limit <count>]
@@ -98,11 +104,18 @@ function parseRequest(args: readonly string[], randomUuid: () => string): GitHub
       };
     }
     case "doctor": {
-      const parsed = parse(rest, { plan: { type: "string" } });
+      const parsed = parse(rest, {
+        plan: { type: "string" },
+        provider: { type: "string" },
+        model: { type: "string" },
+      });
+      const { provider, model } = selectedModel(parsed.values, "doctor");
       return {
         kind: "doctor",
         issueUrl: onePositional(parsed.positionals, "doctor requires <issue-url>"),
         planPath: requiredString(parsed.values.plan, "doctor requires --plan <plan.yaml>"),
+        provider,
+        model,
       };
     }
     case "run": {
@@ -112,12 +125,7 @@ function parseRequest(args: readonly string[], randomUuid: () => string): GitHub
         model: { type: "string" },
         "command-id": { type: "string" },
       });
-      const provider = requiredString(parsed.values.provider, "run requires --provider <provider>");
-      if (provider.length > 96 || !PROVIDER_PATTERN.test(provider)) usage("--provider is invalid");
-      const model = requiredString(parsed.values.model, "run requires --model <model>");
-      if (model !== model.trim() || model.length > 256 || /[\p{Cc}\p{Cf}]/u.test(model)) {
-        usage("--model is invalid");
-      }
+      const { provider, model } = selectedModel(parsed.values, "run");
       return {
         kind: "run",
         issueUrl: onePositional(parsed.positionals, "run requires <issue-url>"),
@@ -213,6 +221,19 @@ function parseRequest(args: readonly string[], randomUuid: () => string): GitHub
     default:
       usage(`unknown issue subcommand ${JSON.stringify(subcommand)}`);
   }
+}
+
+function selectedModel(
+  values: Record<string, string | boolean | undefined>,
+  command: "doctor" | "run",
+): { readonly provider: string; readonly model: string } {
+  const provider = requiredString(values.provider, `${command} requires --provider <provider>`);
+  if (provider.length > 96 || !PROVIDER_PATTERN.test(provider)) usage("--provider is invalid");
+  const model = requiredString(values.model, `${command} requires --model <model>`);
+  if (model !== model.trim() || model.length > 256 || /[\p{Cc}\p{Cf}]/u.test(model)) {
+    usage("--model is invalid");
+  }
+  return Object.freeze({ provider, model });
 }
 
 function parse(

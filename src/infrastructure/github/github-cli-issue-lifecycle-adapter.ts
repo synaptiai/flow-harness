@@ -322,7 +322,7 @@ export class GitHubCliIssueLifecycleAdapter
     this.#now = options.now ?? (() => new Date());
     this.#process = new StrictHostProcess({
       executable: options.ghExecutable,
-      environment: githubEnvironment(),
+      environment: githubCliEnvironment(),
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxStdoutBytes: MAX_STDOUT_BYTES,
       maxStderrBytes: MAX_STDERR_BYTES,
@@ -1679,7 +1679,8 @@ function restArguments(path: string, method: "DELETE" | "GET" = "GET"): string[]
   ];
 }
 
-function githubEnvironment(): Readonly<Record<string, string>> {
+/** Returns the minimal controller-owned environment shared by strict GitHub CLI adapters. */
+export function githubCliEnvironment(): Readonly<Record<string, string>> {
   const environment: Record<string, string> = {
     GH_HOST: "github.com",
     GH_NO_UPDATE_NOTIFIER: "1",
