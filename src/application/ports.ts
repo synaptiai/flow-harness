@@ -180,6 +180,7 @@ export interface NodeExecutionContext {
   readonly cwd: string;
   readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;
   readonly agentCommandJournal?: NodeAgentCommandJournal;

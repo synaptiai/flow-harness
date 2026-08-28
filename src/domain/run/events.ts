@@ -405,6 +405,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly workspaceAuthorityDigest?: string;
   readonly workProfile?: WorkProfile;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
@@ -1606,6 +1607,7 @@ export interface RunState {
   readonly workflowId: string;
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly workspaceAuthorityDigest?: string;
   readonly workProfile: WorkProfile;
   readonly capabilitySnapshot: CapabilitySnapshot | null;
   readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
@@ -3105,6 +3107,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
+      workspaceAuthorityDigest: sha256Schema.optional(),
       workProfile: z.enum(WORK_PROFILES).optional(),
       capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
       capabilityRequirements: z
@@ -4369,6 +4372,9 @@ export function appendRunEvent(
       workflowId: event.workflowId,
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
+      ...(event.workspaceAuthorityDigest === undefined
+        ? {}
+        : { workspaceAuthorityDigest: event.workspaceAuthorityDigest }),
       workProfile: event.workProfile ?? "standard",
       capabilitySnapshot:
         event.capabilitySnapshot === undefined
@@ -6883,6 +6889,9 @@ export function appendRunEvent(
     workflowId: currentState.workflowId,
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
+    ...(currentState.workspaceAuthorityDigest === undefined
+      ? {}
+      : { workspaceAuthorityDigest: currentState.workspaceAuthorityDigest }),
     workProfile: currentState.workProfile,
     capabilitySnapshot: currentState.capabilitySnapshot,
     capabilityRequirements: currentState.capabilityRequirements,
@@ -10551,6 +10560,26 @@ function validateEvidenceIntegrity(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function calculateWorkspaceAuthorityDigest(input: {
+  readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
+}): string {
+  return sha256(
+    JSON.stringify({
+      version: 1,
+      protectedPaths: [...input.protectedPaths].sort(compareCanonicalStrings),
+      allowedWritePrefixes:
+        input.allowedWritePrefixes === undefined
+          ? null
+          : [...input.allowedWritePrefixes].sort(compareCanonicalStrings),
+    }),
+  );
+}
+
+function compareCanonicalStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function pendingNodeState(): NodeRunState {

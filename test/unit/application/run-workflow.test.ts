@@ -45,6 +45,89 @@ describe("runWorkflow", () => {
     ]);
   });
 
+  it("passes an exact optional write allowlist to every node execution context", async () => {
+    const observed = new Map<string, readonly string[] | undefined>();
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      observed.set(node.id, context.allowedWritePrefixes);
+      return successfulOutcome(node.id);
+    });
+
+    await runWorkflow(threeNodeWorkflow(), {
+      ...options(store, executor, "run-write-authority"),
+      allowedWritePrefixes: ["src", "test"],
+    });
+
+    expect(observed).toEqual(
+      new Map([
+        ["first", ["src", "test"]],
+        ["second", ["src", "test"]],
+        ["third", ["src", "test"]],
+      ]),
+    );
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      workspaceAuthorityDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it("rejects changed write authority on resume, including omitted versus empty", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial[0] = {
+      ...initial[0],
+      workspaceAuthorityDigest: workspaceAuthorityDigest([], undefined),
+    } as RunEvent;
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-resume"),
+        allowedWritePrefixes: [],
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
+  it.each([
+    {
+      name: "a removed write restriction",
+      durable: { protectedPaths: [] as string[], allowedWritePrefixes: ["src"] as string[] },
+      resumed: { protectedPaths: [] as string[] },
+    },
+    {
+      name: "an expanded write prefix list",
+      durable: { protectedPaths: [] as string[], allowedWritePrefixes: ["src"] as string[] },
+      resumed: { protectedPaths: [] as string[], allowedWritePrefixes: ["src", "test"] },
+    },
+    {
+      name: "a changed protected path list",
+      durable: { protectedPaths: [".git"], allowedWritePrefixes: ["src"] as string[] },
+      resumed: { protectedPaths: [] as string[], allowedWritePrefixes: ["src"] },
+    },
+  ])("rejects $name on resume", async ({ durable, resumed }) => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial[0] = {
+      ...initial[0],
+      workspaceAuthorityDigest: workspaceAuthorityDigest(
+        durable.protectedPaths,
+        durable.allowedWritePrefixes,
+      ),
+    } as RunEvent;
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-resume"),
+        ...resumed,
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
   it("records standard as the deterministic profile for an unprofiled workflow", async () => {
     const store = new MemoryRunStore();
     const executor = executorFrom(async (node) => successfulOutcome(node.id));
@@ -915,6 +998,22 @@ async function successfulLedger(
 
 function workflowDigest(workflow: ReturnType<typeof threeNodeWorkflow>): string {
   return createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
+}
+
+function workspaceAuthorityDigest(
+  protectedPaths: readonly string[],
+  allowedWritePrefixes: readonly string[] | undefined,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        protectedPaths: [...protectedPaths].sort(),
+        allowedWritePrefixes:
+          allowedWritePrefixes === undefined ? null : [...allowedWritePrefixes].sort(),
+      }),
+    )
+    .digest("hex");
 }
 
 function eventBase(runId: string, workflowId: string, sequence: number) {

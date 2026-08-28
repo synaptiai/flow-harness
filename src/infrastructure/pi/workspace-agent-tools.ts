@@ -28,11 +28,11 @@ import {
   MAX_ARTIFACT_READ_BYTES,
   MAX_COMMAND_ARTIFACT_BYTES,
 } from "../../domain/artifact/reference.js";
+import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
 import {
   MAX_AGENT_SKILL_FILE_BYTES,
   MAX_CAPABILITY_READ_RECEIPTS,
 } from "../../domain/capability/agent-skills.js";
-import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
 import { builtInAgentToolPolicyAction } from "../../domain/capability/agent-tool-policy.js";
 import type {
   PublicAvailabilityRequirement,
@@ -50,11 +50,15 @@ import {
   type PolicyBroker,
 } from "../../domain/policy/broker.js";
 import {
-  MAX_SEMANTIC_PATH_BYTES,
-  MAX_SEMANTIC_POSITION,
+  MAX_AGENT_COMMANDS_PER_ATTEMPT,
+  MAX_AGENT_EFFECT_RECEIPTS,
+} from "../../domain/run/events.js";
+import {
   MAX_SEMANTIC_CODE_BYTES,
   MAX_SEMANTIC_HOVER_BYTES,
   MAX_SEMANTIC_MESSAGE_BYTES,
+  MAX_SEMANTIC_PATH_BYTES,
+  MAX_SEMANTIC_POSITION,
   MAX_SEMANTIC_QUERY_RECEIPTS,
   MAX_SEMANTIC_RECEIPT_RESULT_BYTES,
   MAX_SEMANTIC_RESULT_ITEMS,
@@ -65,17 +69,12 @@ import {
 } from "../../domain/semantic/semantic-code.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
-  MAX_AGENT_COMMANDS_PER_ATTEMPT,
-  MAX_AGENT_EFFECT_RECEIPTS,
-} from "../../domain/run/events.js";
-import {
   createExclusiveDirectory,
   type ExclusiveDirectoryCreateResult,
 } from "../fs/exclusive-directory-create.js";
 import {
   createHashAnchoredTextFile,
   editHashAnchoredTextFile,
-  replaceHashAnchoredTextFile,
   type HashAnchoredCreateRequest,
   type HashAnchoredCreateResult,
   type HashAnchoredEditRequest,
@@ -86,6 +85,7 @@ import {
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
   MAX_REPLACE_INPUT_BYTES,
+  replaceHashAnchoredTextFile,
 } from "../fs/hash-anchored-edit.js";
 import { createWorkspacePolicyBroker } from "../policy/workspace-policy-broker.js";
 import type { AgentCommandRecorder } from "./agent-command-recorder.js";
@@ -287,6 +287,7 @@ export interface FlowAgentTools {
 
 export interface FlowAgentToolOptions {
   readonly protectedPaths?: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
   readonly effectRecorder?: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
@@ -744,7 +745,12 @@ export async function createWorkspaceAgentTools(
   options: FlowAgentToolOptions = {},
 ): Promise<FlowAgentTools> {
   const root = await realpath(cwd);
-  const broker = await createWorkspacePolicyBroker(root, policy, options.protectedPaths ?? []);
+  const broker = await createWorkspacePolicyBroker(
+    root,
+    policy,
+    options.protectedPaths ?? [],
+    options.allowedWritePrefixes,
+  );
   const readVersions = new AsyncLocalStorage<ReadVersionContext>();
   const readReference = workspaceAgentToolReference("read");
   const readPolicyAction = onlyPolicyAction(readReference);

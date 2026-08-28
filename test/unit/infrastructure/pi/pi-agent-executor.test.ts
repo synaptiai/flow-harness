@@ -301,6 +301,25 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("passes and authority-binds the optional workspace write prefixes", async () => {
+    const requests: PiAgentRunRequest[] = [];
+    const runner: PiAgentRunner = {
+      async run(input) {
+        requests.push(input);
+        return { text: "Authority observed.", stopReason: "stop" };
+      },
+    };
+    const executor = new PiAgentExecutor(runner, () => 100);
+
+    await executor.execute(agentNode(), { ...context, allowedWritePrefixes: ["src"] });
+    await executor.execute(agentNode(), { ...context, allowedWritePrefixes: ["test"] });
+
+    expect(requests[0]?.allowedWritePrefixes).toEqual(["src"]);
+    expect(requests[1]?.allowedWritePrefixes).toEqual(["test"]);
+    expect(requests[0]?.authorityDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(requests[0]?.authorityDigest).not.toBe(requests[1]?.authorityDigest);
+  });
+
   it.each([
     ["stop" as const, "succeeded" as const],
     ["error" as const, "failed" as const],

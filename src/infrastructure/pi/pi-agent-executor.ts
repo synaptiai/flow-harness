@@ -121,6 +121,7 @@ export interface PiAgentRunRequest {
   readonly systemPrompt?: string;
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
   readonly effectRecorder: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
   readonly capabilities?: {
@@ -509,6 +510,9 @@ export class PiAgentExecutor implements AgentExecutor {
           ...(systemPrompt === undefined ? {} : { systemPrompt }),
           policyBroker,
           protectedPaths,
+          ...(context.allowedWritePrefixes === undefined
+            ? {}
+            : { allowedWritePrefixes: context.allowedWritePrefixes }),
           effectRecorder,
           commandRecorder,
           ...(context.artifactStore === undefined ? {} : { artifactStore: context.artifactStore }),
@@ -520,6 +524,10 @@ export class PiAgentExecutor implements AgentExecutor {
             attribution: policyBroker.attribution,
             actions: policyActionsForTools(node.agent.tools, toolPackages.length > 0),
             protectedPaths: [...protectedPaths].sort(),
+            allowedWritePrefixes:
+              context.allowedWritePrefixes === undefined
+                ? null
+                : [...context.allowedWritePrefixes].sort(),
             capabilitySnapshot: context.capabilitySnapshot?.digest ?? null,
             toolPackages: toolPackages.map((item) => item.digest),
             commandApproval: context.agentCommandApprovalGate !== undefined,
@@ -1074,6 +1082,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       request.policyBroker,
       {
         protectedPaths: request.protectedPaths,
+        ...(request.allowedWritePrefixes === undefined
+          ? {}
+          : { allowedWritePrefixes: request.allowedWritePrefixes }),
         effectRecorder: request.effectRecorder,
         ...(request.commandRecorder === undefined
           ? {}

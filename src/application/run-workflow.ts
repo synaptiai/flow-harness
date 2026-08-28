@@ -60,6 +60,7 @@ import {
   calculateChildRunId,
   calculateOptimizationPromotionId,
   canScheduleFailedAttemptRetry,
+  calculateWorkspaceAuthorityDigest,
   DURABLE_EFFECT_PROTOCOL,
   type ExecutionWorkspaceProvenance,
   type FilesystemEffectDescriptor,
@@ -148,6 +149,7 @@ export interface RunWorkflowOptions {
   readonly cwd: string;
   readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly store: RunEventStore;
   readonly executor: NodeExecutor;
@@ -170,6 +172,7 @@ export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" 
 
 const effectiveHarnessChildPath = Symbol("effective-harness-child-path");
 const delegationObjective = Symbol("delegation-objective");
+const workspaceAuthorityDigestRequired = Symbol("workspace-authority-digest-required");
 type InternalRunWorkflowOptions = RunWorkflowOptions & {
   readonly [effectiveHarnessChildPath]?: readonly string[];
   readonly [delegationObjective]?: string;
@@ -177,6 +180,7 @@ type InternalRunWorkflowOptions = RunWorkflowOptions & {
 type InternalResumeWorkflowOptions = ResumeWorkflowOptions & {
   readonly [effectiveHarnessChildPath]?: readonly string[];
   readonly [delegationObjective]?: string;
+  readonly [workspaceAuthorityDigestRequired]?: boolean;
 };
 
 export async function runWorkflow(
@@ -201,6 +205,7 @@ async function runWorkflowInternal(
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
+  const workspaceAuthorityDigest = calculateWorkspaceAuthorityDigest(options);
   const workProfile = options.workProfile ?? workflow.workProfile ?? "standard";
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
@@ -217,6 +222,7 @@ async function runWorkflowInternal(
       nodeIds: workflow.nodes.map((node) => node.id),
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
+      workspaceAuthorityDigest,
       workProfile,
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       executionCwd,
@@ -285,6 +291,16 @@ async function resumeWorkflowWithRelocation(
   return await releaseAfter(options.store, options.runId, async () => {
     assertNotAborted(options.signal);
     let state = reduceRunEvents(events);
+    const workspaceAuthorityDigest = calculateWorkspaceAuthorityDigest(options);
+    if (
+      state.workspaceAuthorityDigest !== undefined &&
+      state.workspaceAuthorityDigest !== workspaceAuthorityDigest
+    ) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" workspace write authority does not match durable history`,
+      );
+    }
     let persistedCapabilitySnapshot: CapabilitySnapshot | undefined;
     try {
       persistedCapabilitySnapshot = bindWorkflowCapabilities(
@@ -320,12 +336,13 @@ async function resumeWorkflowWithRelocation(
         `run "${options.runId}" work profile does not match durable history`,
       );
     }
-    const effectiveOptions: ResumeWorkflowOptions = {
+    const effectiveOptions: InternalResumeWorkflowOptions = {
       ...options,
       workProfile: state.workProfile,
       ...(persistedCapabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: persistedCapabilitySnapshot }),
+      [workspaceAuthorityDigestRequired]: state.workspaceAuthorityDigest !== undefined,
     };
     const executionCwd = resolve(options.cwd);
     const now = options.now ?? (() => new Date());
@@ -780,6 +797,9 @@ async function continueWorkflow(
                             ? {}
                             : { projectRoot: options.projectRoot }),
                           protectedPaths: options.protectedPaths,
+                          ...(options.allowedWritePrefixes === undefined
+                            ? {}
+                            : { allowedWritePrefixes: options.allowedWritePrefixes }),
                           ...(signal === undefined ? {} : { signal }),
                         },
                         options,
@@ -836,6 +856,9 @@ async function continueWorkflow(
                       ? {}
                       : { projectRoot: options.projectRoot }),
                     protectedPaths: options.protectedPaths,
+                    ...(options.allowedWritePrefixes === undefined
+                      ? {}
+                      : { allowedWritePrefixes: options.allowedWritePrefixes }),
                     ...(options.capabilitySnapshot === undefined
                       ? {}
                       : { capabilitySnapshot: options.capabilitySnapshot }),
@@ -2500,7 +2523,12 @@ async function validateRecoveredChildTrees(
   state: RunState,
 ): Promise<void> {
   try {
-    await validateRecoveredChildTree(workflow, options.store, state);
+    await validateRecoveredChildTree(
+      workflow,
+      options.store,
+      state,
+      calculateWorkspaceAuthorityDigest(options),
+    );
   } catch (error) {
     throw new RunRecoveryError(
       "child_recovery_ineligible",
@@ -2513,6 +2541,7 @@ async function validateRecoveredChildTree(
   workflow: CompiledWorkflow,
   store: RecoverableRunEventStore,
   state: RunState,
+  expectedWorkspaceAuthorityDigest: string,
 ): Promise<void> {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
@@ -2523,7 +2552,15 @@ async function validateRecoveredChildTree(
       if (link === null) {
         throw new Error(`settled child node "${nodeId}" has no durable child link`);
       }
-      await validateRecoveredChildEvidence(node, link, evidence, state, nodeState.attempt, store);
+      await validateRecoveredChildEvidence(
+        node,
+        link,
+        evidence,
+        state,
+        nodeState.attempt,
+        store,
+        expectedWorkspaceAuthorityDigest,
+      );
     }
     for (const delegation of nodeState.delegations) {
       const delegatedEvidence = delegation.settlement?.evidence;
@@ -2546,6 +2583,7 @@ async function validateRecoveredChildTree(
         state,
         nodeState.attempt,
         store,
+        expectedWorkspaceAuthorityDigest,
       );
     }
   }
@@ -2558,6 +2596,7 @@ async function validateRecoveredChildEvidence(
   parentState: RunState,
   attempt: number,
   store: RecoverableRunEventStore,
+  expectedWorkspaceAuthorityDigest: string,
 ): Promise<void> {
   const childState = reduceRunEvents(await store.read(evidence.childRunId));
   validateRecoveredChildIdentity(
@@ -2567,6 +2606,8 @@ async function validateRecoveredChildEvidence(
     attempt,
     parentState.workProfile,
     childState,
+    expectedWorkspaceAuthorityDigest,
+    parentState.workspaceAuthorityDigest !== undefined,
   );
   if (!runStateIsTerminal(childState)) {
     throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
@@ -2575,7 +2616,12 @@ async function validateRecoveredChildEvidence(
   if (!sameChildEvidenceProjection(evidence, expected)) {
     throw new Error(`settled child evidence for "${node.id}" diverges from its child ledger`);
   }
-  await validateRecoveredChildTree(node.child.workflow, store, childState);
+  await validateRecoveredChildTree(
+    node.child.workflow,
+    store,
+    childState,
+    expectedWorkspaceAuthorityDigest,
+  );
 }
 
 function rejectOpenAttempt(runId: string, state: RunState): void {
@@ -4443,6 +4489,9 @@ async function executeChildNode(
     cwd: workspace.cwd,
     ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
     protectedPaths: context.protectedPaths,
+    ...(context.allowedWritePrefixes === undefined
+      ? {}
+      : { allowedWritePrefixes: context.allowedWritePrefixes }),
     store,
     executor: options.executor,
     ...(options.workspaceIsolator === undefined
@@ -4497,6 +4546,9 @@ async function recoverChildNode(
         cwd: resolve(options.cwd),
         ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
         protectedPaths: options.protectedPaths,
+        ...(options.allowedWritePrefixes === undefined
+          ? {}
+          : { allowedWritePrefixes: options.allowedWritePrefixes }),
         ...(childCapabilitySnapshot === undefined
           ? {}
           : { capabilitySnapshot: childCapabilitySnapshot }),
@@ -4517,6 +4569,8 @@ async function recoverChildNode(
     attempt,
     options.workProfile ?? "standard",
     childState,
+    calculateWorkspaceAuthorityDigest(options),
+    options[workspaceAuthorityDigestRequired] ?? false,
   );
   if (!runStateIsTerminal(childState)) {
     const workspace = await options.workspaceIsolator.reopen({
@@ -4539,6 +4593,9 @@ async function recoverChildNode(
         cwd: workspace.cwd,
         ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
         protectedPaths: options.protectedPaths,
+        ...(options.allowedWritePrefixes === undefined
+          ? {}
+          : { allowedWritePrefixes: options.allowedWritePrefixes }),
         store,
         executor: options.executor,
         workspaceIsolator: options.workspaceIsolator,
@@ -4556,6 +4613,7 @@ async function recoverChildNode(
           ? {}
           : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
         [effectiveHarnessChildPath]: [...(options[effectiveHarnessChildPath] ?? []), node.id],
+        [workspaceAuthorityDigestRequired]: options[workspaceAuthorityDigestRequired] ?? false,
         ...(childDelegationObjective === undefined
           ? {}
           : { [delegationObjective]: childDelegationObjective }),
@@ -4653,6 +4711,8 @@ function validateRecoveredChildIdentity(
   attempt: number,
   expectedWorkProfile: WorkProfile,
   state: RunState,
+  expectedWorkspaceAuthorityDigest: string,
+  requireWorkspaceAuthorityDigest: boolean,
 ): void {
   const provenance = state.executionWorkspace;
   if (
@@ -4660,6 +4720,9 @@ function validateRecoveredChildIdentity(
     state.workflowId !== link.workflowId ||
     state.workflowDigest !== link.workflowDigest ||
     state.workProfile !== expectedWorkProfile ||
+    (state.workspaceAuthorityDigest === undefined
+      ? requireWorkspaceAuthorityDigest
+      : state.workspaceAuthorityDigest !== expectedWorkspaceAuthorityDigest) ||
     !sameRunBudget(state.budget?.limits, node.child.workflow.budget) ||
     provenance === null ||
     provenance.parentRunId !== parentRunId ||

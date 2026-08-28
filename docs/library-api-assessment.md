@@ -2,7 +2,7 @@
 
 This document assesses whether Flow should expose a supported JavaScript or TypeScript library API.
 It began with the source prepared for `@synapti/flow-harness@0.1.0-alpha.4` and the package boundary
-introduced in Issue #184. The evidence baseline now reflects current source after Issue #190.
+introduced in Issue #184. The evidence baseline now reflects current source during Issue #197.
 The immutable alpha.4 release notes retain that release's historical counts.
 
 ## Decision
@@ -37,13 +37,13 @@ declaration is independently callable.
 
 | Observation | Result | Why it matters |
 | --- | --- | --- |
-| Production TypeScript files | 323 | A broad root export would expose most of the product, not a small SDK. |
-| Exported top-level declarations | 3,005 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
-| Domain declarations | 1,489 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
-| Application declarations | 398 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
-| Infrastructure declarations | 979 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
+| Production TypeScript files | 336 | A broad root export would expose most of the product, not a small SDK. |
+| Exported top-level declarations | 3,099 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
+| Domain declarations | 1,528 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
+| Application declarations | 426 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
+| Infrastructure declarations | 1,006 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
 | Supervisor declarations | 122 | These declarations own queues, worker processes, control requests, and shutdown. |
-| CLI declarations | 17 | The CLI composes 292 of 323 production modules and is the intentional product boundary. |
+| CLI declarations | 17 | The CLI composes 292 of 336 production modules and is the intentional product boundary. |
 | Documented CLI forms | 92 | A future client can't safely wrap every form until their machine outputs and error categories are inventoried. |
 | Direct JSON-to-standard-output sites | 97 | Machine-readable output exists, but many commands own distinct result shapes rather than one versioned automation protocol. |
 
@@ -234,7 +234,7 @@ Benefits:
 
 Costs and failure modes:
 
-- Turns 2,938 internal declarations into an accidental public API.
+- Turns thousands of internal declarations into an accidental public API.
 - Couples consumers to file layout, transitive dependencies, Zod schemas, internal errors, and
   compiled graph shape.
 - Lets callers bypass production composition and inject unsafe stores or executors.

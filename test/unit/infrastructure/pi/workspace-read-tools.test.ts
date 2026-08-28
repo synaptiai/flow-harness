@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -210,6 +210,31 @@ describe("workspace-confined Pi tools", () => {
       outcome: "denied",
       reason: "target_outside_workspace",
     });
+  });
+
+  it("protects Git metadata from reads when issue composition supplies .git", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, ".git"));
+    await writeFile(join(root, ".git", "config"), "private Git configuration", "utf8");
+    const policy = policyBroker(["filesystem.read"]);
+    const tools = await createWorkspaceAgentTools(root, ["read"], policy, {
+      protectedPaths: [".git"],
+    });
+    const readTool = tools.definitions[0];
+    if (readTool === undefined) {
+      throw new Error("read tool was not registered");
+    }
+
+    await expect(
+      readTool.execute("git-read", { path: ".git/config" }, undefined, undefined, {} as never),
+    ).rejects.toThrowError(/protected/i);
+    expect(policy.snapshot()).toEqual([
+      expect.objectContaining({
+        action: "filesystem.read",
+        outcome: "denied",
+        reason: "target_protected",
+      }),
+    ]);
   });
 
   it("routes directory listing operations through the policy broker", async () => {
@@ -572,6 +597,134 @@ describe("workspace-confined Pi tools", () => {
         outcome: "committed",
       }),
     ]);
+  });
+
+  it("enforces the optional exact write prefixes before a create effect", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "test"));
+    const policy = policyBroker(["filesystem.write"]);
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(root, ["create"], policy, {
+      allowedWritePrefixes: ["src"],
+      effectRecorder: effects,
+    });
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "allowed-create",
+        { path: "src/allowed.ts", content: "export {};\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      createTool.execute(
+        "denied-create",
+        { path: "test/denied.ts", content: "export {};\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrowError(/protected/i);
+
+    expect(await readFile(join(root, "src", "allowed.ts"), "utf8")).toBe("export {};\n");
+    await expect(readFile(join(root, "test", "denied.ts"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(effects.snapshot()).toHaveLength(1);
+  });
+
+  it("denies a lexical write-prefix symlink escape before an effect is prepared", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "private"));
+    await symlink(join(root, "private"), join(root, "src", "linked-private"));
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(
+      root,
+      ["create"],
+      policyBroker(["filesystem.write"]),
+      { allowedWritePrefixes: ["src"], effectRecorder: effects },
+    );
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "escape-create",
+        { path: "src/linked-private/escaped.ts", content: "escaped\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrowError(/protected/i);
+
+    await expect(readFile(join(root, "private", "escaped.ts"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(effects.snapshot()).toEqual([]);
+  });
+
+  it.each(["src/..", "src/./nested", "src//nested", "/tmp/output"])(
+    "rejects a noncanonical write prefix %s before creating tools",
+    async (allowedWritePrefix) => {
+      const root = await createTemporaryDirectory();
+
+      await expect(
+        createWorkspaceAgentTools(root, ["create"], policyBroker(["filesystem.write"]), {
+          allowedWritePrefixes: [allowedWritePrefix],
+          effectRecorder: effectRecorder(),
+        }),
+      ).rejects.toThrowError(/canonical relative path|escapes the workspace/i);
+    },
+  );
+
+  it("rejects every existing symlink component in an admitted write prefix", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "real"));
+    await mkdir(join(root, "safe"));
+    await symlink(join(root, "real"), join(root, "safe", "linked"));
+
+    await expect(
+      createWorkspaceAgentTools(root, ["create"], policyBroker(["filesystem.write"]), {
+        allowedWritePrefixes: ["safe/linked/nested"],
+        effectRecorder: effectRecorder(),
+      }),
+    ).rejects.toThrowError(/symlink/i);
+  });
+
+  it("keeps the existing unrestricted in-workspace write behavior when no allowlist is supplied", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "unlisted"));
+    const tools = await createWorkspaceAgentTools(
+      root,
+      ["create"],
+      policyBroker(["filesystem.write"]),
+      { effectRecorder: effectRecorder() },
+    );
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "legacy-create",
+        { path: "unlisted/compatible.ts", content: "compatible\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).resolves.toBeDefined();
+    expect(await readFile(join(root, "unlisted", "compatible.ts"), "utf8")).toBe("compatible\n");
   });
 
   it("refuses to replace an existing file through flow_create", async () => {
