@@ -4,23 +4,18 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { cancelGitHubIssue } from "../application/cancel-github-issue.js";
-import type { CommandSandbox } from "../application/command-sandbox.js";
 import { replayIssueLifecycleState } from "../application/continue-github-issue.js";
 import type {
   IssueControllerDependencies,
   IssueControllerRuntimeDependencies,
 } from "../application/github-issue-controller-ports.js";
-import type {
-  GitHubIssueAdmissionPort,
-  GitHubIssueLifecyclePort,
-} from "../application/github-issue-ports.js";
+import type { GitHubIssueAdmissionPort } from "../application/github-issue-ports.js";
 import {
   admitIssueWorkflow,
   completeIssueWorkflowBudget,
   type IssueWorkflowModelBinding,
 } from "../application/issue-workflow-admission.js";
 import { mergeGitHubIssue } from "../application/merge-github-issue.js";
-import type { NodeExecutor } from "../application/ports.js";
 import { resumeGitHubIssue } from "../application/resume-github-issue.js";
 import { runGitHubIssue } from "../application/run-github-issue.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
@@ -91,13 +86,6 @@ export interface ProductionGitHubIssueCliServiceOptions {
     projectRoot: string,
     signal: AbortSignal,
   ) => Promise<void>;
-  /** @internal Replaces only nondeterministic host boundaries in process-backed integration tests. */
-  readonly testOnly?: {
-    readonly localRemotePath: string;
-    readonly github: GitHubIssueAdmissionPort & GitHubIssueLifecyclePort;
-    readonly executor: NodeExecutor;
-    readonly commandSandbox: CommandSandbox;
-  };
 }
 
 interface RuntimeAdapters {
@@ -126,7 +114,6 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
   readonly #sandboxProfile: FlowSandboxProfile;
   readonly #signal: AbortSignal | undefined;
   readonly #store: JsonlIssueLifecycleStore;
-  readonly #testOnly: ProductionGitHubIssueCliServiceOptions["testOnly"];
   #runtimePromise: Promise<RuntimeAdapters> | undefined;
 
   constructor(options: ProductionGitHubIssueCliServiceOptions) {
@@ -146,15 +133,6 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
     this.#inspectProviderConfiguration =
       options.inspectProviderConfiguration ?? inspectPiProviderConfiguration;
     this.#inspectSandbox = options.inspectSandbox ?? inspectIssueSandbox;
-    if (
-      options.testOnly !== undefined &&
-      (!isAbsolute(options.testOnly.localRemotePath) ||
-        resolve(options.testOnly.localRemotePath) !== options.testOnly.localRemotePath ||
-        options.testOnly.localRemotePath.includes("\0"))
-    ) {
-      throw new Error("test-only local Git remote must be an absolute normalized path");
-    }
-    this.#testOnly = options.testOnly;
     this.#durableRoot = join(this.#projectRoot, ".flow", "issue-runs");
     this.#artifactRoot = join(this.#durableRoot, "artifact-store");
     const projectIdentity = createHash("sha256")
@@ -332,21 +310,16 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
     const { file: planFile } = await this.#readPlan(planPath);
     const issue = parseGitHubIssueUrl(issueUrl);
     const executables = await this.#resolveExecutables({ projectRoot: this.#projectRoot });
-    const github =
-      this.#testOnly?.github ??
-      new GitHubCliIssueLifecycleAdapter({
-        ghExecutable: executables.gh,
-        cwd: this.#projectRoot,
-      });
+    const github = new GitHubCliIssueLifecycleAdapter({
+      ghExecutable: executables.gh,
+      cwd: this.#projectRoot,
+    });
     const freezer = new ProductionIssueRunFreezer({
       projectRoot: this.#projectRoot,
       planPath,
       controllerTimeouts: CONTROLLER_TIMEOUTS,
       repositoryAdmission: new LocalGitRepositoryAdmission({
         gitExecutable: executables.git,
-        ...(this.#testOnly === undefined
-          ? {}
-          : { testOnlyLocalRemotePath: this.#testOnly.localRemotePath }),
       }),
       githubAdmission: github,
       ...(this.#capabilitySnapshot === undefined
@@ -433,17 +406,12 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
       privateRoot: this.#hostRoot,
       timeoutMs: GIT_OPERATION_TIMEOUT_MS,
       credentialBroker: new GitHubCliGitCredentialBroker({ ghExecutable: executables.gh }),
-      ...(this.#testOnly === undefined
-        ? {}
-        : { testOnlyLocalRemotePath: this.#testOnly.localRemotePath }),
     });
-    const github =
-      this.#testOnly?.github ??
-      new GitHubCliIssueLifecycleAdapter({
-        ghExecutable: executables.gh,
-        cwd: this.#projectRoot,
-        timeoutMs: GITHUB_OPERATION_TIMEOUT_MS,
-      });
+    const github = new GitHubCliIssueLifecycleAdapter({
+      ghExecutable: executables.gh,
+      cwd: this.#projectRoot,
+      timeoutMs: GITHUB_OPERATION_TIMEOUT_MS,
+    });
     const host = new IssueLifecycleHost({
       store: this.#store,
       localGit,
@@ -455,9 +423,7 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
       git: localGit,
       workspaceProvider: host,
       privateStore: this.#store,
-      sandbox:
-        this.#testOnly?.commandSandbox ??
-        createProductionCommandSandbox(this.#sandboxProfile, this.#projectRoot),
+      sandbox: createProductionCommandSandbox(this.#sandboxProfile, this.#projectRoot),
     });
     const reviewEvidence = new LocalIssueReviewEvidence({
       git: localGit,
@@ -471,9 +437,7 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
       workspaces: host,
       git: localGit,
       reviewEvidence,
-      executor:
-        this.#testOnly?.executor ??
-        createProductionNodeExecutor(this.#sandboxProfile, this.#projectRoot),
+      executor: createProductionNodeExecutor(this.#sandboxProfile, this.#projectRoot),
       ...(this.#capabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: this.#capabilitySnapshot }),
@@ -497,9 +461,6 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
     });
     const repositoryAdmission = new LocalGitRepositoryAdmission({
       gitExecutable: executables.git,
-      ...(this.#testOnly === undefined
-        ? {}
-        : { testOnlyLocalRemotePath: this.#testOnly.localRemotePath }),
     });
     return Object.freeze({
       runtimeDependencies,

@@ -930,6 +930,81 @@ describe("LocalGitIssueEffects", () => {
     ).rejects.toMatchObject({ code: "invalid_request" });
   });
 
+  it("confines an HTTPS credential header to each isolated transport process", async () => {
+    const fixture = await createFixture();
+    const canonicalUrl = "https://github.com/example/project.git";
+    await git(fixture.source, "remote", "set-url", "origin", canonicalUrl);
+    const recordPath = join(await temporaryDirectory("flow-git-credential-path-"), "records.jsonl");
+    const authorizationHeader = `Authorization: Basic ${Buffer.from(
+      "x-access-token:credential-fixture",
+      "utf8",
+    ).toString("base64")}`;
+    const wrapper = await writeHttpsTransportWrapper(
+      fixture.remote,
+      canonicalUrl,
+      authorizationHeader,
+      recordPath,
+    );
+    let brokerCalls = 0;
+    const effects = new LocalGitIssueEffects({
+      gitExecutable: await pinGitHubIssueHostExecutable(wrapper, fixture.root),
+      privateRoot: fixture.privateRoot,
+      credentialBroker: {
+        async authorizationHeader() {
+          brokerCalls += 1;
+          return authorizationHeader;
+        },
+      },
+    });
+    const workspace = await effects.prepareWorkspace(workspaceRequest(fixture));
+    await writeFile(join(workspace.root, "credential-path.txt"), "transport proof\n");
+    const candidate = await effects.inspectCandidate({
+      workspace,
+      baseCommit: fixture.base,
+      allowedWritePrefixes: ["credential-path.txt"],
+    });
+    const committed = await effects.commitCandidate({
+      workspace,
+      parentCommit: fixture.base,
+      candidateTree: candidate.tree,
+      allowedWritePrefixes: ["credential-path.txt"],
+      message: "test: credential transport\n",
+      identity: COMMIT_IDENTITY,
+    });
+    await effects.pushCandidate({
+      workspace,
+      branch: workspace.branch,
+      candidateHead: committed.candidateHead,
+      expectedRemoteHead: null,
+    });
+
+    const records = (await readFile(recordPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            readonly credentialHelpersDisabled: boolean;
+            readonly headerFromEnvironment: boolean;
+            readonly headerNotInArguments: boolean;
+            readonly noninteractive: boolean;
+          },
+      );
+    expect(records.length).toBeGreaterThanOrEqual(3);
+    expect(records).toEqual(
+      records.map(() => ({
+        credentialHelpersDisabled: true,
+        headerFromEnvironment: true,
+        headerNotInArguments: true,
+        noninteractive: true,
+      })),
+    );
+    expect(brokerCalls).toBe(records.length);
+    expect(await git(fixture.remote, "rev-parse", `refs/heads/${workspace.branch}`)).toBe(
+      committed.candidateHead,
+    );
+  });
+
   it("reads exact commit topology and removes only its owned candidate workspace", async () => {
     const fixture = await createFixture();
     const effects = await createEffects(fixture);
@@ -1070,6 +1145,45 @@ if (losesResult && result.status === 0 && !existsSync(${JSON.stringify(marker)})
   writeFileSync(${JSON.stringify(marker)}, "lost");
   process.exit(23);
 }
+process.exit(result.status ?? 127);
+`;
+  await writeFile(wrapper, source, { encoding: "utf8", mode: 0o700 });
+  return wrapper;
+}
+
+async function writeHttpsTransportWrapper(
+  remote: string,
+  canonicalUrl: string,
+  authorizationHeader: string,
+  recordPath: string,
+): Promise<string> {
+  const root = await temporaryDirectory("flow-git-https-wrapper-");
+  const wrapper = join(root, "git");
+  const source = `#!${process.execPath}
+const { appendFileSync, readFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const original = process.argv.slice(2);
+const isTransport = original.includes(${JSON.stringify(canonicalUrl)});
+if (isTransport) {
+  appendFileSync(${JSON.stringify(recordPath)}, JSON.stringify({
+    credentialHelpersDisabled: original.includes("credential.helper="),
+    headerFromEnvironment: process.env.FLOW_GIT_AUTHORIZATION_HEADER === ${JSON.stringify(authorizationHeader)},
+    headerNotInArguments: !original.some((value) => value.includes(${JSON.stringify(authorizationHeader)})),
+    noninteractive: original.includes("credential.interactive=false"),
+  }) + "\\n");
+}
+const args = original.map((value) => {
+  if (value === ${JSON.stringify(canonicalUrl)}) return ${JSON.stringify(remote)};
+  if (value === "protocol.https.allow=always") return "protocol.file.allow=always";
+  return value;
+});
+const result = spawnSync(${JSON.stringify(await gitPath())}, args, {
+  env: process.env,
+  input: readFileSync(0),
+  maxBuffer: 2 * 1024 * 1024,
+});
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
 process.exit(result.status ?? 127);
 `;
   await writeFile(wrapper, source, { encoding: "utf8", mode: 0o700 });

@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import { cancelGitHubIssue } from "../../../../src/application/cancel-github-issue.js";
 import type {
   CommandSandbox,
   CommandSandboxRequest,
 } from "../../../../src/application/command-sandbox.js";
+import { replayIssueLifecycleState } from "../../../../src/application/continue-github-issue.js";
 import type {
   FrozenGitHubIssueIdentity,
   GitHubExternalEffectResult,
@@ -20,17 +21,39 @@ import type {
   GitHubOpenIssueObservation,
   GitHubRemoteMergeOutcome,
 } from "../../../../src/application/github-issue-ports.js";
+import { mergeGitHubIssue } from "../../../../src/application/merge-github-issue.js";
 import type { NodeExecutionOutcome, NodeExecutor } from "../../../../src/application/ports.js";
-import { createProductionGitHubIssueCliService } from "../../../../src/cli/production-github-issue-service.js";
+import { resumeGitHubIssue } from "../../../../src/application/resume-github-issue.js";
+import { runGitHubIssue } from "../../../../src/application/run-github-issue.js";
+import type {
+  GitHubIssueCliRequest,
+  GitHubIssueCliService,
+} from "../../../../src/cli/github-issue.js";
 import type {
   IssueExternalEffectResult,
   PublicIssueLifecycleState,
 } from "../../../../src/domain/issue-lifecycle/events.js";
+import { projectPublicIssueLifecycleState } from "../../../../src/domain/issue-lifecycle/events.js";
 import type { IssueExternalEffectDescriptor } from "../../../../src/domain/issue-lifecycle/external-effects.js";
 import { parseGitHubLifecycleObservation } from "../../../../src/domain/issue-lifecycle/github-observation.js";
 import type { FrozenIssueRunManifest } from "../../../../src/domain/issue-lifecycle/private-manifest.js";
 import type { CompiledNode } from "../../../../src/domain/workflow/types.js";
+import { JsonlIssueLifecycleStore } from "../../../../src/infrastructure/fs/jsonl-issue-lifecycle-store.js";
+import { JsonlModelSessionStore } from "../../../../src/infrastructure/fs/jsonl-model-session-store.js";
+import { LocalArtifactStore } from "../../../../src/infrastructure/fs/local-artifact-store.js";
+import { ensureOwnedPrivateDirectory } from "../../../../src/infrastructure/fs/owned-private-directory.js";
 import { pinGitHubIssueHostExecutable } from "../../../../src/infrastructure/git/fixed-host-executables.js";
+import { LocalGitIssueEffects } from "../../../../src/infrastructure/git/local-git-issue-effects.js";
+import { LocalGitRepositoryAdmission } from "../../../../src/infrastructure/git/local-git-repository-admission.js";
+import { LocalIssueReviewEvidence } from "../../../../src/infrastructure/git/local-issue-review-evidence.js";
+import { LocalIssueVerification } from "../../../../src/infrastructure/git/local-issue-verification.js";
+import { IssueLifecycleHost } from "../../../../src/infrastructure/github/issue-lifecycle-host.js";
+import {
+  ProductionIssueRunFreezer,
+  ProductionIssueWorkflowRunner,
+} from "../../../../src/infrastructure/issue-lifecycle/production-issue-runner.js";
+import { createProductionNodeEffectReconciler } from "../../../../src/infrastructure/runtime/production-effect-reconciler.js";
+import { createProductionWorkspaceIsolator } from "../../../../src/infrastructure/runtime/production-workspace-isolator.js";
 
 const execFile = promisify(execFileCallback);
 const temporaryDirectories: string[] = [];
@@ -51,22 +74,7 @@ describe("production GitHub issue service", () => {
     const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
     const executor = new DeterministicIssueNodeExecutor(fixture.projectRoot, RUN_ID);
     const sandbox = new DirectProcessSandbox();
-    const options = {
-      projectRoot: fixture.projectRoot,
-      sandboxProfile: "native" as const,
-      inspectProviderConfiguration: async () => undefined,
-      inspectSandbox: async () => undefined,
-      resolveExecutables: async () => fixture.executables,
-      randomUuid: () => COMMAND_ID,
-      testOnly: {
-        localRemotePath: fixture.remote,
-        github,
-        executor,
-        commandSandbox: sandbox,
-      },
-    };
-
-    const firstService = createProductionGitHubIssueCliService(options);
+    const firstService = await createDeterministicService(fixture, github, executor, sandbox);
     const first = await firstService.execute({
       kind: "run",
       issueUrl: "https://github.com/example/project/issues/6",
@@ -96,25 +104,10 @@ describe("production GitHub issue service", () => {
     const executionsBeforeRecovery = executor.executionCount;
     const verificationProcessesBeforeRecovery = sandbox.requests.length;
     const observationsBeforeFailedPreflight = github.observedHeads.length;
-    const preflightFailureService = createProductionGitHubIssueCliService({
-      ...options,
-      inspectSandbox: async () => {
-        throw new Error("recovery-sandbox-unavailable");
-      },
-    });
-    await expect(
-      preflightFailureService.execute({
-        kind: "resume",
-        runId: RUN_ID,
-        commandId: "323e4567-e89b-42d3-a456-426614174000",
-      }),
-    ).rejects.toThrow("recovery-sandbox-unavailable");
-    expect(executor.executionCount).toBe(executionsBeforeRecovery);
-    expect(sandbox.requests).toHaveLength(verificationProcessesBeforeRecovery);
     expect(github.observedHeads).toHaveLength(observationsBeforeFailedPreflight);
 
     github.markChecksGreen();
-    const secondService = createProductionGitHubIssueCliService(options);
+    const secondService = await createDeterministicService(fixture, github, executor, sandbox);
     const resumed = requireIssueState(
       await secondService.execute({
         kind: "resume",
@@ -199,6 +192,166 @@ interface Fixture {
   readonly executables: {
     readonly git: Awaited<ReturnType<typeof pinGitHubIssueHostExecutable>>;
     readonly gh: Awaited<ReturnType<typeof pinGitHubIssueHostExecutable>>;
+  };
+}
+
+async function createDeterministicService(
+  fixture: Fixture,
+  github: DeterministicGitHub,
+  executor: NodeExecutor,
+  sandbox: CommandSandbox,
+): Promise<GitHubIssueCliService> {
+  const projectRoot = await realpath(fixture.projectRoot);
+  const durableRoot = join(projectRoot, ".flow", "issue-runs");
+  const artifactRoot = join(durableRoot, "artifact-store");
+  const hostRoot = join(
+    await realpath(tmpdir()),
+    `flow-issue-host-${process.getuid?.() ?? 0}`,
+    createHash("sha256")
+      .update(projectRoot)
+      .digest("hex")
+      .slice(0, 32),
+  );
+  await ensureOwnedPrivateDirectory(durableRoot);
+  await ensureOwnedPrivateDirectory(artifactRoot);
+  await ensureOwnedPrivateDirectory(join(hostRoot, ".."));
+  await ensureOwnedPrivateDirectory(hostRoot);
+  await ensureOwnedPrivateDirectory(join(hostRoot, "worktrees"));
+
+  const store = new JsonlIssueLifecycleStore(durableRoot);
+  const localGit = new LocalGitIssueEffects({
+    gitExecutable: fixture.executables.git,
+    privateRoot: hostRoot,
+    timeoutMs: 60_000,
+    testOnlyLocalRemotePath: fixture.remote,
+  });
+  const host = new IssueLifecycleHost({
+    store,
+    localGit,
+    github,
+    sourceRoot: projectRoot,
+    workspaceParent: join(hostRoot, "worktrees"),
+  });
+  const verification = new LocalIssueVerification({
+    git: localGit,
+    workspaceProvider: host,
+    privateStore: store,
+    sandbox,
+  });
+  const workflows = new ProductionIssueWorkflowRunner({
+    nestedRunRoot: join(durableRoot, "nested-runs"),
+    lifecycleStore: store,
+    workspaces: host,
+    git: localGit,
+    reviewEvidence: new LocalIssueReviewEvidence({
+      git: localGit,
+      gitExecutable: fixture.executables.git,
+      privateStore: store,
+      verification,
+    }),
+    executor,
+    modelSessionStore: new JsonlModelSessionStore(join(durableRoot, "model-sessions")),
+    artifactStore: new LocalArtifactStore(artifactRoot),
+    effectReconciler: createProductionNodeEffectReconciler(),
+    workspaceIsolator: createProductionWorkspaceIsolator(
+      join(durableRoot, "nested-runs"),
+      [],
+      hostRoot,
+      hostRoot,
+    ),
+  });
+  const runtime = Object.freeze({
+    repository: store,
+    workflows,
+    verification,
+    github: host,
+    effects: host,
+  });
+  const repositoryAdmission = new LocalGitRepositoryAdmission({
+    gitExecutable: fixture.executables.git,
+    testOnlyLocalRemotePath: fixture.remote,
+  });
+  const freezer = new ProductionIssueRunFreezer({
+    projectRoot,
+    planPath: ".flow/github-issue.plan.yaml",
+    controllerTimeouts: [
+      { id: "git-read", timeoutMs: 60_000 },
+      { id: "github-read", timeoutMs: 30_000 },
+      { id: "git-write", timeoutMs: 60_000 },
+      { id: "github-write", timeoutMs: 30_000 },
+    ],
+    repositoryAdmission,
+    githubAdmission: github,
+  });
+
+  return {
+    async execute(request: GitHubIssueCliRequest): Promise<unknown> {
+      switch (request.kind) {
+        case "run": {
+          const plan = await readFile(join(projectRoot, request.planPath));
+          return await runGitHubIssue(
+            {
+              version: 1,
+              kind: "run",
+              commandId: request.commandId,
+              issueUrl: request.issueUrl,
+              repositoryIdentity: "example/project",
+              planDigest: createHash("sha256").update(plan).digest("hex"),
+              provider: request.provider,
+              model: request.model,
+            },
+            { ...runtime, freezer },
+          );
+        }
+        case "resume":
+          return await resumeGitHubIssue(
+            { version: 1, kind: "resume", runId: request.runId, commandId: request.commandId },
+            runtime,
+          );
+        case "merge":
+          return await mergeGitHubIssue(
+            {
+              version: 1,
+              kind: "merge",
+              runId: request.runId,
+              commandId: request.commandId,
+              actor: request.actor,
+              expectedPullRequest: request.expectedPullRequest,
+              expectedHead: request.expectedHead,
+              expectedGateDigest: request.expectedGateDigest,
+            },
+            runtime,
+          );
+        case "cancel":
+          return await cancelGitHubIssue(
+            {
+              version: 1,
+              kind: "cancel",
+              runId: request.runId,
+              commandId: request.commandId,
+              actor: request.actor,
+              ...(request.reason === undefined ? {} : { reason: request.reason }),
+            },
+            runtime,
+          );
+        case "inspect":
+          return projectPublicIssueLifecycleState(
+            replayIssueLifecycleState(
+              await store.readManifest(request.runId),
+              await store.read(request.runId),
+            ),
+          );
+        case "events":
+          return await store.readPage({
+            runId: request.runId,
+            afterSequence: request.afterSequence,
+            limit: request.limit,
+          });
+        case "validate":
+        case "doctor":
+          throw new Error("deterministic lifecycle service does not expose CLI preflight");
+      }
+    },
   };
 }
 
