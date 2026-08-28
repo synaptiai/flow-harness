@@ -97,6 +97,28 @@ describe("GitHub issue CLI", () => {
     expect(capture.stderr.join("\n")).toContain("expected-pr");
   });
 
+  it("rejects duplicate scalar options instead of silently using the last value", async () => {
+    const calls: unknown[] = [];
+    const capture = outputCapture();
+
+    const exitCode = await runGitHubIssueCli(
+      [
+        "resume",
+        "issue-run-1",
+        "--command-id",
+        commandId,
+        "--command-id",
+        "223e4567-e89b-42d3-a456-426614174000",
+      ],
+      capture.io,
+      fakeService(calls),
+    );
+
+    expect(exitCode).toBe(2);
+    expect(calls).toEqual([]);
+    expect(capture.stderr.join("\n")).toContain("--command-id may be specified only once");
+  });
+
   it("routes read-only validation, diagnosis, inspection, and bounded event pages", async () => {
     const calls: unknown[] = [];
     const service = fakeService(calls);

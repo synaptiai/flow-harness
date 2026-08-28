@@ -221,9 +221,19 @@ function parse(
   readonly positionals: string[];
 } {
   try {
+    const seen = new Set<string>();
+    for (const argument of args) {
+      if (argument === "--") break;
+      if (!argument.startsWith("--")) continue;
+      const name = argument.slice(2).split("=", 1)[0];
+      if (name === undefined || name.length === 0) continue;
+      if (seen.has(name)) usage(`--${name} may be specified only once`);
+      seen.add(name);
+    }
     const parsed = parseArgs({ args: [...args], options, allowPositionals: true, strict: true });
     return { values: parsed.values, positionals: parsed.positionals };
   } catch (error) {
+    if (error instanceof GitHubIssueCliUsageError) throw error;
     usage(error instanceof Error ? error.message : String(error));
   }
 }
