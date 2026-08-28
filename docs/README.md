@@ -16,7 +16,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You intentionally need the historical first-alpha contract. |
 | [Getting started](getting-started.md) | You want to confirm the `flow` command and complete one credential-free run. |
 | [Complete the coding quick start](guides/coding-quickstart.md) | You want to prove one bounded provider-backed edit and inspect its evidence. |
-| [Complete a GitHub issue with Flow](guides/github-issue-lifecycle.md) | You want to prepare for the bounded end-to-end GitHub issue lifecycle that is under implementation. |
+| [Complete a GitHub issue with Flow](guides/github-issue-lifecycle.md) | You want to implement, review, verify, and explicitly merge one issue in another GitHub repository. |
 | [Diagnose the Flow environment](guides/diagnose-environment.md) | You need a read-only host, project, workflow, provider, sandbox, or Prime preflight. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
 | [Configuration](configuration.md) | You need project settings, operator ceilings, sandbox selection, or policy-change rules. |
@@ -35,6 +35,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Evaluate reference-first context compaction](guides/context-compaction.md) | You need to compare complete history, artifact references, and bounded summaries on held-out tasks. |
 | [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) | You need to author, review, activate, recover, or roll back evidence-backed relationships between exact memory entries. |
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
+| [Author GitHub issue workflows](guides/github-issue-workflows.md) | You need complete implementation and independent-review workflow templates, budgets, provider-data boundaries, or review-result guidance. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
 | [Qualify two local ACP agents](guides/qualify-acp-agents.md) | You need to verify two exact production ACP agents against one prompt-only workflow and private result contract. |

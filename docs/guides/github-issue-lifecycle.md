@@ -17,10 +17,13 @@ host preparation and interruption handling, read the
 
 ## Availability
 
-The current published CLI does not register `flow issue`. This page documents the bounded preview
-contract while its controller is under implementation. Treat every `flow issue` command as
-unavailable until `flow --help` lists the `issue` command group in a later release. You can prepare
-and review the plan and workflow files now, but don't start an issue run with the current release.
+Current source registers the `flow issue` command group. The published `0.1.0-alpha.4` package
+doesn't include it. Use the lifecycle only from a release whose `flow --help` output lists
+`flow issue`, and confirm that release's notes name the GitHub issue lifecycle as qualified.
+
+The first qualification uses one bounded external-repository issue. That evidence proves the
+frozen repository, issue, provider, model, host, and checks named by the run. It doesn't establish
+compatibility with every project or replace your repository's branch protections.
 
 ## Before you begin
 
@@ -52,6 +55,10 @@ flow compatibility check
 The help output must list the `issue` command group. The compatibility report must have an
 `overall` value of `compatible`. If either check fails, the lifecycle remains unavailable. Stop
 before you use any other command in this guide.
+
+Use [Author GitHub issue workflows](github-issue-workflows.md) to create and validate the two
+workflow files. That guide includes complete templates, budget guidance, the structured review
+result, and the exact data sent to the selected model provider.
 
 Check the active GitHub account without displaying its token:
 
@@ -183,10 +190,13 @@ Check the live host, checkout, GitHub identity, issue, and plan without mutating
 
 ```sh
 flow issue doctor https://github.com/example/widgets/issues/42 \
-  --plan .flow/github-issue.plan.yaml
+  --plan .flow/github-issue.plan.yaml \
+  --provider openai \
+  --model <supported-model>
 ```
 
-The diagnostic must succeed before you start. Flow reads the exact configured remote
+Use the same provider and model for `doctor` and `run`. The diagnostic must succeed before you
+start. Flow reads the exact configured remote
 `refs/heads/<baseBranch>` ref and rejects a local or remote base mismatch. It also rejects a closed
 or changed issue, repository mismatch, unsafe checkout, missing tool, authentication failure,
 unsupported repository policy, or unavailable model sandbox.
@@ -196,8 +206,8 @@ URL, remote, base branch, or required checks to a less restrictive value.
 
 ## Start the issue run
 
-Create and persist one universally unique identifier (UUID) if a caller might retry after losing
-the command response. Submit the frozen issue and reviewed plan:
+Create and persist one universally unique identifier (UUID) before you call `run`. Reuse that UUID
+only if the same command response is lost or uncertain. Submit the frozen issue and reviewed plan:
 
 ```sh
 flow issue run https://github.com/example/widgets/issues/42 \
@@ -222,8 +232,8 @@ It commits and pushes the replacement candidate, then observes the same pull req
 new head. It doesn't create another pull request for the same run.
 
 The command stops at a failure, a recoverable interruption, or `merge_approval_required`. It never
-merges as part of `run`. Preserve the returned run ID. Repeating the same command ID with different
-input is a conflict.
+merges as part of `run`. Preserve the returned run ID and command ID. Repeating the same command ID
+with different input is a conflict.
 
 ## Observe the lifecycle
 

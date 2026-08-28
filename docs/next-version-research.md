@@ -378,9 +378,10 @@ A2A, AG-UI, and A2UI as separate candidate boundaries instead of one combined pr
 
 ## Use the recommended release sequence
 
-Prefer **Approach A** for the next version, with NV-02 and NV-03 as explicitly evaluation-only
-research. This sequence strengthens the working product, creates the missing benchmark base, and
-tests the most distinctive long-horizon ideas without prematurely granting new runtime authority.
+**Selected:** The approved next version uses **Approach A**, with NV-02 and NV-03 as explicitly
+evaluation-only research. This sequence strengthens the working product, creates the missing
+benchmark base, and tests the most distinctive long-horizon ideas without prematurely granting new
+runtime authority.
 
 Choose Approach B only if long-horizon autonomous repair is the version's primary product claim.
 Its evaluation budget must also be funded. Choose Approach C only after three independent consumer

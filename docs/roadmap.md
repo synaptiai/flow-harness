@@ -39,9 +39,13 @@ Gate 11 starts the public compatibility program. Its first slice closes the npm 
 adds a real historical corpus with a read-only check. It classifies public surfaces and assesses a
 future library API without exporting one.
 
-Gate 12 is the next-version research and selection gate. It keeps deferred capabilities outside
-delivery commitments until their flows, authority changes, dependencies, failure behavior, and
-falsifiable evidence gates are explicit.
+Gate 12 selected Approach A, the evidence-first usable checkpoint, as the next release thesis. It
+keeps unrelated deferred capabilities outside delivery commitments until their flows, authority
+changes, dependencies, failure behavior, and falsifiable evidence gates are explicit.
+
+Gate 13 applies that thesis to one production GitHub issue lifecycle. A user must be able to install
+Flow and use it in another repository. The proof must cover implementation, independent review,
+deterministic verification, hosted checks, explicit approval, and verified merge.
 
 Remaining targets include executable extensions, remote or multi-user UI hosts, stronger
 isolation, measured product benchmarks, and a future stable compatibility program.
@@ -739,13 +743,19 @@ production authority, activate themselves, or change a supported contract.
 
 ### Slice 12.2: Select one release thesis
 
-- Choose an evidence-first usable checkpoint, long-horizon recovery, or integration-platform
-  direction.
-- Name the primary user, production scope, accepted authority change, compatibility level, and
-  evaluation budget.
-- Assign no semantic version until the selected thesis defines its compatibility level. The result
-  can be another governed alpha checkpoint, a breaking preview line, or a stable-support program.
-- Reject a scope that combines unrelated high-authority boundaries.
+**Implemented by the approved Approach A decision.**
+
+- Use the evidence-first usable checkpoint for the next version.
+- Serve a local command-line operator who needs to complete one issue in another GitHub repository.
+- Keep Git, GitHub credentials, publication, hosted-check observation, approval, and merge in the
+  trusted host controller. The model receives no new delivery authority.
+- Use another compatibility-governed alpha checkpoint unless qualification establishes a stronger
+  support contract. Assign no version until the release gate freezes it.
+- Require local fault and recovery coverage, hosted Linux x64 and macOS x64 package checks, and one
+  complete external-repository acceptance pilot. Preserve every failed attempt and human
+  intervention.
+- Keep long-horizon repair, programmatic integration, remote operation, and stronger isolation as
+  separate research tracks.
 
 ### Slice 12.3: Complete decision-grade research
 
@@ -780,6 +790,88 @@ production authority, activate themselves, or change a supported contract.
 Gate 12 does not promise implementation of every deferred capability. It does not establish a
 stable release, hosted service, public library, remote API, executable-package ABI, or multi-tenant
 security boundary.
+
+## Gate 13: Complete one GitHub issue end to end
+
+Gate 13 delivers the selected evidence-first checkpoint. Completion requires a released command
+that another user can apply to one supported `github.com` repository without building Flow.
+
+### Slice 13.1: Implement the recoverable host controller
+
+**Implemented in current source.**
+
+- Freeze all task and repository inputs before mutation. These inputs include the open issue,
+  canonical repository, base commit, plan, workflows, budgets, and model. Also freeze candidate
+  paths, holdout, checks, branch, and merge policy.
+- Keep model work network-denied and credential-free. Give implementation only admitted workspace
+  writes, and give independent review read-only access.
+- Prepare and settle worktree, commit, push, pull-request, readiness, and merge effects through a
+  replay-validated durable ledger.
+- Reconcile an interrupted effect against exact local or GitHub identity before retry. Preserve
+  uncertainty when absence or completion can't be proved.
+- Require one draft pull request and reuse that pull request after repair. Require exact-head checks
+  from named GitHub Apps, an exact operator merge command, and a post-merge topology proof.
+
+### Slice 13.2: Bind exact independent-review evidence
+
+**Implementation is active.**
+
+- Send the reviewer the frozen issue and complete criterion IDs and descriptions. Also send the base
+  and candidate identities, changed paths, exact bounded diff, and deterministic verification
+  summary.
+- Bind the review request and structured result to the exact candidate, issue, workflow, and frozen
+  contract. Reject incomplete criteria, malformed JSON, P1 through P3 findings, and candidate drift.
+- Store exact diff and command evidence only in owner-protected private state. Keep public events and
+  inspection content-free.
+- Require explicit operator authority for the bounded repository-data transmission before the
+  first model-backed acceptance run.
+
+### Slice 13.3: Prove the external-project lifecycle
+
+**Pending Slice 13.2 and provider-transmission authority.**
+
+- Use the packed release-candidate command through separate operating-system processes against
+  `digital-twin` issue 6.
+- Start from a frozen clean base. Predeclare the holdout, verification commands, hosted-check names,
+  source app identities, budgets, stopping rules, and repair ceiling.
+- Preserve all attempts. For each failure, identify the responsible boundary and add a regression
+  test. Fix the general Flow defect, and repeat from an admitted state.
+- Require independent review with no P1, P2, or P3 findings. Also require successful local and
+  exact-head hosted checks, explicit gate-bound approval, and a proved merge.
+- Reopen the durable run from a fresh service instance and use separate CLI invocations to prove
+  process-boundary recovery.
+
+### Slice 13.4: Qualify and publish the usable checkpoint
+
+**Pending the external-project proof.**
+
+- Update all public lifecycle documentation from the accepted evidence. This set includes the task
+  guide, workflow-authoring guide, operations runbook, specification, architecture, project status,
+  release notes, and field report.
+- Test every published plan and workflow example through production admission. Check every command
+  against the shipped CLI help.
+- Verify one packed archive on hosted Ubuntu 24.04 x64 and macOS 15 x64. Include issue-command
+  discovery, read-only validation, and compatibility checks.
+- Complete independent code and test review. Merge only with no P1, P2, or P3 findings and all
+  required checks successful.
+- Publish a new immutable GitHub prerelease only after a separate exact publication authorization.
+  Stage and approve npm through the existing two-factor release procedure.
+
+### Gate 13 failure behavior and non-goals
+
+| Condition | Required behavior |
+| --- | --- |
+| The operator hasn't authorized bounded provider transmission | Stop before model execution and preserve the target repository. |
+| The base, issue, plan, workflow, provider, model, or hosted-check contract changes | Reject the stale run or gate. Freeze and review a replacement contract. |
+| A local or hosted check is missing, stale, skipped, or unsuccessful | Don't create or accept a merge gate. |
+| Review finds a P1, P2, or P3 issue | Block publication or merge, fix the candidate, and require fresh candidate-bound evidence. |
+| A Git or GitHub response is lost | Reconcile the prepared effect. Don't repeat it from process memory or manual inference. |
+| The pilot doesn't prove the complete lifecycle | Report the attempt and keep the release unqualified. Don't convert partial success into a readiness claim. |
+
+Gate 13 doesn't support forks, merge queues, GitHub Enterprise, multiple remotes, or cross-host
+relocation. It also excludes autonomous merge approval, administrator bypass, remote multi-user
+control, and a hostile multi-tenant boundary. One accepted pilot doesn't prove compatibility with
+every repository, language, model, or issue.
 
 ## Product benchmark gate
 

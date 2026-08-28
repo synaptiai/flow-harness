@@ -10,9 +10,9 @@ directory as security-sensitive.
 
 ## Availability
 
-The current published CLI does not register `flow issue`. This runbook documents the preview
-operating contract while its controller is under implementation. Don't perform an issue lifecycle
-until `flow --help` lists the `issue` command group in a later release.
+Current source registers `flow issue`. The published `0.1.0-alpha.4` package doesn't include it.
+Operate the lifecycle only from a release whose help and release notes identify it as qualified.
+Keep the release pinned for the complete run. Recovery rejects changed frozen identities.
 
 ## Establish the operating boundary
 

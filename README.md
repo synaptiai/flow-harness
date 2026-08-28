@@ -143,6 +143,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Install the Flow preview](docs/guides/install-preview.md) | Published installation, invocation, exact pinning, provenance verification, removal, and release-specific limits |
 | [Getting started](docs/getting-started.md) | Installed command verification and the first credential-free run |
 | [Complete the coding quick start](docs/guides/coding-quickstart.md) | Provider setup, one bounded edit, cost interpretation, evidence, cancellation, cleanup, and recovery |
+| [Complete a GitHub issue with Flow](docs/guides/github-issue-lifecycle.md) | End-to-end implementation, independent review, deterministic verification, hosted checks, explicit merge approval, and restart-safe recovery in another repository |
 | [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
 | [Compatibility policy](docs/compatibility.md) | Supported surfaces, the packaged historical corpus, prerelease changes, migration, and rollback |

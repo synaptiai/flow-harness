@@ -116,12 +116,12 @@ depth, and call count. Durable preparation and settlement reuse isolated child-r
 recovery, replay, cancellation, cleanup, and accounting. Paired evaluation reports both
 delegation-suitable and sequential-control tasks, but no result can activate delegation.
 
-Current Issue #197 source adds the foundation for one bounded `github.com` issue lifecycle. It
-admits an exact issue plan and separate implementation and review workflows. It binds model writes
-to explicit project-relative prefixes and persists lifecycle events in an owner-only JSONL store.
-The host retains Git, GitHub, credential, verification, publication, and merge authority. The
-end-to-end controller and command surface remain under implementation until the Issue #197
-acceptance pilot passes.
+Current Issue #197 source adds an end-to-end controller for one bounded `github.com` issue
+lifecycle. It admits an exact issue plan and separate implementation and review workflows. It binds
+model writes to explicit project-relative prefixes and persists lifecycle events, private evidence,
+and prepared external effects under one owner-only run root. The host retains Git, GitHub,
+credential, deterministic verification, publication, and merge authority. Release qualification
+still requires the external-repository acceptance pilot.
 
 Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
 retain the embedded Pi path.
@@ -177,14 +177,14 @@ flowchart TB
         rolling["Rolling context admission<br/>Exact count · durable projection · fail closed"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
-        issueLifecycle["GitHub issue lifecycle<br/>Frozen contract · host-owned effects<br/>Target controller"]
+        issueLifecycle["GitHub issue controller<br/>Freeze · implement · review · verify · approve"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
         direction LR
         agents["Agent router and adapters<br/>Pi · local ACP · OMP · Prime"]
         workspaceTools["Workspace tool broker and mutation adapters<br/>Read · list · create · mkdir · edit"]
-        issueHost["Issue host boundary<br/>Pinned argv-only process · no-follow frozen files"]
+        issueHost["Trusted issue host<br/>Git · GitHub CLI · credentials · exact merge proof"]
         acpProcess["Isolated local ACP agent<br/>Fresh process · fresh session · prompt-only"]
         semantic["Semantic query service<br/>Short-lived LSP · read-only projection"]
         commands["Command sandboxes<br/>SRT · Docker"]
@@ -404,7 +404,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
-| GitHub issue lifecycle foundation | `src/domain/issue-lifecycle/`, `src/application/github-issue-ports.ts`, `src/application/issue-lifecycle-store.ts`, `src/application/issue-workflow-admission.ts`, `src/infrastructure/fs/jsonl-issue-lifecycle-store.ts`, `src/infrastructure/fs/frozen-project-file.ts`, `src/infrastructure/git/`, and `src/infrastructure/github/` | Freezes exact issue, repository, base, plan, workflow, budget, project-file, and write-authority identities; persists a replay-validated lifecycle; and confines host execution to revalidated pinned executables, literal argument vectors, explicit environments, and bounded streams while the controller remains under implementation. |
+| GitHub issue lifecycle | `src/cli/github-issue.ts`, `src/cli/production-github-issue-service.ts`, `src/domain/issue-lifecycle/`, `src/application/*-github-issue.ts`, `src/application/issue-*.ts`, `src/infrastructure/issue-lifecycle/`, `src/infrastructure/fs/issue-lifecycle-run-repository.ts`, `src/infrastructure/git/`, and `src/infrastructure/github/` | Freezes the issue, base, plan, workflows, budgets, write authority, and selected model; runs bounded implementation and independent review; verifies a base-failing holdout and exact candidate checks; reconciles Git and GitHub effects; waits for exact-head hosted checks; requires an exact operator merge command; and proves the resulting base topology before completion. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
 | Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets; performs exclusive file creation, hash-bound exact editing, version-bound complete replacement, and nonrecursive directory creation under one target-lock and effect-journal contract; and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |

@@ -10,9 +10,9 @@ authority.
 
 ## Availability
 
-The current published CLI does not register `flow issue`. This document defines the normative
-preview contract for the controller under implementation. The command surface is unavailable until
-`flow --help` lists the `issue` command group in a later release.
+Current source registers `flow issue`. The published `0.1.0-alpha.4` package doesn't include the
+command group. The lifecycle becomes a qualified public preview only when a later release's help
+and release notes identify it and the external-repository acceptance pilot passes.
 
 ## Command surface
 
@@ -20,14 +20,14 @@ The preview command surface is:
 
 ```text
 flow issue validate <plan.yaml>
-flow issue doctor <issue-url> --plan <plan.yaml>
-flow issue run <issue-url> --plan <plan.yaml> --provider <provider> --model <model>
+flow issue doctor <issue-url> --plan <plan.yaml> --provider <provider> --model <model>
+flow issue run <issue-url> --plan <plan.yaml> --provider <provider> --model <model> [--command-id <uuid>]
 flow issue inspect <run-id>
 flow issue events <run-id> [--after <sequence>] [--limit <count>]
-flow issue resume <run-id>
-flow issue cancel <run-id> --actor <label> [--reason <text>]
+flow issue resume <run-id> [--command-id <uuid>]
+flow issue cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>]
 flow issue merge <run-id> --actor <label> --expected-pr <number> \
-  --expected-head <40-lowercase-hex> --expected-gate-digest <sha256>
+  --expected-head <40-lowercase-hex> --expected-gate-digest <sha256> [--command-id <uuid>]
 ```
 
 `run`, `resume`, `cancel`, and `merge` accept `--command-id <uuid>` for idempotent submission.
@@ -330,7 +330,7 @@ An applied settlement must bind the effect to its observed result:
 | `push` | `kind`, `candidateHead`, `branch` |
 | `pull_request` | `kind`, `repositoryIdentity`, `candidateHead`, `headBranch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `isDraft` as `true` |
 | `pull_request_ready` | `kind`, `repositoryIdentity`, `candidateHead`, `headBranch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `isDraft` as `false` |
-| `merge` | `kind`, `candidateHead`, `gateDigest`, `mergeCommit`, `deleteBranchRequested`, `branchDeleted` |
+| `merge` | `kind`, `candidateHead`, `gateDigest`, `mergeCommit`, `deleteBranchRequested`, `branchDeleted`, `proofDigest` |
 
 A `not_applied` settlement has no `result`. The result kind must equal the prepared effect kind,
 and every identity must match the current frozen or approved lifecycle identity.
