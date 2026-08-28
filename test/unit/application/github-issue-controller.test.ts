@@ -480,7 +480,7 @@ class MemoryIssueControllerRepository implements IssueControllerRepository {
   manifest?: FrozenIssueRunManifest;
   readonly commands = new Map<string, IssueControllerCommandRecord>();
   releaseCount = 0;
-  nextClaimError?: Error;
+  nextClaimError: Error | undefined;
 
   async initialize(input: IssueControllerRunInitialization): Promise<void> {
     if (this.manifest !== undefined)
