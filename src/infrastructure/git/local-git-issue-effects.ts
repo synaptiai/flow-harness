@@ -17,13 +17,20 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type {
   CleanupIssueGitWorkspaceRequest,
   CommitIssueGitCandidateRequest,
+  FetchIssueGitRemoteBranchRequest,
   InspectIssueGitCandidateRequest,
   InspectIssueGitCommitRequest,
+  InspectIssueGitFrozenBaseRequest,
+  InspectIssueGitPatchSeriesRequest,
+  InspectIssueGitRemoteBranchRequest,
   IssueGitCandidateObservation,
   IssueGitCommitObservation,
   IssueGitCommitResult,
+  IssueGitFrozenBaseObservation,
+  IssueGitPatchSeriesObservation,
   IssueGitPushResult,
   IssueGitReachabilityRequest,
+  IssueGitRemoteBranchObservation,
   IssueGitWorkspace,
   IssueLocalGitPort,
   PrepareIssueGitWorkspaceRequest,
@@ -36,6 +43,7 @@ import { StrictHostProcess, type StrictHostProcessResult } from "./strict-host-p
 
 export const MAX_ISSUE_CANDIDATE_PATHS = 4_096;
 export const MAX_ISSUE_CANDIDATE_BYTES = 67_108_864;
+export const MAX_ISSUE_PATCH_COMMITS = 1_024;
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_GIT_STDOUT_BYTES = 1_048_576;
@@ -179,6 +187,9 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     if (await pathExists(normalized.workspaceRoot)) {
       throw new LocalGitIssueError("workspace_not_owned");
     }
+    if (await pathExists(normalized.frozenBaseRoot)) {
+      throw new LocalGitIssueError("workspace_not_owned");
+    }
     if ((await this.#readLocalRef(normalized.sourceRoot, normalized.branch, signal)) !== null) {
       throw new LocalGitIssueError("branch_not_owned");
     }
@@ -208,11 +219,27 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       allowNonZero: true,
       ...(signal === undefined ? {} : { signal }),
     });
+    if (result.exitCode !== 0 && !(await pathExists(normalized.workspaceRoot))) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    const frozenBaseResult = await this.#git({
+      cwd: normalized.sourceRoot,
+      arguments: [
+        "worktree",
+        "add",
+        "--quiet",
+        "--detach",
+        normalized.frozenBaseRoot,
+        normalized.baseCommit,
+      ],
+      allowNonZero: true,
+      ...(signal === undefined ? {} : { signal }),
+    });
     let workspace: IssueGitWorkspace;
     try {
       workspace = await this.#observeWorkspace(normalized, signal);
     } catch (error) {
-      if (result.exitCode !== 0) {
+      if (result.exitCode !== 0 || frozenBaseResult.exitCode !== 0) {
         throw new LocalGitIssueError("workspace_state_uncertain", { cause: error });
       }
       throw error;
@@ -231,7 +258,15 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     const prefixes = validateAllowedPrefixes(request.allowedWritePrefixes);
     assertCommit(request.baseCommit);
     const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
-    if (request.baseCommit !== workspace.baseCommit) {
+    if (
+      request.baseCommit !== workspace.baseCommit &&
+      !(await this.isAncestor({
+        workspace,
+        ancestor: workspace.baseCommit,
+        descendant: request.baseCommit,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      }))
+    ) {
       throw new LocalGitIssueError("base_drift");
     }
     assertNoGitlinks(
@@ -243,8 +278,13 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     );
     const head = await this.#readRequiredRef(workspace.root, "HEAD", request.signal);
     if (
-      head !== workspace.baseCommit &&
-      head !== (await this.#readBranchHead(workspace, request.signal))
+      head !== (await this.#readBranchHead(workspace, request.signal)) ||
+      !(await this.isAncestor({
+        workspace,
+        ancestor: request.baseCommit,
+        descendant: head,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      }))
     ) {
       throw new LocalGitIssueError("branch_drift");
     }
@@ -455,6 +495,177 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     return result.exitCode === 0;
   }
 
+  async inspectRemoteBranch(
+    request: InspectIssueGitRemoteBranchRequest,
+  ): Promise<IssueGitRemoteBranchObservation> {
+    if (!isValidExactGitBranchName(request.branch)) {
+      throw new LocalGitIssueError("invalid_request");
+    }
+    const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
+    await this.#assertOrigin(workspace, request.signal);
+    const head = await this.#readRemoteRef(workspace, request.branch, request.signal);
+    return Object.freeze({ branch: request.branch, head });
+  }
+
+  async fetchRemoteBranch(
+    request: FetchIssueGitRemoteBranchRequest,
+  ): Promise<IssueGitRemoteBranchObservation> {
+    assertCommit(request.expectedHead);
+    const before = await this.inspectRemoteBranch(request);
+    if (before.head !== request.expectedHead) throw new LocalGitIssueError("remote_drift");
+    await this.#git({
+      cwd: request.workspace.root,
+      arguments: [
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "origin",
+        `refs/heads/${request.branch}`,
+      ],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    const after = await this.inspectRemoteBranch(request);
+    if (after.head !== request.expectedHead) throw new LocalGitIssueError("remote_drift");
+    await this.inspectCommit({
+      workspace: request.workspace,
+      commit: request.expectedHead,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    return after;
+  }
+
+  async inspectPatchSeries(
+    request: InspectIssueGitPatchSeriesRequest,
+  ): Promise<IssueGitPatchSeriesObservation> {
+    assertCommit(request.baseCommit);
+    assertCommit(request.headCommit);
+    const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
+    if (
+      !(await this.isAncestor({
+        workspace,
+        ancestor: request.baseCommit,
+        descendant: request.headCommit,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      }))
+    ) {
+      throw new LocalGitIssueError("base_drift");
+    }
+    const revList = await this.#gitBuffer({
+      cwd: workspace.root,
+      arguments: [
+        "rev-list",
+        "--reverse",
+        `--max-count=${MAX_ISSUE_PATCH_COMMITS + 1}`,
+        `${request.baseCommit}..${request.headCommit}`,
+      ],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    const commits = parseCommitList(revList);
+    if (commits.length < 1 || commits.length > MAX_ISSUE_PATCH_COMMITS) {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    const patchIds: string[] = [];
+    let parent = request.baseCommit;
+    for (const commit of commits) {
+      const observed = await this.inspectCommit({
+        workspace,
+        commit,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      if (observed.parents.length !== 1 || observed.parents[0] !== parent) {
+        throw new LocalGitIssueError("git_response_invalid");
+      }
+      const patch = await this.#gitBuffer({
+        cwd: workspace.root,
+        arguments: [
+          "show",
+          "--format=%H",
+          "--no-ext-diff",
+          "--no-color",
+          "--full-index",
+          "--binary",
+          commit,
+          "--",
+        ],
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      const patchIdOutput = await this.#gitBuffer({
+        cwd: workspace.root,
+        arguments: ["patch-id", "--stable"],
+        stdin: patch,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      patchIds.push(parsePatchId(patchIdOutput, commit));
+      parent = commit;
+    }
+    if (parent !== request.headCommit) throw new LocalGitIssueError("git_response_invalid");
+    return Object.freeze({
+      firstParent: request.baseCommit,
+      headCommit: request.headCommit,
+      commitCount: commits.length,
+      digest: digest("flow.issue.git-patch-series.v1", patchIds),
+    });
+  }
+
+  async inspectFrozenBase(
+    request: InspectIssueGitFrozenBaseRequest,
+  ): Promise<IssueGitFrozenBaseObservation> {
+    const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
+    return await this.#inspectCleanFrozenBase(workspace, request.signal);
+  }
+
+  async resetFrozenBase(
+    request: InspectIssueGitFrozenBaseRequest,
+  ): Promise<IssueGitFrozenBaseObservation> {
+    const record = await this.#assertOwnedWorkspaceRecord(request.workspace);
+    const workspace = record.workspace;
+    if (workspace === undefined) throw new LocalGitIssueError("workspace_not_owned");
+    if (await pathExists(workspace.frozenBaseRoot)) {
+      const frozenBase = await this.#observeFrozenBaseWorktree(
+        record.request,
+        workspace.commonGitDirectory,
+        request.signal,
+      );
+      if (frozenBase.gitDirectory !== workspace.frozenBaseGitDirectory) {
+        throw new LocalGitIssueError("workspace_state_uncertain");
+      }
+      await this.#git({
+        cwd: workspace.sourceRoot,
+        arguments: ["worktree", "remove", "--force", workspace.frozenBaseRoot],
+        allowNonZero: true,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      if (await pathExists(workspace.frozenBaseRoot)) {
+        throw new LocalGitIssueError("workspace_state_uncertain");
+      }
+    }
+    const created = await this.#git({
+      cwd: workspace.sourceRoot,
+      arguments: [
+        "worktree",
+        "add",
+        "--quiet",
+        "--detach",
+        workspace.frozenBaseRoot,
+        workspace.baseCommit,
+      ],
+      allowNonZero: true,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    const observed = await this.#observeActiveWorkspace(record.request, request.signal).catch(
+      (error: unknown) => {
+        if (created.exitCode !== 0) {
+          throw new LocalGitIssueError("workspace_state_uncertain", { cause: error });
+        }
+        throw error;
+      },
+    );
+    if (!sameWorkspace(observed, workspace)) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    return await this.#inspectCleanFrozenBase(observed, request.signal);
+  }
+
   async cleanupWorkspace(request: CleanupIssueGitWorkspaceRequest): Promise<void> {
     assertCommit(request.expectedBranchHead);
     const recordPath = await this.#ownershipRecordPath(request.workspace.ownershipId);
@@ -496,6 +707,25 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
         throw new LocalGitIssueError("workspace_state_uncertain");
       }
     }
+    if (await pathExists(workspace.frozenBaseRoot)) {
+      const frozenBase = await this.#observeFrozenBaseWorktree(
+        record.request,
+        workspace.commonGitDirectory,
+        request.signal,
+      );
+      if (frozenBase.gitDirectory !== workspace.frozenBaseGitDirectory) {
+        throw new LocalGitIssueError("workspace_state_uncertain");
+      }
+      await this.#git({
+        cwd: workspace.sourceRoot,
+        arguments: ["worktree", "remove", "--force", workspace.frozenBaseRoot],
+        allowNonZero: true,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      if (await pathExists(workspace.frozenBaseRoot)) {
+        throw new LocalGitIssueError("workspace_state_uncertain");
+      }
+    }
     const branchHead = await this.#readLocalRef(
       workspace.sourceRoot,
       workspace.branch,
@@ -529,20 +759,16 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     request: PrepareIssueGitWorkspaceRequest,
   ): Promise<PrepareIssueGitWorkspaceRequest> {
     const sourceRoot = await canonicalDirectory(request.sourceRoot, "source_unavailable");
-    const lexicalWorkspaceRoot = resolve(request.workspaceRoot);
-    const lexicalWorkspaceParent = dirname(lexicalWorkspaceRoot);
-    const workspaceParent = await canonicalDirectory(lexicalWorkspaceParent, "workspace_not_owned");
-    const workspaceName = basename(lexicalWorkspaceRoot);
-    const workspaceRoot = join(workspaceParent, workspaceName);
+    const workspaceRoot = await normalizeOwnedWorkspacePath(request.workspaceRoot);
+    const frozenBaseRoot = await normalizeOwnedWorkspacePath(request.frozenBaseRoot);
     if (
-      workspaceName === "" ||
-      workspaceName === "." ||
-      workspaceName === ".." ||
-      relative(lexicalWorkspaceParent, lexicalWorkspaceRoot) !== workspaceName
+      sourceRoot === workspaceRoot ||
+      sourceRoot === frozenBaseRoot ||
+      workspaceRoot === frozenBaseRoot
     ) {
       throw new LocalGitIssueError("workspace_not_owned");
     }
-    return Object.freeze({ ...request, sourceRoot, workspaceRoot });
+    return Object.freeze({ ...request, sourceRoot, workspaceRoot, frozenBaseRoot });
   }
 
   async #reconcileExistingWorkspace(
@@ -556,6 +782,42 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     }
     if (record.status === "cleaned") throw new LocalGitIssueError("workspace_not_owned");
     await this.#assertSource(request, signal);
+    if (record.status === "prepared") {
+      if (!(await pathExists(request.workspaceRoot))) {
+        if ((await this.#readLocalRef(request.sourceRoot, request.branch, signal)) !== null) {
+          throw new LocalGitIssueError("workspace_state_uncertain");
+        }
+        await this.#git({
+          cwd: request.sourceRoot,
+          arguments: [
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            request.branch,
+            request.workspaceRoot,
+            request.baseCommit,
+          ],
+          allowNonZero: true,
+          ...(signal === undefined ? {} : { signal }),
+        });
+      }
+      if (!(await pathExists(request.frozenBaseRoot))) {
+        await this.#git({
+          cwd: request.sourceRoot,
+          arguments: [
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            request.frozenBaseRoot,
+            request.baseCommit,
+          ],
+          allowNonZero: true,
+          ...(signal === undefined ? {} : { signal }),
+        });
+      }
+    }
     const workspace = await this.#observeWorkspace(request, signal);
     if (record.workspace !== undefined && !sameWorkspace(record.workspace, workspace)) {
       throw new LocalGitIssueError("workspace_state_uncertain");
@@ -678,8 +940,12 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       ownershipId: request.ownershipId,
       sourceRoot: request.sourceRoot,
       root,
+      frozenBaseRoot: request.frozenBaseRoot,
       commonGitDirectory: canonicalCommon,
       gitDirectory,
+      frozenBaseGitDirectory: (
+        await this.#observeFrozenBaseWorktree(request, canonicalCommon, signal)
+      ).gitDirectory,
       repositoryIdentity: request.repositoryIdentity,
       originCanonicalUrl: observedOrigin.canonicalUrl,
       branch: request.branch,
@@ -697,8 +963,21 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     signal?: AbortSignal,
   ): Promise<IssueGitWorkspace> {
     assertWorkspaceShape(supplied);
-    const recordPath = await this.#ownershipRecordPath(supplied.ownershipId);
-    const record = await readOptionalOwnershipRecord(recordPath);
+    const record = await this.#assertOwnedWorkspaceRecord(supplied);
+    const observed = await this.#observeActiveWorkspace(record.request, signal);
+    if (!sameWorkspace(observed, supplied)) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    return observed;
+  }
+
+  async #assertOwnedWorkspaceRecord(
+    supplied: IssueGitWorkspace,
+  ): Promise<WorkspaceOwnershipRecord> {
+    assertWorkspaceShape(supplied);
+    const record = await readOptionalOwnershipRecord(
+      await this.#ownershipRecordPath(supplied.ownershipId),
+    );
     if (
       record === undefined ||
       record.status !== "active" ||
@@ -708,11 +987,7 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     ) {
       throw new LocalGitIssueError("workspace_not_owned");
     }
-    const observed = await this.#observeActiveWorkspace(record.request, signal);
-    if (!sameWorkspace(observed, supplied)) {
-      throw new LocalGitIssueError("workspace_state_uncertain");
-    }
-    return observed;
+    return record;
   }
 
   async #observeActiveWorkspace(
@@ -773,8 +1048,12 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       ownershipId: request.ownershipId,
       sourceRoot: request.sourceRoot,
       root,
+      frozenBaseRoot: request.frozenBaseRoot,
       commonGitDirectory,
       gitDirectory,
+      frozenBaseGitDirectory: (
+        await this.#observeFrozenBaseWorktree(request, commonGitDirectory, signal)
+      ).gitDirectory,
       repositoryIdentity: request.repositoryIdentity,
       originCanonicalUrl: observedOrigin.canonicalUrl,
       branch: request.branch,
@@ -784,6 +1063,102 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     return Object.freeze({
       ...identity,
       workspaceIdentityDigest: digest("flow.issue.git-workspace.v1", identity),
+    });
+  }
+
+  async #observeFrozenBaseWorktree(
+    request: PrepareIssueGitWorkspaceRequest,
+    expectedCommonGitDirectory: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly gitDirectory: string; readonly head: string; readonly tree: string }> {
+    const root = await canonicalDirectory(request.frozenBaseRoot, "workspace_state_uncertain");
+    if (root !== request.frozenBaseRoot) throw new LocalGitIssueError("workspace_state_uncertain");
+    const gitFile = join(root, ".git");
+    const metadata = await lstat(gitFile).catch(() => undefined);
+    if (metadata === undefined || !metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    const source = await readBoundedText(gitFile, 16_384);
+    const match = /^gitdir: (.+)\n?$/.exec(source);
+    if (match?.[1] === undefined || !isAbsolute(match[1])) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    const gitDirectory = await canonicalDirectory(match[1], "workspace_state_uncertain");
+    const commonGitDirectory = await canonicalDirectory(
+      await this.#gitText({
+        cwd: root,
+        arguments: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ...(signal === undefined ? {} : { signal }),
+      }),
+      "workspace_state_uncertain",
+    );
+    const detached = await this.#git({
+      cwd: root,
+      arguments: ["symbolic-ref", "--quiet", "HEAD"],
+      acceptedExitCodes: [0, 1],
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const [head, tree, observedOrigin] = await Promise.all([
+      this.#gitText({
+        cwd: root,
+        arguments: ["rev-parse", "--verify", "HEAD"],
+        ...(signal === undefined ? {} : { signal }),
+      }),
+      this.#gitText({
+        cwd: root,
+        arguments: ["rev-parse", "--verify", "HEAD^{tree}"],
+        ...(signal === undefined ? {} : { signal }),
+      }),
+      this.#observeOrigin(root, signal),
+    ]);
+    if (
+      commonGitDirectory !== expectedCommonGitDirectory ||
+      !isWithin(commonGitDirectory, gitDirectory) ||
+      detached.exitCode !== 1 ||
+      detached.stdout.length !== 0 ||
+      head !== request.baseCommit ||
+      observedOrigin.repositoryIdentity !== request.repositoryIdentity
+    ) {
+      throw new LocalGitIssueError("workspace_state_uncertain");
+    }
+    return Object.freeze({ gitDirectory, head: parseCommit(head), tree: parseCommit(tree) });
+  }
+
+  async #inspectCleanFrozenBase(
+    workspace: IssueGitWorkspace,
+    signal?: AbortSignal,
+  ): Promise<IssueGitFrozenBaseObservation> {
+    const observed = await this.#observeFrozenBaseWorktree(
+      {
+        ownershipId: workspace.ownershipId,
+        sourceRoot: workspace.sourceRoot,
+        workspaceRoot: workspace.root,
+        frozenBaseRoot: workspace.frozenBaseRoot,
+        repositoryIdentity: workspace.repositoryIdentity,
+        baseBranch: workspace.baseBranch,
+        baseCommit: workspace.baseCommit,
+        branch: workspace.branch,
+      },
+      workspace.commonGitDirectory,
+      signal,
+    );
+    const status = await this.#gitBuffer({
+      cwd: workspace.frozenBaseRoot,
+      arguments: [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--ignore-submodules=none",
+      ],
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (status.length !== 0) throw new LocalGitIssueError("source_dirty");
+    return Object.freeze({
+      head: observed.head,
+      tree: observed.tree,
+      status: "clean",
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
     });
   }
 
@@ -1275,8 +1650,11 @@ function validateHostEnvironment(
 function assertPrepareRequest(request: PrepareIssueGitWorkspaceRequest): void {
   assertAbsolutePath(request.sourceRoot);
   assertAbsolutePath(request.workspaceRoot);
+  assertAbsolutePath(request.frozenBaseRoot);
   if (
     request.sourceRoot === request.workspaceRoot ||
+    request.sourceRoot === request.frozenBaseRoot ||
+    request.workspaceRoot === request.frozenBaseRoot ||
     !isValidExactGitBranchName(request.baseBranch) ||
     !isValidExactGitBranchName(request.branch) ||
     request.baseBranch === request.branch ||
@@ -1307,8 +1685,10 @@ function assertWorkspaceShape(workspace: IssueGitWorkspace): void {
         ownershipId: workspace.ownershipId,
         sourceRoot: workspace.sourceRoot,
         root: workspace.root,
+        frozenBaseRoot: workspace.frozenBaseRoot,
         commonGitDirectory: workspace.commonGitDirectory,
         gitDirectory: workspace.gitDirectory,
+        frozenBaseGitDirectory: workspace.frozenBaseGitDirectory,
         repositoryIdentity: workspace.repositoryIdentity,
         originCanonicalUrl: workspace.originCanonicalUrl,
         branch: workspace.branch,
@@ -1325,6 +1705,7 @@ function workspaceRequestDigest(workspace: IssueGitWorkspace): string {
     ownershipId: workspace.ownershipId,
     sourceRoot: workspace.sourceRoot,
     workspaceRoot: workspace.root,
+    frozenBaseRoot: workspace.frozenBaseRoot,
     repositoryIdentity: workspace.repositoryIdentity,
     baseBranch: workspace.baseBranch,
     baseCommit: workspace.baseCommit,
@@ -1623,6 +2004,29 @@ function parseSingleLineOrEmpty(source: Buffer, allowEmpty = true): string {
   return value;
 }
 
+function parseCommitList(source: Buffer): string[] {
+  const text = source.toString("utf8");
+  if (text.includes("\r") || text.includes("\0")) {
+    throw new LocalGitIssueError("git_response_invalid");
+  }
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  if (lines.length === 1 && lines[0] === "") return [];
+  const commits = lines.map(parseCommit);
+  if (new Set(commits).size !== commits.length) {
+    throw new LocalGitIssueError("git_response_invalid");
+  }
+  return commits;
+}
+
+function parsePatchId(source: Buffer, expectedCommit: string): string {
+  const value = parseSingleLine(source);
+  const match = /^([a-f0-9]{40}) ([a-f0-9]{40})$/.exec(value);
+  if (match?.[1] === undefined || match[2] !== expectedCommit) {
+    throw new LocalGitIssueError("git_response_invalid");
+  }
+  return match[1];
+}
+
 function parseCommit(value: string): string {
   if (!SHA1_PATTERN.test(value)) throw new LocalGitIssueError("git_response_invalid");
   return value;
@@ -1668,6 +2072,23 @@ function sameWorkspace(left: IssueGitWorkspace, right: IssueGitWorkspace): boole
     left.workspaceIdentityDigest === right.workspaceIdentityDigest &&
     canonicalJson(left) === canonicalJson(right)
   );
+}
+
+async function normalizeOwnedWorkspacePath(path: string): Promise<string> {
+  const lexicalRoot = resolve(path);
+  const lexicalParent = dirname(lexicalRoot);
+  const parent = await canonicalDirectory(lexicalParent, "workspace_not_owned");
+  const name = basename(lexicalRoot);
+  const root = join(parent, name);
+  if (
+    name === "" ||
+    name === "." ||
+    name === ".." ||
+    relative(lexicalParent, lexicalRoot) !== name
+  ) {
+    throw new LocalGitIssueError("workspace_not_owned");
+  }
+  return root;
 }
 
 function isWithin(root: string, candidate: string): boolean {

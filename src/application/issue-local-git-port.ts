@@ -3,8 +3,10 @@ export interface IssueGitWorkspace {
   readonly ownershipId: string;
   readonly sourceRoot: string;
   readonly root: string;
+  readonly frozenBaseRoot: string;
   readonly commonGitDirectory: string;
   readonly gitDirectory: string;
+  readonly frozenBaseGitDirectory: string;
   readonly repositoryIdentity: string;
   readonly originCanonicalUrl: string;
   readonly branch: string;
@@ -17,6 +19,7 @@ export interface PrepareIssueGitWorkspaceRequest {
   readonly ownershipId: string;
   readonly sourceRoot: string;
   readonly workspaceRoot: string;
+  readonly frozenBaseRoot: string;
   readonly repositoryIdentity: string;
   readonly baseBranch: string;
   readonly baseCommit: string;
@@ -94,6 +97,47 @@ export interface IssueGitReachabilityRequest {
   readonly signal?: AbortSignal;
 }
 
+export interface InspectIssueGitRemoteBranchRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly branch: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface FetchIssueGitRemoteBranchRequest extends InspectIssueGitRemoteBranchRequest {
+  readonly expectedHead: string;
+}
+
+export interface IssueGitRemoteBranchObservation {
+  readonly branch: string;
+  readonly head: string | null;
+}
+
+export interface InspectIssueGitPatchSeriesRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly baseCommit: string;
+  readonly headCommit: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface IssueGitPatchSeriesObservation {
+  readonly firstParent: string;
+  readonly headCommit: string;
+  readonly commitCount: number;
+  readonly digest: string;
+}
+
+export interface InspectIssueGitFrozenBaseRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly signal?: AbortSignal;
+}
+
+export interface IssueGitFrozenBaseObservation {
+  readonly head: string;
+  readonly tree: string;
+  readonly status: "clean";
+  readonly workspaceIdentityDigest: string;
+}
+
 export interface CleanupIssueGitWorkspaceRequest {
   readonly workspace: IssueGitWorkspace;
   readonly expectedBranchHead: string;
@@ -110,5 +154,20 @@ export interface IssueLocalGitPort {
   pushCandidate(request: PushIssueGitCandidateRequest): Promise<IssueGitPushResult>;
   inspectCommit(request: InspectIssueGitCommitRequest): Promise<IssueGitCommitObservation>;
   isAncestor(request: IssueGitReachabilityRequest): Promise<boolean>;
+  inspectRemoteBranch(
+    request: InspectIssueGitRemoteBranchRequest,
+  ): Promise<IssueGitRemoteBranchObservation>;
+  fetchRemoteBranch(
+    request: FetchIssueGitRemoteBranchRequest,
+  ): Promise<IssueGitRemoteBranchObservation>;
+  inspectPatchSeries(
+    request: InspectIssueGitPatchSeriesRequest,
+  ): Promise<IssueGitPatchSeriesObservation>;
+  inspectFrozenBase(
+    request: InspectIssueGitFrozenBaseRequest,
+  ): Promise<IssueGitFrozenBaseObservation>;
+  resetFrozenBase(
+    request: InspectIssueGitFrozenBaseRequest,
+  ): Promise<IssueGitFrozenBaseObservation>;
   cleanupWorkspace(request: CleanupIssueGitWorkspaceRequest): Promise<void>;
 }

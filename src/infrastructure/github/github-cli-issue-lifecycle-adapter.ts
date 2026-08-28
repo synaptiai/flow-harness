@@ -548,6 +548,30 @@ export class GitHubCliIssueLifecycleAdapter
     }
   }
 
+  async observeDraftPullRequest(
+    input: Parameters<GitHubIssueLifecyclePort["observeDraftPullRequest"]>[0],
+    signal?: AbortSignal,
+  ): Promise<GitHubExternalEffectResult<"pull_request"> | null> {
+    const effect = requireEffect(input.effect, "pull_request");
+    validateExpected(input.expected);
+    requireDraftEffect(effect, input.expected, input.title, input.body);
+    await this.#authenticate(signal);
+    const pullRequests = await this.#searchPullRequests(input.expected, signal);
+    if (pullRequests.length > 1) {
+      throw new GitHubIssueLifecycleAdapterError("pull_request_ambiguous");
+    }
+    const existing = pullRequests[0];
+    if (existing === undefined) return null;
+    const result = draftResult(
+      requireExactDraft(existing, input.expected, effect, input.title, input.body),
+    );
+    return Object.freeze({
+      result,
+      reconciled: true,
+      evidence: evidence({ kind: "draft-pull-request", reconciled: true, result }),
+    });
+  }
+
   async ensurePullRequestReady(
     input: Parameters<GitHubIssueLifecyclePort["ensurePullRequestReady"]>[0],
     signal?: AbortSignal,

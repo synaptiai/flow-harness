@@ -199,6 +199,16 @@ export interface GitHubIssueLifecyclePort {
     signal?: AbortSignal,
   ): Promise<GitHubLifecycleObservationResult>;
 
+  observeDraftPullRequest(
+    input: {
+      readonly expected: FrozenGitHubIssueIdentity;
+      readonly effect: Extract<IssueExternalEffectDescriptor, { readonly kind: "pull_request" }>;
+      readonly title: string;
+      readonly body: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<GitHubExternalEffectResult<"pull_request"> | null>;
+
   ensureDraftPullRequest(
     input: {
       readonly expected: FrozenGitHubIssueIdentity;

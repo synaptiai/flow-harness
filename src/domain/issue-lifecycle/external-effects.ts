@@ -170,9 +170,10 @@ export function parseIssueExternalEffectDescriptor(input: unknown): IssueExterna
 
 export function calculateIssueExternalEffectOperationDigest(input: unknown): string {
   const descriptor = parseIssueExternalEffectDescriptor(input);
+  const { commandId: _commandId, ...semanticOperation } = descriptor;
   return calculateIssueLifecycleDomainDigest(
     `flow.issue.external-effect.${descriptor.kind.replaceAll("_", "-")}.v1`,
-    descriptor,
+    semanticOperation,
   );
 }
 

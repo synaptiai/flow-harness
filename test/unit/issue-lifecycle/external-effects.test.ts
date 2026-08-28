@@ -48,6 +48,16 @@ describe("issue lifecycle external-effect descriptors", () => {
     ).not.toBe(calculateIssueExternalEffectOperationDigest(input));
   });
 
+  it("keeps semantic operation identity stable across controller command retries", () => {
+    const input = pushEffect();
+    expect(
+      calculateIssueExternalEffectOperationDigest({
+        ...input,
+        commandId: "223e4567-e89b-42d3-a456-426614174000",
+      }),
+    ).toBe(calculateIssueExternalEffectOperationDigest(input));
+  });
+
   it("binds commit intent to the exact isolated workspace", () => {
     const input = commitEffect();
     expect(

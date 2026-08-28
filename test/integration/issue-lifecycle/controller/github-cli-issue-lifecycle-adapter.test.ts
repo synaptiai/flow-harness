@@ -231,6 +231,39 @@ describe("GitHub CLI issue lifecycle adapter", () => {
     expect(await requests(fixture)).toHaveLength(2);
   });
 
+  it("observes an absent draft intent without creating a pull request", async () => {
+    const fixture = await fakeGh([ok(), ok(pullRequestSearchResponse([]))]);
+    const adapter = lifecycleAdapter(fixture);
+
+    const result = await adapter.observeDraftPullRequest({
+      expected: expected(),
+      effect: draftEffect(),
+      title: "Implement #197",
+      body: "Closes #197",
+    });
+
+    expect(result).toBeNull();
+    expect(await requests(fixture)).toHaveLength(2);
+  });
+
+  it("observes one exact draft intent without mutating GitHub", async () => {
+    const fixture = await fakeGh([ok(), ok(pullRequestSearchResponse([pullRequest()]))]);
+    const adapter = lifecycleAdapter(fixture);
+
+    const result = await adapter.observeDraftPullRequest({
+      expected: expected(),
+      effect: draftEffect(),
+      title: "Implement #197",
+      body: "Closes #197",
+    });
+
+    expect(result).toMatchObject({
+      reconciled: true,
+      result: { kind: "pull_request", pullRequestNodeId: "PR_fixture", isDraft: true },
+    });
+    expect(await requests(fixture)).toHaveLength(2);
+  });
+
   it("creates one draft pull request through a fixed GraphQL mutation and proves it", async () => {
     const fixture = await fakeGh([
       ok(),
