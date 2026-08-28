@@ -28,6 +28,7 @@ import {
   calculateIssueExternalEffectOperationDigest,
   type IssueExternalEffectDescriptor,
 } from "../../../../src/domain/issue-lifecycle/external-effects.js";
+import { decodeFrozenGitHubIssueSnapshot } from "../../../../src/domain/issue-lifecycle/frozen-github-issue-snapshot.js";
 import {
   parseGitHubLifecycleObservation,
   verifyIssueMergeProof,
@@ -323,7 +324,7 @@ async function hostFixture(method: "merge" | "squash" | "rebase" = "squash") {
   const workspaceParent = join(root, "workspaces");
   await Promise.all([mkdir(sourceRoot), mkdir(workspaceParent)]);
   const openIssue = openIssueObservation();
-  const issueBytes = encodeFrozenGitHubIssueSnapshot(openIssue, DIGEST);
+  const issueBytes = encodeFrozenGitHubIssueSnapshot(openIssue);
   const manifest = frozenManifest(method, issueBytes);
   const store = new FakeStore(manifest, issueBytes);
   const localGit = new FakeLocalGit(sourceRoot, workspaceParent);
@@ -867,7 +868,7 @@ function frozenManifest(
       state: "open",
       updatedAt: "2026-08-28T11:00:00.000Z",
       canonicalUrl: "https://github.com/example/project/issues/197",
-      contentDigest: DIGEST,
+      contentDigest: decodeFrozenGitHubIssueSnapshot(issueBytes).issue.contentDigest,
     },
     base: { branch: "main", commit: BASE, remoteRef: "refs/heads/main" },
     branch: { prefix: "flow/issue-", name: "flow/issue-197-test" },

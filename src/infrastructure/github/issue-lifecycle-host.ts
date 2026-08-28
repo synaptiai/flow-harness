@@ -41,50 +41,36 @@ import {
   parseIssueExternalEffectDescriptor,
 } from "../../domain/issue-lifecycle/external-effects.js";
 import {
+  decodeFrozenGitHubIssueSnapshot,
+  encodeFrozenGitHubIssueSnapshot as encodeCanonicalFrozenGitHubIssueSnapshot,
+  FROZEN_GITHUB_ISSUE_SNAPSHOT_MEDIA_TYPE,
+  type FrozenGitHubIssueSnapshot,
+  type FrozenGitHubIssueSnapshotContent,
+} from "../../domain/issue-lifecycle/frozen-github-issue-snapshot.js";
+import {
   type GitHubLifecycleObservation,
   type IssueMergeProof,
   verifyIssueMergeProof,
 } from "../../domain/issue-lifecycle/github-observation.js";
 import { canonicalGitHubRepositoryIdentity } from "../../domain/issue-lifecycle/identity.js";
 import {
+  calculateIssueCandidateTreeDigest as calculateCanonicalCandidateTreeDigest,
+  calculateIssueCommitMessageDigest,
+  renderIssueCommitMessage,
+} from "../../domain/issue-lifecycle/issue-delivery-contract.js";
+import {
   calculateIssueLifecycleDomainDigest,
   calculateIssuePrivateManifestDigest,
   type FrozenIssueRunManifest,
 } from "../../domain/issue-lifecycle/private-manifest.js";
 
-export const FROZEN_GITHUB_ISSUE_SNAPSHOT_MEDIA_TYPE =
-  "application/vnd.synapti.flow.github-issue-snapshot.v1+json";
+export { FROZEN_GITHUB_ISSUE_SNAPSHOT_MEDIA_TYPE };
 export const ISSUE_EXTERNAL_EFFECT_EVIDENCE_MEDIA_TYPE =
   "application/vnd.synapti.flow.issue-effect-evidence.v1+json";
 export const ISSUE_MERGE_PROOF_EVIDENCE_MEDIA_TYPE =
   "application/vnd.synapti.flow.issue-merge-proof-evidence.v1+json";
 
-const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const gitCommitSchema = z.string().regex(/^[a-f0-9]{40}$/);
-const timestampSchema = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
-  .refine((value) => new Date(value).toISOString() === value);
-const frozenIssueSnapshotSchema = z
-  .object({
-    version: z.literal(1),
-    repository: z
-      .object({ identity: z.string(), nodeId: z.string().trim().min(1).max(512) })
-      .strict(),
-    issue: z
-      .object({
-        number: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-        nodeId: z.string().trim().min(1).max(512),
-        updatedAt: timestampSchema,
-        contentDigest: sha256Schema,
-        title: z.string().max(65_536),
-        body: z.string().max(1_048_576),
-      })
-      .strict(),
-  })
-  .strict();
-
-type FrozenIssueSnapshot = Readonly<z.infer<typeof frozenIssueSnapshotSchema>>;
 type HostStore = Pick<IssueLifecycleStore, "putBlob" | "read" | "readBlob" | "readManifest">;
 type GitHubHostPort = GitHubIssueAdmissionPort & GitHubIssueLifecyclePort;
 
@@ -777,20 +763,17 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     return manifest;
   }
 
-  async #frozenIssue(manifest: FrozenIssueRunManifest): Promise<FrozenIssueSnapshot> {
+  async #frozenIssue(manifest: FrozenIssueRunManifest): Promise<FrozenGitHubIssueSnapshot> {
     const input = await this.#store.readBlob(manifest.runId, manifest.artifacts.issue);
     if (input.mediaType !== FROZEN_GITHUB_ISSUE_SNAPSHOT_MEDIA_TYPE) {
       throw new IssueLifecycleHostError("frozen_issue_invalid");
     }
-    let value: unknown;
+    let snapshot: FrozenGitHubIssueSnapshot;
     try {
-      value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input.bytes));
+      snapshot = decodeFrozenGitHubIssueSnapshot(input.bytes);
     } catch {
       throw new IssueLifecycleHostError("frozen_issue_invalid");
     }
-    const parsed = frozenIssueSnapshotSchema.safeParse(value);
-    if (!parsed.success) throw new IssueLifecycleHostError("frozen_issue_invalid");
-    const snapshot = parsed.data;
     if (
       snapshot.repository.identity !== manifest.repository.identity ||
       snapshot.repository.nodeId !== manifest.repository.nodeId ||
@@ -801,7 +784,7 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
     ) {
       throw new IssueLifecycleHostError("frozen_issue_invalid");
     }
-    return deepFreeze(snapshot);
+    return snapshot;
   }
 
   #workspaceRequest(manifest: FrozenIssueRunManifest): PrepareIssueGitWorkspaceRequest {
@@ -1059,20 +1042,19 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
 }
 
 export function renderIssueHostCommitMessage(manifest: FrozenIssueRunManifest): string {
-  return `Implement issue #${manifest.issue.number}\n`;
+  return renderIssueCommitMessage(manifest.issue.number);
 }
 
 export function calculateIssueHostCommitMessageDigest(manifest: FrozenIssueRunManifest): string {
-  return calculateIssueLifecycleDomainDigest("flow.issue.commit-message.v1", {
-    message: renderIssueHostCommitMessage(manifest),
-  });
+  return calculateIssueCommitMessageDigest(manifest.issue.number);
 }
 
 export function calculateIssueCandidateTreeDigest(tree: string): string {
-  if (!gitCommitSchema.safeParse(tree).success) {
+  try {
+    return calculateCanonicalCandidateTreeDigest(tree);
+  } catch {
     throw new IssueLifecycleHostError("descriptor_mismatch");
   }
-  return calculateIssueLifecycleDomainDigest("flow.issue.candidate-tree.v1", { tree });
 }
 
 export function renderIssueHostPullRequest(manifest: FrozenIssueRunManifest): {
@@ -1087,7 +1069,6 @@ export function renderIssueHostPullRequest(manifest: FrozenIssueRunManifest): {
 
 export function encodeFrozenGitHubIssueSnapshot(
   observation: GitHubOpenIssueObservation,
-  contentDigest: string,
 ): Uint8Array {
   let repositoryIdentity: string;
   try {
@@ -1097,20 +1078,22 @@ export function encodeFrozenGitHubIssueSnapshot(
   } catch {
     throw new IssueLifecycleHostError("frozen_issue_invalid");
   }
-  const parsed = frozenIssueSnapshotSchema.safeParse({
+  const content: FrozenGitHubIssueSnapshotContent = {
     version: 1,
     repository: { identity: repositoryIdentity, nodeId: observation.repository.nodeId },
     issue: {
       number: observation.issue.number,
       nodeId: observation.issue.nodeId,
       updatedAt: observation.issue.updatedAt,
-      contentDigest,
       title: observation.issue.title,
       body: observation.issue.body,
     },
-  });
-  if (!parsed.success) throw new IssueLifecycleHostError("frozen_issue_invalid");
-  return encodeCanonical(parsed.data);
+  };
+  try {
+    return encodeCanonicalFrozenGitHubIssueSnapshot(content);
+  } catch {
+    throw new IssueLifecycleHostError("frozen_issue_invalid");
+  }
 }
 
 function pullRequestContentDigests(manifest: FrozenIssueRunManifest) {
@@ -1239,14 +1222,6 @@ function compareStrings(left: string, right: string): number {
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === code;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const item of Object.values(value)) deepFreeze(item);
-  }
-  return value;
 }
 
 void (null as unknown as IssueLifecycleEvent);
