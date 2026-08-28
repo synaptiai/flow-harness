@@ -207,10 +207,7 @@ async function createDeterministicService(
   const hostRoot = join(
     await realpath(tmpdir()),
     `flow-issue-host-${process.getuid?.() ?? 0}`,
-    createHash("sha256")
-      .update(projectRoot)
-      .digest("hex")
-      .slice(0, 32),
+    createHash("sha256").update(projectRoot).digest("hex").slice(0, 32),
   );
   await ensureOwnedPrivateDirectory(durableRoot);
   await ensureOwnedPrivateDirectory(artifactRoot);
