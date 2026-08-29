@@ -13,7 +13,10 @@ import {
   type ManagedCommandExecutionInput,
   type PreparedCommand,
 } from "../../../../src/application/command-sandbox.js";
-import type { NodeExecutionContext } from "../../../../src/application/ports.js";
+import type {
+  AgentCommandExecutionContext,
+  NodeExecutionContext,
+} from "../../../../src/application/ports.js";
 import { normalizeAgentCommandRequest } from "../../../../src/domain/agent-command.js";
 import {
   createArtifactReference,
@@ -31,13 +34,13 @@ const sandboxEvidence: SandboxEvidence = {
   policyDigest: "a".repeat(64),
 };
 
-const context: NodeExecutionContext = {
+const context = {
   runId: "sandbox-run",
   workflowId: "sandbox-workflow",
   attempt: 1,
   cwd: process.cwd(),
   protectedPaths: [process.cwd()],
-};
+} satisfies NodeExecutionContext;
 
 describe("CommandNodeExecutor sandbox boundary", () => {
   it("executes a normalized agent command through the same sandbox boundary", async () => {
@@ -69,6 +72,117 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     expect(sandbox.requests[0]).toMatchObject({ executable: "npm", args: ["test"] });
   });
 
+  it("does not pass holdout stdin through the agent-command boundary", async () => {
+    const run = vi.fn(async (input: ManagedCommandExecutionInput) => {
+      input.stdout(Buffer.from(input.stdin === undefined ? "no-stdin" : "stdin-present"));
+      return { exitCode: 0 };
+    });
+    const executor = new CommandNodeExecutor({
+      sandbox: { prepare: async () => managedPrepared(run, async () => undefined) },
+    });
+
+    const outcome = await executor.executeAgentCommand(
+      normalizeAgentCommandRequest({ executable: "npm", args: ["test"], timeoutMs: 10_000 }),
+      {
+        ...context,
+        commandStdin: Buffer.from("unbound private input", "utf8"),
+      } as unknown as Parameters<CommandNodeExecutor["executeAgentCommand"]>[1],
+    );
+
+    expect(outcome).toMatchObject({ status: "succeeded", evidence: { stdout: "no-stdin" } });
+    expect(outcome.evidence).not.toHaveProperty("stdinHash");
+  });
+
+  it("streams one frozen private input to stdin and records only its digest", async () => {
+    const privateInput = Buffer.from("private holdout program\n", "utf8");
+    const expectedHash = createHash("sha256").update(privateInput).digest("hex");
+    const sandbox = new FakeCommandSandbox({
+      processContainment: "process-group",
+      launch: {
+        executable: process.execPath,
+        args: [
+          "-e",
+          'let input="";process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>input+=chunk);process.stdin.on("end",()=>process.stdout.write(input==="private holdout program\\n"?"accepted":"rejected"));',
+        ],
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+      evidence: sandboxEvidence,
+    });
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const execution = executor.execute(commandNode("python3", ["-"]), {
+      ...context,
+      commandStdin: privateInput,
+    });
+    privateInput.fill(0);
+    const outcome = await execution;
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        executable: "python3",
+        args: ["-"],
+        stdinHash: expectedHash,
+        stdout: "accepted",
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("private holdout program");
+  });
+
+  it("fails when a native child exits before a large private input settles", async () => {
+    const privateInput = Buffer.alloc(1_048_576, 0x61);
+    const sandbox = new FakeCommandSandbox({
+      processContainment: "process-group",
+      launch: {
+        executable: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+      evidence: sandboxEvidence,
+    });
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("python3", ["-"]), {
+      ...context,
+      commandStdin: privateInput,
+    });
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "command_stdin_failed",
+        sideEffectStatus: "uncertain",
+      },
+    });
+    expect(outcome.evidence).not.toHaveProperty("stdinHash");
+  });
+
+  it("passes one copied private input through a managed sandbox boundary", async () => {
+    const privateInput = Buffer.from("managed private input\n", "utf8");
+    const run = vi.fn(async (input: ManagedCommandExecutionInput) => {
+      input.stdout(Buffer.from(input.stdin ?? []));
+      return { exitCode: 0 };
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () => managedPrepared(run, async () => undefined),
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("python3", ["-"]), {
+      ...context,
+      commandStdin: privateInput,
+    });
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        stdinHash: createHash("sha256").update(privateInput).digest("hex"),
+        stdout: "managed private input\n",
+      },
+    });
+  });
+
   it("retains exact oversized agent-command output while preserving its bounded preview", async () => {
     const root = await mkdtemp(join(tmpdir(), "flow-command-artifact-"));
     try {
@@ -86,7 +200,7 @@ describe("CommandNodeExecutor sandbox boundary", () => {
         evidence: sandboxEvidence,
       });
       const executor = new CommandNodeExecutor({ sandbox, maxOutputBytes: 4 });
-      const artifactContext: NodeExecutionContext = {
+      const artifactContext: AgentCommandExecutionContext = {
         ...context,
         nodeId: "agent",
         artifactStore: store,
@@ -195,7 +309,7 @@ describe("CommandNodeExecutor sandbox boundary", () => {
         prepare: async () => managedPrepared(run, async () => undefined),
       };
       const executor = new CommandNodeExecutor({ sandbox, maxOutputBytes: 4 });
-      const artifactContext: NodeExecutionContext = {
+      const artifactContext: AgentCommandExecutionContext = {
         ...context,
         nodeId: "agent",
         artifactStore: store,

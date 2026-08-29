@@ -155,6 +155,7 @@ export interface CommandEvidence {
   readonly stderr: string;
   readonly stdoutHash: string;
   readonly stderrHash: string;
+  readonly stdinHash?: string;
   readonly stdoutRetainedHash?: string;
   readonly stderrRetainedHash?: string;
   readonly stdoutRetainedBytes?: number;
@@ -2123,6 +2124,10 @@ const commandEvidenceSchema = z
     stderr: commandOutputSchema,
     stdoutHash: z.string().regex(/^[a-f0-9]{64}$/),
     stderrHash: z.string().regex(/^[a-f0-9]{64}$/),
+    stdinHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     stdoutRetainedHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -9996,6 +10001,12 @@ function validateAgentCommandSettlement(
       throw new RunReplayError(
         eventIndex,
         "agent command settlement evidence is missing sandbox provenance",
+      );
+    }
+    if (evidence.stdinHash !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command settlement evidence contains unauthorized standard input",
       );
     }
     if (

@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,10 @@ import type {
   CommandSandbox,
   CommandSandboxRequest,
 } from "../../../../src/application/command-sandbox.js";
-import { calculateFrozenIssueVerificationCommandDigest } from "../../../../src/application/frozen-issue-command.js";
+import {
+  calculateFrozenIssueVerificationCommandDigest,
+  FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE,
+} from "../../../../src/application/frozen-issue-command.js";
 import type { IssueLifecycleStore } from "../../../../src/application/issue-lifecycle-store.js";
 import type { IssueGitWorkspace } from "../../../../src/application/issue-local-git-port.js";
 import type { IssueVerificationResult } from "../../../../src/application/issue-verification.js";
@@ -96,6 +100,92 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
     expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
     expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.root);
     expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it("runs one manifest-bound private holdout over stdin without disclosing its source", async () => {
+    const source = Buffer.from(
+      `process.stderr.write("private-stdin-output"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);\n`,
+      "utf8",
+    );
+    const fixture = await createFixture({
+      holdoutCommand: { executable: process.execPath, args: ["-"], timeoutMs: 2_000 },
+      holdoutStdin: source,
+    });
+    const store = new MemoryPrivateStore(
+      fixture.planBlob,
+      undefined,
+      fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+    );
+
+    await expect(
+      createVerifier(fixture, undefined, store).verify(request(fixture)),
+    ).resolves.toMatchObject({
+      negativeControl: { baseOutcome: "failed", candidateOutcome: "passed" },
+    });
+
+    const stdinHash = createHash("sha256").update(source).digest("hex");
+    const commandEvidence = store.blobs
+      .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
+      .map((blob) => JSON.parse(decode(blob)) as { readonly stdinHash?: string });
+    expect(commandEvidence).toHaveLength(3);
+    expect(commandEvidence.slice(0, 2).every((evidence) => evidence.stdinHash === stdinHash)).toBe(
+      true,
+    );
+    expect(commandEvidence[2]?.stdinHash).toBeUndefined();
+    expect(JSON.stringify(commandEvidence)).not.toContain(source.toString("utf8"));
+  });
+
+  it("retains evidence when private stdin closes before write settlement", async () => {
+    const source = Buffer.alloc(1_048_576, 0x61);
+    const fixture = await createFixture({
+      holdoutCommand: nodeCommand("process.exit(0);"),
+      holdoutStdin: source,
+    });
+    const store = new MemoryPrivateStore(
+      fixture.planBlob,
+      undefined,
+      fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+    );
+
+    await expect(
+      createVerifier(fixture, undefined, store).verify(request(fixture)),
+    ).rejects.toMatchObject({ code: "command_stdin_failed" });
+
+    const commandEvidence = store.blobs
+      .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
+      .map((blob) => JSON.parse(decode(blob)) as { readonly stdinHash?: string });
+    expect(commandEvidence).toHaveLength(1);
+    expect(commandEvidence[0]).not.toHaveProperty("stdinHash");
+  });
+
+  it("preserves timeout precedence when private stdin remains unsettled", async () => {
+    const source = Buffer.alloc(1_048_576, 0x61);
+    const fixture = await createFixture({
+      holdoutCommand: nodeCommand("setInterval(() => undefined, 1000);", 30),
+      holdoutStdin: source,
+    });
+    const store = new MemoryPrivateStore(
+      fixture.planBlob,
+      undefined,
+      fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+    );
+
+    await expect(
+      createVerifier(fixture, undefined, store, {
+        terminationGraceMs: 5,
+        terminationConfirmationMs: 100,
+      }).verify(request(fixture)),
+    ).rejects.toMatchObject({ code: "command_timeout" });
+
+    const commandEvidence = store.blobs
+      .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
+      .map(
+        (blob) =>
+          JSON.parse(decode(blob)) as { readonly stdinHash?: string; readonly timedOut: boolean },
+      );
+    expect(commandEvidence).toHaveLength(1);
+    expect(commandEvidence[0]).toMatchObject({ timedOut: true });
+    expect(commandEvidence[0]).not.toHaveProperty("stdinHash");
   });
 
   it("rejects a substituted frozen command before starting a process", async () => {
@@ -508,17 +598,24 @@ interface Fixture {
   readonly plan: GitHubIssuePlan;
   readonly planBlob: IssuePrivateBlobInput;
   readonly manifest: ReturnType<typeof parseIssuePrivateManifest>;
+  readonly holdoutStdinBlob?: IssuePrivateBlobInput;
 }
 
 interface FixtureOptions {
   readonly verificationCommand?: GitHubIssuePlan["verification"][number]["command"];
   readonly holdoutCommand?: GitHubIssuePlan["holdout"]["command"];
+  readonly holdoutStdin?: Uint8Array;
   readonly fixture?: Fixture;
 }
 
 async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   if (options.fixture !== undefined) {
-    return withPlan(options.fixture, options.verificationCommand, options.holdoutCommand);
+    return withPlan(
+      options.fixture,
+      options.verificationCommand,
+      options.holdoutCommand,
+      options.holdoutStdin,
+    );
   }
   const root = await temporaryDirectory("flow-issue-verification-");
   const seed = join(root, "seed");
@@ -584,6 +681,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     } as Omit<Fixture, "plan" | "planBlob" | "manifest">,
     options.verificationCommand,
     options.holdoutCommand,
+    options.holdoutStdin,
   );
 }
 
@@ -621,6 +719,7 @@ function withPlan(
   holdout = nodeCommand(
     `process.stderr.write("private-command-output"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);`,
   ),
+  holdoutStdin?: Uint8Array,
 ): Fixture {
   const plan = {
     apiVersion: "flow.synapti.ai/v1alpha1" as const,
@@ -629,7 +728,10 @@ function withPlan(
     branch: { prefix: "codex/issue-" },
     candidate: { allowedPathPrefixes: ["feature.txt"] },
     implementation: { workflow: "workflows/implementation.workflow.yaml" },
-    holdout: { command: holdout },
+    holdout: {
+      command: holdout,
+      ...(holdoutStdin === undefined ? {} : { stdin: { path: ".flow/verification/holdout.mjs" } }),
+    },
     verification: [{ id: "quality", command: verificationCommand }],
     hostedChecks: {
       required: [{ name: "test", sourceApp: { id: 15_368, slug: "github-actions" } }],
@@ -645,6 +747,13 @@ function withPlan(
     mediaType: "application/vnd.flow.github-issue-plan+yaml",
     bytes: Buffer.from(stringify(plan), "utf8"),
   };
+  const holdoutStdinBlob =
+    holdoutStdin === undefined
+      ? undefined
+      : {
+          mediaType: FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE,
+          bytes: Buffer.from(holdoutStdin),
+        };
   const manifest = parseIssuePrivateManifest({
     version: 1,
     runId: RUN_ID,
@@ -676,6 +785,9 @@ function withPlan(
     holdout: {
       commandDigest: calculateFrozenIssueVerificationCommandDigest(holdout),
       timeoutMs: holdout.timeoutMs,
+      ...(holdoutStdin === undefined
+        ? {}
+        : { stdinDigest: createHash("sha256").update(holdoutStdin).digest("hex") }),
     },
     verification: [
       {
@@ -699,15 +811,28 @@ function withPlan(
       plan: createIssuePrivateBlobReference(planBlob),
       implementationWorkflow: blob("application/vnd.flow.workflow+yaml", "implementation"),
       reviewWorkflow: blob("application/vnd.flow.workflow+yaml", "review"),
+      ...(holdoutStdinBlob === undefined
+        ? {}
+        : { holdoutStdin: createIssuePrivateBlobReference(holdoutStdinBlob) }),
     },
   });
-  return { ...fixture, plan, planBlob, manifest };
+  return {
+    ...fixture,
+    plan,
+    planBlob,
+    manifest,
+    ...(holdoutStdinBlob === undefined ? {} : { holdoutStdinBlob }),
+  };
 }
 
 function createVerifier(
   fixture: Fixture,
   sandbox: RecordingProcessSandbox = new RecordingProcessSandbox(),
-  store: MemoryPrivateStore = new MemoryPrivateStore(fixture.planBlob),
+  store: MemoryPrivateStore = new MemoryPrivateStore(
+    fixture.planBlob,
+    undefined,
+    fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+  ),
   limits: {
     readonly maxOutputBytes?: number;
     readonly terminationGraceMs?: number;
@@ -778,13 +903,17 @@ class MemoryPrivateStore implements Pick<IssueLifecycleStore, "readBlob" | "putB
   constructor(
     private readonly planBlob: IssuePrivateBlobInput,
     failPutNumber?: number,
+    private readonly additionalReadableBlobs: readonly IssuePrivateBlobInput[] = [],
   ) {
     this.failPutNumber = failPutNumber;
   }
 
   async readBlob(_runId: string, reference: IssuePrivateBlobReference) {
-    expect(reference).toEqual(createIssuePrivateBlobReference(this.planBlob));
-    return this.planBlob;
+    const blob = [this.planBlob, ...this.additionalReadableBlobs].find(
+      (candidate) => createIssuePrivateBlobReference(candidate).digest === reference.digest,
+    );
+    expect(blob).toBeDefined();
+    return blob as IssuePrivateBlobInput;
   }
 
   async putBlob(_runId: string, input: IssuePrivateBlobInput) {

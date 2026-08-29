@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +69,46 @@ describe("JsonlIssueLifecycleStore aggregate repository", () => {
       expect(runMetadata.uid).toBe(process.getuid());
       expect(manifestMetadata.uid).toBe(process.getuid());
     }
+  });
+
+  it("publishes and recovers an optional manifest-bound holdout stdin blob", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new JsonlIssueLifecycleStore(root);
+    const original = aggregateInitialization();
+    const holdoutStdin = privateBlob(
+      "application/vnd.flow.issue-holdout-stdin",
+      "private holdout source\n",
+    );
+    const holdoutStdinReference = createIssuePrivateBlobReference(holdoutStdin);
+    const manifest = parseIssuePrivateManifest({
+      ...original.manifest,
+      holdout: {
+        ...original.manifest.holdout,
+        stdinDigest: createHash("sha256").update(holdoutStdin.bytes).digest("hex"),
+      },
+      artifacts: { ...original.manifest.artifacts, holdoutStdin: holdoutStdinReference },
+    });
+    const frozenContractDigest = calculateIssuePrivateManifestDigest(manifest);
+    if (
+      original.snapshot.type !== "phase_transitioned" ||
+      original.snapshot.receipt.kind !== "issue_snapshot"
+    ) {
+      throw new Error("aggregate initialization must begin with an issue snapshot transition");
+    }
+    const initialization: IssueLifecycleRunInitialization = {
+      ...original,
+      manifest,
+      initialBlobs: [...original.initialBlobs, holdoutStdin],
+      snapshot: {
+        ...original.snapshot,
+        receipt: { ...original.snapshot.receipt, frozenContractDigest },
+      },
+    };
+
+    await store.initialize(initialization);
+
+    await expect(store.readManifest(RUN_ID)).resolves.toEqual(manifest);
+    await expect(store.readBlob(RUN_ID, holdoutStdinReference)).resolves.toEqual(holdoutStdin);
   });
 
   it("keeps legacy sequence-one initialization ledger-only with a stable manifest error", async () => {

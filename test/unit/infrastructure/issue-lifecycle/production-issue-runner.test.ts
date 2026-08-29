@@ -79,13 +79,20 @@ describe("ProductionIssueRunFreezer", () => {
         verification: [{ id: "test", timeoutMs: 2_000 }],
         controller: [{ id: "github-read", timeoutMs: 3_000 }],
       },
+      holdout: {
+        stdinDigest: sha256("process.exit(process.cwd().includes('candidate') ? 0 : 7);\n"),
+      },
     });
     expect(frozen.initialBlobs.map((blob) => blob.mediaType)).toEqual([
       FROZEN_GITHUB_ISSUE_SNAPSHOT_MEDIA_TYPE,
       "application/vnd.flow.github-issue-plan+yaml",
       "application/vnd.flow.workflow+yaml",
       "application/vnd.flow.workflow+yaml",
+      "application/vnd.flow.issue-holdout-stdin",
     ]);
+    expect(frozen.manifest.artifacts.holdoutStdin).toEqual(
+      createIssuePrivateBlobReference(requiredItem(frozen.initialBlobs, 4)),
+    );
     const issueSnapshot = decodeFrozenGitHubIssueSnapshot(
       requiredItem(frozen.initialBlobs, 0).bytes,
     );
@@ -496,6 +503,10 @@ function freezerFixture(
       implementationWorkflow(options.implementationPrompt),
     ],
     [".flow/workflows/review.workflow.yaml", reviewWorkflow()],
+    [
+      ".flow/verification/holdout.mjs",
+      "process.exit(process.cwd().includes('candidate') ? 0 : 7);\n",
+    ],
   ]);
   const localAdmissionCalls: unknown[] = [];
   const githubAdmissionCalls: unknown[] = [];
@@ -817,6 +828,7 @@ branch: { prefix: flow/issue- }
 candidate: { allowedPathPrefixes: [src/] }
 implementation: { workflow: .flow/workflows/implementation.workflow.yaml }
 holdout:
+  stdin: { path: .flow/verification/holdout.mjs }
   command: { executable: node, args: [holdout.mjs], timeoutMs: 1000 }
 verification:
   - id: test

@@ -360,6 +360,25 @@ describe("durable agent command replay", () => {
     ).toThrow(/expected object|sandbox.*provenance/i);
   });
 
+  it("rejects agent command evidence with an unbound stdin digest", () => {
+    expect(() =>
+      reduceRunEvents([
+        ...preparedEvents(),
+        parseRunEvent({
+          ...base(4),
+          type: "node_agent_command_settled",
+          nodeId: "implement",
+          attempt: 1,
+          commandId: "command-3",
+          outcome: {
+            status: "succeeded",
+            evidence: { ...commandEvidence("ok", ""), stdinHash: "a".repeat(64) },
+          },
+        }),
+      ]),
+    ).toThrow(/standard input|stdin/i);
+  });
+
   it("rejects tampered retained output when the full stream was truncated", () => {
     expect(() =>
       reduceRunEvents([

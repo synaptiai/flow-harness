@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { CommandSandbox } from "../../application/command-sandbox.js";
 import {
   calculateFrozenIssueVerificationCommandDigest,
+  FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE,
+  MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES,
   type FrozenIssueVerificationCommand,
 } from "../../application/frozen-issue-command.js";
 import type {
@@ -57,6 +59,13 @@ const COMMAND_EVIDENCE_MEDIA_TYPE = "application/vnd.flow.issue-command-evidence
 const PRIVATE_EVIDENCE_MEDIA_TYPE = "application/vnd.flow.issue-private-evidence+json";
 const CANDIDATE_EVIDENCE_MEDIA_TYPE = "application/vnd.flow.issue-candidate-delta+json";
 const ALLOWED_SANDBOX_PROFILES = new Set(["workspace-write-network-deny-v1", "flow-container-v1"]);
+const PRE_STDIN_SETTLEMENT_FAILURES = new Set([
+  "command_termination_failed",
+  "command_sandbox_cleanup_failed",
+  "command_timeout",
+  "command_aborted",
+  "command_signaled",
+]);
 
 export type LocalIssueVerificationErrorCode =
   | "invalid_request"
@@ -69,6 +78,7 @@ export type LocalIssueVerificationErrorCode =
   | "command_output_limit"
   | "command_timeout"
   | "command_signaled"
+  | "command_stdin_failed"
   | "command_execution_failed"
   | "operation_cancelled"
   | "evidence_store_failed";
@@ -158,6 +168,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
     await checkpoint(request);
     const plan = await this.#readFrozenPlan(request);
     const commands = bindFrozenCommands(request.manifest, plan);
+    const holdoutStdin = await this.#readFrozenHoldoutStdin(request, plan);
     const workspace = await this.#workspaceProvider
       .readWorkspace({
         runId: request.runId,
@@ -184,6 +195,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
       nodeId: "negative-control-base",
       cwd: workspace.verificationRoot,
       protectedPaths: verificationProtectedPaths(workspace),
+      ...(holdoutStdin === undefined ? {} : { stdin: holdoutStdin }),
       prove: async (cleanliness, signal) =>
         await this.#proveBase(request, workspace, cleanliness, signal),
       driftCode: "base_drift",
@@ -215,6 +227,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
       nodeId: "negative-control-candidate",
       cwd: workspace.verificationRoot,
       protectedPaths: verificationProtectedPaths(workspace),
+      ...(holdoutStdin === undefined ? {} : { stdin: holdoutStdin }),
       prove: async (cleanliness, signal) =>
         await this.#proveCandidateCommand(request, workspace, authority, cleanliness, signal),
       driftCode: "candidate_drift",
@@ -323,6 +336,35 @@ export class LocalIssueVerification implements IssueVerificationPort {
       if (blob.mediaType !== PLAN_MEDIA_TYPE) fail("frozen_input_mismatch");
       const source = new TextDecoder("utf-8", { fatal: true }).decode(blob.bytes);
       return parseGitHubIssuePlanText(source, "frozen issue plan");
+    } catch (error) {
+      if (error instanceof LocalIssueVerificationError) throw error;
+      return fail("frozen_input_mismatch");
+    }
+  }
+
+  async #readFrozenHoldoutStdin(
+    request: IssueVerificationRequest,
+    plan: GitHubIssuePlan,
+  ): Promise<Uint8Array | undefined> {
+    const stdinDigest = request.manifest.holdout.stdinDigest;
+    const reference = request.manifest.artifacts.holdoutStdin;
+    if (plan.holdout.stdin === undefined) {
+      if (stdinDigest !== undefined || reference !== undefined) fail("frozen_input_mismatch");
+      return undefined;
+    }
+    if (stdinDigest === undefined || reference === undefined) fail("frozen_input_mismatch");
+
+    try {
+      const blob = await this.#privateStore.readBlob(request.runId, reference);
+      verifyIssuePrivateBlob(blob, reference);
+      if (
+        blob.mediaType !== FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE ||
+        blob.bytes.byteLength > MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES ||
+        hash(blob.bytes) !== stdinDigest
+      ) {
+        fail("frozen_input_mismatch");
+      }
+      return Buffer.from(blob.bytes);
     } catch (error) {
       if (error instanceof LocalIssueVerificationError) throw error;
       return fail("frozen_input_mismatch");
@@ -562,6 +604,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
     readonly nodeId: string;
     readonly cwd: string;
     readonly protectedPaths: readonly string[];
+    readonly stdin?: Uint8Array;
     readonly prove: (
       cleanliness: "pristine" | "command-postcondition",
       signal?: AbortSignal,
@@ -591,6 +634,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
         cwd: input.cwd,
         projectRoot: input.cwd,
         protectedPaths: input.protectedPaths,
+        ...(input.stdin === undefined ? {} : { commandStdin: input.stdin }),
         ...(input.request.signal === undefined ? {} : { signal: input.request.signal }),
       });
     } catch {
@@ -605,7 +649,12 @@ export class LocalIssueVerification implements IssueVerificationPort {
     await checkpoint(input.request);
     const evidence = outcome.evidence;
     if (evidence?.kind !== "command") fail("command_execution_failed");
-    validateCommandEvidence(input.command, evidence);
+    validateCommandEvidence(
+      input.command,
+      evidence,
+      input.stdin,
+      outcome.status === "failed" ? outcome.error.code : undefined,
+    );
     return Object.freeze({
       evidence,
       succeeded: outcome.status === "succeeded",
@@ -717,6 +766,7 @@ function bindFrozenCommands(
     plan.holdout.command.timeoutMs !== manifest.holdout.timeoutMs ||
     calculateFrozenIssueVerificationCommandDigest(plan.holdout.command) !==
       manifest.holdout.commandDigest ||
+    (plan.holdout.stdin === undefined) !== (manifest.holdout.stdinDigest === undefined) ||
     plan.verification.length !== manifest.verification.length
   ) {
     fail("frozen_input_mismatch");
@@ -782,14 +832,32 @@ function isAborted(signal: AbortSignal | undefined): boolean {
 function validateCommandEvidence(
   command: FrozenIssueVerificationCommand,
   evidence: CommandEvidence,
+  stdin: Uint8Array | undefined,
+  errorCode: string | undefined,
 ): void {
+  const expectedStdinHash = stdin === undefined ? undefined : hash(stdin);
+  const terminationOverridesOutcome =
+    errorCode === "command_termination_failed" || errorCode === "command_sandbox_cleanup_failed";
+  const interruptionOverridesSignal =
+    errorCode === "command_timeout" ||
+    errorCode === "command_aborted" ||
+    terminationOverridesOutcome;
+  const stdinEvidenceIsValid =
+    errorCode === "command_stdin_failed"
+      ? expectedStdinHash !== undefined && evidence.stdinHash === undefined
+      : evidence.stdinHash === expectedStdinHash ||
+        (expectedStdinHash !== undefined &&
+          evidence.stdinHash === undefined &&
+          errorCode !== undefined &&
+          PRE_STDIN_SETTLEMENT_FAILURES.has(errorCode));
   if (
     evidence.executable !== command.executable ||
     !sameStrings(evidence.args, command.args) ||
     evidence.sandbox === undefined ||
     !ALLOWED_SANDBOX_PROFILES.has(evidence.sandbox.profile) ||
     !SHA256_PATTERN.test(evidence.sandbox.policyDigest) ||
-    evidence.terminationStatus === "unconfirmed"
+    !stdinEvidenceIsValid ||
+    (evidence.terminationStatus === "unconfirmed" && !terminationOverridesOutcome)
   ) {
     fail("command_execution_failed");
   }
@@ -800,9 +868,20 @@ function validateCommandEvidence(
   ) {
     fail("command_execution_failed");
   }
-  if (evidence.timedOut) fail("command_timeout");
-  if (evidence.aborted === true) fail("operation_cancelled");
-  if (evidence.signal !== null) fail("command_signaled");
+  if (
+    (evidence.timedOut && errorCode !== "command_timeout" && !terminationOverridesOutcome) ||
+    (!evidence.timedOut && errorCode === "command_timeout") ||
+    (evidence.aborted === true &&
+      errorCode !== "command_aborted" &&
+      !terminationOverridesOutcome) ||
+    (evidence.aborted !== true && errorCode === "command_aborted") ||
+    (evidence.signal !== null &&
+      errorCode !== "command_signaled" &&
+      !interruptionOverridesSignal) ||
+    (evidence.signal === null && errorCode === "command_signaled")
+  ) {
+    fail("command_execution_failed");
+  }
 }
 
 function executionFailure(
@@ -816,6 +895,8 @@ function executionFailure(
       return new LocalIssueVerificationError("operation_cancelled");
     case "command_signaled":
       return new LocalIssueVerificationError("command_signaled");
+    case "command_stdin_failed":
+      return new LocalIssueVerificationError("command_stdin_failed");
     default:
       return new LocalIssueVerificationError(fallback);
   }
@@ -846,7 +927,7 @@ function uniqueStrings(input: readonly string[]): string[] {
   return [...new Set(input)];
 }
 
-function hash(value: string): string {
+function hash(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 

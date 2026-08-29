@@ -45,6 +45,14 @@ const workflowPathSchema = z
   .min(1)
   .max(1_024)
   .refine(isSafeWorkflowPath, "must be a strict project-relative workflow path");
+const holdoutInputPathSchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .refine(
+    isSafeHoldoutInputPath,
+    "must be a strict project-relative path below .flow/verification",
+  );
 const candidatePathPrefixSchema = z
   .string()
   .min(1)
@@ -101,7 +109,12 @@ const githubIssuePlanSchema = z
       })
       .strict(),
     implementation: z.object({ workflow: workflowPathSchema }).strict(),
-    holdout: z.object({ command: commandSchema }).strict(),
+    holdout: z
+      .object({
+        command: commandSchema,
+        stdin: z.object({ path: holdoutInputPathSchema }).strict().optional(),
+      })
+      .strict(),
     verification: z
       .array(z.object({ id: identifierSchema, command: commandSchema }).strict())
       .min(1)
@@ -210,6 +223,12 @@ function isSafeWorkflowPath(value: string): boolean {
   if (isSafeProjectPath(value)) return true;
   if (!value.startsWith(".flow/workflows/")) return false;
   const remainder = value.slice(".flow/workflows/".length);
+  return isSafeProjectPathOrPrefix(remainder, false);
+}
+
+function isSafeHoldoutInputPath(value: string): boolean {
+  if (!value.startsWith(".flow/verification/")) return false;
+  const remainder = value.slice(".flow/verification/".length);
   return isSafeProjectPathOrPrefix(remainder, false);
 }
 

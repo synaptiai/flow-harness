@@ -118,9 +118,11 @@ candidate:
     - docs/
     - README.md
 holdout:
+  stdin:
+    path: .flow/verification/issue-holdout.py
   command:
-    executable: npm
-    args: [run, test:issue-holdout]
+    executable: python3
+    args: ["-"]
     timeoutMs: 120000
 verification:
   - id: format
@@ -164,6 +166,32 @@ identity. Copy the positive numeric app ID and canonical lowercase app slug from
 
 Use a holdout that tests behavior specific to the issue. A general test command that already
 passes on the frozen base doesn't prove that the candidate implemented the issue.
+
+For a private holdout, store the reviewed source below `.flow/verification/` and set
+`holdout.stdin.path`. Flow freezes the exact regular-file bytes before implementation. It binds the
+SHA-256 digest and private blob reference into the run manifest.
+
+Flow sends the bytes to the holdout command through standard input. The command uses the
+verification worktree as its working
+directory. Resolve repository files from that directory. The interpreter reads source from
+standard input. Therefore, don't use `__file__` to locate the repository.
+
+Choose an interpreter mode that reads a program from standard input. For example, use
+`executable: python3` with `args: ["-"]` for Python or `executable: node` with `args: ["-"]` for
+Node.js. The command receives the same frozen bytes for the base negative control and the candidate
+positive control. Flow records `stdinHash` only after the process input pipe accepts all bytes.
+This transport evidence doesn't prove that the application consumed the input. Choose an
+interpreter mode whose successful execution requires reading standard input.
+
+Flow doesn't add a dedicated input-byte field to command evidence. However, it retains exact
+standard output and standard error as owner-only private evidence. A holdout that echoes its input
+can copy source bytes into that evidence. Don't write private holdouts that print their source.
+Public status, public events, and model context don't include private command output.
+
+The native process sandbox supports private holdout input. The current container command backend
+has an output-only attach channel and rejects stdin-enabled commands before execution. Use the
+native sandbox for this preview feature, or omit `holdout.stdin` and use a nonprivate command whose
+source is available in both Git trees.
 
 A repository name can start with a dot. For example, `example/.github` is a valid canonical
 repository identity. The owner component cannot start with a dot, and all repository identities

@@ -93,9 +93,11 @@ implementation:
 candidate:
   allowedPathPrefixes: [src/, tests/]
 holdout:
+  stdin:
+    path: .flow/verification/issue-holdout.py
   command:
-    executable: npm
-    args: [run, test:holdout]
+    executable: python3
+    args: ["-"]
     timeoutMs: 120000
 verification:
   - id: test
@@ -130,6 +132,7 @@ merge:
 | `implementation.workflow` | Must be a project-relative regular-file path to a valid Flow workflow. It can use `.flow/workflows/**` but must exclude `.git` and private `.flow` state. |
 | `candidate.allowedPathPrefixes` | Must be a nonempty, unique list of project-relative exact files or directory prefixes. Entries must stay within the repository and exclude `.git` and `.flow`. |
 | `holdout.command` | Must be one fixed command vector. It must return nonzero on the frozen base and zero on the candidate. |
+| `holdout.stdin.path` | Optional. Must identify one regular file below `.flow/verification/`. The controller freezes at most 1,048,576 bytes and streams the exact bytes to both holdout executions without exposing the source path to the command. |
 | `verification` | Must be a nonempty list of commands with unique `id` values. Every command must return zero on the exact candidate. |
 | `hostedChecks.required` | Must be a nonempty list of strict `{name, sourceApp: {id, slug}}` objects with unique names. The app ID must be a positive safe integer, and the slug must be canonical lowercase. Every named check must come from that exact app and settle successfully for the exact published head. |
 | `review.workflow` | Must be a project-relative regular-file path to a valid, read-only Flow workflow. It has the same path restrictions as `implementation.workflow`. |
@@ -149,6 +152,7 @@ Plan admission applies these exact limits:
 | Input | Limit |
 | --- | --- |
 | Complete plan | 65,536 UTF-8 bytes |
+| Private holdout standard input | 1,048,576 bytes |
 | Verification commands | 32 |
 | Required hosted checks | 32 |
 | Candidate path prefixes | 64 |
@@ -194,9 +198,10 @@ inside that root after lexical and real-path resolution. Absolute paths, empty s
 `..` traversal, NUL bytes, platform aliases, symbolic-link escapes, `.git`, and private `.flow`
 run state are invalid.
 
-The plan can store workflow inputs under `.flow/workflows/**`. It cannot select `.git`,
-`.flow/runs`, `.flow/issue-runs`, or another private `.flow` path. The runtime must reject a path
-whose real path or symbolic-link target escapes its admitted namespace.
+The plan can store workflow inputs under `.flow/workflows/**`. It can select one optional private
+holdout input below `.flow/verification/**`. It cannot select `.git`, `.flow/runs`,
+`.flow/issue-runs`, or another private `.flow` path. The runtime must reject a path whose real path
+or symbolic-link target escapes its admitted namespace.
 
 `candidate.allowedPathPrefixes` cannot grant the model write access to `.flow` or `.git`. A
 workflow path identifies immutable input. It doesn't create a candidate write permission.
@@ -213,7 +218,7 @@ The initial frozen identity contains digests or bounded identities for:
 - issue node, number, state, content digest, and exact update time.
 - configured base branch and the exact commit observed at its remote `refs/heads/<baseBranch>` ref.
 - frozen contract, plan, implementation template workflow, review template workflow, verification
-  commands, holdout, and budgets.
+  commands, holdout command, optional private holdout input, and budgets.
 - derived Flow-owned branch.
 - run and idempotency identities.
 
@@ -407,6 +412,27 @@ The controller runs the frozen holdout twice:
 
 1. The untouched frozen base must return nonzero.
 2. The exact candidate must return zero.
+
+If `holdout.stdin.path` is present, the freezer reads the source before the first mutable effect.
+It binds the raw SHA-256 digest and the typed, content-addressed private blob reference into the run
+manifest.
+
+Verification retrieves only that blob. It verifies the media type, size, blob identity, and raw
+digest. It then sends copied bytes to both commands through standard input. Verification never
+reads the live plan path.
+
+Command evidence contains `stdinHash` only after transport write settlement. It doesn't prove that
+the application consumed the input. Use an interpreter mode whose successful execution requires
+reading standard input. The executor rejects missing, substituted, or oversized input. The native
+executor also rejects a pipe that errors or closes before write settlement.
+
+Command evidence has no dedicated input-byte field. Standard output and standard error remain
+exact owner-only private evidence. A holdout that echoes its input can copy source bytes into that
+evidence. Public projections and model context don't include private command evidence.
+
+The native process sandbox supports this input channel. A managed backend that can't prove stdin
+delivery must fail before command execution. The preview container backend does so because its
+current attach protocol transports output only.
 
 The controller then runs every `verification` command against the exact candidate. Each result
 binds the command identity, executable and argument-vector digest, timeout, exit result, bounded

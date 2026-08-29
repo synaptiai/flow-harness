@@ -1588,7 +1588,9 @@ function prepareInitialization(
   }
 
   const expectedReferences = new Map(
-    Object.values(manifest.artifacts).map((reference) => [reference.digest, reference]),
+    Object.values(manifest.artifacts)
+      .filter((reference): reference is IssuePrivateBlobReference => reference !== undefined)
+      .map((reference) => [reference.digest, reference]),
   );
   const blobs = new Map<
     string,

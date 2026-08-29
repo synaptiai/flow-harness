@@ -58,10 +58,12 @@ export class AgentCommandRecorder {
         ...(approval === undefined ? {} : { approval }),
       });
       executionStarted = true;
-      const outcome = await this.executor.executeAgentCommand(
-        request,
-        withArtifactProducer(withExecutionSignal(this.context, signal), prepared),
+      const executionContext = withArtifactProducer(
+        withExecutionSignal(this.context, signal),
+        prepared,
       );
+      const { commandStdin: _commandStdin, ...agentCommandContext } = executionContext;
+      const outcome = await this.executor.executeAgentCommand(request, agentCommandContext);
       const settlement = await prepared.settle(outcome);
       const durableOutcome = deepFreeze(structuredClone(outcome));
       this.#outcomes.push(durableOutcome);

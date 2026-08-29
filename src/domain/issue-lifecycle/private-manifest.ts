@@ -198,7 +198,13 @@ const frozenIssueRunManifestSchema = z
       .min(1)
       .max(64)
       .refine(uniqueStrings, "allowed write prefixes must be unique"),
-    holdout: z.object({ commandDigest: sha256Schema, timeoutMs: timeoutSchema }).strict(),
+    holdout: z
+      .object({
+        commandDigest: sha256Schema,
+        timeoutMs: timeoutSchema,
+        stdinDigest: sha256Schema.optional(),
+      })
+      .strict(),
     verification: z
       .array(verificationSchema)
       .min(1)
@@ -220,6 +226,7 @@ const frozenIssueRunManifestSchema = z
         plan: privateBlobReferenceSchema,
         implementationWorkflow: privateBlobReferenceSchema,
         reviewWorkflow: privateBlobReferenceSchema,
+        holdoutStdin: privateBlobReferenceSchema.optional(),
       })
       .strict(),
   })
@@ -277,6 +284,16 @@ const frozenIssueRunManifestSchema = z
         code: "custom",
         path: ["budgets", "holdout"],
         message: "budget holdout timeout must match the frozen holdout command",
+      });
+    }
+    if (
+      (manifest.holdout.stdinDigest === undefined) !==
+      (manifest.artifacts.holdoutStdin === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["holdout", "stdinDigest"],
+        message: "holdout stdin digest and private blob reference must be present together",
       });
     }
     if (manifest.budgetDigest !== digestBudget(manifest.budgets)) {

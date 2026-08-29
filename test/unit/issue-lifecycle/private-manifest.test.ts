@@ -120,6 +120,27 @@ describe("private issue-run manifest", () => {
     ).toThrow(String(MAX_ISSUE_PRIVATE_BLOB_BYTES));
   });
 
+  it("binds an optional private holdout stdin digest and blob as one contract", () => {
+    const input = manifest();
+    const holdoutStdin = blob("application/vnd.flow.issue-holdout-stdin", "private verifier");
+    const bound = {
+      ...input,
+      holdout: { ...input.holdout, stdinDigest: "c".repeat(64) },
+      artifacts: { ...input.artifacts, holdoutStdin },
+    };
+
+    expect(parseIssuePrivateManifest(bound)).toMatchObject({
+      holdout: { stdinDigest: "c".repeat(64) },
+      artifacts: { holdoutStdin },
+    });
+    expect(() => parseIssuePrivateManifest({ ...bound, artifacts: input.artifacts })).toThrow(
+      /holdout stdin/i,
+    );
+    expect(() =>
+      parseIssuePrivateManifest({ ...input, artifacts: { ...input.artifacts, holdoutStdin } }),
+    ).toThrow(/holdout stdin/i);
+  });
+
   it.each([
     ["unknown field", (value: ReturnType<typeof manifest>) => ({ ...value, extra: true })],
     [

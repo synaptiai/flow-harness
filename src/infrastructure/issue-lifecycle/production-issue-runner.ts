@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { ArtifactStore } from "../../application/artifact-store.js";
-import { calculateFrozenIssueVerificationCommandDigest } from "../../application/frozen-issue-command.js";
+import {
+  calculateFrozenIssueVerificationCommandDigest,
+  FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE,
+  MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES,
+} from "../../application/frozen-issue-command.js";
 import {
   buildIssueIndependentReviewProjection,
   serializeBoundedIssueReviewContext,
@@ -174,6 +178,10 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
 
     const implementationFile = await this.#read(plan.implementation.workflow);
     const reviewFile = await this.#read(plan.review.workflow);
+    const holdoutStdinFile =
+      plan.holdout.stdin === undefined
+        ? undefined
+        : await this.#read(plan.holdout.stdin.path, MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES);
     const implementationSource = decodeUtf8(implementationFile);
     const reviewSource = decodeUtf8(reviewFile);
     const issueSnapshot = issueSnapshotContent(firstGitHub);
@@ -224,11 +232,16 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
     const planBlob = sourceBlob(PLAN_MEDIA_TYPE, planFile);
     const implementationBlob = sourceBlob(WORKFLOW_MEDIA_TYPE, implementationFile);
     const reviewBlob = sourceBlob(WORKFLOW_MEDIA_TYPE, reviewFile);
+    const holdoutStdinBlob =
+      holdoutStdinFile === undefined
+        ? undefined
+        : sourceBlob(FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE, holdoutStdinFile);
     const initialBlobs = Object.freeze([
       issueBlob,
       planBlob,
       implementationBlob,
       reviewBlob,
+      ...(holdoutStdinBlob === undefined ? [] : [holdoutStdinBlob]),
     ] as const);
     const budgets = issueBudgets(
       implementation,
@@ -279,6 +292,7 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
       holdout: {
         commandDigest: calculateFrozenIssueVerificationCommandDigest(plan.holdout.command),
         timeoutMs: plan.holdout.command.timeoutMs,
+        ...(holdoutStdinFile === undefined ? {} : { stdinDigest: holdoutStdinFile.sha256 }),
       },
       verification: plan.verification.map((entry) => ({
         id: entry.id,
@@ -294,6 +308,9 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
         plan: createIssuePrivateBlobReference(planBlob),
         implementationWorkflow: createIssuePrivateBlobReference(implementationBlob),
         reviewWorkflow: createIssuePrivateBlobReference(reviewBlob),
+        ...(holdoutStdinBlob === undefined
+          ? {}
+          : { holdoutStdin: createIssuePrivateBlobReference(holdoutStdinBlob) }),
       },
     });
     const frozenContractDigest = calculateIssuePrivateManifestDigest(manifest);
@@ -307,8 +324,8 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
     });
   }
 
-  async #read(path: string): Promise<FrozenProjectFile> {
-    return await this.#files.read({ projectRoot: this.#projectRoot, path, maxBytes: 1_048_576 });
+  async #read(path: string, maxBytes = 1_048_576): Promise<FrozenProjectFile> {
+    return await this.#files.read({ projectRoot: this.#projectRoot, path, maxBytes });
   }
 }
 
