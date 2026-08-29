@@ -108,10 +108,14 @@ import {
   type CompiledWorkflowConcurrency,
   type ConditionSourceField,
   type EvidenceSourceField,
+  MAX_AUTHORED_MODEL_VERIFIER_PROMPT_CHARACTERS,
   MAX_COMPILED_WORKFLOW_NODES,
   MAX_CONCURRENT_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_ISSUE_REVIEW_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES,
   MAX_LOOP_ITERATIONS,
+  MAX_MODEL_VERIFIER_INPUT_BYTES,
   MAX_OPTIMIZATION_CANDIDATES,
   MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES,
   MAX_RESULT_VALUE_BYTES,
@@ -2647,6 +2651,80 @@ const controlVerifierCommandSchema = z
   })
   .strict();
 
+const issueWorkflowVerifierInputPolicySchema = z.discriminatedUnion("role", [
+  z
+    .object({
+      kind: z.literal("issue-workflow"),
+      role: z.literal("implementation"),
+      maxBytes: z.literal(MAX_MODEL_VERIFIER_INPUT_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("issue-workflow"),
+      role: z.literal("review"),
+      maxBytes: z.literal(MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES),
+    })
+    .strict(),
+]);
+
+const controlModelVerifierSchema = z
+  .object({
+    kind: z.literal("model"),
+    prompt: z.string().min(1).max(MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES),
+    evidence: z
+      .array(
+        z
+          .object({
+            nodeId: identifierSchema,
+            field: evidenceSourceFieldSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(16)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
+        "verifier evidence sources must be unique",
+      ),
+    model: z
+      .object({
+        provider: z.string().min(1).max(96),
+        id: z.string().min(1).max(256),
+        thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+      })
+      .strict(),
+    timeoutMs: z.number().int().positive().max(86_400_000),
+    inputPolicy: issueWorkflowVerifierInputPolicySchema.optional(),
+  })
+  .strict()
+  .superRefine((verifier, context) => {
+    const maxPromptCharacters =
+      verifier.inputPolicy?.role === "review"
+        ? MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES
+        : verifier.inputPolicy?.role === "implementation"
+          ? MAX_MODEL_VERIFIER_INPUT_BYTES
+          : MAX_AUTHORED_MODEL_VERIFIER_PROMPT_CHARACTERS;
+    if (verifier.prompt.length > maxPromptCharacters) {
+      context.addIssue({
+        code: "too_big",
+        maximum: maxPromptCharacters,
+        inclusive: true,
+        origin: "string",
+        path: ["prompt"],
+        message: `Too big: expected string to have <=${maxPromptCharacters} characters`,
+      });
+    }
+    if (verifier.prompt !== verifier.prompt.trim()) {
+      context.addIssue({
+        code: "custom",
+        path: ["prompt"],
+        message: "verifier prompt must not contain surrounding whitespace",
+      });
+    }
+  });
+
 const controlVerifierSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -2654,42 +2732,7 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
       command: controlVerifierCommandSchema,
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal("model"),
-      prompt: z
-        .string()
-        .min(1)
-        .max(16_384)
-        .refine((value) => value === value.trim(), {
-          message: "verifier prompt must not contain surrounding whitespace",
-        }),
-      evidence: z
-        .array(
-          z
-            .object({
-              nodeId: identifierSchema,
-              field: evidenceSourceFieldSchema,
-            })
-            .strict(),
-        )
-        .min(1)
-        .max(16)
-        .refine(
-          (items) =>
-            new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
-          "verifier evidence sources must be unique",
-        ),
-      model: z
-        .object({
-          provider: z.string().min(1).max(96),
-          id: z.string().min(1).max(256),
-          thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
-        })
-        .strict(),
-      timeoutMs: z.number().int().positive().max(86_400_000),
-    })
-    .strict(),
+  controlModelVerifierSchema,
   z
     .object({
       kind: z.literal("lean-proof"),
@@ -3024,11 +3067,22 @@ const controlGraphSchema = z
       ),
   })
   .strict()
-  .refine(
-    (graph) =>
-      Buffer.byteLength(JSON.stringify(graph), "utf8") <= MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
-    `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
-  );
+  .superRefine((graph, context) => {
+    const maxBytes = graph.nodes.some(
+      (node) =>
+        node.type === "verifier" &&
+        node.verifier.kind === "model" &&
+        node.verifier.inputPolicy?.role === "review",
+    )
+      ? MAX_ISSUE_REVIEW_CONTROL_GRAPH_SERIALIZED_BYTES
+      : MAX_CONTROL_GRAPH_SERIALIZED_BYTES;
+    if (Buffer.byteLength(JSON.stringify(graph), "utf8") > maxBytes) {
+      context.addIssue({
+        code: "custom",
+        message: `serialized control graph must not exceed ${maxBytes} UTF-8 bytes`,
+      });
+    }
+  });
 
 const optimizationEvaluationReasonSchema = z.enum([
   "improved",

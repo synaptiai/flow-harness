@@ -23,7 +23,7 @@ import {
 import type { PinnedGitHubIssueHostExecutable } from "./fixed-host-executables.js";
 import { MAX_STRICT_HOST_PROCESS_OUTPUT_BYTES, StrictHostProcess } from "./strict-host-process.js";
 
-export const MAX_ISSUE_REVIEW_DIFF_BYTES = 32_768;
+export const MAX_ISSUE_REVIEW_DIFF_BYTES = 131_072;
 
 const DEFAULT_DIFF_TIMEOUT_MS = 60_000;
 const MAX_DIFF_STDERR_BYTES = 65_536;

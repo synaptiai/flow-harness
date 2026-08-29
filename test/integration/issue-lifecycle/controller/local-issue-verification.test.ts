@@ -33,6 +33,7 @@ import { LocalGitIssueEffects } from "../../../../src/infrastructure/git/local-g
 import {
   LocalIssueReviewEvidence,
   LocalIssueReviewEvidenceError,
+  MAX_ISSUE_REVIEW_DIFF_BYTES,
 } from "../../../../src/infrastructure/git/local-issue-review-evidence.js";
 import {
   LocalIssueVerification,
@@ -536,6 +537,46 @@ describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
     expect(invocation.environmentNames).not.toContain("OPENAI_API_KEY");
   }, 20_000);
 
+  it("captures an exact review diff above the legacy 32 KiB boundary", async () => {
+    const fixture = await createFixture({ candidateContent: "x".repeat(40_000) });
+    const store = new MemoryPrivateStore(fixture.planBlob);
+    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+    const adapter = new LocalIssueReviewEvidence({
+      git: fixture.effects,
+      gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), fixture.root),
+      privateStore: store,
+      verification: provider(verification),
+    });
+
+    const evidence = await adapter.read({
+      runId: RUN_ID,
+      manifest: fixture.manifest,
+      candidateHead: fixture.candidateHead,
+      workspace: fixture.workspace,
+    });
+
+    expect(evidence.diffBlob.byteLength).toBeGreaterThan(32_768);
+    expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
+  }, 20_000);
+
+  it("rejects a configured review diff boundary above the public maximum", async () => {
+    const fixture = await createFixture();
+    const store = new MemoryPrivateStore(fixture.planBlob);
+    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+    const executable = await pinGitHubIssueHostExecutable(await gitPath(), fixture.root);
+
+    expect(
+      () =>
+        new LocalIssueReviewEvidence({
+          git: fixture.effects,
+          gitExecutable: executable,
+          privateStore: store,
+          verification: provider(verification),
+          maxDiffBytes: MAX_ISSUE_REVIEW_DIFF_BYTES + 1,
+        }),
+    ).toThrow(`maxDiffBytes must be between 1 and ${MAX_ISSUE_REVIEW_DIFF_BYTES}`);
+  });
+
   it("rejects bounded-output overflow and candidate mutation after diff capture", async () => {
     const fixture = await createFixture();
     const store = new MemoryPrivateStore(fixture.planBlob);
@@ -632,6 +673,7 @@ interface FixtureOptions {
   readonly verificationCommand?: GitHubIssuePlan["verification"][number]["command"];
   readonly holdoutCommand?: GitHubIssuePlan["holdout"]["command"];
   readonly holdoutStdin?: Uint8Array;
+  readonly candidateContent?: string;
   readonly fixture?: Fixture;
 }
 
@@ -678,7 +720,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     baseCommit: base,
     branch: "codex/issue-197-verification",
   });
-  await writeFile(join(candidate, "feature.txt"), "candidate\n");
+  await writeFile(join(candidate, "feature.txt"), options.candidateContent ?? "candidate\n");
   const observation = await effects.inspectCandidate({
     workspace,
     baseCommit: base,

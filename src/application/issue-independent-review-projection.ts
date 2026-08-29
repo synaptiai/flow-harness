@@ -2,7 +2,7 @@ import type { FrozenIssueRunManifest } from "../domain/issue-lifecycle/private-m
 import type { IssueReviewEvidence } from "./issue-review-evidence-port.js";
 import {
   IssueWorkflowAdmissionError,
-  MAX_ISSUE_WORKFLOW_CONTEXT_BYTES,
+  MAX_ISSUE_REVIEW_CONTEXT_BYTES,
 } from "./issue-workflow-admission.js";
 
 export interface IssueIndependentReviewProjectionInput {
@@ -82,10 +82,10 @@ export function buildIssueIndependentReviewProjection(
 /** Serializes a review context exactly once and rejects, rather than truncates, excess data. */
 export function serializeBoundedIssueReviewContext(input: unknown): string {
   const serialized = JSON.stringify(input);
-  if (Buffer.byteLength(serialized, "utf8") > MAX_ISSUE_WORKFLOW_CONTEXT_BYTES) {
+  if (Buffer.byteLength(serialized, "utf8") > MAX_ISSUE_REVIEW_CONTEXT_BYTES) {
     throw new IssueWorkflowAdmissionError(
       "context_too_large",
-      `review projection must not exceed ${MAX_ISSUE_WORKFLOW_CONTEXT_BYTES} UTF-8 bytes`,
+      `review projection must not exceed ${MAX_ISSUE_REVIEW_CONTEXT_BYTES} UTF-8 bytes`,
     );
   }
   return serialized;

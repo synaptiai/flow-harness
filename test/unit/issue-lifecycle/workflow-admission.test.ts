@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   admitIssueWorkflow,
   ISSUE_WORKFLOW_PROTECTED_PATHS,
+  MAX_ISSUE_REVIEW_BOUND_PROMPT_CHARACTERS,
+  MAX_ISSUE_REVIEW_CONTEXT_BYTES,
   MAX_ISSUE_WORKFLOW_CONTEXT_BYTES,
 } from "../../../src/application/issue-workflow-admission.js";
 import { createEffectiveHarnessRuntimeSnapshot } from "../../../src/domain/adaptation/effective-harness-runtime.js";
@@ -199,7 +201,7 @@ describe("issue workflow admission", () => {
       source: reviewWorkflow(),
       sourceName: "frozen-review.workflow.yaml",
       model: { provider: "openai", id: "gpt-5.6-sol" },
-      context: { kind: "review", content: "Candidate diff and evidence" },
+      context: { kind: "review", content: JSON.stringify({ summary: "Candidate diff" }) },
       resultNodeId: "review",
     });
 
@@ -214,7 +216,10 @@ describe("issue workflow admission", () => {
       source: reviewWorkflowWithNestedVerifiers(),
       sourceName: "verifier-review.workflow.yaml",
       model: { provider: "openai", id: "gpt-5.6-sol" },
-      context: { kind: "review", content: "Candidate diff and evidence" },
+      context: {
+        kind: "review",
+        content: JSON.stringify({ summary: "Candidate diff and evidence" }),
+      },
       resultNodeId: "review",
     });
     const rootVerifier = admitted.workflow.nodes.find((node) => node.id === "root-verifier");
@@ -230,8 +235,83 @@ describe("issue workflow admission", () => {
           ? verifier.verifier.prompt
           : "";
       expect(prompt).toContain("untrusted task data");
-      expect(prompt).toContain('"content":"Candidate diff and evidence"');
+      expect(prompt).toContain('"summary":"Candidate diff and evidence"');
     }
+  });
+
+  it("admits review context above the implementation limit after worst-case JSON escaping", () => {
+    const emptyBytes = Buffer.byteLength(JSON.stringify({ content: "" }), "utf8");
+    const content = JSON.stringify({
+      content: '"'.repeat((MAX_ISSUE_REVIEW_CONTEXT_BYTES - emptyBytes) / 2),
+    });
+    const admitted = admitIssueWorkflow({
+      role: "review",
+      source: reviewWorkflow(),
+      sourceName: "review.workflow.yaml",
+      model: { provider: "openai", id: "gpt-5.6-sol" },
+      context: { kind: "review", content },
+      resultNodeId: "review",
+    });
+    const resultNode = admitted.workflow.nodes.find((node) => node.id === "review");
+    const prompt = resultNode?.type === "agent" ? resultNode.agent.prompt : "";
+
+    expect(Buffer.byteLength(content, "utf8")).toBe(MAX_ISSUE_REVIEW_CONTEXT_BYTES);
+    expect(prompt.length).toBeGreaterThan(MAX_ISSUE_REVIEW_CONTEXT_BYTES);
+    expect(prompt.length).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_BOUND_PROMPT_CHARACTERS);
+  });
+
+  it("rejects review context above its UTF-8 byte limit", () => {
+    expect(() =>
+      admitIssueWorkflow({
+        role: "review",
+        source: reviewWorkflow(),
+        sourceName: "review.workflow.yaml",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+        context: {
+          kind: "review",
+          content: JSON.stringify({ content: "x".repeat(MAX_ISSUE_REVIEW_CONTEXT_BYTES) }),
+        },
+        resultNodeId: "review",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "context_too_large" }));
+  });
+
+  it.each(["not-json", "[]", '{"summary": "not canonical"}'])(
+    "rejects a noncanonical review context: %s",
+    (content) => {
+      expect(() =>
+        admitIssueWorkflow({
+          role: "review",
+          source: reviewWorkflow(),
+          sourceName: "review.workflow.yaml",
+          model: { provider: "openai", id: "gpt-5.6-sol" },
+          context: { kind: "review", content },
+          resultNodeId: "review",
+        }),
+      ).toThrowError(expect.objectContaining({ code: "unsafe_workflow" }));
+    },
+  );
+
+  it("rejects an authored issue-workflow verifier input policy", () => {
+    const source = reviewWorkflowWithNestedVerifiers().replace(
+      "prompt: Verify the root evidence.",
+      [
+        "prompt: Verify the root evidence.",
+        "      inputPolicy: { kind: issue-workflow, role: review, maxBytes: 786432 }",
+      ].join("\n"),
+    );
+    expect(source).toContain("inputPolicy:");
+
+    expect(() =>
+      admitIssueWorkflow({
+        role: "review",
+        source,
+        sourceName: "review.workflow.yaml",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+        context: { kind: "review", content: JSON.stringify({ summary: "Candidate diff" }) },
+        resultNodeId: "prepare",
+      }),
+    ).toThrow(/inputPolicy/i);
   });
 
   it.each([
@@ -247,7 +327,7 @@ describe("issue workflow admission", () => {
         source,
         sourceName: "review.workflow.yaml",
         model: { provider: "openai", id: "gpt-5.6-sol" },
-        context: { kind: "review", content: "Candidate diff" },
+        context: { kind: "review", content: JSON.stringify({ summary: "Candidate diff" }) },
         resultNodeId: "review",
       }),
     ).toThrowError(expect.objectContaining({ code: "unsafe_workflow" }));
@@ -261,7 +341,7 @@ describe("issue workflow admission", () => {
           source: reviewWorkflow(),
           sourceName: "review.workflow.yaml",
           model: { provider: "openai", id: "gpt-5.6-sol" },
-          context: { kind: "review", content: "Candidate diff" },
+          context: { kind: "review", content: JSON.stringify({ summary: "Candidate diff" }) },
           resultNodeId,
         }),
       ).toThrowError(expect.objectContaining({ code: "invalid_result_node" }));

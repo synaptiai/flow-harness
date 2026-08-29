@@ -213,7 +213,10 @@ describe("GitHub issue lifecycle documentation contracts", () => {
       source: extractFence(guide, "## Create the review workflow", "yaml"),
       sourceName: "documented-review.workflow.yaml",
       model: { provider: "openai", id: "documented-model" },
-      context: { kind: "review", content: "bounded exact review bundle" },
+      context: {
+        kind: "review",
+        content: JSON.stringify({ summary: "bounded exact review bundle" }),
+      },
       resultNodeId: "review-result",
     });
 

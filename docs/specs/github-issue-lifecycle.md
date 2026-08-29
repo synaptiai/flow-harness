@@ -466,10 +466,26 @@ construct one replay-stable projection. The projection must include:
 The projection must exclude workspace identity, absolute paths, and raw command output. It must
 also exclude GitHub node IDs, credentials, and volatile evidence-instance digests.
 
-The complete serialized JSON projection must not exceed 65,536 UTF-8 bytes after escaping. Flow
-must reject an oversized projection without truncating or omitting any field. Reconstructing the
-same candidate and frozen contract from a later process must produce the same projection even when
-private verification timestamps and evidence-instance digests differ.
+The exact diff must not exceed 131,072 UTF-8 bytes. The complete serialized JSON projection must
+not exceed 262,144 UTF-8 bytes after escaping. These reviewer-only limits don't change the 65,536
+UTF-8-byte issue-workflow context limit. Flow must reject an oversized diff or projection without
+truncating or omitting any field. Reconstructing the same candidate and frozen contract from a
+later process must produce the same projection even when private verification timestamps and
+evidence-instance digests differ.
+
+The projection must be one canonical JSON object. Trusted admission embeds the object directly in
+the review context envelope and rejects a noncanonical representation. This rule prevents another
+JSON string layer from consuming the bounded model-input surface.
+
+Trusted issue admission binds the review projection to each review model prompt. A bound prompt
+can contain at most 786,432 characters. A review model verifier can receive at most 786,432 UTF-8
+bytes of rubric, projection, evidence, and work-profile context. Repository-authored workflow
+source cannot request this review-only policy. Generic model verifiers retain the 262,144-byte
+aggregate input limit.
+
+Flow frames untrusted verifier rubric and evidence with deterministic boundaries that don't occur
+in the corresponding content. It also binds the rubric's exact UTF-8 byte length and SHA-256
+digest.
 
 Every finding has a stable identity and one severity from `P1`, `P2`, or `P3`. Any severity listed
 in `review.blockingSeverities` blocks publication or invalidates a later merge gate. A reviewer

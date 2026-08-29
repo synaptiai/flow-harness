@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { parseRunEvent, reduceRunEvents, type RunEvent } from "../../../src/domain/run/events.js";
+import { parseRunEvent, type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
 
 describe("durable control-flow replay", () => {
   it("reconstructs condition, omission, join, and resource-neutral control state", () => {
@@ -75,6 +75,21 @@ describe("durable control-flow replay", () => {
         controlGraph,
       }),
     ).toThrow(/serialized control graph.*524288/i);
+  });
+
+  it("reports the review-policy control graph limit through the public event parser", () => {
+    const { controlGraph, nodeIds } = oversizedReviewControlGraph();
+
+    expect(() =>
+      parseRunEvent({
+        ...base(1),
+        type: "run_started",
+        nodeIds,
+        workflowApiVersion: "flow.synapti.ai/v1alpha1",
+        workflowDigest: "d".repeat(64),
+        controlGraph,
+      }),
+    ).toThrow(/serialized control graph.*1048576/i);
   });
 
   it("rejects a control graph whose ordered node projection differs from node ids", () => {
@@ -610,6 +625,32 @@ function oversizedControlGraph() {
     type: "command",
     dependsOn: ["join-7"],
   });
+  return { controlGraph: { nodes }, nodeIds: nodes.map((node) => node.nodeId) };
+}
+
+function oversizedReviewControlGraph() {
+  const verifier = (nodeId: string) => ({
+    nodeId,
+    type: "verifier" as const,
+    dependsOn: ["source"],
+    verifier: {
+      kind: "model" as const,
+      prompt: "r".repeat(600_000),
+      evidence: [{ nodeId: "source", field: "command.stdout" }],
+      model: { provider: "test", id: "deterministic", thinking: "medium" },
+      timeoutMs: 60_000,
+      inputPolicy: {
+        kind: "issue-workflow" as const,
+        role: "review" as const,
+        maxBytes: 786_432,
+      },
+    },
+  });
+  const nodes = [
+    { nodeId: "source", type: "command" as const, dependsOn: [] },
+    verifier("review-one"),
+    verifier("review-two"),
+  ];
   return { controlGraph: { nodes }, nodeIds: nodes.map((node) => node.nodeId) };
 }
 

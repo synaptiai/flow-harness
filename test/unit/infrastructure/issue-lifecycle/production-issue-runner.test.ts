@@ -359,10 +359,35 @@ describe("ProductionIssueWorkflowRunner", () => {
     expect(fixture.executions).toBe(executionsAfterFirstRun);
   });
 
+  it("runs independent review with an exact diff above the implementation context limit", async () => {
+    const fixture = await runnerFixture({ diffContent: "d".repeat(80_000) });
+
+    const result = await fixture.runner.runReview({
+      kind: "review",
+      runId,
+      manifest: fixture.manifest,
+      frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+      candidateHead,
+      pollCancellation: async () => undefined,
+    });
+    const reviewContext = reviewContextFromPrompt(fixture.reviewPrompt) as {
+      readonly diff: { readonly byteLength: number };
+    };
+
+    expect(result.resultText).toBe(fixture.reviewText);
+    expect(reviewContext.diff.byteLength).toBe(80_000);
+    expect(Buffer.byteLength(JSON.stringify(reviewContext), "utf8")).toBeGreaterThan(65_536);
+  });
+
   it("rejects an oversized aggregate review projection without truncation", async () => {
+    const changedPaths = Array.from(
+      { length: 800 },
+      (_, index) => `src/${index.toString().padStart(4, "0")}-${"x".repeat(90)}.ts`,
+    );
     const fixture = await runnerFixture({
-      issueBody: "issue-context-".repeat(2_500),
-      diffContent: "diff-context-".repeat(2_500),
+      issueBody: "i".repeat(55_000),
+      diffContent: "d".repeat(130_000),
+      changedPaths,
     });
 
     await expect(
@@ -374,7 +399,7 @@ describe("ProductionIssueWorkflowRunner", () => {
         candidateHead,
         pollCancellation: async () => undefined,
       }),
-    ).rejects.toThrow(/review projection.*65536.*UTF-8 bytes/i);
+    ).rejects.toThrow(/review projection.*262144.*UTF-8 bytes/i);
     expect(fixture.executions).toBe(0);
   });
 
@@ -557,6 +582,7 @@ async function runnerFixture(
   options: {
     readonly issueBody?: string;
     readonly diffContent?: string;
+    readonly changedPaths?: readonly string[];
     readonly implementationTokens?: number;
   } = {},
 ) {
@@ -576,12 +602,13 @@ async function runnerFixture(
   await mkdir(verificationRoot);
   await writeFile(join(candidateRoot, ".ignored-mutable-state"), "mutable-only", "utf8");
   const workspace = issueWorkspace(candidateRoot, verificationRoot);
+  const changedPaths = options.changedPaths ?? ["src/index.ts"];
   const candidate = {
     branch: workspace.branch,
     head: baseCommit,
     baseCommit,
     tree: "b".repeat(40),
-    changedPaths: ["src/index.ts"],
+    changedPaths,
     logicalBytes: 42,
     workspaceIdentityDigest: workspace.workspaceIdentityDigest,
   } as const;
@@ -625,7 +652,7 @@ async function runnerFixture(
     candidateDelta: {
       baseCommit,
       candidateHead,
-      pathCount: 1,
+      pathCount: changedPaths.length,
       logicalBytes: 42,
       relevant: true,
       evidenceDigest: "3".repeat(64),
@@ -962,9 +989,9 @@ function reviewContextFromPrompt(prompt: string): unknown {
   const end = prompt.indexOf(suffix, start + prefix.length);
   if (start < 0 || end < 0) throw new Error("review prompt does not contain a Flow context");
   const envelope = JSON.parse(prompt.slice(start + prefix.length, end)) as {
-    context: { content: string };
+    context: { content: unknown };
   };
-  return JSON.parse(envelope.context.content) as unknown;
+  return envelope.context.content;
 }
 
 function agentSuccess(

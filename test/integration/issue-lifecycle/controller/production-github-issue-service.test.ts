@@ -813,9 +813,9 @@ function requiredCandidateHead(prompt: string): string {
   const end = prompt.indexOf(suffix, start + marker.length);
   if (start < 0 || end < 0) throw new Error("review prompt omitted the Flow context envelope");
   const envelope = JSON.parse(prompt.slice(start + marker.length, end)) as {
-    readonly context?: { readonly content?: string };
+    readonly context?: { readonly content?: unknown };
   };
-  const content = JSON.parse(envelope.context?.content ?? "null") as {
+  const content = envelope.context?.content as {
     readonly expectedResult?: { readonly candidateHead?: unknown };
     readonly candidate?: { readonly candidateHead?: unknown };
   } | null;

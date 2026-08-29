@@ -5,6 +5,10 @@ import type { RollingContextCompactionPolicy } from "../run/context-compaction.j
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const WORK_PROFILES = Object.freeze(["fast", "standard", "long"] as const);
 export const MAX_CONTROL_GRAPH_SERIALIZED_BYTES = 524_288;
+export const MAX_ISSUE_REVIEW_CONTROL_GRAPH_SERIALIZED_BYTES = 1_048_576;
+export const MAX_AUTHORED_MODEL_VERIFIER_PROMPT_CHARACTERS = 16_384;
+export const MAX_MODEL_VERIFIER_INPUT_BYTES = 262_144;
+export const MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES = 786_432;
 export const MAX_CONCURRENT_NODES = 32;
 export const MAX_COMPILED_WORKFLOW_NODES = 256;
 export const MAX_LOOP_BODY_NODES = 16;
@@ -181,6 +185,17 @@ export type CompiledVerifierConfig =
   | {
       readonly kind: "model";
       readonly prompt: string;
+      readonly inputPolicy?:
+        | {
+            readonly kind: "issue-workflow";
+            readonly role: "implementation";
+            readonly maxBytes: typeof MAX_MODEL_VERIFIER_INPUT_BYTES;
+          }
+        | {
+            readonly kind: "issue-workflow";
+            readonly role: "review";
+            readonly maxBytes: typeof MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES;
+          };
       readonly evidence: readonly CompiledVerifierEvidenceSource[];
       readonly model: {
         readonly provider: string;

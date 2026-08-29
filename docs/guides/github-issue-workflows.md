@@ -50,10 +50,21 @@ digests, workspace identity, absolute paths, or credentials. It also excludes ra
 and GitHub node IDs. This separation keeps restart replay stable. It doesn't weaken the private
 audit trail or merge gate.
 
-The final serialized projection must not exceed 65,536 UTF-8 bytes. Flow measures the complete JSON
-after escaping and rejects an oversized projection before provider input/output. It never truncates
-the issue, criteria, changed paths, diff, or verification summary. Reduce the issue or candidate
-scope and start a new frozen run if this limit is exceeded.
+The exact diff must not exceed 131,072 UTF-8 bytes. The final serialized projection must not exceed
+262,144 UTF-8 bytes. These limits apply only to independent review. The issue-workflow context
+remains limited to 65,536 UTF-8 bytes. Flow measures the complete JSON after escaping.
+
+Flow rejects an oversized diff or projection before provider input/output. It never truncates the
+issue, criteria, changed paths, diff, or verification summary. Reduce the issue or candidate scope
+and start a new frozen run if either reviewer limit is exceeded.
+
+Flow requires the projection to be one canonical JSON object. It embeds that object directly in
+the review context envelope. A noncanonical review context fails admission.
+
+Flow applies a trusted review-only input policy after it compiles the authored workflow. This
+policy allows a bound review prompt and model-verifier input to contain the complete projection.
+Workflow YAML cannot enable or change the policy. Generic model verifiers keep their standard
+input limit.
 
 ## Create the implementation workflow
 
