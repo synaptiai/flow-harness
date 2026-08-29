@@ -15,6 +15,7 @@ import {
   continueClaimedIssue,
   createClaimedIssueController,
   evidenceDigest,
+  issueControllerFailureCode,
   publicStateDigest,
   releaseClaimedIssue,
 } from "./continue-github-issue.js";
@@ -142,13 +143,14 @@ async function executeDurableRun(
     });
     return state;
   } catch (error) {
+    const code = issueControllerFailureCode(error);
     if (
       controller.state.pendingEffect === undefined &&
       !["merged", "failed", "cancelled"].includes(controller.state.phase)
     ) {
       await controller.append({
         type: "run_failed",
-        code: "controller_failed",
+        code,
         evidenceDigest: evidenceDigest("controller-failure", boundedError(error)),
       });
     }
@@ -158,7 +160,7 @@ async function executeDurableRun(
       commandDigest: calculateIssueLifecycleCommandDigest(command),
       settledAt: eventTime(failed.lastEventAt, dependencies.now),
       outcome: "failed",
-      code: error instanceof Error && "code" in error ? String(error.code) : "controller_failed",
+      code,
       resultDigest: publicStateDigest(failed),
     });
     throw error;

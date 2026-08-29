@@ -816,12 +816,19 @@ function requiredCandidateHead(prompt: string): string {
     readonly context?: { readonly content?: string };
   };
   const content = JSON.parse(envelope.context?.content ?? "null") as {
-    readonly candidateHead?: unknown;
+    readonly expectedResult?: { readonly candidateHead?: unknown };
+    readonly candidate?: { readonly candidateHead?: unknown };
   } | null;
-  if (typeof content?.candidateHead !== "string" || !/^[a-f0-9]{40}$/.test(content.candidateHead)) {
+  const expectedHead = content?.expectedResult?.candidateHead;
+  const candidateHead = content?.candidate?.candidateHead;
+  if (
+    typeof expectedHead !== "string" ||
+    !/^[a-f0-9]{40}$/.test(expectedHead) ||
+    candidateHead !== expectedHead
+  ) {
     throw new Error("review prompt omitted the exact candidate head");
   }
-  return content.candidateHead;
+  return expectedHead;
 }
 
 function planSource(): string {

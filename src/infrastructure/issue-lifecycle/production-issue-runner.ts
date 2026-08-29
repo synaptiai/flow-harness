@@ -39,9 +39,10 @@ import {
   admitIssueWorkflow,
   completeIssueWorkflowBudget,
 } from "../../application/issue-workflow-admission.js";
-import type {
-  ImplementationWorkflowResult,
-  RawReviewWorkflowResult,
+import {
+  type ImplementationWorkflowResult,
+  IssueWorkflowExecutionError,
+  type RawReviewWorkflowResult,
 } from "../../application/issue-workflow-runner.js";
 import type {
   ModelSessionStore,
@@ -403,7 +404,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       String(request.iteration),
     );
     const state = await this.#execute(admitted, flowRunId, workspace, request.signal);
-    assertSucceeded(state, flowRunId);
+    assertSucceeded(state, flowRunId, "implementation");
     await request.pollCancellation();
     const candidate = await this.#git.inspectCandidate({
       workspace,
@@ -490,7 +491,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       request.signal,
       requireVerificationRoot(workspace),
     );
-    assertSucceeded(state, flowRunId);
+    assertSucceeded(state, flowRunId, "review");
     await request.pollCancellation();
     return await this.#reviewResult(request.manifest, request.candidateHead, flowRunId, state, {
       templateWorkflowDigest: admitted.templateWorkflowDigest,
@@ -516,7 +517,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
     }
     const store = new JsonlRunStore(this.#nestedRunRoot);
     const state = reduceRunEvents(await store.read(input.flowRunId));
-    assertSucceeded(state, input.flowRunId);
+    assertSucceeded(state, input.flowRunId, "review");
     return await this.#reviewResult(manifest, input.candidateHead, input.flowRunId, state, {
       templateWorkflowDigest: manifest.reviewWorkflow.templateWorkflowDigest,
       executionWorkflowDigest: state.workflowDigest,
@@ -951,12 +952,46 @@ function assertCandidate(
   }
 }
 
-function assertSucceeded(state: RunState, flowRunId: string): void {
-  if (state.runId !== flowRunId || state.status !== "succeeded") {
-    throw new Error(
-      `nested issue workflow did not succeed: status=${state.status}; node=${state.failedNodeId ?? "none"}`,
+function assertSucceeded(
+  state: RunState,
+  flowRunId: string,
+  role: "implementation" | "review",
+): void {
+  if (state.runId !== flowRunId) {
+    throw new IssueWorkflowExecutionError(
+      "nested_workflow_identity_mismatch",
+      role,
+      state.status,
+      state.failedNodeId,
+      nestedFailureCode(state),
     );
   }
+  if (state.status === "succeeded") return;
+  const suffix =
+    state.status === "resource_exhausted"
+      ? "resource_exhausted"
+      : state.status === "failed"
+        ? "workflow_failed"
+        : state.status === "cancelled"
+          ? "workflow_cancelled"
+          : "workflow_incomplete";
+  throw new IssueWorkflowExecutionError(
+    `${role}_${suffix}`,
+    role,
+    state.status,
+    state.failedNodeId,
+    nestedFailureCode(state),
+  );
+}
+
+function nestedFailureCode(state: RunState): string | null {
+  if (state.failedNodeId === null) return null;
+  const code = state.nodes[state.failedNodeId]?.error?.code;
+  return typeof code === "string" &&
+    /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(code) &&
+    code.length <= 128
+    ? code
+    : null;
 }
 
 function deriveIssueRunId(commandId: string): string {

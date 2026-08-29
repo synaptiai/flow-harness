@@ -81,6 +81,35 @@ export class IssueWorkflowResultError extends Error {
   }
 }
 
+export type IssueWorkflowExecutionErrorCode =
+  | "nested_workflow_identity_mismatch"
+  | "implementation_workflow_failed"
+  | "implementation_workflow_cancelled"
+  | "implementation_resource_exhausted"
+  | "implementation_workflow_incomplete"
+  | "review_workflow_failed"
+  | "review_workflow_cancelled"
+  | "review_resource_exhausted"
+  | "review_workflow_incomplete";
+
+/** A content-free classification of a failed nested issue workflow. */
+export class IssueWorkflowExecutionError extends Error {
+  override readonly name = "IssueWorkflowExecutionError";
+
+  constructor(
+    readonly code: IssueWorkflowExecutionErrorCode,
+    readonly role: "implementation" | "review",
+    readonly nestedStatus: string,
+    readonly failedNodeId: string | null,
+    readonly nestedFailureCode: string | null,
+  ) {
+    super(
+      `${code}: nested ${role} workflow status=${nestedStatus}; ` +
+        `node=${failedNodeId ?? "none"}; nodeError=${nestedFailureCode ?? "none"}`,
+    );
+  }
+}
+
 export function validateImplementationWorkflowResult(
   manifest: FrozenIssueRunManifest,
   expectedIteration: number,

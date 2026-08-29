@@ -11,7 +11,10 @@ import {
   calculateIssueReviewEvidenceDigest,
   type IssueReviewEvidence,
 } from "../../../../src/application/issue-review-evidence-port.js";
-import { validateReviewWorkflowResult } from "../../../../src/application/issue-workflow-runner.js";
+import {
+  IssueWorkflowExecutionError,
+  validateReviewWorkflowResult,
+} from "../../../../src/application/issue-workflow-runner.js";
 import type { NodeExecutionOutcome } from "../../../../src/application/ports.js";
 import { parseIssueLifecycleCommand } from "../../../../src/domain/issue-lifecycle/commands.js";
 import {
@@ -305,6 +308,30 @@ describe("ProductionIssueWorkflowRunner", () => {
     expect(fixture.executions).toBe(executionsAfterFirstRun);
   });
 
+  it("classifies implementation resource exhaustion without exposing nested failure text", async () => {
+    const fixture = await runnerFixture({ implementationTokens: 10_000 });
+
+    const failure = await fixture.runner
+      .runImplementation({
+        kind: "implementation",
+        runId,
+        manifest: fixture.manifest,
+        frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+        iteration: 1,
+        workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
+        pollCancellation: async () => undefined,
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(IssueWorkflowExecutionError);
+    expect(failure).toMatchObject({
+      code: "implementation_resource_exhausted",
+      role: "implementation",
+      nestedStatus: "resource_exhausted",
+    });
+    expect(String(failure)).not.toContain("implemented");
+  });
+
   it("replays review when only timestamp-derived verification digests change", async () => {
     const fixture = await runnerFixture();
     const request = {
@@ -516,7 +543,11 @@ function freezerFixture(
 }
 
 async function runnerFixture(
-  options: { readonly issueBody?: string; readonly diffContent?: string } = {},
+  options: {
+    readonly issueBody?: string;
+    readonly diffContent?: string;
+    readonly implementationTokens?: number;
+  } = {},
 ) {
   const frozen = freezerFixture({
     ...(options.issueBody === undefined ? {} : { issueBody: options.issueBody }),
@@ -655,7 +686,12 @@ async function runnerFixture(
             return agentSuccess(reviewText, node.agent.model.provider, node.agent.model.id);
           }
           implementationPrompt = node.agent.prompt;
-          return agentSuccess("implemented", node.agent.model.provider, node.agent.model.id);
+          return agentSuccess(
+            "implemented",
+            node.agent.model.provider,
+            node.agent.model.id,
+            options.implementationTokens,
+          );
         }
         if (node.type === "verifier" && node.verifier.kind === "model") {
           return verifierSuccess(
@@ -919,7 +955,12 @@ function reviewContextFromPrompt(prompt: string): unknown {
   return JSON.parse(envelope.context.content) as unknown;
 }
 
-function agentSuccess(text: string, provider: string, model: string): NodeExecutionOutcome {
+function agentSuccess(
+  text: string,
+  provider: string,
+  model: string,
+  modelTokens?: number,
+): NodeExecutionOutcome {
   return {
     status: "succeeded",
     evidence: {
@@ -930,6 +971,17 @@ function agentSuccess(text: string, provider: string, model: string): NodeExecut
       textHash: sha256(text),
       textTruncated: false,
       durationMs: 1,
+      ...(modelTokens === undefined
+        ? {}
+        : {
+            usage: {
+              inputTokens: modelTokens,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              costUsdMicros: 1,
+            },
+          }),
       policyDecisions: [],
       effectReceipts: [],
     },

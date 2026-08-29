@@ -73,6 +73,16 @@ export class IssueControllerError extends Error {
   }
 }
 
+export function issueControllerFailureCode(error: unknown): string {
+  if (!(error instanceof Error) || !("code" in error)) return "controller_failed";
+  const code = (error as Error & { readonly code?: unknown }).code;
+  return typeof code === "string" &&
+    /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(code) &&
+    code.length <= 128
+    ? code
+    : "controller_failed";
+}
+
 class MutableClaimedIssueController implements ClaimedIssueController {
   readonly frozenContractDigest: string;
   #events: IssueLifecycleEvent[];

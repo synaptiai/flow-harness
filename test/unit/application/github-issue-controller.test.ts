@@ -120,7 +120,7 @@ describe("foreground GitHub issue controller", () => {
 
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: "run_failed",
-      code: "controller_failed",
+      code: "workflow_failed",
     });
     expect(harness.repository.settlements.get(command.commandId)).toMatchObject({
       outcome: "failed",
@@ -214,7 +214,7 @@ describe("foreground GitHub issue controller", () => {
 
     expect(harness.repository.events.at(-1)).toMatchObject({
       type: "run_failed",
-      code: "controller_failed",
+      code: "verification_failed",
     });
     expect(JSON.stringify(harness.repository.events)).not.toContain("sensitive diagnostic detail");
     expect(harness.repository.settlements.get(runCommand().commandId)).toMatchObject({
