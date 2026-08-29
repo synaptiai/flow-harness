@@ -998,7 +998,7 @@ function frozenManifest(
       model: { provider: "openai", id: "gpt-5.6-sol" },
       resultNodeId: "review-result",
     },
-    acceptanceCriteria: ["criterion-one"],
+    acceptanceCriteria: [{ id: "criterion-one", description: "The criterion is met." }],
     allowedWritePrefixes: ["src/"],
     holdout: { commandDigest: "7".repeat(64), timeoutMs: 120_000 },
     verification: [{ id: "test", commandDigest: "8".repeat(64), timeoutMs: 300_000 }],

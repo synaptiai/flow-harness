@@ -31,6 +31,30 @@ the candidate in the first place. If a candidate might contain a secret, cancel 
 secret, and follow your repository's incident-response process. Don't rely on prompt instructions
 as a data-loss prevention control.
 
+### Review the exact provider projection
+
+Flow assembles one reviewer-only JSON projection after trusted host verification succeeds. The
+projection contains:
+
+- The sanitized frozen issue and every frozen criterion ID and description.
+- The expected candidate, issue, and review-workflow identities for the structured result.
+- The frozen contract digest.
+- The frozen base commit, candidate commit and tree, sorted changed paths, and logical change size.
+- The exact UTF-8 diff, its media type, byte length, and content-addressed digest.
+- The frozen holdout command identity and its base-fail and candidate-pass outcomes.
+- Every frozen deterministic command identity and its candidate-bound pass outcome.
+- The relevant candidate-delta summary.
+
+Flow validates the complete private evidence first. It doesn't transmit timestamp-derived evidence
+digests, workspace identity, absolute paths, or credentials. It also excludes raw command output
+and GitHub node IDs. This separation keeps restart replay stable. It doesn't weaken the private
+audit trail or merge gate.
+
+The final serialized projection must not exceed 65,536 UTF-8 bytes. Flow measures the complete JSON
+after escaping and rejects an oversized projection before provider input/output. It never truncates
+the issue, criteria, changed paths, diff, or verification summary. Reduce the issue or candidate
+scope and start a new frozen run if this limit is exceeded.
+
 ## Create the implementation workflow
 
 Save the implementation workflow at the path selected by `implementation.workflow` in the

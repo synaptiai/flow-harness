@@ -428,6 +428,23 @@ two stages:
 2. Evaluate security, correctness, performance, reliability, maintainability, test quality, and
    documentation.
 
+Before provider input/output, the host must validate the private review evidence. It must then
+construct one replay-stable projection. The projection must include:
+
+- All frozen criterion IDs and descriptions.
+- The expected result identities and frozen contract digest.
+- The frozen base, candidate, tree, sorted changed paths, and logical byte count.
+- The exact UTF-8 diff and its content-addressed metadata.
+- Stable negative-control, deterministic-check, and candidate-delta outcomes.
+
+The projection must exclude workspace identity, absolute paths, and raw command output. It must
+also exclude GitHub node IDs, credentials, and volatile evidence-instance digests.
+
+The complete serialized JSON projection must not exceed 65,536 UTF-8 bytes after escaping. Flow
+must reject an oversized projection without truncating or omitting any field. Reconstructing the
+same candidate and frozen contract from a later process must produce the same projection even when
+private verification timestamps and evidence-instance digests differ.
+
 Every finding has a stable identity and one severity from `P1`, `P2`, or `P3`. Any severity listed
 in `review.blockingSeverities` blocks publication or invalidates a later merge gate. A reviewer
 failure, malformed result, incomplete criterion map, or candidate mutation also blocks progress.

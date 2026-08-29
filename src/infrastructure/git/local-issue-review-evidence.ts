@@ -9,6 +9,7 @@ import type {
 } from "../../application/issue-local-git-port.js";
 import {
   calculateIssueReviewEvidenceDigest,
+  ISSUE_REVIEW_DIFF_MEDIA_TYPE,
   type IssueReviewEvidence,
   type IssueReviewEvidencePort,
 } from "../../application/issue-review-evidence-port.js";
@@ -26,7 +27,6 @@ export const MAX_ISSUE_REVIEW_DIFF_BYTES = 32_768;
 
 const DEFAULT_DIFF_TIMEOUT_MS = 60_000;
 const MAX_DIFF_STDERR_BYTES = 65_536;
-const DIFF_MEDIA_TYPE = "text/x-diff; charset=utf-8";
 
 export type LocalIssueReviewEvidenceErrorCode =
   | "invalid_request"
@@ -170,7 +170,10 @@ export class LocalIssueReviewEvidence implements IssueReviewEvidencePort {
       return fail("diff_failed");
     }
 
-    const diffInput = { mediaType: DIFF_MEDIA_TYPE, bytes: Uint8Array.from(diff.stdout) };
+    const diffInput = {
+      mediaType: ISSUE_REVIEW_DIFF_MEDIA_TYPE,
+      bytes: Uint8Array.from(diff.stdout),
+    };
     let diffBlob: IssuePrivateBlobReference;
     try {
       diffBlob = await this.#privateStore.putBlob(request.runId, diffInput);

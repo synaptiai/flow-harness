@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import { calculateFrozenIssueVerificationCommandDigest } from "../../application/frozen-issue-command.js";
+import {
+  buildIssueIndependentReviewProjection,
+  serializeBoundedIssueReviewContext,
+} from "../../application/issue-independent-review-projection.js";
 import type {
   FrozenIssueRunInput,
   IssueControllerOperation,
@@ -24,6 +28,7 @@ import type {
 } from "../../application/issue-local-git-port.js";
 import {
   calculateIssueReviewEvidenceDigest,
+  ISSUE_REVIEW_DIFF_MEDIA_TYPE,
   type IssueReviewEvidence,
   type IssueReviewEvidencePort,
 } from "../../application/issue-review-evidence-port.js";
@@ -193,11 +198,9 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
       model: { provider: command.provider, id: command.model },
       context: {
         kind: "review",
-        content: reviewContext(
+        content: reviewValidationContext(
           modelIssueContext(issueSnapshot),
-          implementation.criteria.map((criterion) => criterion.id),
-          undefined,
-          undefined,
+          implementation.criteria.map(({ id, description }) => ({ id, description })),
         ),
       },
       resultNodeId: plan.review.resultNode,
@@ -267,7 +270,10 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
         ...workflowIdentity(review, reviewFile.sha256),
         resultNodeId: review.resultNodeId,
       },
-      acceptanceCriteria: implementation.criteria.map((criterion) => criterion.id),
+      acceptanceCriteria: implementation.criteria.map(({ id, description }) => ({
+        id,
+        description,
+      })),
       allowedWritePrefixes: [...implementation.allowedWritePrefixes],
       holdout: {
         commandDigest: calculateFrozenIssueVerificationCommandDigest(plan.holdout.command),
@@ -433,7 +439,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       request.manifest.artifacts.reviewWorkflow,
       WORKFLOW_MEDIA_TYPE,
     );
-    validateReviewEvidence(
+    const reviewEvidence = validateReviewEvidence(
       request.manifest,
       request.candidateHead,
       workspace,
@@ -445,6 +451,11 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       }),
     );
+    const diff = await this.#readTextBlob(
+      request.runId,
+      reviewEvidence.diffBlob,
+      ISSUE_REVIEW_DIFF_MEDIA_TYPE,
+    );
     const admitted = admitIssueWorkflow({
       role: "review",
       source,
@@ -455,12 +466,14 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       model: request.manifest.reviewWorkflow.model,
       context: {
         kind: "review",
-        content: reviewContext(
-          modelIssueContext(issueSnapshot),
-          request.manifest.acceptanceCriteria,
-          request.candidateHead,
-          request.frozenContractDigest,
-        ),
+        content: buildIssueIndependentReviewProjection({
+          manifest: request.manifest,
+          frozenContractDigest: request.frozenContractDigest,
+          candidateHead: request.candidateHead,
+          issueSource: modelIssueContext(issueSnapshot),
+          evidence: reviewEvidence,
+          diff,
+        }),
       },
       resultNodeId: request.manifest.reviewWorkflow.resultNodeId,
     });
@@ -742,18 +755,14 @@ function issueSourceBlob(snapshot: FrozenGitHubIssueSnapshotContent): IssuePriva
   });
 }
 
-function reviewContext(
+function reviewValidationContext(
   issueSource: string,
-  acceptanceCriteria: readonly string[],
-  candidateHead: string | undefined,
-  frozenContractDigest: string | undefined,
+  acceptanceCriteria: FrozenIssueRunManifest["acceptanceCriteria"],
 ): string {
-  return JSON.stringify({
+  return serializeBoundedIssueReviewContext({
     version: 1,
     issue: JSON.parse(issueSource),
-    acceptanceCriteria: [...acceptanceCriteria],
-    ...(candidateHead === undefined ? {} : { candidateHead }),
-    ...(frozenContractDigest === undefined ? {} : { frozenContractDigest }),
+    acceptanceCriteria: acceptanceCriteria.map((criterion) => ({ ...criterion })),
   });
 }
 

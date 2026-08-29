@@ -535,7 +535,7 @@ function aggregateInitialization(): IssueLifecycleRunInitialization {
       model: { provider: "openai", id: "gpt-5.6-sol" },
       resultNodeId: "review-result",
     },
-    acceptanceCriteria: ["criterion-one"],
+    acceptanceCriteria: [{ id: "criterion-one", description: "The criterion is met." }],
     allowedWritePrefixes: ["src/", "test/"],
     holdout: { commandDigest: "9".repeat(64), timeoutMs: 120_000 },
     verification: [{ id: "test", commandDigest: "b".repeat(64), timeoutMs: 300_000 }],

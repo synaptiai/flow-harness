@@ -6,6 +6,8 @@ import { calculateIssueLifecycleDomainDigest } from "../domain/issue-lifecycle/p
 import type { IssueGitWorkspace } from "./issue-local-git-port.js";
 import type { IssueVerificationResult } from "./issue-verification.js";
 
+export const ISSUE_REVIEW_DIFF_MEDIA_TYPE = "text/x-diff; charset=utf-8";
+
 export interface IssueReviewEvidence {
   readonly version: 1;
   readonly baseCommit: string;

@@ -985,7 +985,7 @@ function frozenManifest() {
       model: { provider: "openai", id: "gpt-5" },
       resultNodeId: "review-result",
     },
-    acceptanceCriteria: ["criterion-one"],
+    acceptanceCriteria: [{ id: "criterion-one", description: "The criterion is met." }],
     allowedWritePrefixes: ["src"],
     holdout: { commandDigest: sha("2"), timeoutMs: 1_000 },
     verification: [{ id: "quality", commandDigest: sha("3"), timeoutMs: 2_000 }],

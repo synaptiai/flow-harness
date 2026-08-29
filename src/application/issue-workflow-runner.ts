@@ -148,13 +148,14 @@ export function validateReviewWorkflowResult(
     issueDigest: manifest.issue.contentDigest,
     reviewWorkflowDigest: manifest.reviewWorkflow.templateWorkflowDigest,
   };
-  const report = parseIssueReviewReport(parsedJson, manifest.acceptanceCriteria, expectedIdentity);
+  const acceptanceCriterionIds = manifest.acceptanceCriteria.map((criterion) => criterion.id);
+  const report = parseIssueReviewReport(parsedJson, acceptanceCriterionIds, expectedIdentity);
   return deepFreeze({
     ...result,
     report,
     reportDigest: calculateIssueReviewReportDigest(
       report,
-      manifest.acceptanceCriteria,
+      acceptanceCriterionIds,
       expectedIdentity,
     ),
   });

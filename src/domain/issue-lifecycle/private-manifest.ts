@@ -29,6 +29,12 @@ const workflowCriterionIdentifierSchema = z
   .min(1)
   .max(96)
   .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
+const acceptanceCriterionSchema = z
+  .object({
+    id: workflowCriterionIdentifierSchema,
+    description: z.string().trim().min(1).max(4_096),
+  })
+  .strict();
 const uuidSchema = z
   .string()
   .regex(
@@ -183,10 +189,10 @@ const frozenIssueRunManifestSchema = z
     implementationWorkflow: workflowIdentitySchema,
     reviewWorkflow: workflowIdentitySchema.extend({ resultNodeId: planIdentifierSchema }).strict(),
     acceptanceCriteria: z
-      .array(workflowCriterionIdentifierSchema)
+      .array(acceptanceCriterionSchema)
       .min(1)
       .max(MAX_ISSUE_ACCEPTANCE_CRITERIA)
-      .refine(uniqueStrings, "acceptance criterion identifiers must be unique"),
+      .refine(uniqueIds, "acceptance criterion identifiers must be unique"),
     allowedWritePrefixes: z
       .array(candidatePathPrefixSchema)
       .min(1)

@@ -669,7 +669,9 @@ function withPlan(
     planDigest: "2".repeat(64),
     implementationWorkflow: workflow("3"),
     reviewWorkflow: { ...workflow("4"), resultNodeId: "review-result" },
-    acceptanceCriteria: ["candidate-is-verified"],
+    acceptanceCriteria: [
+      { id: "candidate-is-verified", description: "The candidate is verified." },
+    ],
     allowedWritePrefixes: ["feature.txt"],
     holdout: {
       commandDigest: calculateFrozenIssueVerificationCommandDigest(holdout),

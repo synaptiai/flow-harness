@@ -65,11 +65,36 @@ describe("private issue-run manifest", () => {
   it("accepts the workflow goal contract's exact criterion identifier bounds", () => {
     const input = manifest();
     expect(() =>
-      parseIssuePrivateManifest({ ...input, acceptanceCriteria: [`a${"b".repeat(95)}`] }),
+      parseIssuePrivateManifest({
+        ...input,
+        acceptanceCriteria: [{ id: `a${"b".repeat(95)}`, description: "A complete requirement." }],
+      }),
     ).not.toThrow();
     expect(() =>
-      parseIssuePrivateManifest({ ...input, acceptanceCriteria: [`a${"b".repeat(96)}`] }),
+      parseIssuePrivateManifest({
+        ...input,
+        acceptanceCriteria: [{ id: `a${"b".repeat(96)}`, description: "A complete requirement." }],
+      }),
     ).toThrow(/96/);
+  });
+
+  it("binds criterion descriptions and rejects duplicate criterion identities", () => {
+    const input = manifest();
+    const changed = structuredClone(input);
+    first(changed.acceptanceCriteria).description = "A materially different requirement.";
+
+    expect(calculateIssuePrivateManifestDigest(changed)).not.toBe(
+      calculateIssuePrivateManifestDigest(input),
+    );
+    expect(() =>
+      parseIssuePrivateManifest({
+        ...input,
+        acceptanceCriteria: [
+          first(input.acceptanceCriteria),
+          { id: first(input.acceptanceCriteria).id, description: "Duplicate identity." },
+        ],
+      }),
+    ).toThrow(/unique/i);
   });
 
   it("creates media-bound, byte-exact private blob references", () => {
@@ -201,7 +226,10 @@ function manifest() {
       model: { provider: "openai", id: "gpt-5.6-sol" },
       resultNodeId: "review-result",
     },
-    acceptanceCriteria: ["criterion-one", "criterion-two"],
+    acceptanceCriteria: [
+      { id: "criterion-one", description: "The first criterion is met." },
+      { id: "criterion-two", description: "The second criterion is met." },
+    ],
     allowedWritePrefixes: ["src/", "test/"],
     holdout: { commandDigest: "9".repeat(64), timeoutMs: 120_000 },
     verification: [
