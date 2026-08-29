@@ -1,6 +1,10 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 const MAX_PROVIDER_COUNT_REQUEST_BYTES = 1024 * 1024;
 const MAX_PROVIDER_COUNT_RESPONSE_BYTES = 8 * 1024;
 const PROVIDER_COUNT_TIMEOUT_MS = 15_000;
+const PROVIDER_COUNT_MAX_ATTEMPTS = 2;
+const PROVIDER_COUNT_RETRY_DELAY_MS = 100;
 
 const OPENAI_COUNT_FIELDS = Object.freeze([
   "conversation",
@@ -80,15 +84,47 @@ export async function countProviderInputTokens(input: {
     input.timeoutMs ?? PROVIDER_COUNT_TIMEOUT_MS,
     "provider count timeout",
   );
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  for (let attempt = 1; attempt <= PROVIDER_COUNT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await requestProviderInputTokenCount({
+        apiAdapter: input.apiAdapter,
+        contract,
+        headers,
+        serializedBody,
+        fetchImpl: input.fetchImpl,
+        timeoutMs,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+    } catch (error) {
+      const retryable =
+        error instanceof ProviderInputTokenCountError && error.code === "request_failed";
+      if (!retryable || input.signal?.aborted === true || attempt === PROVIDER_COUNT_MAX_ATTEMPTS) {
+        throw error;
+      }
+      await waitForProviderCountRetry(input.signal);
+    }
+  }
+  throw new ProviderInputTokenCountError("request_failed");
+}
+
+async function requestProviderInputTokenCount(input: {
+  readonly apiAdapter: string;
+  readonly contract: ReturnType<typeof providerCountContract>;
+  readonly headers: Headers;
+  readonly serializedBody: string;
+  readonly fetchImpl: typeof fetch;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+}): Promise<ProviderInputTokenCount> {
+  const timeoutSignal = AbortSignal.timeout(input.timeoutMs);
   const signal =
     input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
   let response: Response;
   try {
-    response = await input.fetchImpl(contract.url, {
+    response = await input.fetchImpl(input.contract.url, {
       method: "POST",
-      headers,
-      body: serializedBody,
+      headers: input.headers,
+      body: input.serializedBody,
       redirect: "error",
       signal,
     });
@@ -106,7 +142,19 @@ export async function countProviderInputTokens(input: {
   }
   const responseText = await readBoundedResponse(response, MAX_PROVIDER_COUNT_RESPONSE_BYTES);
   const inputTokens = parseInputTokenCount(responseText, input.apiAdapter);
-  return Object.freeze({ inputTokens, method: contract.method });
+  return Object.freeze({ inputTokens, method: input.contract.method });
+}
+
+async function waitForProviderCountRetry(signal: AbortSignal | undefined): Promise<void> {
+  try {
+    if (signal === undefined) {
+      await delay(PROVIDER_COUNT_RETRY_DELAY_MS);
+    } else {
+      await delay(PROVIDER_COUNT_RETRY_DELAY_MS, undefined, { signal });
+    }
+  } catch {
+    throw new ProviderInputTokenCountError("request_failed");
+  }
 }
 
 function providerCountContract(

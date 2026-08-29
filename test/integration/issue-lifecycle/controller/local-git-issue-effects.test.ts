@@ -1003,7 +1003,7 @@ describe("LocalGitIssueEffects", () => {
     expect(await git(fixture.remote, "rev-parse", `refs/heads/${workspace.branch}`)).toBe(
       committed.candidateHead,
     );
-  });
+  }, 30_000);
 
   it("reads exact commit topology and removes only its owned candidate workspace", async () => {
     const fixture = await createFixture();

@@ -86,7 +86,11 @@ when the count operation isn't supported or doesn't return a valid bounded respo
 For each task or summary request, Flow asks Pi to serialize the final request and intercepts it
 before network input/output (I/O). Flow sends only the count-endpoint fields to the same origin as
 the captured inference request. The response has an 8 KiB limit and a 15-second timeout. Redirects
-aren't followed.
+aren't followed. If a transport request or response stream fails, Flow waits 100 milliseconds and
+repeats the same count exchange once. Caller cancellation stops the delay and prevents the second
+request. Flow doesn't retry an invalid request, unsuccessful status, unsupported media type,
+oversized response, or invalid response body. Both failed transport attempts produce the same
+content-free `request_failed` category and block inference.
 
 | Pi adapter | Count request | Public method | Interpretation |
 | --- | --- | --- | --- |
