@@ -74,6 +74,7 @@ export type LocalIssueVerificationErrorCode =
   | "base_drift"
   | "candidate_drift"
   | "negative_control_mismatch"
+  | "candidate_holdout_failed"
   | "verification_failed"
   | "command_output_limit"
   | "command_timeout"
@@ -244,7 +245,7 @@ export class LocalIssueVerification implements IssueVerificationPort {
       },
     });
     if (!candidateExecution.succeeded) {
-      throw executionFailure(candidateExecution, "negative_control_mismatch");
+      throw executionFailure(candidateExecution, "candidate_holdout_failed");
     }
     const negativeControl: IssueNegativeControlResult = Object.freeze({
       baseCommit: request.manifest.base.commit,
@@ -886,8 +887,11 @@ function validateCommandEvidence(
 
 function executionFailure(
   execution: ExecutionProof,
-  fallback: "negative_control_mismatch" | "verification_failed",
+  fallback: "negative_control_mismatch" | "candidate_holdout_failed" | "verification_failed",
 ): LocalIssueVerificationError {
+  if (execution.succeeded) {
+    return new LocalIssueVerificationError(fallback);
+  }
   switch (execution.errorCode) {
     case "command_timeout":
       return new LocalIssueVerificationError("command_timeout");
@@ -897,8 +901,10 @@ function executionFailure(
       return new LocalIssueVerificationError("command_signaled");
     case "command_stdin_failed":
       return new LocalIssueVerificationError("command_stdin_failed");
-    default:
+    case "command_failed":
       return new LocalIssueVerificationError(fallback);
+    default:
+      return new LocalIssueVerificationError("command_execution_failed");
   }
 }
 

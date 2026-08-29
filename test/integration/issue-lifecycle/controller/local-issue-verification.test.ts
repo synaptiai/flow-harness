@@ -135,6 +135,33 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
     expect(JSON.stringify(commandEvidence)).not.toContain(source.toString("utf8"));
   });
 
+  it("distinguishes a passing base from a candidate that still fails the holdout", async () => {
+    const passingBase = await createFixture({
+      holdoutCommand: nodeCommand("process.exit(0);"),
+    });
+    await expect(createVerifier(passingBase).verify(request(passingBase))).rejects.toMatchObject({
+      code: "negative_control_mismatch",
+    });
+
+    const failingCandidate = await createFixture({
+      holdoutCommand: nodeCommand("process.exit(7);"),
+    });
+    await expect(
+      createVerifier(failingCandidate).verify(request(failingCandidate)),
+    ).rejects.toMatchObject({
+      code: "candidate_holdout_failed",
+    });
+  });
+
+  it("does not classify candidate infrastructure failures as holdout failures", async () => {
+    const fixture = await createFixture();
+    const sandbox = new RecordingProcessSandbox(undefined, 1, 2);
+
+    await expect(createVerifier(fixture, sandbox).verify(request(fixture))).rejects.toMatchObject({
+      code: "command_execution_failed",
+    });
+  });
+
   it("retains evidence when private stdin closes before write settlement", async () => {
     const source = Buffer.alloc(1_048_576, 0x61);
     const fixture = await createFixture({
@@ -869,6 +896,7 @@ class RecordingProcessSandbox implements CommandSandbox {
   constructor(
     private readonly beforeLaunch?: () => void,
     private readonly beforeLaunchNumber = 1,
+    private readonly releaseFailureNumber?: number,
   ) {}
 
   async prepare(request: CommandSandboxRequest) {
@@ -890,7 +918,11 @@ class RecordingProcessSandbox implements CommandSandbox {
       ...(this.beforeLaunch === undefined || launchNumber !== this.beforeLaunchNumber
         ? {}
         : { beforeLaunch: async () => this.beforeLaunch?.() }),
-      release: async () => undefined,
+      release: async () => {
+        if (launchNumber === this.releaseFailureNumber) {
+          throw new Error("injected sandbox cleanup failure");
+        }
+      },
     };
   }
 }

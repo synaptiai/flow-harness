@@ -388,9 +388,9 @@ Use the phase and stable code from `inspect` to select an action from this table
 | Condition | Meaning | Action |
 | --- | --- | --- |
 | `flow_runtime_not_ignored` | The private run path isn't ignored, contains tracked content, or has unsafe directory ancestry | Preserve existing data. Configure `.flow/issue-runs/` as ignored, remove tracked runtime content through a reviewed repository change, and replace a symbolic-link or non-directory component with a real directory before retrying from a clean checkout |
-| Base holdout passes | The negative control cannot prove the candidate caused the behavior | Strengthen the holdout, create a new plan identity, and start a new run |
-| Candidate holdout fails | The implementation didn't satisfy the issue-specific behavior | Inspect private evidence, repair the reviewed workflow or plan, and start or resume only as directed |
-| Verification fails | A deterministic project command failed | Preserve the workspace and inspect the command's private evidence |
+| `negative_control_mismatch` | The base holdout passed, so the negative control cannot prove that the candidate caused the behavior | Strengthen the holdout, create a new plan identity, and start a new run |
+| `candidate_holdout_failed` | The base holdout failed as required, but the candidate didn't satisfy the issue-specific behavior | Inspect private evidence, repair the reviewed workflow or plan, and start a new run with the replacement frozen identity |
+| `verification_failed` | A deterministic project command failed | Preserve the workspace and inspect the command's private evidence |
 | Review reports P1, P2, or P3 | The exact candidate has a blocking finding | Don't publish or merge. Fix the candidate and require a fresh review |
 | Hosted check is missing, pending, skipped, or failed | The configured exact-head CI gate isn't complete | Correct CI or wait, then resume from the durable observation cursor |
 | Gate is stale | A bound GitHub or repository fact changed after evidence was created | Reverify, rereview, and approve the replacement gate |
@@ -399,5 +399,7 @@ Use the phase and stable code from `inspect` to select an action from this table
 
 Public failures use stable codes such as `executable_unavailable`, `repository_dirty`,
 `github_authentication_failed`, `github_issue_not_open`, `command_timed_out`, and
-`command_output_limit_exceeded`. Use the code and bounded recovery action for automation. Read
+`command_output_limit_exceeded`. Holdout failures use `negative_control_mismatch` for an invalid
+base control and `candidate_holdout_failed` for an ordinary nonzero candidate result. Use the code
+and bounded recovery action for automation. Read
 owner-only evidence on the trusted host when you need the private cause.

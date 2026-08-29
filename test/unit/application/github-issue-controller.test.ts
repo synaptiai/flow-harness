@@ -224,6 +224,37 @@ describe("foreground GitHub issue controller", () => {
     expect(harness.repository.releaseCount).toBe(1);
   });
 
+  it("persists the candidate holdout failure code without private diagnostics", async () => {
+    const harness = scriptedHarness();
+    const command = runCommand();
+    const dependencies: IssueControllerDependencies = {
+      ...harness.dependencies,
+      verification: {
+        verify: async () => {
+          throw Object.assign(new Error("private candidate holdout output"), {
+            code: "candidate_holdout_failed",
+          });
+        },
+      },
+    };
+
+    await expect(runGitHubIssue(command, dependencies)).rejects.toThrow(
+      "private candidate holdout output",
+    );
+
+    expect(harness.repository.events.at(-1)).toMatchObject({
+      type: "run_failed",
+      code: "candidate_holdout_failed",
+    });
+    expect(harness.repository.settlements.get(command.commandId)).toMatchObject({
+      outcome: "failed",
+      code: "candidate_holdout_failed",
+    });
+    expect(JSON.stringify(harness.repository.events)).not.toContain(
+      "private candidate holdout output",
+    );
+  });
+
   it("stops on blocked review without autonomously starting another implementation", async () => {
     const harness = scriptedHarness();
     const dependencies: IssueControllerDependencies = {
