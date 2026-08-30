@@ -4,9 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
-import { phaseRoutingEffectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
-import { delegationEvaluationCandidateFixture } from "../../fixtures/delegation-evaluation-candidate.js";
 import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import {
   FlowWorkflowEvaluationAdapter,
@@ -27,16 +24,19 @@ import {
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ModelUsageObservation } from "../../../src/domain/run/budget.js";
+import { calculateAcpAgentSessionBindingDigest } from "../../../src/domain/run/events.js";
 import {
   calculatePortableHistoryIdentity,
   selectContextCompactionRange,
 } from "../../../src/domain/run/model-session.js";
-import { calculateAcpAgentSessionBindingDigest } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { JsonlModelSessionStore } from "../../../src/infrastructure/fs/jsonl-model-session-store.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { ReflinkCopyWorkspaceIsolator } from "../../../src/infrastructure/fs/reflink-copy-workspace-isolator.js";
+import { acpAgentCapabilitySnapshot } from "../../fixtures/acp-agent.js";
+import { delegationEvaluationCandidateFixture } from "../../fixtures/delegation-evaluation-candidate.js";
+import { phaseRoutingEffectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -98,6 +98,97 @@ describe("Flow workflow evaluation adapter", () => {
     ).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "run_succeeded" })]),
     );
+  });
+
+  it("includes completed provider-failure retries in evaluation telemetry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-retry-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledRetryWorkflow();
+    const request = publicRequest(root);
+    let attempts = 0;
+    const successful = successfulExecutor();
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        attempts += 1;
+        if (attempts > 1) {
+          return await successful.execute(node, context);
+        }
+        return {
+          status: "failed",
+          error: {
+            code: "pi_agent_error",
+            message: "agent provider execution failed",
+            retryable: true,
+            sideEffectStatus: "none",
+          },
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text: "",
+            textHash: sha256(""),
+            textTruncated: false,
+            durationMs: 2,
+            usage: {
+              inputTokens: 1,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              outputTokens: 1,
+              costUsdMicros: 5,
+            },
+            activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor,
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    const result = await adapter.run(request);
+
+    expect(attempts).toBe(2);
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: {
+        costUsdMicros: 22,
+        inputTokens: 4,
+        cacheReadTokens: 1,
+        cacheWriteTokens: 2,
+        outputTokens: 6,
+        turns: 3,
+        toolCalls: 1,
+        toolErrors: 0,
+        activeTimeMs: 6,
+        policyViolations: 0,
+        recoveryAttempts: 1,
+        recoveryOutcome: "succeeded",
+      },
+    });
+    const events = await new JsonlRunStore(join(root, "runs")).read(
+      `eval-${request.trial.trialId}`,
+    );
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_failed",
+      "node_retry_scheduled",
+      "node_started",
+      "node_succeeded",
+      "node_result_published",
+      "run_succeeded",
+    ]);
   });
 
   it("projects zero-invocation baseline evidence for a delegation trial", async () => {
@@ -931,6 +1022,33 @@ nodes:
       prompt: Follow TASK.md.
       model: { provider: test, id: deterministic }
       tools: [read, edit]
+  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
+function compiledRetryWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: evaluated-retry-profile }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Follow TASK.md.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+      recovery: { mode: fresh, maxAttempts: 2 }
   - id: publish
     type: result
     dependsOn: [implement]

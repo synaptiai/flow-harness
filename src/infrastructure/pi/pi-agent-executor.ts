@@ -466,6 +466,7 @@ export class PiAgentExecutor implements AgentExecutor {
     let timeoutHandle: NodeJS.Timeout | undefined;
     let removeExternalAbortListener: () => void = () => undefined;
     let activeRunPromise: Promise<PiAgentRunResult> | undefined;
+    let providerExecutionFailed = false;
     const policyAuditFailure = async (): Promise<NodeExecutionOutcome> => {
       const cleanupSettled =
         activeRunPromise === undefined
@@ -560,6 +561,10 @@ export class PiAgentExecutor implements AgentExecutor {
                 },
               }),
           signal: combinedSignal,
+        })
+        .catch((error: unknown) => {
+          providerExecutionFailed = true;
+          throw error;
         })
         .then((result) => {
           observedUsage = result.usage;
@@ -785,13 +790,14 @@ export class PiAgentExecutor implements AgentExecutor {
             : result.stopReason === "error"
               ? (result.failureCode ?? "pi_agent_error")
               : "pi_agent_incomplete";
+        const effectStatus = combineSideEffectStatuses(
+          sideEffectStatus(effectReceipts),
+          commandRecorder.sideEffectStatus(),
+        );
         return agentFailure(
           code,
           providerStopMessage(result.stopReason),
-          combineSideEffectStatuses(
-            sideEffectStatus(effectReceipts),
-            commandRecorder.sideEffectStatus(),
-          ),
+          effectStatus,
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
             semanticReceipts.length === 0 &&
@@ -812,6 +818,9 @@ export class PiAgentExecutor implements AgentExecutor {
                 completedCapabilityEvidence,
                 delegationReceipts,
               ),
+          result.stopReason === "error" &&
+            result.failureCode === undefined &&
+            effectStatus === "none",
         );
       }
 
@@ -900,6 +909,11 @@ export class PiAgentExecutor implements AgentExecutor {
           policyFailureEvidence(),
         );
       }
+      const providerFailure =
+        providerExecutionFailed &&
+        !(error instanceof PiCapabilityEvidenceError) &&
+        !(error instanceof PiSemanticEvidenceError);
+      const effectStatus = currentSideEffectStatus();
       return agentFailure(
         error instanceof PiCapabilityEvidenceError
           ? "pi_capability_evidence_invalid"
@@ -911,8 +925,9 @@ export class PiAgentExecutor implements AgentExecutor {
           : error instanceof PiSemanticEvidenceError
             ? error.message
             : "agent provider execution failed",
-        currentSideEffectStatus(),
+        effectStatus,
         policyFailureEvidence(),
+        providerFailure && effectStatus === "none",
       );
     } finally {
       commandRecorder.close();
@@ -2988,11 +3003,12 @@ function agentFailure(
   message: string,
   sideEffectStatus: NodeFailure["sideEffectStatus"] = "none",
   evidence: AgentEvidence | null = null,
+  retryable = false,
 ): NodeExecutionOutcome {
   const failure: NodeFailure = {
     code,
     message: boundedMessage(message),
-    retryable: false,
+    retryable,
     sideEffectStatus,
   };
   return { status: "failed", error: failure, evidence };

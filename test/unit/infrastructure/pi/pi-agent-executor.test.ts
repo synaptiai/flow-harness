@@ -9,11 +9,11 @@ import type {
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
 import { AgentCommandApprovalDeniedError } from "../../../../src/application/run-workflow.js";
-import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
 import {
   createPhaseRoutingDecision,
   createPhaseRoutingProfile,
 } from "../../../../src/domain/adaptation/phase-routing-candidate.js";
+import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
@@ -757,10 +757,33 @@ describe("PiAgentExecutor", () => {
       error: {
         code: "pi_agent_failed",
         message: "agent provider execution failed",
-        retryable: false,
+        retryable: true,
         sideEffectStatus: "none",
       },
       evidence: null,
+    });
+  });
+
+  it("keeps invalid provider telemetry non-retryable", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "invalid telemetry",
+          stopReason: "stop",
+          activity: { turns: -1, toolCalls: 0, toolErrors: 0 },
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_failed",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
     });
   });
 
@@ -852,6 +875,7 @@ describe("PiAgentExecutor", () => {
       error: {
         code: "pi_agent_failed",
         message: "agent provider execution failed",
+        retryable: false,
         sideEffectStatus: "committed",
       },
       evidence: {
@@ -910,7 +934,7 @@ describe("PiAgentExecutor", () => {
       error: {
         code: "pi_agent_error",
         message: "agent provider execution failed",
-        retryable: false,
+        retryable: true,
         sideEffectStatus: "none",
       },
       evidence: null,
