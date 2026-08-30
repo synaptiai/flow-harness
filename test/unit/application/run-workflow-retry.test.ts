@@ -24,6 +24,271 @@ import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
 
 describe("runWorkflow proof-safe fresh recovery", () => {
+  it("fresh-retries a completed side-effect-free provider failure with accounted usage", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    let agentExecutions = 0;
+    const executor: NodeExecutor & {
+      readonly calls: { readonly nodeId: string; readonly attempt: number }[];
+    } = {
+      calls: [],
+      async execute(node, context) {
+        this.calls.push({ nodeId: node.id, attempt: context.attempt });
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        agentExecutions += 1;
+        if (agentExecutions > 1) {
+          return successfulAgentOutcome();
+        }
+        return {
+          status: "failed",
+          error: {
+            code: "pi_agent_error",
+            message: "agent provider execution failed",
+            retryable: true,
+            sideEffectStatus: "none",
+          },
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text: "",
+            textHash: sha256(""),
+            textTruncated: false,
+            durationMs: 5,
+            usage: {
+              inputTokens: 2,
+              outputTokens: 1,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              costUsdMicros: 7,
+            },
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+
+    const state = await runWorkflow(
+      workflow("read", true),
+      options(store, executor, "run-terminal-retry"),
+    );
+
+    expect(executor.calls).toEqual([
+      { nodeId: "implement", attempt: 1 },
+      { nodeId: "implement", attempt: 2 },
+      { nodeId: "verify", attempt: 1 },
+    ]);
+    expect(store.events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_failed",
+      "node_retry_scheduled",
+      "node_started",
+      "node_succeeded",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      resources: {
+        nodeStarts: 3,
+        modelTokens: 3,
+        modelCostUsdMicros: 7,
+        executionMs: 7,
+      },
+      nodes: {
+        implement: {
+          status: "succeeded",
+          attempt: 2,
+          failedAttempts: [
+            {
+              attempt: 1,
+              error: { code: "pi_agent_error", retryable: true, sideEffectStatus: "none" },
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("resumes after the failed attempt commits before its retry disposition", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    store.failNext("node_retry_scheduled");
+    let agentExecutions = 0;
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        agentExecutions += 1;
+        return agentExecutions === 1 ? retryableAgentFailure() : successfulAgentOutcome();
+      },
+    };
+
+    await expect(
+      runWorkflow(workflow("read", true), options(store, executor, "run-retry-boundary")),
+    ).rejects.toThrow(/injected node_retry_scheduled persistence failure/i);
+    expect(store.events.at(-1)?.type).toBe("node_failed");
+
+    const state = await resumeWorkflow(workflow("read", true), {
+      cwd: process.cwd(),
+      protectedPaths: [],
+      runId: "run-retry-boundary",
+      store,
+      executor,
+      now: () => new Date("2026-08-07T18:00:10.000Z"),
+    });
+
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: { implement: { attempt: 2, failedAttempts: [{ attempt: 1 }] } },
+    });
+    expect(store.events.filter((event) => event.type === "node_retry_scheduled")).toHaveLength(1);
+  });
+
+  it("stops after the declared number of completed failure attempts", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    const attempts: number[] = [];
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        attempts.push(context.attempt);
+        return retryableAgentFailure();
+      },
+    };
+
+    const state = await runWorkflow(
+      workflow("read", true, undefined, 2),
+      options(store, executor, "run-attempt-limit"),
+    );
+
+    expect(attempts).toEqual([1, 2]);
+    expect(state).toMatchObject({
+      status: "failed",
+      failedNodeId: "implement",
+      nodes: { implement: { attempt: 2, failedAttempts: [{ attempt: 1 }] } },
+    });
+  });
+
+  it("does not retry when bounded model usage is unavailable", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    let calls = 0;
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        calls += 1;
+        return retryableAgentFailure(null);
+      },
+    };
+
+    const state = await runWorkflow(
+      workflow("read", true, undefined, 3, 10),
+      options(store, executor, "run-missing-usage"),
+    );
+
+    expect(calls).toBe(1);
+    expect(state).toMatchObject({ status: "failed", failedNodeId: "implement" });
+    expect(store.events.some((event) => event.type === "node_retry_scheduled")).toBe(false);
+  });
+
+  it("retries when the declared token budget has complete token accounting", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    let calls = 0;
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        calls += 1;
+        return calls === 1
+          ? retryableAgentFailure({
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text: "",
+              textHash: sha256(""),
+              textTruncated: false,
+              durationMs: 1,
+              usageObservation: {
+                modelTokens: { status: "complete", totalTokens: 2 },
+                costUsd: { status: "unavailable" },
+              },
+              policyDecisions: [],
+              effectReceipts: [],
+            })
+          : successfulAgentOutcome();
+      },
+    };
+
+    const state = await runWorkflow(
+      workflow("read", true, undefined, 3, 10),
+      options(store, executor, "run-token-accounting"),
+    );
+
+    expect(calls).toBe(2);
+    expect(state).toMatchObject({ status: "succeeded", resources: { modelTokens: 2 } });
+  });
+
+  it("does not retry a failure carrying non-agent evidence", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    let calls = 0;
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        calls += 1;
+        return retryableAgentFailure(successfulCommandOutcome(node.id).evidence);
+      },
+    };
+
+    const state = await runWorkflow(
+      workflow("read", true),
+      options(store, executor, "run-incompatible-evidence"),
+    );
+
+    expect(calls).toBe(1);
+    expect(state).toMatchObject({ status: "failed", failedNodeId: "implement" });
+    expect(store.events.some((event) => event.type === "node_retry_scheduled")).toBe(false);
+  });
+
+  it("does not select one retry from a concurrent wave with multiple failures", async () => {
+    const compiled = concurrentRetryWorkflow();
+    const store = new MemoryRecoverableRunStore([]);
+    store.failNext("run_failed");
+    const calls: string[] = [];
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") {
+          return successfulCommandOutcome(node.id);
+        }
+        calls.push(node.id);
+        return retryableAgentFailure();
+      },
+    };
+
+    await expect(
+      runWorkflow(compiled, options(store, executor, "run-multiple-failures")),
+    ).rejects.toThrow(/injected run_failed persistence failure/i);
+    expect(store.events.filter((event) => event.type === "node_failed")).toHaveLength(2);
+
+    const state = await resumeWorkflow(
+      compiled,
+      resumeOptions(store, executor, "run-multiple-failures"),
+    );
+
+    expect(calls.sort()).toEqual(["left", "right"]);
+    expect(state.status).toBe("failed");
+    expect(store.events.some((event) => event.type === "node_retry_scheduled")).toBe(false);
+  });
+
   it("persists only explicitly configured agent recovery requirements", async () => {
     const recoveryStore = new MemoryRecoverableRunStore([]);
     const defaultStore = new MemoryRecoverableRunStore([]);
@@ -375,15 +640,52 @@ function options(store: RecoverableRunEventStore, executor: NodeExecutor, runId:
   };
 }
 
-function resumeOptions(store: RecoverableRunEventStore, executor: NodeExecutor) {
+function resumeOptions(
+  store: RecoverableRunEventStore,
+  executor: NodeExecutor,
+  runId = "run-retry",
+) {
   return {
     cwd: process.cwd(),
     protectedPaths: [],
-    runId: "run-retry",
+    runId,
     store,
     executor,
     now: () => new Date("2026-08-07T18:00:10.000Z"),
   };
+}
+
+function concurrentRetryWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: concurrent-retry }
+concurrency: { maxNodes: 2 }
+nodes:
+  - id: root
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: left
+    type: agent
+    dependsOn: [root]
+    agent:
+      prompt: Analyze the left branch.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      recovery: { mode: fresh, maxAttempts: 2 }
+  - id: right
+    type: agent
+    dependsOn: [root]
+    agent:
+      prompt: Analyze the right branch.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      recovery: { mode: fresh, maxAttempts: 2 }
+  - id: join
+    type: command
+    dependsOn: [left, right]
+    command: { executable: node, args: [--version] }
+`);
 }
 
 function openAttemptEvents(
@@ -472,12 +774,22 @@ function reconcilerFor(outcome: "applied" | "not_applied"): NodeEffectReconciler
   };
 }
 
-function workflow(tool: "read" | "edit", recovery: boolean, maxArtifactBytes?: number) {
+function workflow(
+  tool: "read" | "edit",
+  recovery: boolean,
+  maxArtifactBytes?: number,
+  maxAttempts = 3,
+  maxModelTokens?: number,
+) {
+  const budget = [
+    maxArtifactBytes === undefined ? undefined : `maxArtifactBytes: ${maxArtifactBytes}`,
+    maxModelTokens === undefined ? undefined : `maxModelTokens: ${maxModelTokens}`,
+  ].filter((entry): entry is string => entry !== undefined);
   return compileWorkflowText(`
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: proof-safe-retry }
-${maxArtifactBytes === undefined ? "" : `budget: { maxArtifactBytes: ${maxArtifactBytes} }`}
+${budget.length === 0 ? "" : `budget: { ${budget.join(", ")} }`}
 nodes:
   - id: implement
     type: agent
@@ -485,12 +797,37 @@ nodes:
       prompt: Implement the requested change.
       model: { provider: test, id: deterministic }
       tools: [${tool}]
-      ${recovery ? "recovery: { mode: fresh, maxAttempts: 3 }" : ""}
+      ${recovery ? `recovery: { mode: fresh, maxAttempts: ${maxAttempts} }` : ""}
   - id: verify
     type: command
     dependsOn: [implement]
     command: { executable: node, args: [--version] }
 `);
+}
+
+function retryableAgentFailure(
+  evidence: NodeExecutionOutcome["evidence"] = {
+    kind: "agent",
+    provider: "test",
+    model: "deterministic",
+    text: "",
+    textHash: sha256(""),
+    textTruncated: false,
+    durationMs: 1,
+    policyDecisions: [],
+    effectReceipts: [],
+  },
+): NodeExecutionOutcome {
+  return {
+    status: "failed",
+    error: {
+      code: "pi_agent_error",
+      message: "agent provider execution failed",
+      retryable: true,
+      sideEffectStatus: "none",
+    },
+    evidence,
+  };
 }
 
 function firstDescriptor(): FilesystemEditEffectDescriptor {

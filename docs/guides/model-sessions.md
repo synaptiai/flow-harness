@@ -1,8 +1,9 @@
 # Inspect and recover portable model sessions
 
-Use this guide to inspect the safe metadata for a model-backed node and to resume an eligible
-interrupted attempt. Flow preserves completed conversation and tool context in a private,
-provider-neutral record. It never treats that record as proof that a node or workflow succeeded.
+Use this guide to inspect safe metadata for a model-backed node. You can also resume an eligible
+interrupted attempt and diagnose a completed provider failure that Flow retried. Flow preserves
+completed conversation and tool context in a private, provider-neutral record. It never treats
+that record as proof that a node or workflow succeeded.
 
 This feature is implemented in Flow `0.1.0-alpha.4` and the current source tree. It applies to
 model-backed agent and model verifier nodes that run through the production Pi adapter.
@@ -125,6 +126,28 @@ Flow derives the capsule only from committed primary events and interruption bou
 only the derived surface's digest, byte count, source head, and render version, so later attempts
 don't embed earlier generated capsules recursively.
 
+## Inspect a completed provider-failure retry
+
+An opted-in Pi agent might report a provider execution failure before any command, effect, or
+delegation. Flow can then start the next attempt without waiting for an operator. The run ledger
+first records `node_failed`, including usage and cost when available. It then records
+`node_retry_scheduled`. Flow starts a new in-memory Pi session with the next attempt number.
+
+Inspect the run after it completes:
+
+```sh
+flow inspect <run-id>
+```
+
+The node's `failedAttempts` list contains the prior terminal error and evidence. The run resource
+totals include both attempts. The private model-session record contains `attempt_settled` for the
+failed attempt and `attempt_started` for the next attempt. It doesn't invent an
+`attempt_interrupted` event.
+
+If the run stops after `node_failed` but before `node_retry_scheduled`, resume it with the exact
+workflow and execution directory. Flow replays the charged failure and records the retry
+disposition once. Don't restart the complete workflow or delete the failed evidence.
+
 ## Understand request identity and capacity
 
 Before every provider request, Flow commits the selected route, thinking setting, and Pi runtime
@@ -181,6 +204,7 @@ count bounds a large sequence of small events.
 | Committed event or hash chain is invalid | Fails closed. | Restore the exact record from a trusted backup or keep the run for audit. Don't hand-edit history. |
 | Request surface no longer matches | Reports stable mismatch categories without private values. | Compare reviewed configuration and runtime changes. Start a new run when exact recovery isn't valid. |
 | Provider stream was interrupted | Stores no partial model message and never continues the stream. | Use fresh recovery only when the workflow proof gate allows it. |
+| Provider execution failed with no recorded side effect and complete bounded-resource evidence | Records the failed attempt, charges its resources, and starts the next declared fresh attempt when every recovery gate passes. | Inspect `failedAttempts`, `node_retry_scheduled`, and total resources. Repeated failures stop at the attempt or resource ceiling. |
 | Tool call has no completed result | Never invents a result. Effect or command settlement decides whether retry is safe. | Inspect the authoritative effect and command state before any new run. |
 | Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. If the current source and selected embedded Pi adapter meet your requirements, you can enable the explicit rolling policy in a new reviewed workflow. Don't raise limits by editing durable state. |
 

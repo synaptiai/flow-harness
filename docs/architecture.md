@@ -56,10 +56,10 @@ records make the operation restart-safe. A settled record consumes the authority
 reinstallation. Explicit retired-blob maintenance previews a bounded physical store and applies one
 digest-bound plan under the package mutation lock. POSIX open-file handles preserve complete reader
 generations.
-Opaque provider-session continuation and general failure or fallback
-retries remain later work. The same is true for broader configurable policy, model network
-tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
-work.
+Opaque provider-session continuation, fallback routing, and retry policy beyond a completed,
+side-effect-free provider execution failure remain later work. The same is true for broader
+configurable policy, model network tools, and arbitrary evaluator runtimes. Stronger virtual
+machine (VM) or managed sandbox backends also remain later work.
 
 Gate 8 provides the first installable preview, current source-build environment diagnostics, and a
 guided quick start. The diagnostic checks only the selected requirements. Quick start publishes a
@@ -306,7 +306,8 @@ flowchart TB
     commands -->|"Performs contained file and process operations"| project
     agents -->|"Uses isolated trial files"| workspaces
     commands -->|"Uses isolated command files"| workspaces
-    engine -->|"Appends events and replays prior state"| ledgers
+    engine -->|"Appends outcomes and proof-safe retry dispositions"| ledgers
+    ledgers -->|"Replays prior state and retry eligibility"| engine
     engine -->|"Creates, claims, and links safe summaries"| sessions
     sessions -->|"Returns redacted integrity metadata"| cli
     commands -->|"Publishes exact bounded command streams"| artifacts
@@ -1290,11 +1291,30 @@ substituted for another. The effect journal constrains failure classification as
 unknown settlement requires uncertainty and a committed settlement forbids a side-effect-free
 failure, while provider or cleanup uncertainty may conservatively remain uncertain even when every
 recorded edit is committed or not applied. A recovery observation never terminalizes its open
-attempt. Only a separate `node_attempt_interrupted` event—validated against the persisted opt-in,
-attempt cap, effect proof, and resource limits—archives the attempt and permits the scheduler to
-start the exact next fresh attempt.
+attempt. Only a separate `node_attempt_interrupted` event archives the attempt and permits a fresh
+start. Validation requires the persisted opt-in, attempt cap, effect proof, and resource limits.
 
-Fresh and recovered execution publish an atomic per-run ownership record containing a process ID and random token before appending. A live owner blocks competitors; an exited owner can be displaced atomically. Recovery replays the committed JSONL prefix and verifies the exact compiled workflow digest, node set, budget, concurrency, approvals, and recovery requirements. It reconciles every open effect and classifies every open attempt in workflow declaration order. Every proof-safe attempt receives one `node_attempt_interrupted` event before the single `run_resumed`; an unsafe sibling still blocks execution without erasing the durable safe dispositions or reconciliation prefix. A crash among these dispositions is replay-safe because archived attempts are already pending with their counters retained. A final unterminated record is uncommitted and is truncated before the recovered owner appends. Ownership is local-host coordination, not a distributed lease or security boundary.
+A completed provider execution failure follows a separate append-only boundary. `node_failed` first
+records terminal evidence and charges resources. Then `node_retry_scheduled` archives the failure
+under `failedAttempts` and returns the node to pending. The scheduler and reducer share one
+eligibility rule. Live execution and replay require the same fresh policy, remaining attempt,
+side-effect-free evidence, and empty effect, command, and delegation history. They also require
+complete bounded-resource accounting and available budget.
+
+Fresh and recovered execution publish an atomic per-run ownership record before appending. The
+record contains a process ID and random token. A live owner blocks competitors. Flow can displace
+an exited owner atomically.
+
+Recovery replays the committed JSON Lines (JSONL) prefix. It verifies the exact compiled workflow
+digest, node set, budget, concurrency, approvals, and recovery requirements. It then reconciles
+every open effect and classifies each open attempt in workflow declaration order.
+
+Every proof-safe attempt receives one `node_attempt_interrupted` event before the single
+`run_resumed` event. An unsafe sibling still blocks execution without erasing safe dispositions or
+the reconciliation prefix. Archived attempts remain pending with their counters, which makes a
+crash among dispositions replay-safe. The recovered owner truncates an uncommitted final record
+before it appends. Ownership coordinates one local host. It isn't a distributed lease or security
+boundary.
 
 ### Local detached supervision
 

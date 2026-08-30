@@ -454,6 +454,15 @@ export interface NodeAttemptInterruptedEvent extends RunEventBase {
   readonly modelSession?: ModelSessionSummary;
 }
 
+export interface NodeRetryScheduledEvent extends RunEventBase {
+  readonly type: "node_retry_scheduled";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly reason: "retryable_failure";
+  readonly disposition: "fresh_retry";
+  readonly resourceAccounting: "complete";
+}
+
 export interface NodeDelegationPreparedEvent extends RunEventBase {
   readonly type: "node_delegation_prepared";
   readonly nodeId: string;
@@ -1286,6 +1295,7 @@ export type RunEvent =
   | NodeDelegationPreparedEvent
   | NodeDelegationSettledEvent
   | NodeAttemptInterruptedEvent
+  | NodeRetryScheduledEvent
   | NodeConditionEvaluatedEvent
   | NodeResultPublishedEvent
   | NodeOmittedEvent
@@ -1400,6 +1410,7 @@ export interface NodeRunState {
   readonly commands: readonly NodeAgentCommandRunState[];
   readonly delegations: readonly NodeDelegationRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
+  readonly failedAttempts: readonly FailedNodeAttemptState[];
   readonly control: NodeControlRunState | null;
   readonly omission: NodeOmissionRunState | null;
   readonly optimization: OptimizationCheckRunState | null;
@@ -1547,6 +1558,23 @@ export interface InterruptedNodeAttemptState {
   readonly effects: readonly NodeEffectRunState[];
   readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
   readonly commands: readonly NodeAgentCommandRunState[];
+  readonly modelSession: ModelSessionSummary | null;
+}
+
+export interface FailedNodeAttemptState {
+  readonly attempt: number;
+  readonly startedAt: string;
+  readonly failedAt: string;
+  readonly reason: "retryable_failure";
+  readonly disposition: "fresh_retry";
+  readonly resourceAccounting: "complete";
+  readonly evidence: NodeEvidence | null;
+  readonly error: NodeFailure;
+  readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
+  readonly effects: readonly NodeEffectRunState[];
+  readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
+  readonly commands: readonly NodeAgentCommandRunState[];
+  readonly delegations: readonly NodeDelegationRunState[];
   readonly modelSession: ModelSessionSummary | null;
 }
 
@@ -3385,6 +3413,17 @@ export const runEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBaseShape,
+      type: z.literal("node_retry_scheduled"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      reason: z.literal("retryable_failure"),
+      disposition: z.literal("fresh_retry"),
+      resourceAccounting: z.literal("complete"),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
       type: z.literal("node_condition_evaluated"),
       nodeId: identifierSchema,
       attempt: z.literal(1),
@@ -4385,6 +4424,7 @@ export function appendRunEvent(
     event.type !== "run_resumed" &&
     event.type !== "node_effect_reconciled" &&
     event.type !== "node_attempt_interrupted" &&
+    event.type !== "node_retry_scheduled" &&
     !isRunningNodeOutcome(event, nodes)
   ) {
     throw new RunReplayError(
@@ -5211,6 +5251,48 @@ export function appendRunEvent(
         commands: Object.freeze([]),
         delegations: Object.freeze([]),
         interruptedAttempts: Object.freeze([...current.interruptedAttempts, interruptedAttempt]),
+      });
+      break;
+    }
+    case "node_retry_scheduled": {
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      const requirement = currentState.recoveryRequirements[event.nodeId];
+      validateFailedAttemptRecovery(currentState, current, requirement, event, eventIndex);
+      if (current.error === null) {
+        throw new RunReplayError(eventIndex, "terminal retry requires a failed node error");
+      }
+      const failedAttempt: FailedNodeAttemptState = deepFreeze({
+        attempt: current.attempt,
+        startedAt: requireStartedAt(current, eventIndex),
+        failedAt: requireFinishedAt(current, eventIndex),
+        reason: event.reason,
+        disposition: event.disposition,
+        resourceAccounting: event.resourceAccounting,
+        evidence: current.evidence,
+        error: current.error,
+        effectProtocol: current.effectProtocol,
+        effects: current.effects,
+        commandProtocol: current.commandProtocol,
+        commands: current.commands,
+        delegations: current.delegations,
+        modelSession: current.modelSession,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "pending",
+        startedAt: null,
+        finishedAt: null,
+        evidence: null,
+        error: null,
+        approval: null,
+        workflowApproval: null,
+        agentCommandApprovals: Object.freeze([]),
+        effectProtocol: null,
+        effects: Object.freeze([]),
+        commandProtocol: null,
+        commands: Object.freeze([]),
+        delegations: Object.freeze([]),
+        failedAttempts: Object.freeze([...current.failedAttempts, failedAttempt]),
       });
       break;
     }
@@ -6696,6 +6778,15 @@ export function appendRunEvent(
         throw new RunReplayError(
           eventIndex,
           `failed node "${event.failedNodeId}" is not the deterministic primary failed node of a quiescent run`,
+        );
+      }
+      if (
+        failedNodes.length === 1 &&
+        canScheduleFailedAttemptRetry(currentState, event.failedNodeId)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `retryable node "${event.failedNodeId}" must schedule its declared fresh retry`,
         );
       }
       status = "failed";
@@ -10481,6 +10572,7 @@ function pendingNodeState(): NodeRunState {
     commands: Object.freeze([]),
     delegations: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),
+    failedAttempts: Object.freeze([]),
     control: null,
     omission: null,
     optimization: null,
@@ -10641,6 +10733,61 @@ function validateInterruptedAttemptRecovery(
   }
 }
 
+function validateFailedAttemptRecovery(
+  state: RunState,
+  node: NodeRunState,
+  requirement: Omit<AgentRecoveryRequirement, "nodeId"> | undefined,
+  event: NodeRetryScheduledEvent,
+  eventIndex: number,
+): void {
+  if (event.attempt !== node.attempt) {
+    throw new RunReplayError(
+      eventIndex,
+      "terminal retry attempt does not match the failed attempt",
+    );
+  }
+  if (requirement !== state.recoveryRequirements[event.nodeId]) {
+    throw new RunReplayError(eventIndex, "terminal retry recovery requirement is inconsistent");
+  }
+  if (!canScheduleFailedAttemptRetry(state, event.nodeId)) {
+    throw new RunReplayError(eventIndex, "terminal failure is not eligible for fresh retry");
+  }
+}
+
+export function canScheduleFailedAttemptRetry(state: RunState, nodeId: string): boolean {
+  const node = state.nodes[nodeId];
+  const requirement = state.recoveryRequirements[nodeId];
+  if (
+    node?.status !== "failed" ||
+    node.error?.retryable !== true ||
+    node.error.sideEffectStatus !== "none" ||
+    requirement === undefined ||
+    node.attempt >= requirement.maxAttempts ||
+    node.effects.length > 0 ||
+    node.commands.length > 0 ||
+    node.delegations.length > 0 ||
+    (state.budget?.exhausted.length ?? 0) > 0
+  ) {
+    return false;
+  }
+  const limits = state.budget?.limits;
+  const evidence = node.evidence;
+  if (evidence !== null && evidence.kind !== "agent") {
+    return false;
+  }
+  const tokenAccountingComplete =
+    evidence?.kind === "agent" &&
+    (evidence.usage !== undefined || evidence.usageObservation?.modelTokens.status === "complete");
+  const costAccountingComplete =
+    evidence?.kind === "agent" &&
+    (evidence.usage !== undefined || evidence.usageObservation?.costUsd.status === "complete");
+  return !(
+    (limits?.maxModelTokens !== undefined && !tokenAccountingComplete) ||
+    (limits?.maxCostUsdMicros !== undefined && !costAccountingComplete) ||
+    (limits?.maxExecutionMs !== undefined && evidence === null)
+  );
+}
+
 function effectIsProvenNotApplied(effect: NodeEffectRunState): boolean {
   return (
     effect.settlement?.outcome === "not_applied" || effect.reconciliation?.outcome === "not_applied"
@@ -10652,6 +10799,13 @@ function requireStartedAt(node: NodeRunState, eventIndex: number): string {
     throw new RunReplayError(eventIndex, "running node is missing its start timestamp");
   }
   return node.startedAt;
+}
+
+function requireFinishedAt(node: NodeRunState, eventIndex: number): string {
+  if (node.finishedAt === null) {
+    throw new RunReplayError(eventIndex, "failed node is missing its finish timestamp");
+  }
+  return node.finishedAt;
 }
 
 export function nodeEffectId(eventSequence: number): string {

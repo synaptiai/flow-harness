@@ -23,8 +23,8 @@ import {
   workflowApprovalRequestId,
 } from "../domain/approval/workflow-approval.js";
 import {
-  calculateCapabilitySnapshotDigest,
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
@@ -48,8 +48,8 @@ import {
 } from "../domain/result/typed-result.js";
 import {
   type AgentCapabilityRequirement,
-  type AgentDelegationReceipt,
   type AgentCommandSettlementOutcome,
+  type AgentDelegationReceipt,
   type AgentEffectReceipt,
   type AgentRecoveryRequirement,
   appendRunEvent,
@@ -59,6 +59,7 @@ import {
   type ControlGraph,
   calculateChildRunId,
   calculateOptimizationPromotionId,
+  canScheduleFailedAttemptRetry,
   DURABLE_EFFECT_PROTOCOL,
   type ExecutionWorkspaceProvenance,
   type FilesystemEffectDescriptor,
@@ -66,9 +67,9 @@ import {
   type NodeEffectReconciledEvent,
   type NodeEffectSettlementInput,
   type NodeFailure,
-  nodeDelegationId,
   type NodeOptimizationEvaluatedEvent,
   nodeAgentCommandId,
+  nodeDelegationId,
   nodeEffectId,
   type OptimizationCheckRunState,
   type OptimizationPromotionBoundary,
@@ -92,12 +93,12 @@ import {
   modelSessionSummary,
 } from "../domain/run/model-session.js";
 import { createModelWorkProfileContext } from "../domain/run/work-profile.js";
+import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import {
   projectCompiledControlGraph,
   workflowRequiresControlGraph,
 } from "../domain/workflow/control-graph.js";
 import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
-import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import type {
   CompiledAgentNode,
   CompiledApprovalNode,
@@ -131,9 +132,9 @@ import type {
   ModelSessionStore,
   NodeAgentCommandApprovalGate,
   NodeAgentCommandJournal,
+  NodeDelegationSession,
   NodeEffectJournal,
   NodeEffectReconciler,
-  NodeDelegationSession,
   NodeExecutionOutcome,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -422,7 +423,28 @@ async function continueWorkflow(
     return eventBase(workflow, runId, sequence, now, at);
   }
 
-  const failed = Object.entries(state.nodes).find(([, node]) => node.status === "failed");
+  async function scheduleFailedAttemptRetry(nodeId: string): Promise<boolean> {
+    if (!canScheduleFailedAttemptRetry(state, nodeId)) {
+      return false;
+    }
+    const attempt = state.nodes[nodeId]?.attempt;
+    if (attempt === undefined) {
+      throw new Error(`Failed node "${nodeId}" has no committed attempt`);
+    }
+    await record({
+      ...base(nextSequence()),
+      type: "node_retry_scheduled",
+      nodeId,
+      attempt,
+      reason: "retryable_failure",
+      disposition: "fresh_retry",
+      resourceAccounting: "complete",
+    });
+    return true;
+  }
+
+  const failedEntries = Object.entries(state.nodes).filter(([, node]) => node.status === "failed");
+  const failed = failedEntries[0];
   if (failed !== undefined) {
     const [failedNodeId, failedNode] = failed;
     if (failedNode.error === null) {
@@ -431,13 +453,15 @@ async function continueWorkflow(
     if (hasSettlementExhaustion(state)) {
       return await exhaustRun();
     }
-    await record({
-      ...base(nextSequence()),
-      type: "run_failed",
-      failedNodeId,
-      reason: failedNode.error.message,
-    });
-    return state;
+    if (failedEntries.length !== 1 || !(await scheduleFailedAttemptRetry(failedNodeId))) {
+      await record({
+        ...base(nextSequence()),
+        type: "run_failed",
+        failedNodeId,
+        reason: failedNode.error.message,
+      });
+      return state;
+    }
   }
 
   workflowLoop: while (!workflowIsTerminal(state)) {
@@ -920,6 +944,9 @@ async function continueWorkflow(
       const error = state.nodes[primaryFailure]?.error;
       if (error === null || error === undefined) {
         throw new Error(`Failed node "${primaryFailure}" has no committed error`);
+      }
+      if (failedNodeIds.length === 1 && (await scheduleFailedAttemptRetry(primaryFailure))) {
+        continue;
       }
       await record({
         ...base(nextSequence()),

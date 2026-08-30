@@ -2,10 +2,15 @@
 
 Flow can resume an interrupted run when its durable ledger proves that execution stopped between
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
-attempt applied no effects. Recovery remains conservative: ambiguous work is reported to the
-operator and is never repeated automatically. Agent attempts that select `exec` never opt into
-fresh recovery. Command attempts, model verifier attempts, and Lean proof verifier attempts also
-remain ineligible. An open verifier start is refused as uncertain.
+attempt applied no effects. The same opt-in can retry a completed provider execution failure. The
+terminal evidence must prove that the attempt performed no effect. It must also account for every
+bounded resource. Recovery remains conservative: ambiguous work is reported to the operator and is
+never repeated automatically.
+
+An interrupted agent attempt that selects `exec` never qualifies for fresh recovery. A completed
+agent attempt that prepared a command, effect, or delegation also doesn't qualify. Command
+attempts, model verifier attempts, and Lean proof verifier attempts remain ineligible. An open
+verifier start is refused as uncertain.
 
 ## Lean proof appliance attempts
 
@@ -610,6 +615,49 @@ silently changing this behavior.
 Fresh retry is also distinct from completion proof. The retried agent must still produce its own
 terminal evidence, and downstream deterministic verifier nodes still decide criterion acceptance.
 
+### Retry a completed provider failure
+
+The embedded Pi adapter classifies only these completed, side-effect-free failures as retryable:
+
+- Pi returns a terminal provider `error` without a stable model-context failure code.
+- The provider runner throws an error that isn't a Flow capability-evidence or semantic-evidence
+  validation failure.
+
+Flow keeps cancellation, timeout, output exhaustion, incomplete output, policy failure, stable
+model-context failure, validation failure, and operator denial non-retryable. A provider failure
+after any recorded command, effect, or delegation also remains ineligible. These rules prevent a
+generic provider error from overriding stronger durable evidence.
+
+After an eligible attempt completes, Flow first appends `node_failed`. This event closes the model
+session and charges the attempt's node start, duration, artifacts, model tokens, and reported cost.
+Flow then appends `node_retry_scheduled` only when all of these statements are true:
+
+- The node has a persisted `recovery: { mode: fresh, ... }` policy.
+- The failed attempt is below `maxAttempts`.
+- The failure is retryable and has `sideEffectStatus: none`.
+- The attempt has no effect, command, or delegation record.
+- No declared run budget is exhausted.
+- When model tokens or cost are bounded, terminal evidence contains a complete usage observation.
+- When execution time is bounded, terminal evidence is present.
+
+`node_retry_scheduled` fixes the reason to `retryable_failure`, the disposition to `fresh_retry`,
+and resource accounting to `complete`. The reducer archives the terminal error, evidence,
+timestamps, protocols, effects, commands, delegations, and model-session summary under
+`failedAttempts`. It then returns only the current node projection to `pending`. The next
+`node_started` event must use the next attempt number.
+
+If Flow stops after `node_failed` but before `node_retry_scheduled`, resume replays the charged
+failure and appends the missing retry disposition once. If Flow stops after the disposition, replay
+sees the archived attempt and continues from the pending next attempt. A run without the opt-in
+records the ordinary terminal outcome. The same rule applies when bounded-resource evidence is
+incomplete or a resource or attempt ceiling is reached. Flow performs no additional provider
+request in these cases.
+
+This retry starts a new Flow attempt and a new in-memory Pi session. It doesn't continue the failed
+provider request, hide the failed attempt, or add an adapter-owned retry layer. Inspect
+`failedAttempts`, the run resources, and `node_retry_scheduled` before you diagnose repeated
+provider failures.
+
 ### Rolling context epoch recovery
 
 An opted-in rolling context epoch adds a private write-ahead boundary inside the model-session
@@ -928,7 +976,7 @@ diagnosis.
 | Code | Meaning | Operator action |
 | --- | --- | --- |
 | `uncertain_operation` | A node attempt started without a durable outcome, even if its edits were reconciled | Inspect the node and its settlement/reconciliation provenance; start a new reviewed run rather than editing the ledger |
-| `recovery_retry_ineligible` | The node opted into fresh recovery, but attempt, effect, protocol, or resource proof forbids the next start | Inspect `interruptedAttempts`, effects, recovery requirement, and budget; do not hand-edit the ledger or rerun under a weakened workflow |
+| `recovery_retry_ineligible` | The node opted into fresh recovery, but interruption, attempt, effect, protocol, or resource proof forbids the next start | Inspect `interruptedAttempts`, `failedAttempts`, effects, recovery requirement, and budget; don't hand-edit the ledger or rerun under a weakened workflow |
 | `reconciliation_unavailable` | An open typed effect was found but this embedding did not supply a reconciler | Use the production CLI/worker composition or configure a reviewed reconciler; do not retry the node |
 | `reconciliation_incomplete` | A reconciler returned no observation or attempted multiple publications | Preserve the ledger and diagnose the adapter contract before trying recovery again |
 | `terminal_run` | The run already has a terminal event | Use `flow inspect`; start a new run for new work |

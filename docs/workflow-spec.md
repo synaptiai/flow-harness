@@ -1708,6 +1708,14 @@ canonical JSON user turn with a fixed untrusted-data instruction. `resume_surfac
 only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
 never primary history.
 
+A completed side-effect-free provider execution failure can use the same declared fresh policy.
+Flow first appends `node_failed` with complete terminal evidence and resource accounting. It then
+appends `node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete`
+dispositions. Replay archives the terminal attempt under `failedAttempts` before returning the
+node to `pending`. The retry is illegal without an attempt remaining, with an exhausted budget,
+or after any effect, command, or delegation record. It is also illegal without complete evidence
+for a declared model-token, model-cost, or execution-time limit.
+
 The dedicated compaction evaluator can derive a smaller provider surface without changing primary
 history. `references` mode projects only validated same-run command artifact references. It keeps
 the original tool result when a reference is invalid, unavailable, or not smaller.
@@ -1823,7 +1831,8 @@ fresh mode, maximum attempts, and whether replay requires no effect protocol or
 `flow.effects/v1`. When declared, the compiled goal is also captured, so replay and inspection do
 not need the original workflow file. Model-backed `node_started`, `node_attempt_interrupted`,
 `node_succeeded`, and `node_failed` events can carry only the bounded public model-session summary.
-The private event bodies remain outside the authoritative ledger.
+`node_retry_scheduled` carries no private model content. The private event bodies remain outside
+the authoritative ledger.
 
 A child `node_started` also captures its deterministic child run id, embedded workflow digest,
 result node/schema identity, and isolation backend. The child ledger's own `run_started` captures
@@ -1841,6 +1850,14 @@ incomplete-resource-accounting dispositions. The reducer archives the attempt nu
 interruption timestamps, effect protocol, and immutable effects before returning the node to
 pending. The next `node_started` must use the prior attempt plus one. At most `A` starts and `A-1`
 interruption dispositions exist for `maxAttempts: A`.
+
+`node_retry_scheduled` can follow one completed opted-in agent failure only when the failure is
+retryable and side-effect-free. The attempt must contain no effects, commands, or delegations. The
+attempt cap must have capacity, and each declared resource limit must remain accountable and
+unexhausted. The prior `node_failed` event has already charged terminal evidence. The reducer
+archives that evidence and error under `failedAttempts`, returns the node to pending, and preserves
+the next-attempt invariant. Replay rejects a generic `run_failed` event when this retry disposition
+is required and still eligible.
 
 Agent-command approval history retains every exact request, decision or cancellation, expiry, and
 single command consumption on its running node. `node_agent_command_prepared` carries the approval

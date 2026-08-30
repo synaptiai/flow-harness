@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import {
-  calculateCapabilitySnapshotDigest,
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
 } from "../domain/capability/agent-skills.js";
 import type { EvaluationOciLease } from "../domain/evaluation/attempt.js";
 import type {
@@ -13,8 +13,8 @@ import type {
   PhaseRoutingObservation,
 } from "../domain/evaluation/records.js";
 import {
-  parseDelegationEvaluationObservation,
   parseAcpQualificationObservation,
+  parseDelegationEvaluationObservation,
   unavailableEvaluationMetrics,
 } from "../domain/evaluation/records.js";
 import {
@@ -777,18 +777,23 @@ function metricsFromState(
   wallTimeMs: number,
 ): EvaluationMetrics {
   const attemptedModels = attemptedNodes(workflow, state, isModelNode);
-  const modelEvidence = attemptedModels.map(({ state: node }) =>
-    modelUsageObservation(node.evidence),
+  const modelEvidence = attemptedModels.flatMap(({ state: node }) =>
+    terminalAttemptEvidence(node).map(modelUsageObservation),
   );
-  const tokenBreakdownComplete = modelEvidence.every(
-    (usage) =>
-      usage?.modelTokens.status === "complete" && usage.modelTokens.breakdown !== undefined,
-  );
+  const tokenBreakdownComplete =
+    attemptedModels.every(({ state: node }) => node.interruptedAttempts.length === 0) &&
+    modelEvidence.every(
+      (usage) =>
+        usage?.modelTokens.status === "complete" && usage.modelTokens.breakdown !== undefined,
+    );
   const costComplete = attemptedModels.every(({ node, state: nodeState }) =>
     node.type === "child"
       ? nodeState.evidence?.kind === "child" &&
         nodeState.evidence.resourceAvailability?.modelCostUsdMicros !== "unavailable"
-      : modelUsageObservation(nodeState.evidence)?.costUsd.status === "complete",
+      : nodeState.interruptedAttempts.length === 0 &&
+        terminalAttemptEvidence(nodeState).every(
+          (evidence) => modelUsageObservation(evidence)?.costUsd.status === "complete",
+        ),
   );
   const usage = tokenBreakdownComplete
     ? sumTokenBreakdowns(
@@ -802,11 +807,14 @@ function metricsFromState(
   const attemptedAgents = attemptedNodes(workflow, state, (node) => node.type === "agent");
   const hasAttemptedChild =
     attemptedNodes(workflow, state, (node) => node.type === "child").length > 0;
-  const agentEvidence = attemptedAgents.map(({ state: node }) =>
-    node.evidence?.kind === "agent" ? node.evidence : undefined,
+  const agentEvidence = attemptedAgents.flatMap(({ state: node }) =>
+    terminalAttemptEvidence(node).map((evidence) =>
+      evidence?.kind === "agent" ? evidence : undefined,
+    ),
   );
   const activityComplete =
     !hasAttemptedChild &&
+    attemptedAgents.every(({ state: node }) => node.interruptedAttempts.length === 0) &&
     agentEvidence.every((evidence): evidence is AgentEvidence => evidence?.activity !== undefined);
   const activity = activityComplete
     ? agentEvidence.reduce(
@@ -819,7 +827,9 @@ function metricsFromState(
       )
     : undefined;
   const policyComplete =
-    !hasAttemptedChild && agentEvidence.every((evidence) => evidence !== undefined);
+    !hasAttemptedChild &&
+    attemptedAgents.every(({ state: node }) => node.interruptedAttempts.length === 0) &&
+    agentEvidence.every((evidence) => evidence !== undefined);
   const policyViolations = policyComplete
     ? agentEvidence.reduce(
         (total, evidence) =>
@@ -830,11 +840,15 @@ function metricsFromState(
       )
     : null;
   const recoveryAttempts = Object.values(state.nodes).reduce(
-    (total, node) => total + node.interruptedAttempts.length,
+    (total, node) => total + node.interruptedAttempts.length + node.failedAttempts.length,
     0,
   );
   const attemptedTimedNodes = attemptedNodes(workflow, state, isTimedNode);
-  const activeTimeComplete = attemptedTimedNodes.every(({ state: node }) => node.evidence !== null);
+  const activeTimeComplete = attemptedTimedNodes.every(
+    ({ state: node }) =>
+      node.interruptedAttempts.length === 0 &&
+      terminalAttemptEvidence(node).every((evidence) => evidence !== null),
+  );
   return Object.freeze({
     costUsdMicros: costComplete ? state.resources.modelCostUsdMicros : null,
     inputTokens: usage?.inputTokens ?? null,
@@ -857,6 +871,12 @@ function metricsFromState(
           ? "succeeded"
           : "failed",
   });
+}
+
+function terminalAttemptEvidence(
+  node: RunState["nodes"][string],
+): readonly (NodeEvidence | null)[] {
+  return [...node.failedAttempts.map((attempt) => attempt.evidence), node.evidence];
 }
 
 function isTimedNode(node: CompiledNode): boolean {

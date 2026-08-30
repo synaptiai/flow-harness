@@ -156,7 +156,8 @@ the [Security policy](../SECURITY.md).
 
 - Attached and detached execution.
 - Durable FIFO admission, authenticated workers, cancellation, and event replay.
-- Proof-gated fresh recovery for eligible interrupted agent attempts.
+- Proof-gated fresh recovery for eligible interrupted agent attempts and completed,
+  side-effect-free provider execution failures.
 - Terminal, browser, and ACP v1 observation and steering.
 - Exact local ACP v1 executor selection for attached and detached runs.
 - One fresh contained process and session for each attempt.

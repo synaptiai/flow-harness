@@ -208,6 +208,11 @@ holdout before execution. Preserve failed and interrupted attempts in the denomi
 public inspection with private test evidence under the same disclosure rules. Require independent
 task verification before claiming success.
 
+Evaluation aggregates terminal evidence from each `failedAttempts` entry and the current attempt.
+This rule covers model usage, activity, policy decisions, active time, and recovery outcomes. A
+process-interrupted attempt keeps completeness-sensitive metrics unavailable because its resource
+accounting is incomplete.
+
 The second separate-repository field series tested large-file modularization, directory creation,
 complete replacement, and phase decomposition. It also tested early syntax checks,
 abstract-syntax-tree preservation, historical imports, executable documentation, and bounded
