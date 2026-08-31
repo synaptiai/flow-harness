@@ -1155,7 +1155,6 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       );
     }
 
-    const providerFailureObserver = attachProviderFailureObserver(session, this.providerFetch);
     const modelSessionRecorder =
       request.modelSession === undefined
         ? undefined
@@ -1206,8 +1205,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       const failureCode = modelSessionRecorder?.failureCode();
       if (promptError !== undefined) {
         const message = promptError instanceof Error ? promptError.message : String(promptError);
-        const terminalFailureCode =
-          failureCode ?? providerFailureObserver.failureCode() ?? classifyProviderFailure(message);
+        const terminalFailureCode = failureCode ?? classifyProviderFailure(message);
         return {
           ...output.result(),
           usage,
@@ -1233,7 +1231,6 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       }
       const terminalFailureCode =
         failureCode ??
-        providerFailureObserver.failureCode() ??
         (finalMessage.stopReason === "error"
           ? classifyProviderFailure(finalMessage.errorMessage)
           : undefined);
@@ -2082,71 +2079,6 @@ function modelContextFailureMessage(code: PiModelContextFailureCode): string {
     case "pi_model_context_checkpoint_invalid":
       return "rolling-context provider request identity is invalid";
   }
-}
-
-function attachProviderFailureObserver(
-  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
-  providerFetch: typeof fetch,
-): { readonly failureCode: () => PiProviderFailureCode | undefined } {
-  const agent = (
-    session as unknown as {
-      readonly agent?: { streamFunction?: PiStreamFunction };
-    }
-  ).agent;
-  if (agent?.streamFunction === undefined) {
-    return { failureCode: () => undefined };
-  }
-
-  const originalStreamFunction = agent.streamFunction;
-  let observedFailureCode: PiProviderFailureCode | undefined;
-  agent.streamFunction = async (model, context, options) => {
-    const delegate = options?.fetch ?? providerFetch;
-    const observingFetch: typeof fetch = async (input, init) => {
-      const response = await delegate(input, init);
-      if (!response.ok && observedFailureCode === undefined) {
-        observedFailureCode = await classifyProviderResponse(response);
-      }
-      return response;
-    };
-    return await originalStreamFunction(model, context, {
-      ...options,
-      fetch: observingFetch,
-    });
-  };
-  return { failureCode: () => observedFailureCode };
-}
-
-async function classifyProviderResponse(
-  response: Response,
-): Promise<PiProviderFailureCode | undefined> {
-  if (response.status !== 429) return undefined;
-
-  try {
-    const payload = (await response.clone().json()) as unknown;
-    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-      return undefined;
-    }
-    const root = payload as Readonly<Record<string, unknown>>;
-    const error =
-      typeof root.error === "object" && root.error !== null && !Array.isArray(root.error)
-        ? (root.error as Readonly<Record<string, unknown>>)
-        : root;
-    const identifiers = [error.type, error.code].filter(
-      (value): value is string => typeof value === "string",
-    );
-    if (
-      identifiers.some((value) =>
-        ["insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"].includes(
-          value.toLowerCase(),
-        ),
-      )
-    ) {
-      return "pi_provider_quota_exhausted";
-    }
-  } catch {
-    // Provider error bodies are optional diagnostic input. Never disturb the original response.
-  }
-  return undefined;
 }
 
 function attachModelSessionRecorder(

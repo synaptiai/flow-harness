@@ -1809,23 +1809,14 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(disposed).toBe(true);
   });
 
-  it("classifies provider credit exhaustion for safe executor projection", async () => {
-    const agent = {
-      streamFunction: async (
-        _model: unknown,
-        _context: unknown,
-        options: { readonly fetch?: typeof fetch },
-      ) => {
-        await options.fetch?.("https://api.openai.com/v1/responses");
-        throw new Error("Unknown: UnknownError");
-      },
-    };
+  it("classifies a structured provider credit-exhaustion error", async () => {
     const fakeSession = {
-      agent,
       state: { messages: [] },
       subscribe: () => () => undefined,
       prompt: async () => {
-        await agent.streamFunction({}, {}, {});
+        throw new Error(
+          'OpenAI API error (429): {"type":"insufficient_quota","code":"credit_balance_exhausted","message":"PRIVATE_PROVIDER_BILLING_DETAIL"}',
+        );
       },
       abort: async () => undefined,
       getSessionStats: () => sessionStats(),
@@ -1837,24 +1828,12 @@ describe("EmbeddedPiAgentRunner", () => {
     const runner = new EmbeddedPiAgentRunner(
       async () => ({ getModel: () => ({}) }) as never,
       createSession,
-      async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              type: "insufficient_quota",
-              code: "credit_balance_exhausted",
-              message: "PRIVATE_PROVIDER_BILLING_DETAIL",
-            },
-          }),
-          { status: 429, headers: { "content-type": "application/json" } },
-        ),
     );
 
     const result = await runner.run(agentRequest());
 
     expect(result.failureCode).toBe("pi_provider_quota_exhausted");
-    expect(result.errorMessage).toBe("Unknown: UnknownError");
-    expect(JSON.stringify(result)).not.toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
+    expect(result.errorMessage).toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
   });
 
   it("classifies Pi's friendly exhausted-credit message", async () => {
