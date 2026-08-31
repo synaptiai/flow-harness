@@ -60,6 +60,11 @@ Use [Author GitHub issue workflows](github-issue-workflows.md) to create and val
 workflow files. That guide includes complete templates, budget guidance, the structured review
 result, and the exact data sent to the selected model provider.
 
+Use [Configure model providers](model-providers.md) to select and secure the model route. The
+current source supports OpenRouter alongside existing OpenAI and Anthropic routes. OpenRouter with
+GLM 5.3 Flash uses `--provider openrouter --model z-ai/glm-5.3-flash` and requires
+`OPENROUTER_API_KEY` in the host environment.
+
 Check the active GitHub account without displaying its token:
 
 ```sh
@@ -219,8 +224,8 @@ Check the live host, checkout, GitHub identity, issue, and plan without mutating
 ```sh
 flow issue doctor https://github.com/example/widgets/issues/42 \
   --plan .flow/github-issue.plan.yaml \
-  --provider openai \
-  --model <supported-model>
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash
 ```
 
 Use the same provider and model for `doctor` and `run`. The diagnostic must succeed before you
@@ -240,8 +245,8 @@ only if the same command response is lost or uncertain. Submit the frozen issue 
 ```sh
 flow issue run https://github.com/example/widgets/issues/42 \
   --plan .flow/github-issue.plan.yaml \
-  --provider openai \
-  --model <supported-model> \
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash \
   --command-id <uuid>
 ```
 

@@ -16,6 +16,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You intentionally need the historical first-alpha contract. |
 | [Getting started](getting-started.md) | You want to confirm the `flow` command and complete one credential-free run. |
 | [Complete the coding quick start](guides/coding-quickstart.md) | You want to prove one bounded provider-backed edit and inspect its evidence. |
+| [Configure model providers](guides/model-providers.md) | You need Anthropic, OpenAI, or OpenRouter setup, GLM 5.3 Flash selection, privacy and spending controls, or context-policy compatibility. |
 | [Complete a GitHub issue with Flow](guides/github-issue-lifecycle.md) | You want to implement, review, verify, and explicitly merge one issue in another GitHub repository. |
 | [Diagnose the Flow environment](guides/diagnose-environment.md) | You need a read-only host, project, workflow, provider, sandbox, or Prime preflight. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |

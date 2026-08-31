@@ -40,12 +40,15 @@ Choose one supported preview provider and one exact model from the pinned Pi cat
 | --- | --- | --- |
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-5.6-luna` |
+| OpenRouter | `OPENROUTER_API_KEY` | `z-ai/glm-5.3-flash` |
 
 Set the selected credential in the environment that starts Flow. Do not put the credential in a
 Flow project file, workflow, command argument, shell history, or issue report. Follow the official
 [Anthropic API setup](https://docs.anthropic.com/en/api/getting-started) or
-[OpenAI API quick start](https://platform.openai.com/docs/quickstart) when you create or rotate a
-credential.
+[OpenAI API quick start](https://platform.openai.com/docs/quickstart), or
+[OpenRouter API keys](https://openrouter.ai/settings/keys) when you create or rotate a credential.
+Read [Configure model providers](model-providers.md) for the OpenRouter data boundary, spending
+controls, exact GLM 5.3 Flash commands, and context-policy limit.
 
 The model examples describe the repository's pinned catalog at publication time. Provider
 availability can change. Flow checks the exact selected provider, model, and configured
@@ -63,6 +66,7 @@ Use the provider's current pricing page before every paid run:
 
 - [Anthropic pricing](https://docs.anthropic.com/en/docs/about-claude/pricing)
 - [OpenAI API pricing](https://platform.openai.com/pricing)
+- [OpenRouter models and pricing](https://openrouter.ai/models)
 
 For a model whose provider publishes per-million-token rates, estimate the request cost with this
 formula:
@@ -102,6 +106,15 @@ flow quickstart . \
   --coding \
   --provider openai \
   --model gpt-5.6-luna
+```
+
+For GLM 5.3 Flash through OpenRouter:
+
+```sh
+flow quickstart . \
+  --coding \
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash
 ```
 
 The complete grammar is:

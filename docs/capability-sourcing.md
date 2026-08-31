@@ -8,7 +8,9 @@ profile. Prime Agent supplies one optional OCI evaluation profile.
 
 The first runtime embeds [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
 
-Pi's experimental `AgentHarness` API is not a foundation for the first release. Pi v0.84.0 describes unfinished paths that reject with `HarnessNotImplemented`; Flow will use the established `createAgentSession()` API instead. See the [Pi v0.84.0 release](https://github.com/earendil-works/pi/releases/tag/v0.84.0).
+Flow uses Pi's established `createAgentSession()` API. Pi 0.84.4 also exposes an `AgentHarness`
+API, but adopting it would change Flow's qualified execution boundary and requires separate
+evaluation. See the [Pi v0.84.4 release](https://github.com/earendil-works/pi/releases/tag/v0.84.4).
 
 ## Native Flow capabilities
 

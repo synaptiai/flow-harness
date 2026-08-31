@@ -70,6 +70,15 @@ describe("public documentation structure", () => {
     await expect(
       readFile(join(documentationRoot, "guides", "coding-quickstart.md"), "utf8"),
     ).resolves.toMatch(/^# Complete the coding quick start$/mu);
+    const modelProviders = await readFile(
+      join(documentationRoot, "guides", "model-providers.md"),
+      "utf8",
+    );
+    expect(modelProviders).toMatch(/^# Configure model providers$/mu);
+    expect(modelProviders).toContain("OPENROUTER_API_KEY");
+    expect(modelProviders).toContain("z-ai/glm-5.3-flash");
+    expect(modelProviders).toContain("openai-completions");
+    expect(modelProviders).toMatch(/rolling context.*not supported/is);
     await expect(
       readFile(join(documentationRoot, "operations", "prime-runtime.md"), "utf8"),
     ).resolves.toMatch(/^# Prime runtime operations$/mu);
