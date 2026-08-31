@@ -102,6 +102,7 @@ import type {
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
+import { PI_CODING_AGENT_VERSION } from "./pi-package-pins.js";
 import {
   countProviderInputTokens,
   ProviderInputTokenCountError,
@@ -1296,7 +1297,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
   }
 }
 
-const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.84.0";
+const PI_MODEL_SESSION_RUNTIME_VERSION = `pi-${PI_CODING_AGENT_VERSION}`;
 const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const ROLLING_CONTEXT_OUTPUT_TOKEN_LIMITS = Object.freeze([4_096, 2_048] as const);
 const ROLLING_CONTEXT_MINIMUM_REDUCTION_BYTES = 4_096;
