@@ -59,7 +59,7 @@ import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/pro
 import type { GitHubIssueCliRequest, GitHubIssueCliService } from "./github-issue.js";
 
 const SOURCE_FILE_LIMIT_BYTES = 1_048_576;
-const READINESS_TIMEOUT_MS = 10_000;
+const READINESS_TIMEOUT_MS = 30_000;
 const GIT_OPERATION_TIMEOUT_MS = 60_000;
 const GITHUB_OPERATION_TIMEOUT_MS = 30_000;
 const CONTROLLER_TIMEOUTS = Object.freeze([
