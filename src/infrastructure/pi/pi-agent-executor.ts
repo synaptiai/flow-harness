@@ -152,7 +152,7 @@ export interface PiAgentRunResult {
   readonly text: string;
   readonly stopReason: PiTerminalStopReason;
   readonly errorMessage?: string;
-  readonly failureCode?: PiModelContextFailureCode;
+  readonly failureCode?: PiAgentFailureCode;
   readonly outputLimitExceeded?: boolean;
   readonly textHash?: string;
   readonly textTruncated?: boolean;
@@ -810,7 +810,7 @@ export class PiAgentExecutor implements AgentExecutor {
         );
         return agentFailure(
           code,
-          providerStopMessage(result.stopReason),
+          providerStopMessage(result.stopReason, result.failureCode),
           effectStatus,
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
@@ -953,7 +953,13 @@ export class PiAgentExecutor implements AgentExecutor {
   }
 }
 
-function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string {
+function providerStopMessage(
+  stopReason: PiAgentRunResult["stopReason"],
+  failureCode?: PiAgentFailureCode,
+): string {
+  if (failureCode === "pi_provider_quota_exhausted") {
+    return "agent provider quota or credit balance is exhausted";
+  }
   if (stopReason === "error") {
     return "agent provider execution failed";
   }
@@ -961,6 +967,21 @@ function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string
     return "agent provider execution was aborted";
   }
   return "agent provider execution did not complete";
+}
+
+function classifyProviderFailure(message: string | undefined): PiProviderFailureCode | undefined {
+  if (message === undefined) return undefined;
+
+  const normalized = message.toLowerCase();
+  if (
+    /\b(?:insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached)\b/u.test(
+      normalized,
+    ) ||
+    (normalized.includes("no credits") && normalized.includes("add credits"))
+  ) {
+    return "pi_provider_quota_exhausted";
+  }
+  return undefined;
 }
 
 class PiCapabilityEvidenceError extends Error {
@@ -1134,6 +1155,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       );
     }
 
+    const providerFailureObserver = attachProviderFailureObserver(session, this.providerFetch);
     const modelSessionRecorder =
       request.modelSession === undefined
         ? undefined
@@ -1183,16 +1205,17 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       const capabilityReads = capabilitySession?.evidence().reads;
       const failureCode = modelSessionRecorder?.failureCode();
       if (promptError !== undefined) {
+        const message = promptError instanceof Error ? promptError.message : String(promptError);
+        const terminalFailureCode =
+          failureCode ?? providerFailureObserver.failureCode() ?? classifyProviderFailure(message);
         return {
           ...output.result(),
           usage,
           activity,
           ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: isAborted(request.signal) ? "aborted" : "error",
-          ...(failureCode === undefined ? {} : { failureCode }),
-          errorMessage: boundedMessage(
-            promptError instanceof Error ? promptError.message : String(promptError),
-          ),
+          ...(terminalFailureCode === undefined ? {} : { failureCode: terminalFailureCode }),
+          errorMessage: boundedMessage(message),
         };
       }
       const finalMessage = session.state.messages.at(-1);
@@ -1208,13 +1231,19 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
             : { errorMessage: "Pi session ended without a terminal assistant message" }),
         };
       }
+      const terminalFailureCode =
+        failureCode ??
+        providerFailureObserver.failureCode() ??
+        (finalMessage.stopReason === "error"
+          ? classifyProviderFailure(finalMessage.errorMessage)
+          : undefined);
       return {
         ...output.result(),
         usage,
         activity,
         ...(capabilityReads === undefined ? {} : { capabilityReads }),
         stopReason: finalMessage.stopReason,
-        ...(failureCode === undefined ? {} : { failureCode }),
+        ...(terminalFailureCode === undefined ? {} : { failureCode: terminalFailureCode }),
         ...(output.truncated ? { outputLimitExceeded: true } : {}),
         ...(finalMessage.errorMessage === undefined
           ? {}
@@ -1234,6 +1263,10 @@ const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.84.0";
 const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const ROLLING_CONTEXT_OUTPUT_TOKEN_LIMITS = Object.freeze([4_096, 2_048] as const);
 const ROLLING_CONTEXT_MINIMUM_REDUCTION_BYTES = 4_096;
+
+export type PiProviderFailureCode = "pi_provider_quota_exhausted";
+
+export type PiAgentFailureCode = PiModelContextFailureCode | PiProviderFailureCode;
 
 export type PiModelContextFailureCode =
   | "pi_model_context_floor_exhausted"
@@ -2049,6 +2082,71 @@ function modelContextFailureMessage(code: PiModelContextFailureCode): string {
     case "pi_model_context_checkpoint_invalid":
       return "rolling-context provider request identity is invalid";
   }
+}
+
+function attachProviderFailureObserver(
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"],
+  providerFetch: typeof fetch,
+): { readonly failureCode: () => PiProviderFailureCode | undefined } {
+  const agent = (
+    session as unknown as {
+      readonly agent?: { streamFunction?: PiStreamFunction };
+    }
+  ).agent;
+  if (agent?.streamFunction === undefined) {
+    return { failureCode: () => undefined };
+  }
+
+  const originalStreamFunction = agent.streamFunction;
+  let observedFailureCode: PiProviderFailureCode | undefined;
+  agent.streamFunction = async (model, context, options) => {
+    const delegate = options?.fetch ?? providerFetch;
+    const observingFetch: typeof fetch = async (input, init) => {
+      const response = await delegate(input, init);
+      if (!response.ok && observedFailureCode === undefined) {
+        observedFailureCode = await classifyProviderResponse(response);
+      }
+      return response;
+    };
+    return await originalStreamFunction(model, context, {
+      ...options,
+      fetch: observingFetch,
+    });
+  };
+  return { failureCode: () => observedFailureCode };
+}
+
+async function classifyProviderResponse(
+  response: Response,
+): Promise<PiProviderFailureCode | undefined> {
+  if (response.status !== 429) return undefined;
+
+  try {
+    const payload = (await response.clone().json()) as unknown;
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return undefined;
+    }
+    const root = payload as Readonly<Record<string, unknown>>;
+    const error =
+      typeof root.error === "object" && root.error !== null && !Array.isArray(root.error)
+        ? (root.error as Readonly<Record<string, unknown>>)
+        : root;
+    const identifiers = [error.type, error.code].filter(
+      (value): value is string => typeof value === "string",
+    );
+    if (
+      identifiers.some((value) =>
+        ["insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"].includes(
+          value.toLowerCase(),
+        ),
+      )
+    ) {
+      return "pi_provider_quota_exhausted";
+    }
+  } catch {
+    // Provider error bodies are optional diagnostic input. Never disturb the original response.
+  }
+  return undefined;
 }
 
 function attachModelSessionRecorder(

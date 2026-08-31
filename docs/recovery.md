@@ -623,12 +623,20 @@ The embedded Pi adapter classifies only these completed provider failures as ret
 - The provider runner throws an error that isn't a Flow capability-evidence or semantic-evidence
   validation failure.
 
+Flow treats an `insufficient_quota`, `credit_balance_exhausted`, or
+`billing_hard_limit_reached` provider response as the stable, non-retryable
+`pi_provider_quota_exhausted` failure. This rule is distinct from an ordinary
+`rate_limit_exceeded` response, which remains a retryable provider error. Restore the provider
+credit balance or quota before you resume or start another run. Flow records only the stable
+failure code and safe message in node evidence. It doesn't persist the provider's raw error text.
+
 Flow keeps cancellation, timeout, output exhaustion, incomplete output, policy failure, stable
-model-context failure, validation failure, and operator denial non-retryable. A side-effect-free
-provider failure can start a fresh attempt. A provider failure after workspace edits can continue
-only from the exact durable model-session record when every edit settled as committed. Recorded
-commands, delegations, uncertain edits, and non-provider failures remain ineligible. These rules
-prevent a generic provider error from overriding stronger durable evidence.
+model-context failure, stable provider failure, validation failure, and operator denial
+non-retryable. A side-effect-free provider failure can start a fresh attempt. A provider failure
+after workspace edits can continue only from the exact durable model-session record when every
+edit settled as committed. Recorded commands, delegations, uncertain edits, and non-provider
+failures remain ineligible. These rules prevent a generic provider error from overriding stronger
+durable evidence.
 
 After an eligible attempt completes, Flow first appends `node_failed`. This event closes the model
 session and charges the attempt's node start, duration, artifacts, model tokens, and reported cost.

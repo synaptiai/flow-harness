@@ -843,6 +843,33 @@ describe("PiAgentExecutor", () => {
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_STREAM");
   });
 
+  it("fails closed without retrying when the provider credit balance is exhausted", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "",
+          stopReason: "error",
+          errorMessage: "PRIVATE_PROVIDER_BILLING_DETAIL",
+          failureCode: "pi_provider_quota_exhausted",
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "pi_provider_quota_exhausted",
+        message: "agent provider quota or credit balance is exhausted",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
+  });
+
   it("preserves policy decisions when the runtime fails after a tool operation", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
@@ -1780,6 +1807,107 @@ describe("EmbeddedPiAgentRunner", () => {
       },
     });
     expect(disposed).toBe(true);
+  });
+
+  it("classifies provider credit exhaustion for safe executor projection", async () => {
+    const agent = {
+      streamFunction: async (
+        _model: unknown,
+        _context: unknown,
+        options: { readonly fetch?: typeof fetch },
+      ) => {
+        await options.fetch?.("https://api.openai.com/v1/responses");
+        throw new Error("Unknown: UnknownError");
+      },
+    };
+    const fakeSession = {
+      agent,
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        await agent.streamFunction({}, {}, {});
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              type: "insufficient_quota",
+              code: "credit_balance_exhausted",
+              message: "PRIVATE_PROVIDER_BILLING_DETAIL",
+            },
+          }),
+          { status: 429, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_quota_exhausted");
+    expect(result.errorMessage).toBe("Unknown: UnknownError");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
+  });
+
+  it("classifies Pi's friendly exhausted-credit message", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          "You have no credits. Add credits at https://platform.openai.com/settings/organization/billing.",
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_quota_exhausted");
+  });
+
+  it("does not misclassify an ordinary rate limit as exhausted credit", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          'OpenAI API error (429): {"type":"rate_limit_error","code":"rate_limit_exceeded"}',
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBeUndefined();
+    expect(result.stopReason).toBe("error");
   });
 
   it("rejects invalid provider usage instead of persisting it", async () => {
