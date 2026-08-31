@@ -236,6 +236,13 @@ response. The operation might have succeeded even when the client did not receiv
 Don't resume `merge_approval_required` or a terminal phase. The former requires an exact merge
 decision. The latter cannot accept another event.
 
+Candidate inspection is read-only. Flow automatically retries the complete snapshot once when the
+pinned Git executable returns a malformed response. If both responses are malformed, the run fails
+with `git_response_invalid` before Flow prepares a commit effect. Preserve the terminal run and its
+worktree for investigation. Don't commit or publish that workspace manually as if the lifecycle had
+verified it. Correct the Git or host fault, confirm the source checkout is still clean and current,
+and start a new run with a new command ID.
+
 Resume checks prepared intent against exact local and remote identities. It can settle an effect
 that already occurred, retry an effect proved absent, or remain in `external_state_uncertain`. It
 must not adopt a similarly named branch, pull request, commit, or merge.

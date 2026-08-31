@@ -292,6 +292,20 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
   async inspectCandidate(
     request: InspectIssueGitCandidateRequest,
   ): Promise<IssueGitCandidateObservation> {
+    try {
+      return await this.#inspectCandidateOnce(request);
+    } catch (error) {
+      if (!(error instanceof LocalGitIssueError) || error.code !== "git_response_invalid") {
+        throw error;
+      }
+      assertNotAborted(request.signal);
+      return await this.#inspectCandidateOnce(request);
+    }
+  }
+
+  async #inspectCandidateOnce(
+    request: InspectIssueGitCandidateRequest,
+  ): Promise<IssueGitCandidateObservation> {
     const prefixes = validateAllowedPrefixes(request.allowedWritePrefixes);
     assertCommit(request.baseCommit);
     const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);

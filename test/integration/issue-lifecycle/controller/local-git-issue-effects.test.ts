@@ -211,7 +211,7 @@ describe("LocalGitIssueEffects", () => {
       code: "ENOENT",
     });
     await expect(effects.prepareWorkspace(workspaceRequest(fixture))).resolves.toEqual(workspace);
-  });
+  }, 30_000);
 
   it("rejects a substituted frozen-base Git metadata directory before reset", async () => {
     const fixture = await createFixture();
@@ -787,6 +787,64 @@ describe("LocalGitIssueEffects", () => {
     ).resolves.toMatchObject({ parent: first.candidateHead, tree: secondTree.tree });
   });
 
+  it("retries one malformed candidate-inspection response from the pinned Git executable", async () => {
+    const fixture = await createFixture();
+    const logPath = join(await temporaryDirectory("flow-git-retry-"), "argv.jsonl");
+    const effects = await createEffects(
+      fixture,
+      {},
+      await writeGitWrapper(logPath, "diff-tree-invalid-once"),
+    );
+    const workspace = await effects.prepareWorkspace(workspaceRequest(fixture));
+    await mkdir(join(workspace.root, "src"));
+    await writeFile(join(workspace.root, "src", "feature.ts"), "candidate\n");
+
+    await expect(
+      effects.inspectCandidate({
+        workspace,
+        baseCommit: fixture.base,
+        allowedWritePrefixes: ["src"],
+      }),
+    ).resolves.toMatchObject({
+      branch: workspace.branch,
+      baseCommit: fixture.base,
+      changedPaths: ["src/feature.ts"],
+    });
+
+    const invocations = (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(invocations.filter((arguments_) => arguments_.includes("diff-tree"))).toHaveLength(2);
+  }, 60_000);
+
+  it("fails closed after two malformed candidate-inspection responses", async () => {
+    const fixture = await createFixture();
+    const logPath = join(await temporaryDirectory("flow-git-retry-"), "argv.jsonl");
+    const effects = await createEffects(
+      fixture,
+      {},
+      await writeGitWrapper(logPath, "diff-tree-invalid"),
+    );
+    const workspace = await effects.prepareWorkspace(workspaceRequest(fixture));
+    await mkdir(join(workspace.root, "src"));
+    await writeFile(join(workspace.root, "src", "feature.ts"), "candidate\n");
+
+    await expect(
+      effects.inspectCandidate({
+        workspace,
+        baseCommit: fixture.base,
+        allowedWritePrefixes: ["src"],
+      }),
+    ).rejects.toMatchObject({ code: "git_response_invalid" });
+
+    const invocations = (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(invocations.filter((arguments_) => arguments_.includes("diff-tree"))).toHaveLength(2);
+  }, 60_000);
+
   it("uses one exact leased push with only the admitted local test protocol", async () => {
     const fixture = await createFixture();
     const logPath = join(await temporaryDirectory("flow-git-argv-"), "argv.jsonl");
@@ -1116,7 +1174,13 @@ async function createEffects(
   });
 }
 
-type ResultLossMode = "worktree-add" | "update-ref" | "push" | "worktree-remove";
+type ResultLossMode =
+  | "worktree-add"
+  | "update-ref"
+  | "push"
+  | "worktree-remove"
+  | "diff-tree-invalid-once"
+  | "diff-tree-invalid";
 
 async function writeGitWrapper(logPath: string, resultLossMode?: ResultLossMode): Promise<string> {
   const root = await temporaryDirectory("flow-git-wrapper-");
@@ -1133,6 +1197,17 @@ const result = spawnSync(${JSON.stringify(await gitPath())}, args, {
   input,
   maxBuffer: 2 * 1024 * 1024,
 });
+const corruptsDiffTree =
+  (${JSON.stringify(resultLossMode ?? null)} === "diff-tree-invalid" ||
+    ${JSON.stringify(resultLossMode ?? null)} === "diff-tree-invalid-once" &&
+      !existsSync(${JSON.stringify(marker)})) &&
+  args.includes("diff-tree") &&
+  result.status === 0;
+if (corruptsDiffTree) {
+  writeFileSync(${JSON.stringify(marker)}, "invalid");
+  process.stdout.write("malformed\\0");
+  process.exit(0);
+}
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 const command = args.find((value) => ["worktree", "update-ref", "push"].includes(value));

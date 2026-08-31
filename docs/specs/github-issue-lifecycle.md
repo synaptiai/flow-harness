@@ -408,6 +408,14 @@ The implementation workflow can change only admitted candidate paths in the isol
 The resulting diff must be nonempty and task-relevant. A changed path outside the admitted prefixes
 fails the run.
 
+Before it prepares a commit effect, the controller constructs an exact candidate snapshot. The
+snapshot binds the base commit, changed paths, Git attributes, private candidate index, tree delta,
+and logical byte count. If the pinned Git executable returns one malformed response during it,
+the controller retries the complete snapshot once. The second snapshot repeats every branch,
+ancestry, path, filter, symbolic-link, tree-drift, and byte-limit check. A second malformed response
+fails closed with `git_response_invalid`. This retry cannot create a commit, update a branch,
+contact GitHub, or authorize an external effect.
+
 The controller runs the frozen holdout twice:
 
 1. The untouched frozen base must return nonzero.
@@ -684,6 +692,7 @@ The lifecycle fails closed under these conditions:
 | Closed, transferred, changed, or repository-mismatched issue | Reject before mutation |
 | Base movement before implementation | Require a new freeze. Never silently adopt it |
 | Base movement after implementation begins | Fail and preserve the workspace |
+| Malformed Git response during a candidate snapshot | Retry the complete read-only snapshot once. Fail and preserve the workspace if the second response is malformed |
 | Holdout, verifier, or review failure | Preserve evidence. Don't publish or merge |
 | Branch or pull-request collision | Reconcile only an exact prepared identity. Reuse the stable ready pull request after candidate repair. Otherwise fail |
 | Lost external acknowledgement | Enter `external_state_uncertain` and reconcile before retry |
