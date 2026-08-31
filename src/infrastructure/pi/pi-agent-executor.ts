@@ -972,16 +972,56 @@ function providerStopMessage(
 function classifyProviderFailure(message: string | undefined): PiProviderFailureCode | undefined {
   if (message === undefined) return undefined;
 
-  const normalized = message.toLowerCase();
+  const quotaCodes = new Set([
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "billing_hard_limit_reached",
+  ]);
+  const structured = parseEmbeddedProviderError(message);
+  if (hasProviderFailureCode(structured, quotaCodes)) {
+    return "pi_provider_quota_exhausted";
+  }
+
+  const normalized = message.trim().toLowerCase();
   if (
-    /\b(?:insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached)\b/u.test(
+    /^you have no credits\b[^\r\n]{0,160}\badd credits\b[^\r\n]{0,120}https:\/\/platform\.openai\.com\/settings\/organization\/billing\/?\.?$/u.test(
       normalized,
-    ) ||
-    (normalized.includes("no credits") && normalized.includes("add credits"))
+    )
   ) {
     return "pi_provider_quota_exhausted";
   }
   return undefined;
+}
+
+function parseEmbeddedProviderError(message: string): unknown {
+  for (let start = message.indexOf("{"); start >= 0; start = message.indexOf("{", start + 1)) {
+    const end = message.lastIndexOf("}");
+    if (end <= start) return undefined;
+    try {
+      return JSON.parse(message.slice(start, end + 1));
+    } catch {
+      // Try the next object boundary in the provider message.
+    }
+  }
+  return undefined;
+}
+
+function hasProviderFailureCode(value: unknown, codes: ReadonlySet<string>): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  if (Array.isArray(value)) return value.some((item) => hasProviderFailureCode(item, codes));
+  return Object.entries(value).some(
+    ([key, item]) =>
+      ((key === "type" || key === "code") && typeof item === "string" && codes.has(item)) ||
+      hasProviderFailureCode(item, codes),
+  );
+}
+
+class PiProviderFailureError extends Error {
+  override readonly name = "PiProviderFailureError";
+
+  constructor(readonly code: PiProviderFailureCode) {
+    super(code);
+  }
 }
 
 class PiCapabilityEvidenceError extends Error {
@@ -1629,7 +1669,10 @@ async function prepareRollingContextSummary(input: {
         },
       });
       message = await stream.result();
-    } catch {
+    } catch (error) {
+      const providerFailure = classifyProviderFailure(
+        error instanceof Error ? error.message : String(error),
+      );
       await input.journal.append({
         type: "rolling_context_epoch_settled",
         attempt: input.attempt,
@@ -1644,6 +1687,7 @@ async function prepareRollingContextSummary(input: {
         throw new PiAgentAbortError(abortMessage(input.request.signal));
       }
       if (requestFailure !== undefined) throw new PiModelContextError(requestFailure);
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     let usage: ModelSessionUsage;
@@ -1672,6 +1716,8 @@ async function prepareRollingContextSummary(input: {
     }
     const candidateText = summaryCandidateText(message);
     if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+      const providerFailure =
+        message.stopReason === "error" ? classifyProviderFailure(message.errorMessage) : undefined;
       await input.journal.append({
         type: "rolling_context_epoch_settled",
         attempt: input.attempt,
@@ -1684,6 +1730,7 @@ async function prepareRollingContextSummary(input: {
         },
       });
       if (requestFailure !== undefined) throw new PiModelContextError(requestFailure);
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     const candidate = validateContextSummaryCandidate({
@@ -2089,7 +2136,7 @@ function attachModelSessionRecorder(
 ): {
   readonly detach: () => void;
   readonly compactionUsage: () => ModelSessionUsage;
-  readonly failureCode: () => PiModelContextFailureCode | undefined;
+  readonly failureCode: () => PiAgentFailureCode | undefined;
 } {
   const authorityDigest = request.authorityDigest;
   if (authorityDigest === undefined) {
@@ -2101,7 +2148,7 @@ function attachModelSessionRecorder(
     | undefined;
   let acceptedSummary: AcceptedContextSummary | undefined;
   let compactionUsage = emptyModelSessionUsage();
-  let modelContextFailureCode: PiModelContextFailureCode | undefined;
+  let terminalFailureCode: PiAgentFailureCode | undefined;
   session.agent.streamFunction = async (model, context, options) => {
     if (
       request.phaseRouting !== undefined &&
@@ -2135,16 +2182,26 @@ function attachModelSessionRecorder(
       acceptedSummary === undefined &&
       request.contextCompactionMode === "references-and-summary"
     ) {
-      const outcome = await prepareContextSummary({
-        model,
-        context: referenceContext,
-        options,
-        state,
-        request,
-        journal,
-        stream: originalStreamFunction,
-      });
-      compactionUsage = addModelSessionUsage(compactionUsage, outcome.usage);
+      let outcome: Awaited<ReturnType<typeof prepareContextSummary>>;
+      try {
+        outcome = await prepareContextSummary({
+          model,
+          context: referenceContext,
+          options,
+          state,
+          request,
+          journal,
+          stream: originalStreamFunction,
+          recordSummaryUsage: (usage) => {
+            compactionUsage = addModelSessionUsage(compactionUsage, usage);
+          },
+        });
+      } catch (error) {
+        if (error instanceof PiProviderFailureError) {
+          terminalFailureCode = error.code;
+        }
+        throw error;
+      }
       if (outcome.accepted !== undefined) {
         acceptedSummary = outcome.accepted;
         providerContext = applyAcceptedContextSummary(referenceContext, acceptedSummary);
@@ -2172,8 +2229,8 @@ function attachModelSessionRecorder(
         providerContext = outcome.context;
         admittedProviderRequest = outcome.admitted;
       } catch (error) {
-        if (error instanceof PiModelContextError) {
-          modelContextFailureCode = error.code;
+        if (error instanceof PiModelContextError || error instanceof PiProviderFailureError) {
+          terminalFailureCode = error.code;
         }
         throw error;
       }
@@ -2256,7 +2313,7 @@ function attachModelSessionRecorder(
           providerFetch,
           admitted: admittedProviderRequest,
           onFailure: (code) => {
-            modelContextFailureCode = code;
+            terminalFailureCode = code;
           },
         });
   };
@@ -2358,7 +2415,7 @@ function attachModelSessionRecorder(
   return {
     detach,
     compactionUsage: () => compactionUsage,
-    failureCode: () => modelContextFailureCode,
+    failureCode: () => terminalFailureCode,
   };
 }
 
@@ -2407,6 +2464,7 @@ async function prepareContextSummary(input: {
   readonly request: PiAgentRunRequest;
   readonly journal: ModelSessionJournal;
   readonly stream: PiStreamFunction;
+  readonly recordSummaryUsage: (usage: ModelSessionUsage) => void;
 }): Promise<{
   readonly accepted?: AcceptedContextSummary;
   readonly usage: ModelSessionUsage;
@@ -2454,7 +2512,10 @@ async function prepareContextSummary(input: {
         contextSummaryInferenceOptions(input.options, outputTokenLimit),
       );
       message = await stream.result();
-    } catch {
+    } catch (error) {
+      const providerFailure = classifyProviderFailure(
+        error instanceof Error ? error.message : String(error),
+      );
       await input.journal.append({
         type: "context_compaction_settled",
         attempt,
@@ -2462,10 +2523,12 @@ async function prepareContextSummary(input: {
         generationAttempt,
         settlement: { outcome: "rejected", reason: "provider_error" },
       });
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     const usage = projectModelSessionUsage(message.usage);
     totalUsage = addModelSessionUsage(totalUsage, usage);
+    input.recordSummaryUsage(usage);
     if (message.stopReason === "aborted") {
       await input.journal.append({
         type: "context_compaction_settled",
@@ -2478,6 +2541,8 @@ async function prepareContextSummary(input: {
     }
     const candidateText = summaryCandidateText(message);
     if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+      const providerFailure =
+        message.stopReason === "error" ? classifyProviderFailure(message.errorMessage) : undefined;
       await input.journal.append({
         type: "context_compaction_settled",
         attempt,
@@ -2489,6 +2554,7 @@ async function prepareContextSummary(input: {
           usage,
         },
       });
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     const candidate = validateContextSummaryCandidate({

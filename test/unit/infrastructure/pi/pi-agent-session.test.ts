@@ -663,6 +663,47 @@ describe("Pi provider-neutral model session", () => {
     ).toEqual(["invalid_output", "accepted"]);
   });
 
+  it("stops rolling compaction after one exhausted-credit response", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      inferenceCalls += 1;
+      return Response.json(
+        {
+          error: {
+            type: "insufficient_quota",
+            code: "credit_balance_exhausted",
+            message:
+              "You have no credits. Add credits at https://platform.openai.com/settings/organization/billing.",
+          },
+        },
+        { status: 429 },
+      );
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_provider_quota_exhausted",
+    });
+    expect(countCalls).toBe(2);
+    expect(inferenceCalls).toBe(1);
+    expect(journal.state.activeRollingEpoch).toBeNull();
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement),
+    ).toEqual([expect.objectContaining({ outcome: "rejected", reason: "provider_error" })]);
+  });
+
   it("charges rejected rolling summary usage to the failed node", async () => {
     const model = openAIModel();
     const journal = rollingPressureJournal();
@@ -1433,6 +1474,73 @@ describe("Pi provider-neutral model session", () => {
         : [event.settlement.usage],
     );
     expect(result.usage).toEqual(summaryUsage.reduce(addUsage, mainUsage));
+  });
+
+  it("stops references-and-summary compaction after one exhausted-credit response", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText(`OLD_CONTEXT:${"x".repeat(12_000)}`),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-1" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        [
+          fauxText("LATEST_CONTEXT"),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-2" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage:
+          'OpenAI API error (429): {"type":"insufficient_quota","code":"credit_balance_exhausted"}',
+      }),
+    ]);
+
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_000,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_provider_quota_exhausted",
+    });
+    expect(faux.state.callCount).toBe(3);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "context_compaction_settled")
+        .map((event) => event.settlement),
+    ).toEqual([expect.objectContaining({ outcome: "rejected", reason: "provider_error" })]);
+    const mainUsage = journal.state.events
+      .filter((event) => event.type === "model_message_committed")
+      .flatMap((event) => (event.usage === undefined ? [] : [event.usage]))
+      .reduce(addUsage, emptyUsage());
+    const quotaSettlement = journal.state.events.find(
+      (event) => event.type === "context_compaction_settled",
+    );
+    if (
+      quotaSettlement?.type !== "context_compaction_settled" ||
+      quotaSettlement.settlement.outcome === "interrupted" ||
+      quotaSettlement.settlement.usage === undefined
+    ) {
+      throw new Error("quota compaction usage was not settled");
+    }
+    expect(quotaSettlement.settlement.usage.inputTokens).toBeGreaterThan(0);
+    expect(result.usage).toEqual(addUsage(mainUsage, quotaSettlement.settlement.usage));
   });
 
   it("retries once with a smaller limit and retains the prior surface after rejection", async () => {

@@ -627,8 +627,9 @@ Flow treats an `insufficient_quota`, `credit_balance_exhausted`, or
 `billing_hard_limit_reached` provider response as the stable, non-retryable
 `pi_provider_quota_exhausted` failure. This rule is distinct from an ordinary
 `rate_limit_exceeded` response, which remains a retryable provider error. Restore the provider
-credit balance or quota before you resume or start another run. Flow records only the stable
-failure code and safe message in node evidence. It doesn't persist the provider's raw error text.
+credit balance or quota, then start a new run. Preserve and inspect the failed run because a
+terminal quota failure can't resume. Flow records only the stable failure code and safe message in
+node evidence. It doesn't persist the provider's raw error text.
 
 Flow keeps cancellation, timeout, output exhaustion, incomplete output, policy failure, stable
 model-context failure, stable provider failure, validation failure, and operator denial

@@ -1889,6 +1889,33 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(result.stopReason).toBe("error");
   });
 
+  it("ignores quota words outside structured provider code fields", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          'OpenAI API error (429): {"type":"rate_limit_error","code":"rate_limit_exceeded","message":"insufficient_quota: no credits; add credits"}',
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBeUndefined();
+    expect(result.stopReason).toBe("error");
+  });
+
   it("rejects invalid provider usage instead of persisting it", async () => {
     const fakeSession = {
       state: { messages: [{ role: "assistant", stopReason: "stop" }] },
