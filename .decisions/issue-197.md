@@ -216,3 +216,29 @@ probabilistic and cannot replace the explicit merge action.
 
 Every failed or incomplete attempt, harness change, operator intervention, cost, and duration remains
 in the acceptance denominator.
+
+## Policy-decision calibration for the issue 6 rerun
+
+The operator approved one per-agent `policyDecisionLimit` with a compatibility default of 64, a
+hard maximum of 128, and a 96-decision override for
+`repair-detector-integration-convergence`. These values are provisional Flow controls, not an
+industry standard.
+
+Primary-source comparison found materially different units and defaults: OpenAI Agents SDK uses 10
+model turns by default, CrewAI uses 20 agent iterations, AutoGen leaves team turns unlimited unless
+configured, OpenHands SDK uses 500 iterations, LangGraph uses 1,000 graph super-steps, and DeepSeek
+Harness Ralph uses 256 fresh-agent rounds. Claude Agent SDK exposes a configurable turn limit
+without a comparable public default. None counts Flow's individual authorization decisions, so the
+numbers cannot be transferred directly.
+
+The failed issue run recorded 64 allowed decisions, 65 tool calls, 16 committed effects, 44 turns,
+and 406,712 milliseconds in the convergence node before the 65th decision failed closed. The
+frozen workflow gave that node 900,000 milliseconds, so a prior 600,000-millisecond extrapolation
+was rejected as incorrect. The 96 override supplies 50% headroom over the compatibility default;
+128 remains a 2× explicit ceiling. A 96-decision exhaustion must produce new evidence and a new
+design decision. It doesn't authorize an automatic increase.
+
+The implementation keeps omitted workflow bytes unchanged for digest compatibility. Live execution
+and replay resolve omission to 64. Only an explicit override enters the compiled workflow and,
+when non-default, forces a persisted control graph. The model receives the effective value, and
+audit exhaustion remains fail-closed.

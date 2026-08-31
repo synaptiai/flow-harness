@@ -1227,6 +1227,36 @@ filesystem targets and derives authority from the semantic operation. It permits
 the compiled node declares. `flow_ls` sorts and bounds one directory listing behind one logical
 `filesystem.list` authorization. It doesn't spend policy-decision capacity per returned entry.
 
+### Configure the policy-decision limit
+
+Every agent attempt has one shared policy-decision limit. Omit `policyDecisionLimit` to use 64
+decisions. Set it to an integer from 1 through 128 when one identified node has a demonstrated need
+for a different bound:
+
+```yaml
+agent:
+  policyDecisionLimit: 96
+```
+
+The count includes every allowed or denied operation made through a policy-backed tool. One
+`flow_read` or `flow_ls` call records one decision. Reading an admitted `skill://` resource doesn't
+record a policy decision. The model receives the effective limit in its system instructions so it
+can reserve capacity for final verification.
+
+The compiler binds an explicit value into the workflow digest. A non-default value also requires a
+persisted control graph, which records the override. Live execution stops at that value, and replay
+rejects terminal evidence that contains more decisions. Audit exhaustion aborts the model session
+and produces `pi_agent_policy_audit_exhausted`. A later provider result cannot replace that failure.
+
+The values 64, 96, and 128 are Flow-specific operational bounds, not cross-framework standards.
+Use the 64-decision default until durable run evidence shows that one coherent node needs more
+capacity. Prefer splitting a node when its evidence shows repeated broad reads, repeated rewrites,
+or unrelated responsibilities. Authorize an override independently of other bounds. Keep the node
+timeout, model-token budget, reported-cost budget, 32-effect limit, and path restrictions unchanged.
+Change those bounds only when separate evidence supports the change.
+
+Treat 128 as a hard ceiling. It provides defense in depth. Don't treat it as a target.
+
 `flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
 Every request contains one canonical portable project path. Definition, reference, and hover
 requests also contain a zero-based line and character. A semantic workflow requires one exact
@@ -1865,18 +1895,25 @@ reference when the compiled node requires it. Replay rejects missing or extra re
 commands, digests, working directories, attempts, lifetimes, early or expired grants, reuse, and
 terminal outcomes with pending or unconsumed authority.
 
-Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local
-sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action,
-canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write
-decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect
-receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values,
-and committed or uncertain outcome. Terminal events are illegal while an effect lacks an executor
-settlement; a recovery observation alone does not terminalize an attempt. Every prepared effect,
-including a not-applied effect, must match a distinct allowed write decision. Receipts exactly
-project committed and unknown executor settlements; not-applied settlements and recovery
-observations produce no receipt. Recovery reconciliation records applied, not-applied, or unknown
-target state with a bounded reason and includes the observed digest/mode only for a stable regular
-file. Exact and divergent observations are cross-checked against the prepared descriptor.
+Agent evidence retains at most the node's configured policy-decision limit. The default is 64, and
+the hard maximum is 128. Each decision has a contiguous attempt-local sequence.
+
+It records exact run, workflow, node, and attempt attribution. It also records derived authority,
+semantic action, and a canonical target of at most 1024 UTF-8 bytes. The record includes the allow
+or deny reason and the SHA-256 request digest. Write decisions also retain the exact operation
+digest.
+
+Agent evidence retains at most 32 edit effect receipts. Each receipt records the same attribution,
+canonical target, operation digest, and before and after SHA-256 values. It also records a committed
+or uncertain outcome. Terminal events are illegal while an effect lacks an executor settlement. A
+recovery observation alone doesn't terminalize an attempt. Every prepared effect must match a
+distinct allowed write decision, including a not-applied effect.
+
+Receipts exactly project committed and unknown executor settlements. Not-applied settlements and
+recovery observations produce no receipt. Recovery reconciliation records applied, not-applied, or
+unknown target state with a bounded reason. It includes the observed digest and mode only for a
+stable regular file. Exact and divergent observations are cross-checked against the prepared
+descriptor.
 
 Replay verifies concurrency capacity and dependency readiness, declaration-ordered concurrent
 outcomes and failure selection, condition source kind, attempt, field, hash, truncation, selected case, exact branch

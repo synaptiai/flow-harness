@@ -7,6 +7,10 @@ import {
   WorkflowCompilationError,
 } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import {
+  projectCompiledControlGraph,
+  workflowRequiresControlGraph,
+} from "../../../src/domain/workflow/control-graph.js";
 
 const validWorkflowUrl = new URL(
   "../../fixtures/workflows/valid-command.workflow.yaml",
@@ -967,6 +971,59 @@ nodes:
 
     expect(node?.type).toBe("agent");
     expect(node?.type === "agent" ? node.agent.contextCompaction : undefined).toBeUndefined();
+  });
+
+  it("normalizes and digest-binds an explicit policy decision limit", () => {
+    const explicitSource = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository with a bounded policy audit.
+      model: { provider: openai, id: gpt-5.6 }
+      tools: [read, ls]
+      policyDecisionLimit: 96
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+    const defaultSource = explicitSource.replace("      policyDecisionLimit: 96\n", "");
+
+    const explicit = compileWorkflowText(explicitSource, "policy-limit.workflow.yaml");
+    const defaulted = compileWorkflowText(defaultSource);
+
+    expect(explicit.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: { policyDecisionLimit: 96 },
+    });
+    expect(
+      defaulted.nodes[0]?.type === "agent"
+        ? defaulted.nodes[0].agent.policyDecisionLimit
+        : undefined,
+    ).toBeUndefined();
+    expect(workflowRequiresControlGraph(explicit)).toBe(true);
+    expect(projectCompiledControlGraph(explicit).nodes[0]).toMatchObject({
+      type: "agent",
+      policyDecisionLimit: 96,
+    });
+    expect(calculateWorkflowDigest(explicit)).not.toBe(calculateWorkflowDigest(defaulted));
+  });
+
+  it.each([0, 1.5, 129])("rejects policy decision limit %s", (limit) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository with a bounded policy audit.
+      model: { provider: openai, id: gpt-5.6 }
+      policyDecisionLimit: ${limit}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.policyDecisionLimit");
   });
 
   it.each([

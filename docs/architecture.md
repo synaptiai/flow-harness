@@ -989,6 +989,13 @@ exact run, node, and attempt. One read or directory listing is one logical autho
 the implementation checks access separately or returns many bounded entries. Create, directory
 create, and edit authorization bind a digest of the complete model request.
 
+Each agent uses one attempt-scoped decision limit. Omission preserves the compatibility default of
+64. An explicit workflow value from 1 through 128 is digest-bound. Flow projects a non-default
+value into the durable control graph and shows the effective value to the model. The live broker
+aborts at the effective value. The reducer independently applies the same default or persisted
+override to terminal evidence. This count limits authorization activity. It doesn't replace time,
+token, cost, effect, path, approval, or sandbox boundaries.
+
 For writable attempts, the application supplies a narrow provider-neutral effect journal. The
 mutation layer holds one target lock. Before mutation, it records the operation kind, canonical
 target, operation digest, after hash, and permission mode. An edit also records the before hash.

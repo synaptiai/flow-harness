@@ -47,6 +47,7 @@ import type { LanguageServerSnapshot } from "../../domain/capability/language-se
 import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
 import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
 import { type PolicyAuditLimitError, PolicyBroker } from "../../domain/policy/broker.js";
+import { DEFAULT_POLICY_DECISION_LIMIT } from "../../domain/policy/limits.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
 import {
@@ -328,6 +329,7 @@ export class PiAgentExecutor implements AgentExecutor {
       attempt: context.attempt,
     } as const;
     const protectedPaths = context.protectedPaths ?? [];
+    const policyDecisionLimit = node.agent.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT;
     const policyAuditController = new AbortController();
     let policyAuditError: PolicyAuditLimitError | undefined;
     let resolvePolicyAuditExhaustion: () => void = () => undefined;
@@ -343,6 +345,7 @@ export class PiAgentExecutor implements AgentExecutor {
         policyAuditController.abort(error);
         resolvePolicyAuditExhaustion();
       },
+      policyDecisionLimit,
     );
     const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
     const commandBudgetController = new AbortController();
@@ -489,7 +492,10 @@ export class PiAgentExecutor implements AgentExecutor {
     };
     const systemPrompt = appendSupplementalMemory(
       appendGoalWorkspace(
-        appendModelWorkProfile(context.agentSystemPrompt, context.modelWorkProfile),
+        appendModelWorkProfile(
+          appendPolicyDecisionLimit(context.agentSystemPrompt, policyDecisionLimit),
+          context.modelWorkProfile,
+        ),
         context.agentGoalWorkspace,
       ),
       context.agentSupplementalMemory,
@@ -3260,6 +3266,15 @@ const WORK_PROFILE_GUIDANCE: Readonly<Record<WorkProfile, string>> = Object.free
   standard: "Balance completeness, verification, and resource use.",
   long: "Use broader investigation and deeper verification within existing authority.",
 });
+
+function appendPolicyDecisionLimit(systemPrompt: string | undefined, limit: number): string {
+  const block = [
+    `Flow permits at most ${limit} recorded policy decisions across policy-backed tool operations during this agent attempt.`,
+    "The limit is shared by every policy-backed tool and includes allowed and denied operations.",
+    "Use tool operations deliberately and reserve enough capacity to verify the result.",
+  ].join("\n");
+  return [systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT, block].join("\n\n");
+}
 
 function appendModelWorkProfile(
   systemPrompt: string | undefined,

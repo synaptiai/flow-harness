@@ -13,6 +13,7 @@ import {
   workflowPackageVersionSchema,
 } from "../capability/workflow-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
+import { MAX_POLICY_DECISION_LIMIT } from "../policy/limits.js";
 import {
   DEFAULT_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT,
   MAX_PROTECTED_CONTEXT_CONSTRAINTS,
@@ -264,6 +265,7 @@ const agentConfigSchema = z
     toolApproval: agentToolApprovalSchema.optional(),
     recovery: agentRecoverySchema.optional(),
     contextCompaction: rollingContextCompactionSchema.optional(),
+    policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
     timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
   })
   .strict()

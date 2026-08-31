@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { parseRunEvent, type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
+import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 
 describe("durable control-flow replay", () => {
   it("reconstructs condition, omission, join, and resource-neutral control state", () => {
@@ -61,6 +62,50 @@ describe("durable control-flow replay", () => {
       }),
     ).toThrow();
   });
+
+  it.each([
+    [undefined, 64, 65],
+    [96, 96, 97],
+  ] as const)(
+    "rejects policy evidence above configured limit %s with effective limit %s",
+    (configuredLimit, effectiveLimit, evidenceCount) => {
+      const events = throughCondition();
+      const started = events[0];
+      if (started?.type !== "run_started" || started.controlGraph === undefined) {
+        throw new Error("expected a persisted control graph");
+      }
+      const agent = started.controlGraph.nodes.find((node) => node.nodeId === "implement");
+      if (agent?.type !== "agent") {
+        throw new Error("expected the implementation agent node");
+      }
+      const controlGraph = {
+        ...structuredClone(started.controlGraph),
+        nodes: started.controlGraph.nodes.map((node) =>
+          node.nodeId === "implement" && configuredLimit !== undefined
+            ? { ...node, policyDecisionLimit: configuredLimit }
+            : structuredClone(node),
+        ),
+      };
+      events[0] = { ...started, controlGraph };
+
+      expect(() =>
+        reduceRunEvents([
+          ...events,
+          { ...base(5), type: "node_started", nodeId: "implement", attempt: 1 },
+          {
+            ...base(6),
+            type: "node_succeeded",
+            nodeId: "implement",
+            attempt: 1,
+            evidence: {
+              ...agentEvidence("implemented"),
+              policyDecisions: policyDecisions(evidenceCount),
+            },
+          },
+        ] as unknown as RunEvent[]),
+      ).toThrowError(new RegExp(`policy decision evidence.*${effectiveLimit}`, "iu"));
+    },
+  );
 
   it("rejects an oversized serialized control graph through the public event parser", () => {
     const { controlGraph, nodeIds } = oversizedControlGraph();
@@ -694,6 +739,28 @@ function agentEvidence(text: string) {
     policyDecisions: [],
     effectReceipts: [],
   };
+}
+
+function policyDecisions(count: number) {
+  const broker = new PolicyBroker(
+    {
+      runId: "run-control",
+      workflowId: "conditional-control",
+      nodeId: "implement",
+      attempt: 1,
+    },
+    ["filesystem.read"],
+    undefined,
+    128,
+  );
+  for (let index = 0; index < count; index += 1) {
+    broker.authorize({
+      action: "filesystem.read",
+      target: `/workspace/file-${index}`,
+      boundary: "inside",
+    });
+  }
+  return broker.close();
 }
 
 function sha256(value: string): string {

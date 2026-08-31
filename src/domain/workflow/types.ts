@@ -169,6 +169,7 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
       readonly maxAttempts: number;
     };
     readonly contextCompaction?: RollingContextCompactionPolicy;
+    readonly policyDecisionLimit?: number;
     readonly timeoutMs: number;
   };
 }

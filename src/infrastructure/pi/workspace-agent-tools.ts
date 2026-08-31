@@ -44,11 +44,12 @@ import {
   type ToolPackageSnapshot,
   validateToolPackageSnapshot,
 } from "../../domain/capability/tool-packages.js";
+import type { PolicyBroker } from "../../domain/policy/broker.js";
 import {
-  MAX_POLICY_DECISIONS,
+  DEFAULT_POLICY_DECISION_LIMIT,
+  MAX_POLICY_DECISION_LIMIT,
   MAX_POLICY_TARGET_BYTES,
-  type PolicyBroker,
-} from "../../domain/policy/broker.js";
+} from "../../domain/policy/limits.js";
 import {
   MAX_AGENT_COMMANDS_PER_ATTEMPT,
   MAX_AGENT_EFFECT_RECEIPTS,
@@ -428,9 +429,10 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
   ),
   limit(
     "policy-decisions-per-attempt",
-    MAX_POLICY_DECISIONS,
+    MAX_POLICY_DECISION_LIMIT,
     "items",
-    "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none.",
+    "Maximum configurable authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none.",
+    DEFAULT_POLICY_DECISION_LIMIT,
   ),
   limit(
     "policy-target-bytes",

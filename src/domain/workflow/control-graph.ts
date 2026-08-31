@@ -12,6 +12,7 @@ import type {
   CompiledWorkflowPackageReference,
   ConditionSourceField,
 } from "./types.js";
+import { DEFAULT_POLICY_DECISION_LIMIT } from "../policy/limits.js";
 
 interface ProjectedNodeBase {
   readonly nodeId: string;
@@ -29,6 +30,7 @@ type ProjectedControlGraphNode =
   | (ProjectedNodeBase & {
       readonly type: "agent";
       readonly when?: CompiledBranchGuard;
+      readonly policyDecisionLimit?: number;
       readonly model?: CompiledAgentNode["agent"]["model"];
       readonly commandTools?: {
         readonly rawExec: boolean;
@@ -130,7 +132,10 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
     collectWorkflowPackages(workflow).length > 0 ||
     workflow.nodes.some(
       (node) =>
-        (node.type === "agent" && node.agent.toolPackages.length > 0) ||
+        (node.type === "agent" &&
+          (node.agent.toolPackages.length > 0 ||
+            (node.agent.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT) !==
+              DEFAULT_POLICY_DECISION_LIMIT)) ||
         node.type === "condition" ||
         node.type === "join" ||
         node.type === "child" ||
@@ -226,6 +231,10 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         ...common,
         type: node.type,
         ...(node.when === undefined ? {} : { when: node.when }),
+        ...((node.agent.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT) ===
+        DEFAULT_POLICY_DECISION_LIMIT
+          ? {}
+          : { policyDecisionLimit: node.agent.policyDecisionLimit }),
         ...(proofModelSourceNodeIds.has(node.id) ? { model: node.agent.model } : {}),
         ...(node.agent.toolPackages.length === 0
           ? {}

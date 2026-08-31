@@ -159,7 +159,11 @@ describe("production workspace-agent tool reference", () => {
       value: 1_048_576,
       unit: "bytes",
     });
-    expect(limits["policy-decisions-per-attempt"]).toMatchObject({ value: 64, unit: "items" });
+    expect(limits["policy-decisions-per-attempt"]).toMatchObject({
+      value: 128,
+      default: 64,
+      unit: "items",
+    });
     expect(limits["policy-target-bytes"]).toMatchObject({ value: 1_024, unit: "bytes" });
 
     const tools = Object.fromEntries(catalog.tools.map((tool) => [tool.selector, tool]));

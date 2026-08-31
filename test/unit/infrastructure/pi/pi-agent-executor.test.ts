@@ -23,11 +23,7 @@ import {
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../../src/domain/capability/agent-skills.js";
-import {
-  MAX_POLICY_DECISIONS,
-  PolicyAuditLimitError,
-  PolicyBroker,
-} from "../../../../src/domain/policy/broker.js";
+import { PolicyAuditLimitError, PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
 import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../../src/domain/run/work-profile.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
@@ -52,9 +48,11 @@ const context: NodeExecutionContext = {
 describe("PiAgentExecutor", () => {
   it("fails an attempt when policy audit exhaustion is followed by a normal model stop", async () => {
     let observedAbort = false;
+    let observedSystemPrompt: string | undefined;
     const runner: PiAgentRunner = {
       async run(input) {
-        for (let index = 0; index < MAX_POLICY_DECISIONS; index += 1) {
+        observedSystemPrompt = input.systemPrompt;
+        for (let index = 0; index < 2; index += 1) {
           input.policyBroker.authorize({
             action: "filesystem.read",
             target: `${input.cwd}/file-${index}.txt`,
@@ -73,21 +71,23 @@ describe("PiAgentExecutor", () => {
       },
     };
 
-    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["read", "ls"], 2),
+      context,
+    );
 
     expect(observedAbort).toBe(true);
+    expect(observedSystemPrompt).toContain("2 recorded policy decisions");
     expect(outcome).toMatchObject({
       status: "failed",
       error: {
         code: "pi_agent_policy_audit_exhausted",
-        message: `agent reached policy audit limit of ${MAX_POLICY_DECISIONS} decisions`,
+        message: "agent reached policy audit limit of 2 decisions",
         sideEffectStatus: "none",
       },
       evidence: {
         text: "",
-        policyDecisions: expect.arrayContaining([
-          expect.objectContaining({ sequence: MAX_POLICY_DECISIONS }),
-        ]),
+        policyDecisions: expect.arrayContaining([expect.objectContaining({ sequence: 2 })]),
       },
     });
   });
@@ -617,10 +617,9 @@ describe("PiAgentExecutor", () => {
       agentMaxOutputBytes: 16_384,
     });
 
-    expect(request).toMatchObject({
-      systemPrompt: "Verifier system contract.",
-      maxOutputBytes: 16_384,
-    });
+    expect(request?.systemPrompt).toContain("Verifier system contract.");
+    expect(request?.systemPrompt).toContain("64 recorded policy decisions");
+    expect(request).toMatchObject({ maxOutputBytes: 16_384 });
     expect(outcome).toMatchObject({ status: "succeeded", evidence: { text: "accepted" } });
   });
 
@@ -1873,6 +1872,7 @@ describe("EmbeddedPiAgentRunner", () => {
 function agentNode(
   timeoutMs = 300_000,
   tools: CompiledAgentNode["agent"]["tools"] = ["read", "ls"],
+  policyDecisionLimit?: number,
 ): CompiledAgentNode {
   return {
     id: "analyze",
@@ -1888,6 +1888,7 @@ function agentNode(
       tools,
       skills: [],
       toolPackages: [],
+      ...(policyDecisionLimit === undefined ? {} : { policyDecisionLimit }),
       timeoutMs,
     },
   };

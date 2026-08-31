@@ -1543,6 +1543,9 @@ function freezeNode(
                 ]),
               }),
             }),
+        ...(source.agent.policyDecisionLimit === undefined
+          ? {}
+          : { policyDecisionLimit: source.agent.policyDecisionLimit }),
         timeoutMs: source.agent.timeoutMs,
       }),
     };
@@ -1971,6 +1974,9 @@ function freezeLoopBodyNode(
                 ]),
               }),
             }),
+        ...(source.agent.policyDecisionLimit === undefined
+          ? {}
+          : { policyDecisionLimit: source.agent.policyDecisionLimit }),
         timeoutMs: source.agent.timeoutMs,
       }),
     };

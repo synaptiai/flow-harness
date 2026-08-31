@@ -64,12 +64,12 @@ import {
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
+import { calculatePolicyRequestDigest, classifyPolicyAction } from "../policy/broker.js";
 import {
-  calculatePolicyRequestDigest,
-  classifyPolicyAction,
-  MAX_POLICY_DECISIONS,
+  DEFAULT_POLICY_DECISION_LIMIT,
+  MAX_POLICY_DECISION_LIMIT,
   MAX_POLICY_TARGET_BYTES,
-} from "../policy/broker.js";
+} from "../policy/limits.js";
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
 import {
@@ -530,6 +530,7 @@ export interface ControlGraphCommandNode extends ControlGraphNodeBase {
 export interface ControlGraphAgentNode extends ControlGraphNodeBase {
   readonly type: "agent";
   readonly when?: ControlBranchGuard;
+  readonly policyDecisionLimit?: number;
   readonly model?: {
     readonly provider: string;
     readonly id: string;
@@ -2200,7 +2201,7 @@ const agentEvidenceSchema = z
         message: "agent tool errors cannot exceed tool calls",
       })
       .optional(),
-    policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISIONS).default([]),
+    policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISION_LIMIT).default([]),
     effectReceipts: z
       .array(
         z
@@ -2826,6 +2827,7 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
       ...controlNodeBaseShape,
       type: z.literal("agent"),
       when: controlBranchGuardSchema.optional(),
+      policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
       model: z
         .object({
           provider: z.string().min(1).max(96),
@@ -6623,6 +6625,12 @@ export function appendRunEvent(
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       requireNoOpenAgentCommandApproval(current, eventIndex);
+      validateAgentPolicyDecisionLimit(
+        currentState.controlGraph,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       validateDelegationEvidenceProjection(current, event.evidence, event, eventIndex);
@@ -6712,6 +6720,12 @@ export function appendRunEvent(
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       requireNoOpenAgentCommandApproval(current, eventIndex);
+      validateAgentPolicyDecisionLimit(
+        currentState.controlGraph,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       validateDelegationEvidenceProjection(current, event.evidence, event, eventIndex);
@@ -9062,6 +9076,26 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
     throw new RunReplayError(
       eventIndex,
       "successful ACP model verifier evidence requires confirmed termination and no authority violation",
+    );
+  }
+}
+
+function validateAgentPolicyDecisionLimit(
+  graph: ControlGraph | null,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  evidence: NodeEvidence | null,
+  eventIndex: number,
+): void {
+  if (evidence?.kind !== "agent") return;
+  const controlNode = graph?.nodes.find((node) => node.nodeId === event.nodeId);
+  const limit =
+    controlNode?.type === "agent"
+      ? (controlNode.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT)
+      : DEFAULT_POLICY_DECISION_LIMIT;
+  if (evidence.policyDecisions.length > limit) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent policy decision evidence exceeds configured limit of ${limit}`,
     );
   }
 }
