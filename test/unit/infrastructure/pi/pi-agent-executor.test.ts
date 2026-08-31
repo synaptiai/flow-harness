@@ -4,6 +4,7 @@ import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type {
   AgentCommandExecutor,
+  ModelSessionJournal,
   NodeAgentCommandJournal,
   NodeEffectJournal,
   NodeExecutionContext,
@@ -908,6 +909,81 @@ describe("PiAgentExecutor", () => {
       },
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_EDIT");
+  });
+
+  it("marks a committed provider failure retryable when a durable model session can continue it", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        throw new Error("PRIVATE_PROVIDER_AFTER_EDIT");
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_failed",
+        message: "agent provider execution failed",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: { kind: "agent", effectReceipts: [{ outcome: "committed" }] },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_EDIT");
+  });
+
+  it("marks a committed terminal provider error retryable for durable continuation", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return {
+          text: "",
+          stopReason: "error",
+          errorMessage: "PRIVATE_PROVIDER_TERMINAL_AFTER_EDIT",
+          usage: {
+            inputTokens: 8,
+            outputTokens: 1,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 0,
+            costUsdMicros: 9,
+          },
+        };
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_error",
+        message: "agent provider execution failed",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        usage: { inputTokens: 8, outputTokens: 1, costUsdMicros: 9 },
+        effectReceipts: [{ outcome: "committed" }],
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_TERMINAL_AFTER_EDIT");
   });
 
   it("fails a terminal agent result when an edit receipt is uncertain", async () => {

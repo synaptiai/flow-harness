@@ -834,7 +834,7 @@ export class PiAgentExecutor implements AgentExecutor {
               ),
           result.stopReason === "error" &&
             result.failureCode === undefined &&
-            effectStatus === "none",
+            (effectStatus === "none" || context.modelSession !== undefined),
         );
       }
 
@@ -941,7 +941,7 @@ export class PiAgentExecutor implements AgentExecutor {
             : "agent provider execution failed",
         effectStatus,
         policyFailureEvidence(),
-        providerFailure && effectStatus === "none",
+        providerFailure && (effectStatus === "none" || context.modelSession !== undefined),
       );
     } finally {
       commandRecorder.close();

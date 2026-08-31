@@ -280,6 +280,40 @@ describe("model session record", () => {
     expect(first.digest).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("renders a continuation capsule after a provider request and attempt settle as failed", () => {
+    let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+    state = append(state, { type: "attempt_started", attempt: 1 });
+    state = append(state, {
+      type: "user_message_committed",
+      attempt: 1,
+      origin: "primary_prompt",
+      text: "Implement the bounded change.",
+    });
+    state = append(state, {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      identity: requestIdentity(state),
+    });
+    state = append(state, {
+      type: "model_request_settled",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      outcome: "failed",
+    });
+    state = append(state, { type: "attempt_settled", attempt: 1, outcome: "failed" });
+    state = append(state, { type: "attempt_started", attempt: 2 });
+
+    const capsule = renderModelSessionResumeCapsule(state);
+
+    expect(capsule.text).toContain(MODEL_SESSION_RESUME_INSTRUCTION);
+    expect(capsule.text).toContain("Implement the bounded change.");
+    expect(capsule.text).not.toContain("model_request_settled");
+    expect(capsule.bytes).toBe(Buffer.byteLength(capsule.text, "utf8"));
+  });
+
   it("reports stable request mismatch categories without returning compared values", () => {
     const expected = requestIdentity();
     const actual: ModelRequestIdentity = {

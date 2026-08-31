@@ -615,18 +615,20 @@ silently changing this behavior.
 Fresh retry is also distinct from completion proof. The retried agent must still produce its own
 terminal evidence, and downstream deterministic verifier nodes still decide criterion acceptance.
 
-### Retry a completed provider failure
+### Retry or continue after a completed provider failure
 
-The embedded Pi adapter classifies only these completed, side-effect-free failures as retryable:
+The embedded Pi adapter classifies only these completed provider failures as retryable:
 
 - Pi returns a terminal provider `error` without a stable model-context failure code.
 - The provider runner throws an error that isn't a Flow capability-evidence or semantic-evidence
   validation failure.
 
 Flow keeps cancellation, timeout, output exhaustion, incomplete output, policy failure, stable
-model-context failure, validation failure, and operator denial non-retryable. A provider failure
-after any recorded command, effect, or delegation also remains ineligible. These rules prevent a
-generic provider error from overriding stronger durable evidence.
+model-context failure, validation failure, and operator denial non-retryable. A side-effect-free
+provider failure can start a fresh attempt. A provider failure after workspace edits can continue
+only from the exact durable model-session record when every edit settled as committed. Recorded
+commands, delegations, uncertain edits, and non-provider failures remain ineligible. These rules
+prevent a generic provider error from overriding stronger durable evidence.
 
 After an eligible attempt completes, Flow first appends `node_failed`. This event closes the model
 session and charges the attempt's node start, duration, artifacts, model tokens, and reported cost.
@@ -634,8 +636,11 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 
 - The node has a persisted `recovery: { mode: fresh, ... }` policy.
 - The failed attempt is below `maxAttempts`.
-- The failure is retryable and has `sideEffectStatus: none`.
-- The attempt has no effect, command, or delegation record.
+- The failure is retryable.
+- The attempt is side-effect-free, or it has only committed durable workspace edits.
+- A committed-edit attempt has a closed, matching model-session record for the failed attempt.
+- The attempt has no command or delegation record. Any edit history contains no open, unknown,
+  uncertain, reconciled, or not-applied effect.
 - No declared run budget is exhausted.
 - When model tokens or cost are bounded, terminal evidence contains a complete usage observation.
 - When execution time is bounded, terminal evidence is present.
@@ -644,7 +649,9 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 and resource accounting to `complete`. The reducer archives the terminal error, evidence,
 timestamps, protocols, effects, commands, delegations, and model-session summary under
 `failedAttempts`. It then returns only the current node projection to `pending`. The next
-`node_started` event must use the next attempt number.
+`node_started` event must use the next attempt number. For a committed-edit continuation, that
+attempt receives a new in-memory Pi session and a digest-bound resume capsule. It doesn't repeat
+or continue the failed provider stream.
 
 If Flow stops after `node_failed` but before `node_retry_scheduled`, resume replays the charged
 failure and appends the missing retry disposition once. If Flow stops after the disposition, replay

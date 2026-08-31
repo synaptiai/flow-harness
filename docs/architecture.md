@@ -56,10 +56,11 @@ records make the operation restart-safe. A settled record consumes the authority
 reinstallation. Explicit retired-blob maintenance previews a bounded physical store and applies one
 digest-bound plan under the package mutation lock. POSIX open-file handles preserve complete reader
 generations.
-Opaque provider-session continuation, fallback routing, and retry policy beyond a completed,
-side-effect-free provider execution failure remain later work. The same is true for broader
-configurable policy, model network tools, and arbitrary evaluator runtimes. Stronger virtual
-machine (VM) or managed sandbox backends also remain later work.
+Opaque provider-session continuation, fallback routing, and replay of a failed provider stream
+remain later work. Flow can start a new attempt from its provider-neutral model-session ledger
+after an eligible provider failure, including when earlier turns committed fully settled workspace
+edits. Broader configurable policy, model network tools, arbitrary evaluator runtimes, and stronger
+virtual machine (VM) or managed sandbox backends also remain later work.
 
 Gate 8 provides the first installable preview, current source-build environment diagnostics, and a
 guided quick start. The diagnostic checks only the selected requirements. Quick start publishes a
@@ -1323,9 +1324,19 @@ start. Validation requires the persisted opt-in, attempt cap, effect proof, and 
 A completed provider execution failure follows a separate append-only boundary. `node_failed` first
 records terminal evidence and charges resources. Then `node_retry_scheduled` archives the failure
 under `failedAttempts` and returns the node to pending. The scheduler and reducer share one
-eligibility rule. Live execution and replay require the same fresh policy, remaining attempt,
-side-effect-free evidence, and empty effect, command, and delegation history. They also require
-complete bounded-resource accounting and available budget.
+eligibility rule.
+
+Live execution and replay require the same fresh policy and a remaining attempt. They also require
+complete resource accounting and available budget. The ordinary path requires side-effect-free
+evidence. Its effect, command, and delegation history must be empty.
+
+A committed-edit continuation requires durable committed edit settlements and an exact closed
+model-session record. The record
+must match the failed attempt and have no request-identity mismatch. Command and delegation history
+must be empty.
+
+The next attempt uses a new Pi session and a digest-bound portable capsule. It never restores or
+repeats the failed stream.
 
 Fresh and recovered execution publish an atomic per-run ownership record before appending. The
 record contains a process ID and random token. A live owner blocks competitors. Flow can displace

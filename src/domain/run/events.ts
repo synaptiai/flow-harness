@@ -10888,12 +10888,9 @@ export function canScheduleFailedAttemptRetry(state: RunState, nodeId: string): 
   if (
     node?.status !== "failed" ||
     node.error?.retryable !== true ||
-    node.error.sideEffectStatus !== "none" ||
     requirement === undefined ||
     node.attempt >= requirement.maxAttempts ||
-    node.effects.length > 0 ||
-    node.commands.length > 0 ||
-    node.delegations.length > 0 ||
+    !failedAttemptHasRetryBoundary(node, requirement) ||
     (state.budget?.exhausted.length ?? 0) > 0
   ) {
     return false;
@@ -10913,6 +10910,36 @@ export function canScheduleFailedAttemptRetry(state: RunState, nodeId: string): 
     (limits?.maxModelTokens !== undefined && !tokenAccountingComplete) ||
     (limits?.maxCostUsdMicros !== undefined && !costAccountingComplete) ||
     (limits?.maxExecutionMs !== undefined && evidence === null)
+  );
+}
+
+function failedAttemptHasRetryBoundary(
+  node: NodeRunState,
+  requirement: Omit<AgentRecoveryRequirement, "nodeId">,
+): boolean {
+  if (
+    node.error?.sideEffectStatus === "none" &&
+    node.effects.length === 0 &&
+    node.commands.length === 0 &&
+    node.delegations.length === 0
+  ) {
+    return true;
+  }
+  const session = node.modelSession;
+  return (
+    node.error?.sideEffectStatus === "committed" &&
+    (node.error.code === "pi_agent_error" || node.error.code === "pi_agent_failed") &&
+    requirement.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
+    node.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
+    node.effects.length > 0 &&
+    node.effects.every((effect) => effect.settlement?.outcome === "committed") &&
+    node.commands.length === 0 &&
+    node.delegations.length === 0 &&
+    session !== null &&
+    session.activeAttempt === null &&
+    session.lastAttempt === node.attempt &&
+    session.latestRequest?.attempt === node.attempt &&
+    session.mismatchCategories.length === 0
   );
 }
 

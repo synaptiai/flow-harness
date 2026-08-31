@@ -520,6 +520,9 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 
 - Start a fresh process and session for eligible explicit recovery. Supply the bounded durable
   recovery capsule instead of resuming opaque provider or ACP state.
+- Continue an eligible provider-failed agent from the exact model-session ledger after earlier
+  workspace edits. Require a durable committed settlement for every edit. Refuse continuation when
+  a command or delegation ran.
 
 #### Implemented hosted proof
 

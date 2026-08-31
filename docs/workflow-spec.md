@@ -1738,13 +1738,19 @@ canonical JSON user turn with a fixed untrusted-data instruction. `resume_surfac
 only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
 never primary history.
 
-A completed side-effect-free provider execution failure can use the same declared fresh policy.
-Flow first appends `node_failed` with complete terminal evidence and resource accounting. It then
-appends `node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete`
-dispositions. Replay archives the terminal attempt under `failedAttempts` before returning the
-node to `pending`. The retry is illegal without an attempt remaining, with an exhausted budget,
-or after any effect, command, or delegation record. It is also illegal without complete evidence
-for a declared model-token, model-cost, or execution-time limit.
+A completed provider execution failure can use the same declared fresh policy. Flow first appends
+`node_failed` with complete terminal evidence and resource accounting. It then appends
+`node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete` dispositions.
+Replay archives the terminal attempt under `failedAttempts` before returning the node to `pending`.
+
+A side-effect-free failure requires empty effect, command, and delegation history. A failure after
+workspace edits also requires `flow.effects/v1` and only committed effect settlements. It requires
+a closed model-session record that matches the failed attempt. The record must have no
+model-session mismatch. Command and delegation history must be empty. Other committed, open,
+unknown, or uncertain operations remain ineligible.
+
+Every path requires an attempt remaining and available budget. Evidence must be complete for each
+declared model-token, model-cost, or execution-time limit.
 
 The dedicated compaction evaluator can derive a smaller provider surface without changing primary
 history. `references` mode projects only validated same-run command artifact references. It keeps
@@ -1881,13 +1887,19 @@ interruption timestamps, effect protocol, and immutable effects before returning
 pending. The next `node_started` must use the prior attempt plus one. At most `A` starts and `A-1`
 interruption dispositions exist for `maxAttempts: A`.
 
-`node_retry_scheduled` can follow one completed opted-in agent failure only when the failure is
-retryable and side-effect-free. The attempt must contain no effects, commands, or delegations. The
-attempt cap must have capacity, and each declared resource limit must remain accountable and
-unexhausted. The prior `node_failed` event has already charged terminal evidence. The reducer
-archives that evidence and error under `failedAttempts`, returns the node to pending, and preserves
-the next-attempt invariant. Replay rejects a generic `run_failed` event when this retry disposition
-is required and still eligible.
+`node_retry_scheduled` can follow one completed opted-in provider failure only when the shared
+proof gate accepts it. The ordinary path is side-effect-free and contains no effects, commands, or
+delegations.
+
+The committed-edit continuation path requires the durable effect protocol and only committed
+workspace-edit settlements. It also requires a closed model-session record for the same failed
+attempt. Command and delegation history must be empty. The attempt cap must have capacity. Each
+declared resource limit must remain accountable and unexhausted. The prior `node_failed` event has
+already charged terminal evidence.
+
+The reducer archives the evidence, error, edit receipts, and model session under `failedAttempts`.
+It returns the node to pending and preserves the next-attempt invariant. Replay rejects a generic
+`run_failed` event when this retry disposition is required and still eligible.
 
 Agent-command approval history retains every exact request, decision or cancellation, expiry, and
 single command consumption on its running node. `node_agent_command_prepared` carries the approval
