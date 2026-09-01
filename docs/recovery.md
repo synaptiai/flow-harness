@@ -631,13 +631,21 @@ credit balance or quota, then start a new run. Preserve and inspect the failed r
 terminal quota failure can't resume. Flow records only the stable failure code and safe message in
 node evidence. It doesn't persist the provider's raw error text.
 
-Flow keeps cancellation, timeout, output exhaustion, incomplete output, policy failure, stable
+Flow keeps cancellation, timeout, retained-report byte exhaustion, policy failure, stable
 model-context failure, stable provider failure, validation failure, and operator denial
-non-retryable. A side-effect-free provider failure can start a fresh attempt. A provider failure
-after workspace edits can continue only from the exact durable model-session record when every
-edit settled as committed. Recorded commands, delegations, uncertain edits, and non-provider
-failures remain ineligible. These rules prevent a generic provider error from overriding stronger
-durable evidence.
+non-retryable. A side-effect-free transient provider failure can start a fresh attempt. A settled
+provider `length` stop can also start a fresh attempt when the exact durable model-session record is
+available. Either failure after workspace edits can continue only when every edit settled as
+committed. Recorded commands, delegations, uncertain edits, and other failure classes remain
+ineligible. These rules prevent a generic provider error from overriding stronger durable
+evidence.
+
+Fresh recovery doesn't restore provider-private reasoning or a partial stream. It renders only the
+committed portable model-session history. A `length` response with no portable text, tool call,
+tool result, or effect can therefore use a charged attempt without adding useful progress. The
+shared `maxAttempts` ceiling still includes the initial attempt and every output-limited or
+transient-provider retry. This fail-closed ceiling prevents an unproductive response pattern from
+becoming an unbounded loop.
 
 After an eligible attempt completes, Flow first appends `node_failed`. This event closes the model
 session and charges the attempt's node start, duration, artifacts, model tokens, and reported cost.

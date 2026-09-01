@@ -102,7 +102,7 @@ pinned offline catalog:
 
 | Model identifier | OpenRouter routing behavior | Use when |
 | --- | --- | --- |
-| `z-ai/glm-5.3-flash` | OpenRouter's default price-and-availability balance | Default routing meets the workload's reliability and latency needs. |
+| `z-ai/glm-5.3-flash` | OpenRouter's default routing with Auto Exacto for tool-calling requests | Start here for agent workflows unless measured evidence favors another route. |
 | `z-ai/glm-5.3-flash:nitro` | Prefer providers with higher output throughput | Long responses are sensitive to provider speed or stream duration. |
 | `z-ai/glm-5.3-flash:exacto` | Prefer providers with stronger tool-calling quality signals | Tool-call reliability matters more than lowest price. |
 | `z-ai/glm-5.3-flash:floor` | Prefer lower-priced providers | A tolerant batch workload prioritizes cost. |
@@ -118,12 +118,12 @@ Use the same complete model identifier for `doctor` and `run`. For example:
 flow issue doctor https://github.com/example/widgets/issues/42 \
   --plan .flow/github-issue.plan.yaml \
   --provider openrouter \
-  --model z-ai/glm-5.3-flash:nitro
+  --model z-ai/glm-5.3-flash
 
 flow issue run https://github.com/example/widgets/issues/42 \
   --plan .flow/github-issue.plan.yaml \
   --provider openrouter \
-  --model z-ai/glm-5.3-flash:nitro \
+  --model z-ai/glm-5.3-flash \
   --command-id <uuid>
 ```
 
@@ -182,6 +182,13 @@ model session and effects are complete. A node timeout or lost active response c
 and isn't automatically retryable. OpenRouter's
 [response caching](https://openrouter.ai/docs/guides/features/response-caching) also doesn't make
 duplicate simultaneous requests free. Inspect the existing run before starting a replacement.
+
+Fresh recovery doesn't restore provider-private reasoning or a partial provider stream. It starts a
+new request from the portable history that Flow committed before the limit. An output-limited
+message with no text, tool call, tool result, or effect can therefore consume a charged attempt
+without adding useful portable progress. Keep `recovery.maxAttempts` and the aggregate workflow
+budget finite. Don't raise `maxOutputTokens` only to make a repeatedly empty response complete.
+Review the route, prompt scope, and model suitability first.
 
 OpenRouter's dynamic route and Flow's response cap are independent. The default route applies
 OpenRouter's [Auto Exacto](https://openrouter.ai/docs/guides/routing/auto-exacto) quality-aware

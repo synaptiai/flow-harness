@@ -288,3 +288,32 @@ The workflow schema accepts a positive safe integer instead of inventing a model
 maximum. The selected model's pinned output capability is the effective ceiling, and Pi applies the
 smaller value. This keeps numeric identity exact while allowing a future catalog update without a
 Flow schema migration. It doesn't make a value above the selected model's capability meaningful.
+
+### Outcome of the capped `:nitro` rerun
+
+Run `issue-8c53ad3c-fa7f-4837-88d2-b8b0abcce8cf` reached 14 of 20 implementation agent nodes before
+the `repair-installer-initialization-semantics` node exhausted its three attempts. The run preserved
+one settled outer preparation effect and a complete nested event ledger; it made no source changes
+in the operator checkout.
+
+The node's first attempt read two authorized files, then settled at exactly 24,576 output tokens
+with provider stop reason `length`. Its second attempt used the durable resume surface and again
+settled at exactly 24,576 output tokens with no tool calls or visible report. The third attempt
+prepared the next digest-bound request, then failed in 93 milliseconds with zero reported usage.
+The first two failures were `pi_agent_incomplete`; the last was `pi_agent_error`. All three were
+side-effect-free for this node. The attempt ceiling then stopped the run.
+
+This result falsifies two earlier assumptions. First, the prior `:nitro` sample maximum of 19,615
+didn't predict the next run: two later responses reached the new cap. Second, a durable resume
+surface doesn't imply that an output-limited response made portable progress. Flow intentionally
+doesn't retain provider-private reasoning or partial streams, and both limited messages had empty
+portable text. Raising the token cap or adding output-continuation attempts would therefore spend
+more without evidence that this route would converge.
+
+Keep `maxOutputTokens: 24576`, the three-attempt recovery ceiling, and the aggregate workflow
+budgets. For the next clean run, select the base `z-ai/glm-5.3-flash` identifier instead of
+`:nitro`. OpenRouter applies Auto Exacto automatically to tool-calling requests and ranks eligible
+providers using throughput, tool-call success, and benchmark signals. The `:nitro` suffix
+explicitly prioritizes throughput and overrides that quality-first ordering. This route change is
+an evidence-driven pilot variable, not a claim that one route is universally superior. Preserve
+the failed run in the final acceptance denominator.

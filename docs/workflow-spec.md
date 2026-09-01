@@ -1297,6 +1297,12 @@ cancellation, lost response, unknown effect, missing usage required by the run b
 budget, or exhausted recovery count remains ineligible. The cap therefore improves the chance of
 a settled recovery boundary. It does not make an uncertain request safe to repeat.
 
+The new attempt uses only committed portable history. Flow doesn't retain provider-private
+reasoning or a partial stream. An output-limited message that contains no portable text, tool call,
+tool result, or effect can therefore consume an attempt without advancing the resumable state.
+Bound `recovery.maxAttempts` and the aggregate workflow budget independently of this per-response
+limit.
+
 `flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
 Every request contains one canonical portable project path. Definition, reference, and hover
 requests also contain a zero-based line and character. A semantic workflow requires one exact
