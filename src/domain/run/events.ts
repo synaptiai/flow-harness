@@ -531,6 +531,7 @@ export interface ControlGraphAgentNode extends ControlGraphNodeBase {
   readonly type: "agent";
   readonly when?: ControlBranchGuard;
   readonly policyDecisionLimit?: number;
+  readonly maxOutputTokens?: number;
   readonly model?: {
     readonly provider: string;
     readonly id: string;
@@ -2828,6 +2829,7 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
       type: z.literal("agent"),
       when: controlBranchGuardSchema.optional(),
       policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
+      maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
       model: z
         .object({
           provider: z.string().min(1).max(96),
@@ -10928,7 +10930,9 @@ function failedAttemptHasRetryBoundary(
   const session = node.modelSession;
   return (
     node.error?.sideEffectStatus === "committed" &&
-    (node.error.code === "pi_agent_error" || node.error.code === "pi_agent_failed") &&
+    (node.error.code === "pi_agent_error" ||
+      node.error.code === "pi_agent_failed" ||
+      node.error.code === "pi_agent_incomplete") &&
     requirement.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
     node.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
     node.effects.length > 0 &&

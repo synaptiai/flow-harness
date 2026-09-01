@@ -834,9 +834,10 @@ export class PiAgentExecutor implements AgentExecutor {
                 completedCapabilityEvidence,
                 delegationReceipts,
               ),
-          result.stopReason === "error" &&
-            result.failureCode === undefined &&
-            (effectStatus === "none" || context.modelSession !== undefined),
+          result.failureCode === undefined &&
+            ((result.stopReason === "error" &&
+              (effectStatus === "none" || context.modelSession !== undefined)) ||
+              (result.stopReason === "length" && context.modelSession !== undefined)),
         );
       }
 

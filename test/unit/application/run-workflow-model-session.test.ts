@@ -107,178 +107,184 @@ describe("runWorkflow model session coordination", () => {
     });
   });
 
-  it("continues a provider-failed edit attempt from its settled model-session ledger", async () => {
-    const operations: string[] = [];
-    const store = new MemoryRunStore([], operations);
-    const sessions = new MemoryModelSessionStore(operations);
-    let agentExecutions = 0;
-    const executor: NodeExecutor = {
-      async execute(node, context): Promise<NodeExecutionOutcome> {
-        operations.push(`executor:${node.id}:${context.attempt}`);
-        if (node.type !== "agent") return successfulCommandOutcome(node.id);
-        agentExecutions += 1;
-        if (agentExecutions > 1) {
-          expect(context.modelSession?.state.events).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                type: "attempt_settled",
-                attempt: 1,
-                outcome: "failed",
-              }),
-              expect.objectContaining({
-                type: "tool_result_committed",
-                toolCallId: "call-edit-1",
-                isError: false,
-              }),
-              expect.objectContaining({ type: "attempt_started", attempt: 2 }),
-            ]),
-          );
-          return successfulAgentOutcome();
-        }
+  it.each([
+    ["provider-failed", "pi_agent_error"],
+    ["output-limited", "pi_agent_incomplete"],
+  ] as const)(
+    "continues a %s edit attempt from its settled model-session ledger",
+    async (_case, failureCode) => {
+      const operations: string[] = [];
+      const store = new MemoryRunStore([], operations);
+      const sessions = new MemoryModelSessionStore(operations);
+      let agentExecutions = 0;
+      const executor: NodeExecutor = {
+        async execute(node, context): Promise<NodeExecutionOutcome> {
+          operations.push(`executor:${node.id}:${context.attempt}`);
+          if (node.type !== "agent") return successfulCommandOutcome(node.id);
+          agentExecutions += 1;
+          if (agentExecutions > 1) {
+            expect(context.modelSession?.state.events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  type: "attempt_settled",
+                  attempt: 1,
+                  outcome: "failed",
+                }),
+                expect.objectContaining({
+                  type: "tool_result_committed",
+                  toolCallId: "call-edit-1",
+                  isError: false,
+                }),
+                expect.objectContaining({ type: "attempt_started", attempt: 2 }),
+              ]),
+            );
+            return successfulAgentOutcome();
+          }
 
-        const session = context.modelSession;
-        const effectJournal = context.effectJournal;
-        if (session === undefined || effectJournal === undefined) {
-          throw new Error("test requires durable model-session and effect journals");
-        }
-        let modelState = await session.read();
-        modelState = await session.append({
-          type: "model_request_prepared",
-          attempt: 1,
-          turn: 1,
-          request: 1,
-          identity: requestIdentity(modelState, 1, 1),
-        });
-        modelState = await session.append({
-          type: "model_message_committed",
-          attempt: 1,
-          turn: 1,
-          request: 1,
-          text: "I will update the bounded source file.",
-          stopReason: "tool_use",
-        });
-        modelState = await session.append({
-          type: "tool_call_committed",
-          attempt: 1,
-          turn: 1,
-          request: 1,
-          toolCallId: "call-edit-1",
-          toolName: "flow_edit",
-          argumentsJson: '{"path":"source.ts"}',
-        });
-        const prepared = await effectJournal.prepare({
-          kind: "filesystem.edit",
-          target: resolve(process.cwd(), "source.ts"),
-          operationDigest: "a".repeat(64),
-          beforeSha256: "b".repeat(64),
-          afterSha256: "c".repeat(64),
-          mode: 0o644,
-        });
-        const receipt = await prepared.settle({
-          outcome: "committed",
-          reason: "directory_synced",
-        });
-        if (receipt === null) throw new Error("committed effect must return a receipt");
-        modelState = await session.append({
-          type: "tool_result_committed",
-          attempt: 1,
-          turn: 1,
-          request: 1,
-          toolCallId: "call-edit-1",
-          toolName: "flow_edit",
-          text: "Updated source.ts.",
-          isError: false,
-        });
-        modelState = await session.append({
-          type: "model_request_settled",
-          attempt: 1,
-          turn: 1,
-          request: 1,
-          outcome: "completed",
-        });
-        modelState = await session.append({
-          type: "model_request_prepared",
-          attempt: 1,
-          turn: 2,
-          request: 2,
-          identity: requestIdentity(modelState, 2, 2),
-        });
-        await session.append({
-          type: "model_request_settled",
-          attempt: 1,
-          turn: 2,
-          request: 2,
-          outcome: "failed",
-        });
-        const policy = new PolicyBroker(
-          {
-            runId: context.runId,
-            workflowId: context.workflowId,
-            nodeId: node.id,
-            attempt: context.attempt,
-          },
-          ["filesystem.write"],
-        );
-        policy.authorize({
-          action: "filesystem.write",
-          target: receipt.target,
-          boundary: "inside",
-          operationDigest: receipt.operationDigest,
-        });
-        return {
-          status: "failed",
-          error: {
-            code: "pi_agent_error",
-            message: "agent provider execution failed",
-            retryable: true,
-            sideEffectStatus: "committed",
-          },
-          evidence: {
-            kind: "agent",
-            provider: "test",
-            model: "deterministic",
-            text: "",
-            textHash: sha256(""),
-            textTruncated: false,
-            durationMs: 5,
-            usage: {
-              inputTokens: 2,
-              outputTokens: 1,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-              costUsdMicros: 7,
-            },
-            policyDecisions: policy.close(),
-            effectReceipts: [receipt],
-          },
-        };
-      },
-    };
-
-    const state = await runWorkflow(editWorkflow(), {
-      ...runOptions(store, executor, sessions),
-      runId: "run-model-provider-continuation",
-    });
-
-    expect(state).toMatchObject({
-      status: "succeeded",
-      resources: { nodeStarts: 3, modelTokens: 3, modelCostUsdMicros: 7 },
-      nodes: {
-        implement: {
-          status: "succeeded",
-          attempt: 2,
-          failedAttempts: [
+          const session = context.modelSession;
+          const effectJournal = context.effectJournal;
+          if (session === undefined || effectJournal === undefined) {
+            throw new Error("test requires durable model-session and effect journals");
+          }
+          let modelState = await session.read();
+          modelState = await session.append({
+            type: "model_request_prepared",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            identity: requestIdentity(modelState, 1, 1),
+          });
+          modelState = await session.append({
+            type: "model_message_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            text: "I will update the bounded source file.",
+            stopReason: "tool_use",
+          });
+          modelState = await session.append({
+            type: "tool_call_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            toolCallId: "call-edit-1",
+            toolName: "flow_edit",
+            argumentsJson: '{"path":"source.ts"}',
+          });
+          const prepared = await effectJournal.prepare({
+            kind: "filesystem.edit",
+            target: resolve(process.cwd(), "source.ts"),
+            operationDigest: "a".repeat(64),
+            beforeSha256: "b".repeat(64),
+            afterSha256: "c".repeat(64),
+            mode: 0o644,
+          });
+          const receipt = await prepared.settle({
+            outcome: "committed",
+            reason: "directory_synced",
+          });
+          if (receipt === null) throw new Error("committed effect must return a receipt");
+          modelState = await session.append({
+            type: "tool_result_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            toolCallId: "call-edit-1",
+            toolName: "flow_edit",
+            text: "Updated source.ts.",
+            isError: false,
+          });
+          modelState = await session.append({
+            type: "model_request_settled",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            outcome: "completed",
+          });
+          modelState = await session.append({
+            type: "model_request_prepared",
+            attempt: 1,
+            turn: 2,
+            request: 2,
+            identity: requestIdentity(modelState, 2, 2),
+          });
+          await session.append({
+            type: "model_request_settled",
+            attempt: 1,
+            turn: 2,
+            request: 2,
+            outcome: failureCode === "pi_agent_incomplete" ? "output_limited" : "failed",
+          });
+          const policy = new PolicyBroker(
             {
-              attempt: 1,
-              error: { code: "pi_agent_error", sideEffectStatus: "committed" },
-              effects: [{ settlement: { outcome: "committed" } }],
+              runId: context.runId,
+              workflowId: context.workflowId,
+              nodeId: node.id,
+              attempt: context.attempt,
             },
-          ],
+            ["filesystem.write"],
+          );
+          policy.authorize({
+            action: "filesystem.write",
+            target: receipt.target,
+            boundary: "inside",
+            operationDigest: receipt.operationDigest,
+          });
+          return {
+            status: "failed",
+            error: {
+              code: failureCode,
+              message: "agent provider execution failed",
+              retryable: true,
+              sideEffectStatus: "committed",
+            },
+            evidence: {
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text: "",
+              textHash: sha256(""),
+              textTruncated: false,
+              durationMs: 5,
+              usage: {
+                inputTokens: 2,
+                outputTokens: 1,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                costUsdMicros: 7,
+              },
+              policyDecisions: policy.close(),
+              effectReceipts: [receipt],
+            },
+          };
         },
-      },
-    });
-    expect(operations).toContain("executor:implement:2");
-  });
+      };
+
+      const state = await runWorkflow(editWorkflow(), {
+        ...runOptions(store, executor, sessions),
+        runId: `run-model-${failureCode}-continuation`,
+      });
+
+      expect(state).toMatchObject({
+        status: "succeeded",
+        resources: { nodeStarts: 3, modelTokens: 3, modelCostUsdMicros: 7 },
+        nodes: {
+          implement: {
+            status: "succeeded",
+            attempt: 2,
+            failedAttempts: [
+              {
+                attempt: 1,
+                error: { code: failureCode, sideEffectStatus: "committed" },
+                effects: [{ settlement: { outcome: "committed" } }],
+              },
+            ],
+          },
+        },
+      });
+      expect(operations).toContain("executor:implement:2");
+    },
+  );
 
   it("passes the compiled rolling-context policy to the model executor", async () => {
     const operations: string[] = [];

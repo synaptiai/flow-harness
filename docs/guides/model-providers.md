@@ -151,17 +151,44 @@ and [provider routing](https://openrouter.ai/docs/guides/routing/provider-select
 external controls. Flow records the selected OpenRouter model route and provider-reported usage.
 It doesn't certify the upstream provider's retention, region, or training policy.
 
-## Keep spending bounded
+## Bound provider responses and spending
 
-Use two independent controls:
+Use three independent controls:
 
-- Set `maxModelTokens` and `maxCostUsd` in each Flow workflow.
+- Set `maxOutputTokens` on each agent and model verifier to bound one provider response.
+- Set `maxModelTokens` and `maxCostUsd` in each Flow workflow to bound aggregate admitted work.
 - Set a spending limit on the dedicated OpenRouter key or an organization guardrail.
 
-Flow's limits stop new work at durable boundaries. They aren't prepaid reservations or a hard stop
-inside a provider request that is already running. Provider-reported usage arrives during or after
-the response and can differ from the final invoice. A provider-side key limit can reject new
-requests after its own accounting reaches the configured threshold.
+For example, a long-running implementation node can use this workload-specific cap:
+
+```yaml
+agent:
+  maxOutputTokens: 24576
+```
+
+This value isn't a Flow default or an OpenRouter recommendation. Choose it from preserved run
+evidence for the exact model, route, node responsibility, and repository. Split a node that mixes
+unrelated responsibilities before raising the cap. Model verifiers usually need less output
+because they return bounded structured verdicts.
+
+Flow's limits stop new work at durable boundaries. They aren't prepaid reservations.
+`maxOutputTokens` asks the provider to end one response at the configured output boundary. The
+other Flow limits don't stop a provider request that is already running. Provider-reported usage
+arrives during or after the response and can differ from the final invoice. A provider-side key
+limit can reject new requests after its own accounting reaches the configured threshold.
+
+A settled output-limited response can qualify for Flow's configured fresh recovery when its durable
+model session and effects are complete. A node timeout or lost active response can remain uncertain
+and isn't automatically retryable. OpenRouter's
+[response caching](https://openrouter.ai/docs/guides/features/response-caching) also doesn't make
+duplicate simultaneous requests free. Inspect the existing run before starting a replacement.
+
+OpenRouter's dynamic route and Flow's response cap are independent. The default route applies
+OpenRouter's [Auto Exacto](https://openrouter.ai/docs/guides/routing/auto-exacto) quality-aware
+routing for tool calls. The `:nitro` variant instead prioritizes output throughput, which can help a
+response settle before a long node timeout. Neither route guarantees a latency or completion
+target. Don't pin one upstream provider from a transient endpoint snapshot. Availability, ranking,
+and telemetry can change between requests.
 
 Check the current [GLM 5.3 Flash model page](https://openrouter.ai/z-ai/glm-5.3-flash) before a paid
 run. Price, routing, promotion, capacity, and availability data can change without a Flow release.

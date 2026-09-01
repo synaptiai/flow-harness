@@ -1056,6 +1056,48 @@ describe("PiAgentExecutor", () => {
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_TERMINAL_AFTER_EDIT");
   });
 
+  it("marks an output-limited terminal result retryable only with durable continuation", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return {
+          text: "partial report",
+          stopReason: "length",
+          usage: {
+            inputTokens: 8,
+            outputTokens: 24_576,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 0,
+            costUsdMicros: 9,
+          },
+        };
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_incomplete",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        usage: { outputTokens: 24_576 },
+        effectReceipts: [{ outcome: "committed" }],
+      },
+    });
+  });
+
   it("fails a terminal agent result when an edit receipt is uncertain", async () => {
     const runner: PiAgentRunner = {
       async run(input) {

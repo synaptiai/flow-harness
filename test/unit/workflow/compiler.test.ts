@@ -1026,6 +1026,67 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.policyDecisionLimit");
   });
 
+  it("normalizes and digest-binds explicit model output-token limits", () => {
+    const explicitSource = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository within one bounded provider response.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      maxOutputTokens: 24576
+  - id: verify
+    type: verifier
+    dependsOn: [analyze]
+    verifier:
+      kind: model
+      prompt: Verify the agent report.
+      evidence: [{ nodeId: analyze, field: agent.text }]
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      maxOutputTokens: 8192
+`);
+    const omittedSource = explicitSource
+      .replace("      maxOutputTokens: 24576\n", "")
+      .replace("      maxOutputTokens: 8192\n", "");
+
+    const explicit = compileWorkflowText(explicitSource, "model-output-limit.workflow.yaml");
+    const omitted = compileWorkflowText(omittedSource);
+
+    expect(explicit.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: { maxOutputTokens: 24_576 },
+    });
+    expect(explicit.nodes[1]).toMatchObject({
+      type: "verifier",
+      verifier: { kind: "model", maxOutputTokens: 8_192 },
+    });
+    expect(workflowRequiresControlGraph(explicit)).toBe(true);
+    expect(projectCompiledControlGraph(explicit).nodes[0]).toMatchObject({
+      type: "agent",
+      maxOutputTokens: 24_576,
+    });
+    expect(
+      omitted.nodes[0]?.type === "agent" ? omitted.nodes[0].agent.maxOutputTokens : undefined,
+    ).toBeUndefined();
+    expect(calculateWorkflowDigest(explicit)).not.toBe(calculateWorkflowDigest(omitted));
+  });
+
+  it.each([0, 1.5, 1_000_001])("rejects model output-token limit %s", (limit) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository within one bounded provider response.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      maxOutputTokens: ${limit}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.maxOutputTokens");
+  });
+
   it.each([
     ["unsupported mode", "{ mode: eager }", "nodes.0.agent.contextCompaction.mode"],
     [

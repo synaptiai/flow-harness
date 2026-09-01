@@ -250,6 +250,25 @@ describe("verifier node executor", () => {
     });
   });
 
+  it("passes a model verifier's frozen output-token limit to the agent executor", async () => {
+    const raw = verdictJson("accepted", "The bounded response verifies the evidence.");
+    const agent = fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) });
+    const executor = new VerifierNodeExecutor(fakeCommandExecutor(), agent);
+    const baseNode = modelVerifier();
+    if (baseNode.verifier.kind !== "model") throw new Error("fixture must use a model verifier");
+    const node: CompiledVerifierNode = {
+      ...baseNode,
+      verifier: { ...baseNode.verifier, maxOutputTokens: 8_192 },
+    };
+
+    await executor.execute(node, contextWithSources());
+
+    expect(agent.execute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentMaxOutputTokens: 8_192 }),
+    );
+  });
+
   it("turns an explicit rejected model verdict into a side-effect-free verifier failure", async () => {
     const reason = "The evidence does not prove the claim.";
     const raw = JSON.stringify({ verdict: "rejected", reason });

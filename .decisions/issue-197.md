@@ -242,3 +242,44 @@ The implementation keeps omitted workflow bytes unchanged for digest compatibili
 and replay resolve omission to 64. Only an explicit override enters the compiled workflow and,
 when non-default, forces a persisted control graph. The model receives the effective value, and
 audit exhaustion remains fail-closed.
+
+## Provider-response calibration for the issue 6 rerun
+
+The preserved issue 6 model-session ledgers contain 639 settled messages with positive output-token
+usage. The base `z-ai/glm-5.3-flash` route contributed 318 messages: mean 2,306.6, median 350, 90th
+percentile 4,851, 95th percentile 7,511, 99th percentile 35,469, and maximum 50,718 output tokens.
+Eleven messages exceeded 16,384 tokens, eight exceeded 24,576, and six exceeded 32,768.
+
+The `z-ai/glm-5.3-flash:nitro` route contributed 321 messages: mean 1,194.4, median 421, 90th
+percentile 3,646, 95th percentile 4,973, 99th percentile 8,012, and maximum 19,615 output tokens.
+One message exceeded 16,384 tokens; none exceeded 24,576. This is observational evidence from the
+bounded pilot, not a controlled model-quality comparison. The routes ran different attempts and
+repository states, so route choice isn't the only possible cause of the distribution.
+
+The latest failed attempt strengthens the need for a response boundary but doesn't prove one exact
+value. Its installer and incremental-detector nodes settled, including one 15,235-token response.
+The state-integrity node then reached its 20-minute timeout during request 5. That request had no
+settled usage, so its eventual output length and provider cost are unknown. A timeout alone can't
+show whether the provider was generating, stalled, disconnected, or finishing an unusually long
+reasoning path.
+
+For the next issue 6 run, use the `:nitro` route and set each agent node to
+`maxOutputTokens: 24576`. This cap covers every observed settled `:nitro` response and about 97.5%
+of the observed base-route responses. Set model verifiers to `8192` because they return a strict,
+small JSON verdict; that verifier value is a conservative interface bound, not a percentile-derived
+model standard. Keep the existing run-wide token, cost, time, artifact, policy-decision, effect,
+and path controls unchanged unless separate evidence justifies a change.
+
+The rejected alternatives were an unlimited catalog maximum, a static upstream-provider pin, and
+a timeout increase by itself. The catalog maximum allowed a single request to inherit GLM's
+131,072-token output capacity. OpenRouter's endpoint response exposed no current latency or
+throughput samples for the eligible upstreams, so a hardcoded provider wasn't evidence-based. A
+larger timeout could increase both cost and uncertainty without creating a settled recovery
+boundary.
+
+Flow therefore adds an optional, digest-bound per-node response cap. A provider `length` stop is
+retryable only through the existing fresh-recovery contract with a complete durable model session,
+settled effects, sufficient attempts, and complete usage required by the run budget. Timeouts,
+cancellation, lost responses, unknown effects, and exhausted budgets remain nonretryable. This
+design can add another charged request after a capped response, so it trades bounded individual
+tails for possible retry cost; the aggregate workflow budget remains the controlling backstop.

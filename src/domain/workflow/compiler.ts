@@ -1546,6 +1546,9 @@ function freezeNode(
         ...(source.agent.policyDecisionLimit === undefined
           ? {}
           : { policyDecisionLimit: source.agent.policyDecisionLimit }),
+        ...(source.agent.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: source.agent.maxOutputTokens }),
         timeoutMs: source.agent.timeoutMs,
       }),
     };
@@ -1569,6 +1572,9 @@ function freezeNode(
         prompt: source.verifier.prompt,
         evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
         model: Object.freeze({ ...source.verifier.model }),
+        ...(source.verifier.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: source.verifier.maxOutputTokens }),
         timeoutMs: source.verifier.timeoutMs,
       });
     } else if (source.verifier.kind === "lean-proof") {
@@ -1593,6 +1599,9 @@ function freezeNode(
         package: Object.freeze({ ...source.verifier.package }),
         evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
         model: Object.freeze({ ...source.verifier.model }),
+        ...(source.verifier.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: source.verifier.maxOutputTokens }),
         timeoutMs: source.verifier.timeoutMs,
       });
     }

@@ -888,6 +888,10 @@ async function continueWorkflow(
                     executionNode.agent.contextCompaction === undefined
                       ? {}
                       : { contextCompaction: executionNode.agent.contextCompaction }),
+                    ...(executionNode.type !== "agent" ||
+                    executionNode.agent.maxOutputTokens === undefined
+                      ? {}
+                      : { agentMaxOutputTokens: executionNode.agent.maxOutputTokens }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,

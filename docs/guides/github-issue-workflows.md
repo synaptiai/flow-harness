@@ -123,6 +123,7 @@ nodes:
       recovery:
         mode: fresh
         maxAttempts: 2
+      maxOutputTokens: 24576
       timeoutMs: 600000
   - id: assess-implementation
     type: verifier
@@ -142,6 +143,7 @@ nodes:
         provider: runtime
         id: selected-by-flow
         thinking: high
+      maxOutputTokens: 8192
       timeoutMs: 300000
 ```
 
@@ -197,6 +199,7 @@ nodes:
       recovery:
         mode: fresh
         maxAttempts: 2
+      maxOutputTokens: 24576
       timeoutMs: 480000
   - id: validate-review-result
     type: verifier
@@ -216,6 +219,7 @@ nodes:
         provider: runtime
         id: selected-by-flow
         thinking: high
+      maxOutputTokens: 8192
       timeoutMs: 120000
 ```
 
@@ -245,6 +249,18 @@ Both workflows must set all five budget dimensions:
 Start with the smallest values that accommodate the repository and task. Increase a limit only
 after you inspect a resource-exhaustion result and confirm that the task still has an appropriate
 scope. A larger token or time limit doesn't grant new tools, paths, credentials, or merge authority.
+
+Set `maxOutputTokens` separately on every agent and model verifier. It limits one provider response.
+It doesn't replace `maxModelTokens`, which accounts for the complete workflow. The example uses
+24,576 output tokens for coding and independent review and 8,192 for the constrained verifier JSON.
+These are illustrative starting points for a long-running issue workflow, not universal defaults.
+
+Use preserved run evidence to lower or raise them, and keep every configured value within the
+selected model's published capability. Prefer smaller nodes over an ever-larger response.
+
+When a response reaches the cap, a configured recovery attempt can continue only from a complete
+durable session boundary. A node timeout or lost active response can have unknown provider usage
+and doesn't become safe to retry merely because a cap was configured.
 
 The CLI-selected provider and model replace every model tuple in both workflows before execution.
 Flow rejects an incomplete budget or a workflow that introduces a second authority path. Use

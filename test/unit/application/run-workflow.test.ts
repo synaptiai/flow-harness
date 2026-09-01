@@ -71,6 +71,40 @@ describe("runWorkflow", () => {
     });
   });
 
+  it("passes an agent's frozen output-token limit only to that node", async () => {
+    const observed = new Map<string, number | undefined>();
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      observed.set(node.id, context.agentMaxOutputTokens);
+      return node.type === "agent" ? successfulAgentOutcome() : successfulOutcome(node.id);
+    });
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: bounded-provider-response }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test, id: deterministic }
+      maxOutputTokens: 24576
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: node, args: [verify] }
+`);
+
+    await runWorkflow(workflow, options(store, executor, "run-model-output-limit"));
+
+    expect(observed).toEqual(
+      new Map([
+        ["analyze", 24_576],
+        ["verify", undefined],
+      ]),
+    );
+  });
+
   it("rejects changed write authority on resume, including omitted versus empty", async () => {
     const workflow = threeNodeWorkflow();
     const initial = eventsThroughFirstSuccess(workflow);

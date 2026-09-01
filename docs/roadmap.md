@@ -812,6 +812,9 @@ that another user can apply to one supported `github.com` repository without bui
   replay-validated durable ledger.
 - Reconcile an interrupted effect against exact local or GitHub identity before retry. Preserve
   uncertainty when absence or completion can't be proved.
+- Bind an optional per-node model-response cap into the workflow and recovery identity. Continue
+  an output-limited response only from a settled durable model session. Don't infer safety from a
+  timeout or missing response.
 - Require one draft pull request and reuse that pull request after repair. Require exact-head checks
   from named GitHub Apps, an exact operator merge command, and a post-merge topology proof.
 

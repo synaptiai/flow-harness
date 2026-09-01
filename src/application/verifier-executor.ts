@@ -290,6 +290,9 @@ export class VerifierNodeExecutor implements VerifierExecutor {
         tools: Object.freeze([]),
         skills: Object.freeze([]),
         toolPackages: Object.freeze([]),
+        ...(verifier.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: verifier.maxOutputTokens }),
         timeoutMs: verifier.timeoutMs,
       },
     };
@@ -297,6 +300,9 @@ export class VerifierNodeExecutor implements VerifierExecutor {
       ...context,
       agentSystemPrompt: VERIFIER_SYSTEM_PROMPT,
       agentMaxOutputBytes: MAX_VERIFIER_RAW_BYTES,
+      ...(verifier.maxOutputTokens === undefined
+        ? {}
+        : { agentMaxOutputTokens: verifier.maxOutputTokens }),
     });
     const agentEvidence = outcome.evidence?.kind === "agent" ? outcome.evidence : null;
     if (

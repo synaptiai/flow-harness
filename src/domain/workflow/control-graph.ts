@@ -31,6 +31,7 @@ type ProjectedControlGraphNode =
       readonly type: "agent";
       readonly when?: CompiledBranchGuard;
       readonly policyDecisionLimit?: number;
+      readonly maxOutputTokens?: number;
       readonly model?: CompiledAgentNode["agent"]["model"];
       readonly commandTools?: {
         readonly rawExec: boolean;
@@ -135,7 +136,8 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
         (node.type === "agent" &&
           (node.agent.toolPackages.length > 0 ||
             (node.agent.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT) !==
-              DEFAULT_POLICY_DECISION_LIMIT)) ||
+              DEFAULT_POLICY_DECISION_LIMIT ||
+            node.agent.maxOutputTokens !== undefined)) ||
         node.type === "condition" ||
         node.type === "join" ||
         node.type === "child" ||
@@ -235,6 +237,9 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         DEFAULT_POLICY_DECISION_LIMIT
           ? {}
           : { policyDecisionLimit: node.agent.policyDecisionLimit }),
+        ...(node.agent.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: node.agent.maxOutputTokens }),
         ...(proofModelSourceNodeIds.has(node.id) ? { model: node.agent.model } : {}),
         ...(node.agent.toolPackages.length === 0
           ? {}

@@ -170,6 +170,7 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
     };
     readonly contextCompaction?: RollingContextCompactionPolicy;
     readonly policyDecisionLimit?: number;
+    readonly maxOutputTokens?: number;
     readonly timeoutMs: number;
   };
 }
@@ -203,6 +204,7 @@ export type CompiledVerifierConfig =
         readonly id: string;
         readonly thinking: ThinkingLevel;
       };
+      readonly maxOutputTokens?: number;
       readonly timeoutMs: number;
     }
   | {
@@ -228,6 +230,7 @@ export type CompiledVerifierConfig =
         readonly id: string;
         readonly thinking: ThinkingLevel;
       };
+      readonly maxOutputTokens?: number;
       readonly timeoutMs: number;
     };
 

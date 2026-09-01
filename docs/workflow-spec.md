@@ -792,6 +792,7 @@ node, may appear inside a bounded loop body, and declares one strict driver:
       - { nodeId: plan, field: agent.text }
       - { nodeId: verify-tests, field: verifier.reason }
     model: { provider: anthropic, id: claude-sonnet-4-5, thinking: medium }
+    maxOutputTokens: 8192
     timeoutMs: 120000
 ```
 
@@ -808,6 +809,11 @@ tools, extensions, skills, templates, context files, or project discovery. The r
 at 16384 bytes and must be exactly one JSON object with only `verdict` and `reason`; duplicate keys,
 extra prose, Markdown fences, unknown fields, invalid verdicts, or an empty/oversized reason become
 `inconclusive`.
+
+An inline or packaged model verifier accepts the same optional `maxOutputTokens` field as an agent.
+The value limits each provider response but doesn't replace the verifier's strict 16 KiB raw-byte
+and JSON-shape checks. Use a smaller verifier cap when the required verdict is short. The `8192`
+value in the example is illustrative.
 
 Verifier evidence records the driver, verdict, bounded reason and hash, duration, ordered source
 node/attempt/field/hash observations, and command or model provenance. Model evidence also retains
@@ -1200,6 +1206,7 @@ New command evidence records `anthropic-sandbox-runtime`, its exact installed ve
       provider: anthropic
       id: claude-sonnet-4-5
       thinking: medium
+    maxOutputTokens: 24576
     tools:
       - read
       - ls
@@ -1256,6 +1263,38 @@ timeout, model-token budget, reported-cost budget, 32-effect limit, and path res
 Change those bounds only when separate evidence supports the change.
 
 Treat 128 as a hard ceiling. It provides defense in depth. Don't treat it as a target.
+
+### Configure the provider-response limit
+
+Use `maxOutputTokens` to limit the output of each provider request made by one agent node:
+
+```yaml
+agent:
+  maxOutputTokens: 24576
+```
+
+The value is optional and must be an integer from 1 through 1,000,000. Flow binds an explicit
+value into the workflow digest and durable control graph. Pi applies the smaller of this value and
+the selected model's pinned output limit. If you omit the field, Pi uses the model's pinned limit,
+which can be much larger than the response that one workflow node needs.
+
+This limit is distinct from the run-wide `budget.maxModelTokens` value. `maxOutputTokens` bounds
+one provider response. `maxModelTokens` accounts for reported input, output, cache-read, and
+cache-write tokens across settled model work in the run. The 64 KiB agent-output limit bounds the
+retained UTF-8 report, and `timeoutMs` bounds elapsed node execution. Configure and evaluate each
+control independently.
+
+There is no universal output-token value for coding agents. Start with the smallest value that
+allows one coherent node to finish, and calibrate it from preserved run evidence. Split unrelated
+work into dependency-ordered nodes before increasing the cap. The `24576` value above is an
+illustrative long-running coding limit, not a default or cross-provider recommendation.
+
+If a provider settles a request because it reached this limit, Flow records
+`pi_agent_incomplete`. A node with configured fresh recovery can continue in another attempt only
+when the durable model session, usage, and effect receipts satisfy every recovery check. A timeout,
+cancellation, lost response, unknown effect, missing usage required by the run budget, exhausted
+budget, or exhausted recovery count remains ineligible. The cap therefore improves the chance of
+a settled recovery boundary. It does not make an uncertain request safe to repeat.
 
 `flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
 Every request contains one canonical portable project path. Definition, reference, and hover
@@ -1393,9 +1432,10 @@ Flow disables Pi's built-in tools. Flow therefore doesn't inherit Pi's fuzzy edi
 or optional executable downloads. The node session also disables Pi extensions, skills, prompt
 templates, themes, context files, and project discovery.
 
-Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agent output has a 64
-KiB limit. The ledger retains the bounded text, complete stream hash, truncation status, policy
-decisions, and effect receipts. It classifies output overflow as `pi_agent_output_limit`.
+Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agent report bytes have
+a 64 KiB limit independent of `maxOutputTokens`. The ledger retains the bounded text, complete
+stream hash, truncation status, policy decisions, and effect receipts. It classifies byte overflow
+as `pi_agent_output_limit` and a provider `length` stop as `pi_agent_incomplete`.
 
 Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason with a nonempty agent
 report can make the node succeed. A whitespace-only report produces `pi_agent_empty_output` and
