@@ -235,7 +235,7 @@ describe("embedded Pi SDK integration", () => {
         const stream = createAssistantMessageEventStream();
         const message: AssistantMessage = {
           role: "assistant",
-          content: [{ type: "text", text: "LIMIT_OK" }],
+          content: [],
           api: model.api,
           provider: model.provider,
           model: model.id,
@@ -247,11 +247,27 @@ describe("embedded Pi SDK integration", () => {
             totalTokens: 2,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
           },
-          stopReason: "stop",
+          stopReason: "pending",
           timestamp: Date.now(),
         };
         queueMicrotask(() => {
           stream.push({ type: "start", partial: message });
+          const block = { type: "text" as const, text: "LIMIT_OK" };
+          message.content.push(block);
+          stream.push({ type: "text_start", contentIndex: 0, partial: message });
+          stream.push({
+            type: "text_delta",
+            contentIndex: 0,
+            delta: block.text,
+            partial: message,
+          });
+          stream.push({
+            type: "text_end",
+            contentIndex: 0,
+            content: block.text,
+            partial: message,
+          });
+          message.stopReason = "stop";
           stream.push({ type: "done", reason: "stop", message });
           stream.end();
         });
