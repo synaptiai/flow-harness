@@ -783,6 +783,49 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("rejects an empty agent report and permits a side-effect-free retry", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return { text: "", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_empty_output",
+        message: "agent completed without a report",
+        retryable: true,
+        sideEffectStatus: "none",
+      },
+    });
+  });
+
+  it("rejects an empty report without retrying after a committed edit", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return { text: "", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      agentNode(300_000, ["edit"]),
+      contextWithEffectJournal(),
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_empty_output",
+        retryable: false,
+        sideEffectStatus: "committed",
+      },
+    });
+  });
+
   it("keeps invalid provider telemetry non-retryable", async () => {
     const runner: PiAgentRunner = {
       async run() {
@@ -1381,6 +1424,52 @@ describe("EmbeddedPiAgentRunner", () => {
     ).rejects.toThrow(/phase-routing decision does not match/i);
     expect(runtimeInitializations).toBe(0);
   });
+
+  it.each(["nitro", "floor", "exacto"])(
+    "runs OpenRouter's %s route with base-model capabilities",
+    async (variant) => {
+      let sessionModel: { readonly id?: string } | undefined;
+      const modelLookups: Array<readonly [string, string]> = [];
+      const getModel = (provider: string, modelId: string) => {
+        modelLookups.push([provider, modelId]);
+        return modelId === "z-ai/glm-5.3-flash"
+          ? {
+              provider: "openrouter",
+              id: modelId,
+              maxTokens: 131_072,
+              reasoning: true,
+            }
+          : undefined;
+      };
+      const fakeSession = {
+        state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+        subscribe: () => () => undefined,
+        prompt: async () => undefined,
+        abort: async () => undefined,
+        getSessionStats: () => sessionStats(),
+        dispose: () => undefined,
+      };
+      const createSession = (async (options: Parameters<typeof createAgentSession>[0]) => {
+        if (options === undefined) throw new Error("expected session options");
+        sessionModel = options.model;
+        return { session: fakeSession };
+      }) as unknown as typeof createAgentSession;
+      const runner = new EmbeddedPiAgentRunner(async () => ({ getModel }) as never, createSession);
+
+      await runner.run({
+        ...agentRequest(),
+        provider: "openrouter",
+        model: `z-ai/glm-5.3-flash:${variant}`,
+        thinking: "low",
+      });
+
+      expect(modelLookups).toEqual([
+        ["openrouter", `z-ai/glm-5.3-flash:${variant}`],
+        ["openrouter", "z-ai/glm-5.3-flash"],
+      ]);
+      expect(sessionModel?.id).toBe(`z-ai/glm-5.3-flash:${variant}`);
+    },
+  );
 
   it("counts turns, tool calls, and tool errors from one settled session", async () => {
     const messages: Array<Record<string, unknown>> = [];

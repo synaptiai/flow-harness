@@ -148,6 +148,12 @@ If the run stops after `node_failed` but before `node_retry_scheduled`, resume i
 workflow and execution directory. Flow replays the charged failure and records the retry
 disposition once. Don't restart the complete workflow or delete the failed evidence.
 
+An agent that returns a terminal `stop` without a nonempty report fails with
+`pi_agent_empty_output`. A no-effect attempt can use the same declared fresh-recovery policy. An
+attempt with a committed or uncertain side effect remains non-retryable because repeating it could
+duplicate or overwrite work. This rule prevents an empty provider completion from becoming false
+`node_succeeded` evidence.
+
 ## Understand request identity and capacity
 
 Before every provider request, Flow commits the selected route, thinking setting, and Pi runtime

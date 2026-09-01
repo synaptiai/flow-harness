@@ -1397,8 +1397,10 @@ Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agen
 KiB limit. The ledger retains the bounded text, complete stream hash, truncation status, policy
 decisions, and effect receipts. It classifies output overflow as `pi_agent_output_limit`.
 
-Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason can make the node
-succeed. Reaching the policy-audit limit aborts the session and produces
+Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason with a nonempty agent
+report can make the node succeed. A whitespace-only report produces `pi_agent_empty_output` and
+retains the attempt's exact side-effect status. Reaching the policy-audit limit aborts the session
+and produces
 `pi_agent_policy_audit_exhausted`. A later normal provider stop can't replace that failure.
 
 Flow permits a bounded cleanup grace after timeout, audit exhaustion, or operator cancellation. It

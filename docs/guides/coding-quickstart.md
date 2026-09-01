@@ -114,8 +114,12 @@ For GLM 5.3 Flash through OpenRouter:
 flow quickstart . \
   --coding \
   --provider openrouter \
-  --model z-ai/glm-5.3-flash
+  --model z-ai/glm-5.3-flash:nitro
 ```
+
+The `:nitro` suffix keeps GLM 5.3 Flash as the model and asks OpenRouter to prefer higher-output-
+throughput providers. Read [Choose an OpenRouter provider route](model-providers.md#choose-an-openrouter-provider-route)
+before you substitute the base, `:exacto`, or `:floor` route.
 
 The complete grammar is:
 

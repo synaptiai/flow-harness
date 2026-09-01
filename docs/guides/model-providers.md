@@ -94,6 +94,45 @@ The implementation and review workflows can use `provider: controller` and
 The controller binds those placeholders to the command's exact OpenRouter route. Don't put the API
 key in either workflow.
 
+### Choose an OpenRouter provider route
+
+OpenRouter supports dynamic model variants that change provider selection without changing the
+base model. Flow recognizes these documented variants after it resolves the base model from Pi's
+pinned offline catalog:
+
+| Model identifier | OpenRouter routing behavior | Use when |
+| --- | --- | --- |
+| `z-ai/glm-5.3-flash` | OpenRouter's default price-and-availability balance | Default routing meets the workload's reliability and latency needs. |
+| `z-ai/glm-5.3-flash:nitro` | Prefer providers with higher output throughput | Long responses are sensitive to provider speed or stream duration. |
+| `z-ai/glm-5.3-flash:exacto` | Prefer providers with stronger tool-calling quality signals | Tool-call reliability matters more than lowest price. |
+| `z-ai/glm-5.3-flash:floor` | Prefer lower-priced providers | A tolerant batch workload prioritizes cost. |
+
+OpenRouter documents the [`:nitro` variant](https://openrouter.ai/docs/guides/routing/model-variants/nitro),
+the [`:exacto` variant](https://openrouter.ai/docs/guides/routing/model-variants/exacto), and its
+[provider-routing behavior](https://openrouter.ai/docs/guides/routing/provider-selection). Provider
+availability and ranking can change after Flow admits a run.
+
+Use the same complete model identifier for `doctor` and `run`. For example:
+
+```sh
+flow issue doctor https://github.com/example/widgets/issues/42 \
+  --plan .flow/github-issue.plan.yaml \
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash:nitro
+
+flow issue run https://github.com/example/widgets/issues/42 \
+  --plan .flow/github-issue.plan.yaml \
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash:nitro \
+  --command-id <uuid>
+```
+
+Flow checks the exact identifier first. If Pi's catalog doesn't contain that identifier, Flow
+derives capabilities only for the three documented dynamic variants above. It derives those
+capabilities only from a known OpenRouter base model. An unknown suffix or missing base model fails
+admission before inference.
+The selected suffix remains part of the frozen model and request identity.
+
 ## Review the data boundary
 
 An OpenRouter run sends model context to OpenRouter, which can route the request to an upstream
@@ -101,10 +140,11 @@ inference provider. Model context can include the frozen issue, admitted reposit
 model-visible tool results, and prior model turns. Flow doesn't send the GitHub credential, give the
 model a network tool, or put the OpenRouter credential in model context.
 
-OpenRouter chooses among eligible upstream providers by default. Flow doesn't currently expose
-per-request OpenRouter routing fields such as a provider allowlist, `data_collection`, or `zdr`.
-Apply required restrictions through OpenRouter account or organization settings. Don't send
-sensitive repository content until those controls and every eligible provider meet your policy.
+OpenRouter chooses among eligible upstream providers. Flow exposes the bounded dynamic model
+variants documented above, but it doesn't expose arbitrary per-request routing fields such as a
+provider allowlist, `data_collection`, or `zdr`. Apply required restrictions through OpenRouter
+account or organization settings. Don't send sensitive repository content until those controls
+and every eligible provider meet your policy.
 
 OpenRouter documents [Zero Data Retention controls](https://openrouter.ai/docs/guides/features/zdr)
 and [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection). These are
@@ -150,8 +190,9 @@ token-count contracts.
 If Flow reports that the selected provider configuration is unavailable, check these conditions in
 order:
 
-1. Confirm that `--provider` is `openrouter` and `--model` is the exact
-   `z-ai/glm-5.3-flash` slug.
+1. Confirm that `--provider` is `openrouter` and `--model` is either the exact
+   `z-ai/glm-5.3-flash` slug or that slug with one supported dynamic variant: `:nitro`, `:exacto`,
+   or `:floor`.
 2. Confirm that `OPENROUTER_API_KEY` is present in the process that starts Flow. Don't print it.
 3. Confirm that the installed Flow version includes the model in its pinned Pi catalog. A model
    released after that package requires a Flow dependency update or a later Flow release.

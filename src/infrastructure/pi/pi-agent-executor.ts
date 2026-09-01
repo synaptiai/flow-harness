@@ -102,6 +102,7 @@ import type {
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
+import { openRouterDynamicBaseModelId } from "./openrouter-dynamic-model.js";
 import { PI_CODING_AGENT_VERSION } from "./pi-package-pins.js";
 import {
   countProviderInputTokens,
@@ -839,6 +840,20 @@ export class PiAgentExecutor implements AgentExecutor {
         );
       }
 
+      if (normalized.text.trim().length === 0) {
+        const effectStatus = combineSideEffectStatuses(
+          sideEffectStatus(effectReceipts),
+          commandRecorder.sideEffectStatus(),
+        );
+        return agentFailure(
+          "pi_agent_empty_output",
+          "agent completed without a report",
+          effectStatus,
+          evidence,
+          effectStatus === "none",
+        );
+      }
+
       return {
         status: "succeeded",
         evidence,
@@ -1068,7 +1083,15 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
 
     const modelRuntime = await this.createModelRuntime(request.signal);
     throwIfAborted(request.signal);
-    const selectedModel = modelRuntime.getModel(request.provider, request.model);
+    const exactModel = modelRuntime.getModel(request.provider, request.model);
+    const dynamicBaseModelId = openRouterDynamicBaseModelId(request.provider, request.model);
+    const dynamicBaseModel =
+      exactModel === undefined && dynamicBaseModelId !== undefined
+        ? modelRuntime.getModel(request.provider, dynamicBaseModelId)
+        : undefined;
+    const selectedModel =
+      exactModel ??
+      (dynamicBaseModel === undefined ? undefined : { ...dynamicBaseModel, id: request.model });
     if (selectedModel === undefined) {
       throw new Error(`Pi model "${request.provider}/${request.model}" is not available`);
     }
