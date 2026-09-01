@@ -63,6 +63,56 @@ describe("durable control-flow replay", () => {
     ).toThrow();
   });
 
+  it("preserves inline and packaged model-verifier output limits at run start", () => {
+    const started = controlRunStarted();
+    const verifierNodes = [
+      {
+        nodeId: "bounded-inline-verifier",
+        type: "verifier" as const,
+        dependsOn: ["verify-final"],
+        verifier: {
+          kind: "model" as const,
+          prompt: "Verify the bounded evidence.",
+          evidence: [{ nodeId: "verify-final", field: "command.stdout" as const }],
+          model: { provider: "test", id: "deterministic", thinking: "off" as const },
+          maxOutputTokens: 8_192,
+          timeoutMs: 120_000,
+        },
+      },
+      {
+        nodeId: "bounded-packaged-verifier",
+        type: "verifier" as const,
+        dependsOn: ["bounded-inline-verifier"],
+        verifier: {
+          kind: "packaged-model" as const,
+          package: { name: "evidence-review", version: "1.2.0" },
+          evidence: [{ nodeId: "verify-final", field: "command.stdout" as const }],
+          model: { provider: "test", id: "deterministic", thinking: "off" as const },
+          maxOutputTokens: 4_096,
+          timeoutMs: 120_000,
+        },
+      },
+    ];
+    const event = {
+      ...started,
+      nodeIds: [...started.nodeIds, ...verifierNodes.map((node) => node.nodeId)],
+      controlGraph: {
+        ...started.controlGraph,
+        nodes: [...started.controlGraph.nodes, ...verifierNodes],
+      },
+    };
+
+    expect(parseRunEvent(event)).toMatchObject({
+      controlGraph: {
+        nodes: [
+          ...started.controlGraph.nodes,
+          { verifier: { kind: "model", maxOutputTokens: 8_192 } },
+          { verifier: { kind: "packaged-model", maxOutputTokens: 4_096 } },
+        ],
+      },
+    });
+  });
+
   it.each([
     [undefined, 64, 65],
     [96, 96, 97],

@@ -2697,6 +2697,7 @@ const controlModelVerifierSchema = z
         thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
       })
       .strict(),
+    maxOutputTokens: z.number().int().positive().safe().optional(),
     timeoutMs: z.number().int().positive().max(86_400_000),
     inputPolicy: issueWorkflowVerifierInputPolicySchema.optional(),
   })
@@ -2810,6 +2811,7 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
           thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
         })
         .strict(),
+      maxOutputTokens: z.number().int().positive().safe().optional(),
       timeoutMs: z.number().int().positive().max(86_400_000),
     })
     .strict(),
