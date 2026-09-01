@@ -913,6 +913,49 @@ describe("PiAgentExecutor", () => {
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
   });
 
+  it.each([
+    ["pi_provider_authentication_failed", "agent provider authentication failed", false],
+    ["pi_provider_request_rejected", "agent provider rejected the request", false],
+    [
+      "pi_provider_rate_limited",
+      "agent provider rate limit remained unavailable after bounded transport retries",
+      true,
+    ],
+    [
+      "pi_provider_unavailable",
+      "agent provider remained unavailable after bounded transport retries",
+      true,
+    ],
+  ] as const)(
+    "maps %s to fixed public evidence and retryability",
+    async (failureCode, message, retryable) => {
+      const runner: PiAgentRunner = {
+        async run() {
+          return {
+            text: "",
+            stopReason: "error",
+            errorMessage: "PRIVATE_PROVIDER_DETAIL",
+            failureCode,
+          };
+        },
+      };
+
+      const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+      expect(outcome).toEqual({
+        status: "failed",
+        error: {
+          code: failureCode,
+          message,
+          retryable,
+          sideEffectStatus: "none",
+        },
+        evidence: null,
+      });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_DETAIL");
+    },
+  );
+
   it("preserves policy decisions when the runtime fails after a tool operation", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
@@ -1967,6 +2010,66 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(result.errorMessage).toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
   });
 
+  it.each([
+    [401, "pi_provider_authentication_failed"],
+    [402, "pi_provider_quota_exhausted"],
+    [400, "pi_provider_request_rejected"],
+    [429, "pi_provider_rate_limited"],
+    [503, "pi_provider_unavailable"],
+    [524, "pi_provider_unavailable"],
+    [529, "pi_provider_unavailable"],
+  ] as const)("classifies an OpenRouter HTTP %i failure as %s", async (status, failureCode) => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          `OpenRouter API error (${status}): {"error":{"code":${status},"message":"PRIVATE_OPENROUTER_DETAIL"}}`,
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe(failureCode);
+    expect(result.errorMessage).toContain("PRIVATE_OPENROUTER_DETAIL");
+  });
+
+  it("does not classify a textual number outside the HTTP status range", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error("OpenRouter API error (700): PRIVATE_NON_HTTP_DETAIL");
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBeUndefined();
+    expect(result.stopReason).toBe("error");
+  });
+
   it("classifies Pi's friendly exhausted-credit message", async () => {
     const fakeSession = {
       state: { messages: [] },
@@ -2016,7 +2119,7 @@ describe("EmbeddedPiAgentRunner", () => {
 
     const result = await runner.run(agentRequest());
 
-    expect(result.failureCode).toBeUndefined();
+    expect(result.failureCode).toBe("pi_provider_rate_limited");
     expect(result.stopReason).toBe("error");
   });
 
@@ -2043,7 +2146,7 @@ describe("EmbeddedPiAgentRunner", () => {
 
     const result = await runner.run(agentRequest());
 
-    expect(result.failureCode).toBeUndefined();
+    expect(result.failureCode).toBe("pi_provider_rate_limited");
     expect(result.stopReason).toBe("error");
   });
 

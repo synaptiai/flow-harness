@@ -346,3 +346,30 @@ mixed installer-initialization repair into one product-contract node and one foc
 each with separate authority, evidence, and recovery history. This choice addresses both observed
 failures without increasing a token, attempt, cost, or time limit. Preserve both failed runs in the
 final acceptance denominator.
+
+### Outcome of the split-node `:nitro` rerun
+
+Run `issue-676b6dd2-9aba-4b1d-86ae-f09ca73172f7` completed its first 16 of 21 implementation
+agent nodes on their initial attempts. This included the formerly failing no-op performance node
+and both halves of the installer-initialization split. The split therefore resolved the observed
+output-limit failure without increasing response, attempt, time, or aggregate resource bounds.
+
+The next runtime/performance convergence node made five completed model requests and proposed one
+edit, but the edit tool returned an error before any durable effect was prepared. Request 6 then
+settled as `pi_agent_error`. Fresh attempts 2 and 3 failed after about 10.6 seconds each with zero
+usage and no side effects. The run stopped at the existing three-attempt ceiling. It preserved the
+portable history, exact request identities, complete resource accounting, and a side-effect-free
+terminal failure.
+
+The evidence doesn't disclose the upstream response, so it cannot distinguish an account/request
+4xx from a transient 429 or gateway failure. It does prove that Flow's fixed public taxonomy was
+too coarse: a permanent provider rejection and a transient availability failure both became the
+same retryable `pi_agent_error`. Blind node-level backoff is rejected because Pi already retries an
+OpenRouter request up to six total transport attempts with exponential delays. Another generic
+retry layer would multiply traffic and cost without classifying the failure.
+
+Classify bounded provider HTTP status evidence into fixed Flow-owned codes. Authentication,
+payment/quota, and request-rejection statuses are nonretryable. A 429 or documented transient
+timeout/gateway/server status remains retryable when the node's ordinary effect and resource gates
+allow recovery. Keep raw provider text, credentials, and nested causes private. Rerun only after the
+selected provider credential is restored and `flow issue doctor` passes.

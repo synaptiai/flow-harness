@@ -235,9 +235,19 @@ order:
 5. Run `flow issue doctor` again. Don't bypass a failed diagnostic by changing to an unreviewed
    model or weakening the workflow budget.
 
-Provider HTTP failures, rate limits, and exhausted credits settle as provider failures. Preserve
-the Flow run and inspect its bounded evidence before you retry. Reuse a command identifier only
-when the original command response is lost or uncertain, as described in the
+Provider HTTP failures settle into fixed, secret-free categories:
+
+| Flow failure code | Meaning | Retry behavior |
+| --- | --- | --- |
+| `pi_provider_authentication_failed` | The provider rejected the credential. | Stop. Correct or rotate the credential. |
+| `pi_provider_quota_exhausted` | The account or key has no usable credit or quota. | Stop. Restore provider capacity. |
+| `pi_provider_request_rejected` | The provider rejected the model, request shape, policy, or payload. | Stop. Inspect the pinned route and workflow bounds. |
+| `pi_provider_rate_limited` | A 429 remained after the model transport's bounded retries. | A side-effect-safe workflow node can use its declared fresh-recovery attempts. |
+| `pi_provider_unavailable` | A timeout or documented transient gateway/server status remained after bounded transport retries. | A side-effect-safe workflow node can use its declared fresh-recovery attempts. |
+
+Flow doesn't publish the provider response body, credential, or private nested cause. Preserve the
+run and inspect its bounded failure code before you retry. Reuse a command identifier only when the
+original command response is lost or uncertain, as described in the
 [GitHub issue lifecycle operations runbook](../operations/github-issue-lifecycle.md).
 
 ## Continue with an existing route

@@ -832,7 +832,7 @@ export class PiAgentExecutor implements AgentExecutor {
                 completedCapabilityEvidence,
                 delegationReceipts,
               ),
-          result.failureCode === undefined &&
+          providerFailureCanRetry(result.failureCode) &&
             ((result.stopReason === "error" &&
               (effectStatus === "none" || context.modelSession !== undefined)) ||
               (result.stopReason === "length" && context.modelSession !== undefined)),
@@ -972,8 +972,17 @@ function providerStopMessage(
   stopReason: PiAgentRunResult["stopReason"],
   failureCode?: PiAgentFailureCode,
 ): string {
-  if (failureCode === "pi_provider_quota_exhausted") {
-    return "agent provider quota or credit balance is exhausted";
+  switch (failureCode) {
+    case "pi_provider_authentication_failed":
+      return "agent provider authentication failed";
+    case "pi_provider_quota_exhausted":
+      return "agent provider quota or credit balance is exhausted";
+    case "pi_provider_rate_limited":
+      return "agent provider rate limit remained unavailable after bounded transport retries";
+    case "pi_provider_request_rejected":
+      return "agent provider rejected the request";
+    case "pi_provider_unavailable":
+      return "agent provider remained unavailable after bounded transport retries";
   }
   if (stopReason === "error") {
     return "agent provider execution failed";
@@ -1005,7 +1014,65 @@ function classifyProviderFailure(message: string | undefined): PiProviderFailure
   ) {
     return "pi_provider_quota_exhausted";
   }
+
+  const status = providerHttpStatus(message, structured);
+  if (status === 401) return "pi_provider_authentication_failed";
+  if (status === 402) return "pi_provider_quota_exhausted";
+  if (status === 429) return "pi_provider_rate_limited";
+  if (status === 400 || status === 403 || status === 404 || status === 413 || status === 422) {
+    return "pi_provider_request_rejected";
+  }
+  if (
+    status !== undefined &&
+    (status === 408 || status === 524 || status === 529 || status >= 500)
+  ) {
+    return "pi_provider_unavailable";
+  }
   return undefined;
+}
+
+function providerHttpStatus(message: string, structured: unknown): number | undefined {
+  const embedded = findProviderHttpStatus(structured);
+  if (embedded !== undefined) return embedded;
+  for (const pattern of [
+    /^(\d{3})(?:\s|$)/u,
+    /\bapi error\s*\(?(\d{3})\)?/iu,
+    /\bhttp(?: error)?\s*[:=(]?\s*(\d{3})\b/iu,
+    /\bstatus(?: code)?\s*[:=(]?\s*(\d{3})\b/iu,
+  ]) {
+    const match = pattern.exec(message);
+    if (match?.[1] !== undefined) {
+      const status = Number.parseInt(match[1], 10);
+      if (status >= 100 && status <= 599) return status;
+    }
+  }
+  return undefined;
+}
+
+function findProviderHttpStatus(value: unknown): number | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const status = findProviderHttpStatus(item);
+      if (status !== undefined) return status;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "status" || key === "statusCode" || key === "status_code" || key === "code") {
+      const status = typeof item === "number" ? item : Number(item);
+      if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+    }
+    const nested = findProviderHttpStatus(item);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function providerFailureCanRetry(code: PiAgentFailureCode | undefined): boolean {
+  return (
+    code === undefined || code === "pi_provider_rate_limited" || code === "pi_provider_unavailable"
+  );
 }
 
 function parseEmbeddedProviderError(message: string): unknown {
@@ -1324,7 +1391,12 @@ const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const ROLLING_CONTEXT_OUTPUT_TOKEN_LIMITS = Object.freeze([4_096, 2_048] as const);
 const ROLLING_CONTEXT_MINIMUM_REDUCTION_BYTES = 4_096;
 
-export type PiProviderFailureCode = "pi_provider_quota_exhausted";
+export type PiProviderFailureCode =
+  | "pi_provider_authentication_failed"
+  | "pi_provider_quota_exhausted"
+  | "pi_provider_rate_limited"
+  | "pi_provider_request_rejected"
+  | "pi_provider_unavailable";
 
 export type PiAgentFailureCode = PiModelContextFailureCode | PiProviderFailureCode;
 
