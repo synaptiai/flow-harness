@@ -218,9 +218,7 @@ export class PiAgentExecutor implements AgentExecutor {
     const maxOutputTokens = context.agentMaxOutputTokens;
     if (
       maxOutputTokens !== undefined &&
-      (!Number.isSafeInteger(maxOutputTokens) ||
-        maxOutputTokens <= 0 ||
-        maxOutputTokens > 1_000_000)
+      (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0)
     ) {
       return agentFailure(
         "pi_output_token_limit_invalid",

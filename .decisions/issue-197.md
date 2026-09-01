@@ -283,3 +283,8 @@ settled effects, sufficient attempts, and complete usage required by the run bud
 cancellation, lost responses, unknown effects, and exhausted budgets remain nonretryable. This
 design can add another charged request after a capped response, so it trades bounded individual
 tails for possible retry cost; the aggregate workflow budget remains the controlling backstop.
+
+The workflow schema accepts a positive safe integer instead of inventing a model-independent hard
+maximum. The selected model's pinned output capability is the effective ceiling, and Pi applies the
+smaller value. This keeps numeric identity exact while allowing a future catalog update without a
+Flow schema migration. It doesn't make a value above the selected model's capability meaningful.

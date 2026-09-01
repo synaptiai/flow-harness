@@ -1070,7 +1070,7 @@ nodes:
     expect(calculateWorkflowDigest(explicit)).not.toBe(calculateWorkflowDigest(omitted));
   });
 
-  it.each([0, 1.5, 1_000_001])("rejects model output-token limit %s", (limit) => {
+  it.each([0, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects model output-token limit %s", (limit) => {
     const source = workflowWithNodes(`
   - id: analyze
     type: agent

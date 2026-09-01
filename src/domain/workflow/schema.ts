@@ -266,7 +266,7 @@ const agentConfigSchema = z
     recovery: agentRecoverySchema.optional(),
     contextCompaction: rollingContextCompactionSchema.optional(),
     policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
-    maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
+    maxOutputTokens: z.number().int().positive().safe().optional(),
     timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
   })
   .strict()
@@ -371,7 +371,7 @@ const verifierNodeSchema = z
               "verifier evidence declarations must be unique",
             ),
           model: modelSchema,
-          maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
+          maxOutputTokens: z.number().int().positive().safe().optional(),
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })
         .strict(),
@@ -424,7 +424,7 @@ const verifierNodeSchema = z
               "verifier evidence declarations must be unique",
             ),
           model: modelSchema,
-          maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
+          maxOutputTokens: z.number().int().positive().safe().optional(),
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })
         .strict(),

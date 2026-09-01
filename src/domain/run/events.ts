@@ -2829,7 +2829,7 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
       type: z.literal("agent"),
       when: controlBranchGuardSchema.optional(),
       policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
-      maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
+      maxOutputTokens: z.number().int().positive().safe().optional(),
       model: z
         .object({
           provider: z.string().min(1).max(96),

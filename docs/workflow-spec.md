@@ -1273,10 +1273,11 @@ agent:
   maxOutputTokens: 24576
 ```
 
-The value is optional and must be an integer from 1 through 1,000,000. Flow binds an explicit
-value into the workflow digest and durable control graph. Pi applies the smaller of this value and
-the selected model's pinned output limit. If you omit the field, Pi uses the model's pinned limit,
-which can be much larger than the response that one workflow node needs.
+The value is optional and must be a positive safe integer. Flow binds an explicit value into the
+workflow digest and durable control graph. Pi applies the smaller of this value and the selected
+model's pinned output limit. Flow doesn't impose a second arbitrary model-independent ceiling. If
+you omit the field, Pi uses the model's pinned limit, which can be much larger than the response
+that one workflow node needs.
 
 This limit is distinct from the run-wide `budget.maxModelTokens` value. `maxOutputTokens` bounds
 one provider response. `maxModelTokens` accounts for reported input, output, cache-read, and
