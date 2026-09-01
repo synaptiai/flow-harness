@@ -317,3 +317,32 @@ providers using throughput, tool-call success, and benchmark signals. The `:nitr
 explicitly prioritizes throughput and overrides that quality-first ordering. This route change is
 an evidence-driven pilot variable, not a claim that one route is universally superior. Preserve
 the failed run in the final acceptance denominator.
+
+### Outcome of the base-route rerun
+
+Run `issue-c5fe72dd-55a8-464c-aa45-9a4d467102eb` selected the base
+`z-ai/glm-5.3-flash` route. It completed the first ten implementation nodes on their initial
+attempts, including the earlier state-integrity timeout regression and the public installer repair.
+One state-integrity response settled successfully at 16,960 output tokens, which confirms that the
+24,576-token cap leaves useful headroom for long but productive turns.
+
+The next `repair-detector-noop-performance` node read its two authorized files, then its second
+request settled as a retryable provider error after about 6.2 minutes. Attempt 2 settled as another
+provider error after about 19.3 minutes with zero reported usage. Attempt 3 reached the exact
+1,350,000-millisecond node timeout with zero reported usage. All three attempts were
+side-effect-free for that node. Flow recorded both retry dispositions, stopped at the configured
+attempt ceiling, and preserved the isolated candidate and failed outer run.
+
+This result doesn't identify one upstream endpoint or prove that Auto Exacto caused the failures.
+The failed streams supplied no settled endpoint identity, and provider availability can change
+between requests. It does prove that the base route didn't satisfy this workflow's end-to-end
+reliability requirement. The response-token cap and a node timeout also control different risks: a
+stream can remain active through provider-private progress until the node timeout without ever
+settling a model message whose output usage Flow can inspect.
+
+The next run returns to `z-ai/glm-5.3-flash:nitro`, which previously completed the large-context
+no-op repair. It keeps the 24,576-token response cap and three-attempt ceiling. It splits the later
+mixed installer-initialization repair into one product-contract node and one focused-test node,
+each with separate authority, evidence, and recovery history. This choice addresses both observed
+failures without increasing a token, attempt, cost, or time limit. Preserve both failed runs in the
+final acceptance denominator.
