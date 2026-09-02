@@ -467,6 +467,7 @@ export interface NodeRetryScheduledEvent extends RunEventBase {
   readonly reason: "retryable_failure";
   readonly disposition: "fresh_retry";
   readonly resourceAccounting: "complete";
+  readonly notBefore?: string;
 }
 
 export interface NodeDelegationPreparedEvent extends RunEventBase {
@@ -1148,6 +1149,10 @@ export interface AgentRecoveryRequirement {
   readonly mode: "fresh";
   readonly maxAttempts: number;
   readonly effectProtocol: "none" | typeof DURABLE_EFFECT_PROTOCOL;
+  readonly backoff?: {
+    readonly initialDelayMs: number;
+    readonly maxDelayMs: number;
+  };
 }
 
 export interface AgentCapabilityRequirement {
@@ -1419,6 +1424,7 @@ export interface NodeRunState {
   readonly delegations: readonly NodeDelegationRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
   readonly failedAttempts: readonly FailedNodeAttemptState[];
+  readonly retryNotBefore: string | null;
   readonly control: NodeControlRunState | null;
   readonly omission: NodeOmissionRunState | null;
   readonly optimization: OptimizationCheckRunState | null;
@@ -3268,6 +3274,17 @@ export const runEventSchema = z.discriminatedUnion("type", [
               mode: z.literal("fresh"),
               maxAttempts: z.number().int().min(2).max(16),
               effectProtocol: z.enum(["none", DURABLE_EFFECT_PROTOCOL]),
+              backoff: z
+                .object({
+                  initialDelayMs: z.number().int().positive().max(300_000),
+                  maxDelayMs: z.number().int().positive().max(900_000),
+                })
+                .strict()
+                .refine((backoff) => backoff.maxDelayMs >= backoff.initialDelayMs, {
+                  message: "recovery backoff maxDelayMs must be at least initialDelayMs",
+                  path: ["maxDelayMs"],
+                })
+                .optional(),
             })
             .strict(),
         )
@@ -3487,6 +3504,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       reason: z.literal("retryable_failure"),
       disposition: z.literal("fresh_retry"),
       resourceAccounting: z.literal("complete"),
+      notBefore: z.iso.datetime({ offset: true }).optional(),
     })
     .strict(),
   z
@@ -4194,6 +4212,9 @@ export function appendRunEvent(
           mode: requirement.mode,
           maxAttempts: requirement.maxAttempts,
           effectProtocol: requirement.effectProtocol,
+          ...(requirement.backoff === undefined
+            ? {}
+            : { backoff: Object.freeze({ ...requirement.backoff }) }),
         }),
       ]),
     );
@@ -5180,6 +5201,15 @@ export function appendRunEvent(
           `node start attempt ${event.attempt} does not match next node attempt ${current.attempt + 1}`,
         );
       }
+      if (
+        current.retryNotBefore !== null &&
+        Date.parse(event.at) < Date.parse(current.retryNotBefore)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" started before its durable retry backoff elapsed`,
+        );
+      }
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "running",
@@ -5198,6 +5228,7 @@ export function appendRunEvent(
         commandProtocol: event.commandProtocol ?? null,
         commands: Object.freeze([]),
         delegations: Object.freeze([]),
+        retryNotBefore: null,
       });
       resources = addResourcesForStart(resources, eventIndex);
       break;
@@ -5364,6 +5395,7 @@ export function appendRunEvent(
         commands: Object.freeze([]),
         delegations: Object.freeze([]),
         failedAttempts: Object.freeze([...current.failedAttempts, failedAttempt]),
+        retryNotBefore: event.notBefore ?? null,
       });
       break;
     }
@@ -10665,6 +10697,27 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function calculateRecoveryBackoffDelayMs(
+  runId: string,
+  nodeId: string,
+  failedAttempt: number,
+  backoff: { readonly initialDelayMs: number; readonly maxDelayMs: number },
+): number {
+  if (!Number.isSafeInteger(failedAttempt) || failedAttempt <= 0) {
+    throw new RangeError("recovery backoff requires a positive failed attempt");
+  }
+  const exponentialCeiling = Math.min(
+    backoff.maxDelayMs,
+    backoff.initialDelayMs * 2 ** Math.min(failedAttempt - 1, 30),
+  );
+  const minimumDelay = Math.ceil(exponentialCeiling / 2);
+  const jitterRange = exponentialCeiling - minimumDelay + 1;
+  const sample = BigInt(
+    `0x${sha256(`${runId}\u0000${nodeId}\u0000${failedAttempt}`).slice(0, 16)}`,
+  );
+  return minimumDelay + Number(sample % BigInt(jitterRange));
+}
+
 export function calculateWorkspaceAuthorityDigest(input: {
   readonly protectedPaths: readonly string[];
   readonly allowedWritePrefixes?: readonly string[];
@@ -10705,6 +10758,7 @@ function pendingNodeState(): NodeRunState {
     delegations: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),
     failedAttempts: Object.freeze([]),
+    retryNotBefore: null,
     control: null,
     omission: null,
     optimization: null,
@@ -10883,6 +10937,27 @@ function validateFailedAttemptRecovery(
   }
   if (!canScheduleFailedAttemptRetry(state, event.nodeId)) {
     throw new RunReplayError(eventIndex, "terminal failure is not eligible for fresh retry");
+  }
+  if (requirement?.backoff === undefined) {
+    if (event.notBefore !== undefined) {
+      throw new RunReplayError(eventIndex, "terminal retry backoff was not declared");
+    }
+    return;
+  }
+  if (event.notBefore === undefined) {
+    throw new RunReplayError(eventIndex, "terminal retry is missing its declared backoff");
+  }
+  const expectedNotBefore = new Date(
+    Date.parse(event.at) +
+      calculateRecoveryBackoffDelayMs(
+        event.runId,
+        event.nodeId,
+        event.attempt,
+        requirement.backoff,
+      ),
+  ).toISOString();
+  if (event.notBefore !== expectedNotBefore) {
+    throw new RunReplayError(eventIndex, "terminal retry backoff does not match its run identity");
   }
 }
 

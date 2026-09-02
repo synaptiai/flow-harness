@@ -190,6 +190,12 @@ without adding useful portable progress. Keep `recovery.maxAttempts` and the agg
 budget finite. Don't raise `maxOutputTokens` only to make a repeatedly empty response complete.
 Review the route, prompt scope, and model suitability first.
 
+For transient provider failures, declare `recovery.backoff` so a new Flow attempt doesn't begin
+immediately after the request-level transport retries are exhausted. Choose an initial and maximum
+window that fit the provider's expected recovery time and the node timeout. Flow uses deterministic
+equal jitter within each exponential window and persists the exact deadline. The delay doesn't hide
+or refund the failed attempt.
+
 OpenRouter's dynamic route and Flow's response cap are independent. The default route applies
 OpenRouter's [Auto Exacto](https://openrouter.ai/docs/guides/routing/auto-exacto) quality-aware
 routing for tool calls. The `:nitro` variant instead prioritizes output throughput, which can help a

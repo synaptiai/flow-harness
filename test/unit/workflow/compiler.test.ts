@@ -1149,10 +1149,47 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.recovery");
   });
 
+  it("compiles bounded retry backoff for proof-safe fresh recovery", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash:nitro }
+      tools: [read]
+      recovery:
+        mode: fresh
+        maxAttempts: 3
+        backoff: { initialDelayMs: 30000, maxDelayMs: 120000 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`),
+    );
+
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: {
+        recovery: {
+          mode: "fresh",
+          maxAttempts: 3,
+          backoff: { initialDelayMs: 30_000, maxDelayMs: 120_000 },
+        },
+      },
+    });
+  });
+
   it.each([
     ["unsupported mode", "{ mode: resume, maxAttempts: 2 }", "nodes.0.agent.recovery.mode"],
     ["one attempt", "{ mode: fresh, maxAttempts: 1 }", "nodes.0.agent.recovery.maxAttempts"],
     ["too many attempts", "{ mode: fresh, maxAttempts: 17 }", "nodes.0.agent.recovery.maxAttempts"],
+    [
+      "inverted retry backoff",
+      "{ mode: fresh, maxAttempts: 2, backoff: { initialDelayMs: 2000, maxDelayMs: 1000 } }",
+      "nodes.0.agent.recovery.backoff.maxDelayMs",
+    ],
     ["unknown field", "{ mode: fresh, maxAttempts: 2, delayMs: 1000 }", "nodes.0.agent.recovery"],
   ])("rejects fresh recovery with %s", (_case, recovery, path) => {
     const source = workflowWithNodes(`

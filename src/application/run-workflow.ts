@@ -59,6 +59,7 @@ import {
   type ControlGraph,
   calculateChildRunId,
   calculateOptimizationPromotionId,
+  calculateRecoveryBackoffDelayMs,
   canScheduleFailedAttemptRetry,
   calculateWorkspaceAuthorityDigest,
   DURABLE_EFFECT_PROTOCOL,
@@ -162,6 +163,7 @@ export interface RunWorkflowOptions {
   readonly artifactStore?: ArtifactStore;
   readonly workProfile?: WorkProfile;
   readonly modelSessionStore?: ModelSessionStore;
+  readonly recoveryDelay?: (milliseconds: number, signal: AbortSignal | undefined) => Promise<void>;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -448,16 +450,47 @@ async function continueWorkflow(
     if (attempt === undefined) {
       throw new Error(`Failed node "${nodeId}" has no committed attempt`);
     }
+    const event = base(nextSequence());
+    const backoff = state.recoveryRequirements[nodeId]?.backoff;
     await record({
-      ...base(nextSequence()),
+      ...event,
       type: "node_retry_scheduled",
       nodeId,
       attempt,
       reason: "retryable_failure",
       disposition: "fresh_retry",
       resourceAccounting: "complete",
+      ...(backoff === undefined
+        ? {}
+        : {
+            notBefore: new Date(
+              Date.parse(event.at) +
+                calculateRecoveryBackoffDelayMs(runId, nodeId, attempt, backoff),
+            ).toISOString(),
+          }),
     });
     return true;
+  }
+
+  async function waitForPendingRetryBackoff(): Promise<boolean> {
+    const pendingRetry = Object.values(state.nodes)
+      .filter(
+        (node): node is typeof node & { readonly retryNotBefore: string } =>
+          node.status === "pending" && node.retryNotBefore !== null,
+      )
+      .sort((left, right) => left.retryNotBefore.localeCompare(right.retryNotBefore))[0];
+    if (pendingRetry === undefined) return true;
+
+    while (true) {
+      const remainingMs = Date.parse(pendingRetry.retryNotBefore) - now().getTime();
+      if (remainingMs <= 0) return true;
+      try {
+        await (options.recoveryDelay ?? abortableRecoveryDelay)(remainingMs, options.signal);
+      } catch (error) {
+        if (isAborted(options.signal)) return false;
+        throw error;
+      }
+    }
   }
 
   const failedEntries = Object.entries(state.nodes).filter(([, node]) => node.status === "failed");
@@ -482,6 +515,9 @@ async function continueWorkflow(
   }
 
   workflowLoop: while (!workflowIsTerminal(state)) {
+    if (!(await waitForPendingRetryBackoff())) {
+      return await cancelRun();
+    }
     if ((state.budget?.exhausted.length ?? 0) > 0) {
       return await exhaustRun();
     }
@@ -2946,6 +2982,9 @@ function agentRecoveryRequirements(
         mode: node.agent.recovery.mode,
         maxAttempts: node.agent.recovery.maxAttempts,
         effectProtocol: supportsDurableEffects(node) ? DURABLE_EFFECT_PROTOCOL : "none",
+        ...(node.agent.recovery.backoff === undefined
+          ? {}
+          : { backoff: Object.freeze({ ...node.agent.recovery.backoff }) }),
       });
       return [requirement];
     }),
@@ -3053,7 +3092,9 @@ function sameRecoveryRequirements(
         requirement.nodeId === right[index]?.nodeId &&
         requirement.mode === right[index]?.mode &&
         requirement.maxAttempts === right[index]?.maxAttempts &&
-        requirement.effectProtocol === right[index]?.effectProtocol,
+        requirement.effectProtocol === right[index]?.effectProtocol &&
+        requirement.backoff?.initialDelayMs === right[index]?.backoff?.initialDelayMs &&
+        requirement.backoff?.maxDelayMs === right[index]?.backoff?.maxDelayMs,
     )
   );
 }
@@ -4953,6 +4994,31 @@ async function abortableApprovalDelay(
     const timeout = setTimeout(finish, milliseconds);
     const onAbort = () =>
       finish(signal?.reason ?? new Error("agent command approval wait was cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    function finish(error?: unknown): void {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      if (error === undefined) {
+        resolveDelay();
+      } else {
+        reject(error);
+      }
+    }
+  });
+}
+
+async function abortableRecoveryDelay(
+  milliseconds: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (isAborted(signal)) {
+    throw signal?.reason ?? new Error("workflow retry backoff was cancelled");
+  }
+  await new Promise<void>((resolveDelay, reject) => {
+    const timeout = setTimeout(finish, milliseconds);
+    const onAbort = () =>
+      finish(signal?.reason ?? new Error("workflow retry backoff was cancelled"));
     signal?.addEventListener("abort", onAbort, { once: true });
 
     function finish(error?: unknown): void {

@@ -69,10 +69,22 @@ const commandApprovalSchema = z
   })
   .strict();
 
+const retryBackoffSchema = z
+  .object({
+    initialDelayMs: z.number().int().positive().max(300_000),
+    maxDelayMs: z.number().int().positive().max(900_000),
+  })
+  .strict()
+  .refine((backoff) => backoff.maxDelayMs >= backoff.initialDelayMs, {
+    message: "recovery backoff maxDelayMs must be at least initialDelayMs",
+    path: ["maxDelayMs"],
+  });
+
 const agentRecoverySchema = z
   .object({
     mode: z.literal("fresh"),
     maxAttempts: z.number().int().min(2).max(16),
+    backoff: retryBackoffSchema.optional(),
   })
   .strict();
 

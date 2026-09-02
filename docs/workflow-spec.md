@@ -1461,6 +1461,13 @@ execution.
 integer from 2 through 16. No default object is inserted: omission means an interrupted open attempt
 is never retried automatically.
 
+`recovery.backoff` is optional. Its positive `initialDelayMs` value has a 300,000-millisecond limit.
+Its `maxDelayMs` value must be at least the initial delay and has a 900,000-millisecond limit.
+
+Flow uses bounded exponential equal jitter before each new attempt. It persists the resulting
+`notBefore` deadline in `node_retry_scheduled`. A restart waits for the remaining time, and replay
+rejects a start before that deadline. Omission preserves immediate retry behavior.
+
 Fresh recovery is evaluated only when `resume` finds a durable `node_started` without a node
 outcome. Flow starts a new in-memory Pi session with the current instructions, tools, authority,
 and workspace. It supplies completed provider-neutral history as one new untrusted-data user turn.
@@ -1800,6 +1807,8 @@ A completed provider execution failure can use the same declared fresh policy. F
 `node_failed` with complete terminal evidence and resource accounting. It then appends
 `node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete` dispositions.
 Replay archives the terminal attempt under `failedAttempts` before returning the node to `pending`.
+When the policy declares backoff, the retry event carries the deterministic `notBefore` deadline.
+The scheduler enforces that deadline before it starts the next attempt.
 
 A side-effect-free failure requires empty effect, command, and delegation history. A failure after
 workspace edits also requires `flow.effects/v1` and only committed effect settlements. It requires

@@ -552,12 +552,23 @@ An agent node opts in through:
 recovery:
   mode: fresh
   maxAttempts: 3
+  backoff:
+    initialDelayMs: 30000
+    maxDelayMs: 120000
 ```
 
 `maxAttempts` counts the initial attempt. The compiler accepts 2 through 16 and inserts no default.
 At run start, Flow persists the node id, mode, cap, and required effect protocol so replay never
 consults a changed workflow file to decide safety. The compiled workflow digest and the explicit
 persisted requirements must both match during resume.
+
+`backoff` is optional. `initialDelayMs` must be positive and no more than 300,000 milliseconds.
+`maxDelayMs` must be at least the initial delay and no more than 900,000 milliseconds.
+
+Before each new attempt, Flow doubles the prior delay ceiling up to the declared maximum. It selects
+a deterministic delay from the upper half of that window. The run and node identities seed this
+equal-jitter selection. Independent runs spread their requests while replay reproduces the exact
+deadline. Omit `backoff` only when an immediate retry is intentional.
 
 The reducer permits `node_attempt_interrupted` only when all of these statements are true:
 
@@ -672,19 +683,23 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 - When execution time is bounded, terminal evidence is present.
 
 `node_retry_scheduled` fixes the reason to `retryable_failure`, the disposition to `fresh_retry`,
-and resource accounting to `complete`. The reducer archives the terminal error, evidence,
-timestamps, protocols, effects, commands, delegations, and model-session summary under
-`failedAttempts`. It then returns only the current node projection to `pending`. The next
-`node_started` event must use the next attempt number. For a committed-edit continuation, that
-attempt receives a new in-memory Pi session and a digest-bound resume capsule. It doesn't repeat
-or continue the failed provider stream.
+and resource accounting to `complete`. When `backoff` is declared, the event also records the
+derived `notBefore` deadline. The reducer verifies that deadline against the persisted policy and
+run identity.
+
+The reducer archives the terminal error, evidence, timestamps, protocols, effects, commands,
+delegations, and model-session summary under `failedAttempts`. It then returns only the current
+node projection to `pending`. The scheduler waits until `notBefore`, and replay rejects an early
+`node_started` event. The next start must use the next attempt number. For a committed-edit
+continuation, that attempt receives a new in-memory Pi session and a digest-bound resume capsule.
+It doesn't repeat or continue the failed provider stream.
 
 If Flow stops after `node_failed` but before `node_retry_scheduled`, resume replays the charged
-failure and appends the missing retry disposition once. If Flow stops after the disposition, replay
-sees the archived attempt and continues from the pending next attempt. A run without the opt-in
-records the ordinary terminal outcome. The same rule applies when bounded-resource evidence is
-incomplete or a resource or attempt ceiling is reached. Flow performs no additional provider
-request in these cases.
+failure and appends the missing retry disposition once. If Flow stops during a declared backoff,
+resume waits only for the remaining time before it continues from the pending next attempt. A run
+without the opt-in records the ordinary terminal outcome. The same rule applies when
+bounded-resource evidence is incomplete or a resource or attempt ceiling is reached. Flow performs
+no additional provider request in these cases.
 
 This retry starts a new Flow attempt and a new in-memory Pi session. It doesn't continue the failed
 provider request, hide the failed attempt, or add an adapter-owned retry layer. Inspect

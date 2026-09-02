@@ -1326,7 +1326,8 @@ start. Validation requires the persisted opt-in, attempt cap, effect proof, and 
 A completed provider execution failure follows a separate append-only boundary. `node_failed` first
 records terminal evidence and charges resources. Then `node_retry_scheduled` archives the failure
 under `failedAttempts` and returns the node to pending. The scheduler and reducer share one
-eligibility rule.
+eligibility rule. An optional recovery backoff adds a deterministic, jittered `notBefore` deadline
+to that event. Live execution waits for the deadline, and replay rejects an early start.
 
 Live execution and replay require the same fresh policy and a remaining attempt. They also require
 complete resource accounting and available budget. The ordinary path requires side-effect-free

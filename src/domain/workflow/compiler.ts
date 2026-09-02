@@ -1532,7 +1532,15 @@ function freezeNode(
             }),
         ...(source.agent.recovery === undefined
           ? {}
-          : { recovery: Object.freeze({ ...source.agent.recovery }) }),
+          : {
+              recovery: Object.freeze({
+                mode: source.agent.recovery.mode,
+                maxAttempts: source.agent.recovery.maxAttempts,
+                ...(source.agent.recovery.backoff === undefined
+                  ? {}
+                  : { backoff: Object.freeze({ ...source.agent.recovery.backoff }) }),
+              }),
+            }),
         ...(source.agent.contextCompaction === undefined
           ? {}
           : {
@@ -1972,7 +1980,15 @@ function freezeLoopBodyNode(
             }),
         ...(source.agent.recovery === undefined
           ? {}
-          : { recovery: Object.freeze({ ...source.agent.recovery }) }),
+          : {
+              recovery: Object.freeze({
+                mode: source.agent.recovery.mode,
+                maxAttempts: source.agent.recovery.maxAttempts,
+                ...(source.agent.recovery.backoff === undefined
+                  ? {}
+                  : { backoff: Object.freeze({ ...source.agent.recovery.backoff }) }),
+              }),
+            }),
         ...(source.agent.contextCompaction === undefined
           ? {}
           : {

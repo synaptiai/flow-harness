@@ -167,6 +167,10 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
     readonly recovery?: {
       readonly mode: "fresh";
       readonly maxAttempts: number;
+      readonly backoff?: {
+        readonly initialDelayMs: number;
+        readonly maxDelayMs: number;
+      };
     };
     readonly contextCompaction?: RollingContextCompactionPolicy;
     readonly policyDecisionLimit?: number;
