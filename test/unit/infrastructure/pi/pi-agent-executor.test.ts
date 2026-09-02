@@ -2045,6 +2045,59 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(result.errorMessage).toContain("PRIVATE_OPENROUTER_DETAIL");
   });
 
+  it.each([
+    "TypeError: fetch failed",
+    "Provider returned error",
+    "Stream ended without finish_reason",
+  ])("classifies a retryable provider transport failure: %s", async (message) => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(message);
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_unavailable");
+    expect(result.errorMessage).toBe(message);
+  });
+
+  it("classifies a statusless provider rate limit separately from transport failures", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error("Provider rate limit exceeded");
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_rate_limited");
+  });
+
   it("does not classify a textual number outside the HTTP status range", async () => {
     const fakeSession = {
       state: { messages: [] },

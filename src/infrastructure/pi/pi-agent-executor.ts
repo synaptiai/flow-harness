@@ -1028,7 +1028,19 @@ function classifyProviderFailure(message: string | undefined): PiProviderFailure
   ) {
     return "pi_provider_unavailable";
   }
+  if (/\b(?:rate.?limit(?:ed|ing)?|too many requests)\b/iu.test(message)) {
+    return "pi_provider_rate_limited";
+  }
+  if (isRetryableProviderTransportFailure(message)) {
+    return "pi_provider_unavailable";
+  }
   return undefined;
+}
+
+function isRetryableProviderTransportFailure(message: string): boolean {
+  return /\b(?:fetch failed|network error|connection (?:error|refused|lost)|other side closed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream connect|reset before headers|socket hang up|socket connection was closed|timed? out|timeout|websocket (?:closed|error)|stream ended before (?:message_stop|a terminal response event)|ended without|http2 request did not get a response|provider returned error|retry delay|please retry your request|try your request again)\b/iu.test(
+    message,
+  );
 }
 
 function providerHttpStatus(message: string, structured: unknown): number | undefined {
