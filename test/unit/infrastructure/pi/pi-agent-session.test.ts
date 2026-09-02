@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { streamSimple as anthropicMessagesStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { streamSimple as openAIResponsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
-import { createAgentSession } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
 import type { ModelSessionJournal } from "../../../../src/application/ports.js";
@@ -1800,7 +1800,7 @@ function openAIRunner(
   };
   return new EmbeddedPiAgentRunner(
     async () => modelRuntime as never,
-    createAgentSession,
+    createSessionWithoutTransportRetries,
     providerFetch,
   );
 }
@@ -1827,10 +1827,23 @@ function anthropicRunner(
   };
   return new EmbeddedPiAgentRunner(
     async () => modelRuntime as never,
-    createAgentSession,
+    createSessionWithoutTransportRetries,
     providerFetch,
   );
 }
+
+const createSessionWithoutTransportRetries: typeof createAgentSession = async (options) =>
+  await createAgentSession({
+    ...options,
+    settingsManager: SettingsManager.inMemory({
+      compaction: { enabled: false },
+      retry: {
+        enabled: false,
+        maxRetries: 0,
+        provider: { maxRetries: 0, maxRetryDelayMs: 60_000 },
+      },
+    }),
+  });
 
 function rollingRequest(
   model: ReturnType<typeof openAIModel>,

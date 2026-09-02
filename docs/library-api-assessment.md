@@ -38,8 +38,8 @@ declaration is independently callable.
 | Observation | Result | Why it matters |
 | --- | --- | --- |
 | Production TypeScript files | 370 | A broad root export would expose most of the product, not a small SDK. |
-| Exported top-level declarations | 3,368 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
-| Domain declarations | 1,592 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
+| Exported top-level declarations | 3,369 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
+| Domain declarations | 1,593 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
 | Application declarations | 549 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
 | Infrastructure declarations | 1,081 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
 | Supervisor declarations | 122 | These declarations own queues, worker processes, control requests, and shutdown. |
