@@ -1285,7 +1285,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         retry: {
           enabled: false,
           maxRetries: 0,
-          provider: { maxRetries: 0 },
+          provider: { maxRetries: 2, maxRetryDelayMs: 60_000 },
         },
       }),
     });

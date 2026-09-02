@@ -1478,9 +1478,18 @@ arbitrary process execution is never classified as read-only and has no general 
 proof. A prepared command blocks terminal settlement until its outcome is durable, and an open
 command-capable attempt is never replayed automatically.
 
-Flow disables both Pi assistant-turn retries and provider retries in the embedded session. This
-keeps retry ownership at the Flow attempt layer. Normal model/tool turns inside one live session
-remain possible and stay bounded by the node timeout.
+Flow disables Pi assistant-turn retries in the embedded session. Each provider request can make at
+most two transport retries before it returns an error to Flow. The pinned Pi transport retries only
+network failures and retryable HTTP responses. It honors `Retry-After` and applies exponential
+backoff with jitter. It rejects a server-requested delay longer than 60 seconds.
+
+These retries finish before a response stream produces a tool call. They don't repeat a Flow
+workspace effect.
+
+Flow still owns agent-attempt recovery. If the bounded transport retries fail, the adapter returns
+one typed provider failure to the current attempt. A later Flow attempt is allowed only by the
+persisted recovery policy, side-effect proof, remaining budget, and `maxAttempts`. Normal
+model/tool turns inside one live session remain possible and stay bounded by the node timeout.
 
 ### Rolling context policy
 

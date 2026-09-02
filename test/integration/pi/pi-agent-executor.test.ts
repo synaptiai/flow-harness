@@ -51,6 +51,10 @@ describe("embedded Pi SDK integration", () => {
     const before = "const value = 1;\n";
     const afterEdit = "const value = 2;\n";
     const afterReplace = "export const value = 3;\n";
+    const observedProviderRetrySettings: Array<{
+      readonly maxRetries: number | undefined;
+      readonly maxRetryDelayMs: number | undefined;
+    }> = [];
     await writeFile(target, before, "utf8");
     const runtime = await ModelRuntime.create({
       allowModelNetwork: false,
@@ -74,7 +78,11 @@ describe("embedded Pi SDK integration", () => {
           maxTokens: 256,
         },
       ],
-      streamSimple: (model, context) => {
+      streamSimple: (model, context, options) => {
+        observedProviderRetrySettings.push({
+          maxRetries: options?.maxRetries,
+          maxRetryDelayMs: options?.maxRetryDelayMs,
+        });
         const stream = createAssistantMessageEventStream();
         const invocation = context.messages.filter(
           (message) => message.role === "assistant",
@@ -202,6 +210,10 @@ describe("embedded Pi SDK integration", () => {
       },
     });
     expect(await readFile(target, "utf8")).toBe(afterReplace);
+    expect(observedProviderRetrySettings).toHaveLength(5);
+    expect(observedProviderRetrySettings).toEqual(
+      Array.from({ length: 5 }, () => ({ maxRetries: 2, maxRetryDelayMs: 60_000 })),
+    );
   });
 
   it("applies the requested output-token limit to the selected Pi model", async () => {

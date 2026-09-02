@@ -1761,7 +1761,7 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(sessionOptions?.resourceLoader?.getExtensions().extensions).toEqual([]);
   });
 
-  it("keeps retry ownership in Flow by disabling Pi turn and provider retries", async () => {
+  it("keeps agent retry ownership in Flow and bounds provider transport retries", async () => {
     let sessionOptions: Parameters<typeof createAgentSession>[0];
     const fakeSession = {
       state: { messages: [{ role: "assistant", stopReason: "stop" }] },
@@ -1788,7 +1788,8 @@ describe("EmbeddedPiAgentRunner", () => {
       baseDelayMs: 2000,
     });
     expect(sessionOptions?.settingsManager?.getProviderRetrySettings()).toMatchObject({
-      maxRetries: 0,
+      maxRetries: 2,
+      maxRetryDelayMs: 60_000,
     });
     expect(sessionOptions?.settingsManager?.getCompactionEnabled()).toBe(false);
   });

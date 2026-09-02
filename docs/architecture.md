@@ -784,8 +784,10 @@ the same executable and position-checked secure lifecycle tail. Flow rejects unk
 process-group-only macOS preparation is released and denied. The deadline covers sandbox
 preparation and is checked again at spawn. Unconfirmed descendant termination is attempt-fatal:
 the command settles durably, later command preparations are denied, Pi is aborted, and terminal
-success is rejected. Flow disables Pi assistant-turn and provider retry layers; the adapter executes
-one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
+success is rejected. Flow disables Pi assistant-turn retries. The adapter permits at most two
+provider transport retries before a response stream yields tool authority. It uses the pinned Pi
+backoff and a 60-second server-delay cap. The adapter still executes one Flow attempt. Only durable
+Flow policy can authorize a later fresh attempt.
 
 ### Portable model sessions
 

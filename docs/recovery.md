@@ -600,9 +600,12 @@ Before each provider call, Flow commits an exact request identity. It binds the 
 runtime, instructions, tools, authority, history, surface, attempt, turn, and request. A changed or
 oversized surface fails before provider I/O.
 
-Flow disables Pi assistant-turn retries and provider retries. One Flow attempt can't silently
-expand through those retry layers. Ordinary tool/model turns inside the live session remain bounded
-by the node timeout. Read
+Flow disables Pi assistant-turn retries. One provider request can make at most two transport
+retries for a network failure or retryable HTTP response. The pinned transport honors
+`Retry-After`, uses exponential backoff with jitter, and caps a server-requested wait at 60 seconds.
+Because these retries occur before a response stream yields a tool call, they can't repeat a Flow
+workspace effect. Ordinary tool/model turns inside the live session remain bounded by the node
+timeout. Read
 [Inspect and recover portable model sessions](guides/model-sessions.md) for the public inspection
 fields, limits, and remediation table.
 
@@ -646,6 +649,12 @@ tool result, or effect can therefore use a charged attempt without adding useful
 shared `maxAttempts` ceiling still includes the initial attempt and every output-limited or
 transient-provider retry. This fail-closed ceiling prevents an unproductive response pattern from
 becoming an unbounded loop.
+
+Provider transport retry and Flow attempt recovery are separate bounded layers. Transport retry
+repeats only the current pre-stream provider request. It doesn't increment the Flow attempt or
+repeat completed tool work. Flow attempt recovery runs only after the transport layer is exhausted.
+It creates a new in-memory session from the durable portable history. This recovery charges a node
+start.
 
 After an eligible attempt completes, Flow first appends `node_failed`. This event closes the model
 session and charges the attempt's node start, duration, artifacts, model tokens, and reported cost.

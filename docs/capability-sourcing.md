@@ -37,7 +37,7 @@ evaluation. See the [Pi v0.84.4 release](https://github.com/earendil-works/pi/re
 | --- | --- | --- |
 | Multi-provider inference | Import through Pi's model runtime | Persist only Flow model requirements and provider/model identifiers |
 | Authentication and model catalog | Reuse | Keep credentials and provider details outside workflow files |
-| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import; Pi assistant-turn and provider retries are explicitly disabled so Flow owns attempt count |
+| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import; Pi assistant-turn retries are disabled, provider transport retries are fixed at two with a 60-second server-delay cap, and Flow owns durable attempt count |
 | Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
 | Concurrent tool calls | Reference implementation only | Pi may run independent tool calls concurrently, but Flow owns graph admission, quiescent waves, durable ordering, failure, and recovery semantics |
