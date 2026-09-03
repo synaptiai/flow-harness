@@ -109,6 +109,8 @@ describe("runWorkflow model session coordination", () => {
 
   it.each([
     ["provider-failed", "pi_agent_error"],
+    ["provider-rate-limited", "pi_provider_rate_limited"],
+    ["provider-unavailable", "pi_provider_unavailable"],
     ["output-limited", "pi_agent_incomplete"],
   ] as const)(
     "continues a %s edit attempt from its settled model-session ledger",

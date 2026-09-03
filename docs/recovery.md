@@ -684,6 +684,8 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 - The failed attempt is below `maxAttempts`.
 - The failure is retryable.
 - The attempt is side-effect-free, or an agent attempt has only committed durable workspace edits.
+- A committed-edit agent failed with `pi_agent_error`, `pi_agent_failed`,
+  `pi_agent_incomplete`, `pi_provider_rate_limited`, or `pi_provider_unavailable`.
 - A committed-edit attempt has a closed, matching model-session record for the failed attempt.
 - The attempt has no command or delegation record. Any edit history contains no open, unknown,
   uncertain, reconciled, or not-applied effect.
