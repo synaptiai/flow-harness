@@ -591,6 +591,92 @@ describe("SrtCommandSandbox", () => {
     expect(manager.checkCalls).toBe(1);
   });
 
+  it("quarantines commands until a timed-out reset later completes", async () => {
+    const manager = new FakeSrtManager();
+    let completeFirstReset!: () => void;
+    let firstReset = true;
+    manager.resetImplementation = async () => {
+      if (!firstReset) return;
+      firstReset = false;
+      await new Promise<void>((resolve) => {
+        completeFirstReset = resolve;
+      });
+    };
+    const sandbox = createSandbox(manager, { cleanupTimeoutMs: 10 });
+    const first = await sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+
+    await expect(first.release()).rejects.toThrow("sandbox cleanup exceeded 10ms");
+
+    let secondSettled = false;
+    const secondPromise = sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+    void secondPromise.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+
+    completeFirstReset();
+    const second = await secondPromise;
+    await second.release();
+
+    expect(manager.initializeCalls).toBe(2);
+    expect(manager.resetCalls).toBe(2);
+  });
+
+  it("keeps the sandbox poisoned when a timed-out reset later rejects", async () => {
+    const manager = new FakeSrtManager();
+    let failFirstReset!: (error: Error) => void;
+    manager.resetImplementation = async () => {
+      await new Promise<void>((_resolve, reject) => {
+        failFirstReset = reject;
+      });
+    };
+    const sandbox = createSandbox(manager, { cleanupTimeoutMs: 10 });
+    const first = await sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+
+    await expect(first.release()).rejects.toThrow("sandbox cleanup exceeded 10ms");
+
+    const secondPromise = sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+    failFirstReset(new Error("terminal reset failure"));
+
+    await expect(secondPromise).rejects.toThrow("terminal reset failure");
+    await expect(
+      sandbox.prepare({
+        executable: "node",
+        args: [],
+        cwd: workspace,
+        protectedPaths: [],
+      }),
+    ).rejects.toThrow("unavailable after cleanup failure: terminal reset failure");
+    expect(manager.initializeCalls).toBe(1);
+    expect(manager.resetCalls).toBe(1);
+  });
+
   it("produces one policy digest across machine-specific paths", async () => {
     const first = createSandbox(new FakeSrtManager());
     const second = createSandbox(new FakeSrtManager(), {
@@ -661,6 +747,7 @@ function createSandbox(
       workspace: string,
     ) => Promise<readonly string[]>;
     readonly resolveTrustedBwrapPath?: (workspace: string) => Promise<string>;
+    readonly cleanupTimeoutMs?: number;
   } = {},
 ): SrtCommandSandbox {
   const selectedPrivateTemp = overrides.privateTemp ?? privateTemp;
@@ -693,7 +780,7 @@ function createSandbox(
             overrides.resolveTrustedBwrapPath ?? (async () => "/usr/bin/bwrap"),
         }
       : {}),
-    cleanupTimeoutMs: 100,
+    cleanupTimeoutMs: overrides.cleanupTimeoutMs ?? 100,
   });
 }
 
@@ -712,6 +799,7 @@ class FakeSrtManager implements SrtSandboxManager {
   wrapError: Error | undefined;
   initializeError: Error | undefined;
   cleanupError: Error | undefined;
+  resetImplementation: (() => Promise<void>) | undefined;
   readonly customConfigs: Array<SrtRuntimeConfig | undefined> = [];
   checkCalls = 0;
   initializeCalls = 0;
@@ -765,5 +853,6 @@ class FakeSrtManager implements SrtSandboxManager {
 
   async reset(): Promise<void> {
     this.resetCalls += 1;
+    await this.resetImplementation?.();
   }
 }
