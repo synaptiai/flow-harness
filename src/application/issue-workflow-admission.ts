@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 
+import type { AgentCommandAuthority } from "../domain/agent-command.js";
 import {
   type CapabilitySnapshot,
   validateCapabilitySnapshot,
@@ -19,6 +20,10 @@ import {
   MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES,
   MAX_MODEL_VERIFIER_INPUT_BYTES,
 } from "../domain/workflow/types.js";
+import {
+  createFrozenVerificationAgentCommandAuthority,
+  type FrozenIssueVerificationCommand,
+} from "./frozen-issue-command.js";
 import { compileWorkflowFromSnapshot } from "./workflow-package-admission.js";
 
 export const MAX_ISSUE_WORKFLOW_CONTEXT_BYTES = 65_536;
@@ -57,6 +62,7 @@ export interface ImplementationWorkflowAdmissionInput extends CommonIssueWorkflo
   readonly role: "implementation";
   readonly context: IssueWorkflowContext & { readonly kind: "issue" };
   readonly allowedWritePrefixes: readonly string[];
+  readonly verificationCommands?: readonly FrozenIssueVerificationCommand[];
 }
 
 export interface ReviewWorkflowAdmissionInput extends CommonIssueWorkflowAdmissionInput {
@@ -88,6 +94,7 @@ interface CommonAdmittedIssueWorkflow {
 export interface AdmittedImplementationWorkflow extends CommonAdmittedIssueWorkflow {
   readonly role: "implementation";
   readonly criteria: readonly CompiledCriterion[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
 }
 
 export interface AdmittedReviewWorkflow extends CommonAdmittedIssueWorkflow {
@@ -147,7 +154,15 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
 
   if (input.role === "implementation") {
     const allowedWritePrefixes = normalizeIssueWorkflowWritePrefixes(input.allowedWritePrefixes);
-    validateImplementationWorkflow(workflow, allowedWritePrefixes);
+    const agentCommandAuthority =
+      input.verificationCommands === undefined
+        ? undefined
+        : createFrozenVerificationAgentCommandAuthority(input.verificationCommands);
+    const usesExec = validateImplementationWorkflow(
+      workflow,
+      allowedWritePrefixes,
+      agentCommandAuthority,
+    );
     const template = bindWorkflowModel(workflow, input.model);
     assertWorkflowSatisfiesPolicyPackages(template, capabilitySnapshot, {
       modelBinding: input.policyModelBinding ?? "exact",
@@ -172,6 +187,7 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
       protectedPaths: ISSUE_WORKFLOW_PROTECTED_PATHS,
       allowedWritePrefixes,
       criteria: workflow.goal?.criteria ?? [],
+      ...(usesExec ? { agentCommandAuthority } : {}),
     });
   }
 
@@ -340,7 +356,8 @@ export function normalizeIssueWorkflowWritePrefixes(
 function validateImplementationWorkflow(
   workflow: CompiledWorkflow,
   allowedWritePrefixes: readonly string[],
-): void {
+  agentCommandAuthority: AgentCommandAuthority | undefined,
+): boolean {
   if (workflow.goal === undefined || workflow.goal.criteria.length === 0) {
     throw new IssueWorkflowAdmissionError(
       "unsafe_workflow",
@@ -349,6 +366,7 @@ function validateImplementationWorkflow(
   }
   let hasAgent = false;
   let hasMutatingAgent = false;
+  let usesExec = false;
   for (const node of workflow.nodes) {
     if (
       node.type === "command" ||
@@ -364,7 +382,8 @@ function validateImplementationWorkflow(
     }
     if (node.type === "agent") {
       hasAgent = true;
-      validateAgent(node, "implementation");
+      validateAgent(node, "implementation", agentCommandAuthority);
+      usesExec ||= node.agent.tools.includes("exec");
       hasMutatingAgent ||= node.agent.tools.some((tool) => MUTATING_AGENT_TOOLS.has(tool));
     }
     if (node.type === "verifier") validateVerifier(node);
@@ -381,6 +400,7 @@ function validateImplementationWorkflow(
       "a mutable implementation workflow requires at least one explicit write prefix",
     );
   }
+  return usesExec;
 }
 
 function validateReviewWorkflow(workflow: CompiledWorkflow): void {
@@ -393,19 +413,30 @@ function validateReviewWorkflow(workflow: CompiledWorkflow): void {
     ) {
       unsafe(node, "review workflows must remain read-only and non-interactive");
     }
-    if (node.type === "agent") validateAgent(node, "review");
+    if (node.type === "agent") validateAgent(node, "review", undefined);
     if (node.type === "verifier") validateVerifier(node);
     if (node.type === "child") validateReviewWorkflow(node.child.workflow);
   }
 }
 
-function validateAgent(node: CompiledAgentNode, role: IssueWorkflowRole): void {
-  if (
-    node.agent.tools.includes("exec") ||
-    node.agent.toolPackages.length > 0 ||
-    node.agent.toolApproval !== undefined
-  ) {
+function validateAgent(
+  node: CompiledAgentNode,
+  role: IssueWorkflowRole,
+  agentCommandAuthority: AgentCommandAuthority | undefined,
+): void {
+  if (node.agent.toolPackages.length > 0 || node.agent.toolApproval !== undefined) {
     unsafe(node, `${role} agents cannot execute commands or command tool packages`);
+  }
+  if (
+    node.agent.tools.includes("exec") &&
+    (role === "review" || agentCommandAuthority === undefined)
+  ) {
+    unsafe(
+      node,
+      role === "review"
+        ? "review agents cannot execute commands"
+        : "implementation exec requires controller-frozen verification-command authority",
+    );
   }
   if (role === "review" && node.agent.tools.some((tool) => MUTATING_AGENT_TOOLS.has(tool))) {
     unsafe(node, "review agents must be read-only");

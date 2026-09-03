@@ -7,6 +7,10 @@ import {
   MAX_ISSUE_REVIEW_CONTEXT_BYTES,
   MAX_ISSUE_WORKFLOW_CONTEXT_BYTES,
 } from "../../../src/application/issue-workflow-admission.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../src/domain/agent-command.js";
 import { createEffectiveHarnessRuntimeSnapshot } from "../../../src/domain/adaptation/effective-harness-runtime.js";
 import { createEffectiveHarnessHeadIdentity } from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
@@ -137,7 +141,6 @@ describe("issue workflow admission", () => {
 
   it.each([
     ["command nodes", commandWorkflow()],
-    ["agent exec", implementationWorkflow("[read, exec]")],
     ["approval nodes", approvalWorkflow()],
     ["child delegation", delegatedWorkflow()],
     ["optimization nodes", optimizationWorkflow()],
@@ -147,6 +150,42 @@ describe("issue workflow admission", () => {
         role: "implementation",
         source,
         sourceName: "unsafe-implementation.workflow.yaml",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+        context: { kind: "issue", content: "Issue #197" },
+        allowedWritePrefixes: ["src/"],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "unsafe_workflow" }));
+  });
+
+  it("admits implementation exec only for controller-frozen verification commands", () => {
+    const command = { executable: "npm", args: ["test"], timeoutMs: 120_000 } as const;
+    const admitted = admitIssueWorkflow({
+      role: "implementation",
+      source: implementationWorkflow("[read, exec]"),
+      sourceName: "implementation.workflow.yaml",
+      model: { provider: "openai", id: "gpt-5.6-sol" },
+      context: { kind: "issue", content: "Issue #197" },
+      allowedWritePrefixes: ["src/"],
+      verificationCommands: [command],
+    });
+
+    expect(admitted.agentCommandAuthority).toEqual({
+      version: 1,
+      kind: "frozen-verification",
+      requestDigests: [
+        calculateAgentCommandDigest(normalizeAgentCommandRequest({ version: 1, ...command })),
+      ],
+    });
+    expect(Object.isFrozen(admitted.agentCommandAuthority)).toBe(true);
+    expect(Object.isFrozen(admitted.agentCommandAuthority?.requestDigests)).toBe(true);
+  });
+
+  it("rejects implementation exec without frozen verification-command authority", () => {
+    expect(() =>
+      admitIssueWorkflow({
+        role: "implementation",
+        source: implementationWorkflow("[read, exec]"),
+        sourceName: "implementation.workflow.yaml",
         model: { provider: "openai", id: "gpt-5.6-sol" },
         context: { kind: "issue", content: "Issue #197" },
         allowedWritePrefixes: ["src/"],
@@ -320,6 +359,7 @@ describe("issue workflow admission", () => {
       reviewWorkflow().replace("tools: [read, ls]", "tools: [read, edit]"),
     ],
     ["a command review node", commandReviewWorkflow()],
+    ["an exec review agent", reviewWorkflow().replace("[read, ls]", "[read, exec]")],
   ])("rejects %s", (_name, source) => {
     expect(() =>
       admitIssueWorkflow({

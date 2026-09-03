@@ -26,6 +26,7 @@ export {
 } from "./command-envelope.js";
 
 export const AGENT_COMMAND_PROTOCOL = "flow.agent-commands/v1" as const;
+export const MAX_AGENT_COMMAND_AUTHORITY_REQUESTS = 32;
 
 const boundedCommandString = (label: string, maxBytes: number) =>
   z
@@ -54,6 +55,24 @@ const commandFields = {
 };
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+export const agentCommandAuthoritySchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("frozen-verification"),
+    requestDigests: z
+      .array(sha256Schema)
+      .min(1)
+      .max(MAX_AGENT_COMMAND_AUTHORITY_REQUESTS)
+      .refine(
+        (digests) => new Set(digests).size === digests.length,
+        "agent command authority digests must be unique",
+      )
+      .refine(
+        (digests) => digests.every((digest, index) => index === 0 || digests[index - 1]! < digest),
+        "agent command authority digests must use canonical order",
+      ),
+  })
+  .strict();
 const toolPackageInputValueSchema = z.union([
   z
     .string()
@@ -112,6 +131,27 @@ export interface AgentCommandRequest {
   readonly args: readonly string[];
   readonly timeoutMs: number;
   readonly source?: ToolPackageCommandSource;
+}
+
+export interface AgentCommandAuthority {
+  readonly version: 1;
+  readonly kind: "frozen-verification";
+  readonly requestDigests: readonly string[];
+}
+
+export function normalizeAgentCommandAuthority(
+  requestDigests: readonly string[],
+): AgentCommandAuthority {
+  const canonical = [...new Set(requestDigests)].sort(compareStrings);
+  const parsed = agentCommandAuthoritySchema.parse({
+    version: 1,
+    kind: "frozen-verification",
+    requestDigests: canonical,
+  });
+  return Object.freeze({
+    ...parsed,
+    requestDigests: Object.freeze([...parsed.requestDigests]),
+  });
 }
 
 export function normalizeAgentCommandRequest(input: unknown): AgentCommandRequest {
