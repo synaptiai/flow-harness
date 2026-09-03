@@ -70,7 +70,10 @@ import {
   calculateIssueCandidateTreeDigest,
   calculateIssueCommitMessageDigest,
 } from "../../domain/issue-lifecycle/issue-delivery-contract.js";
-import { parseGitHubIssuePlanText } from "../../domain/issue-lifecycle/plan.js";
+import {
+  type GitHubIssuePlan,
+  parseGitHubIssuePlanText,
+} from "../../domain/issue-lifecycle/plan.js";
 import {
   calculateIssueBudgetDigest,
   calculateIssueLifecycleDomainDigest,
@@ -196,6 +199,7 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
       model: { provider: command.provider, id: command.model },
       context: { kind: "issue", content: modelIssueContext(issueSnapshot) },
       allowedWritePrefixes: plan.candidate.allowedPathPrefixes,
+      verificationCommands: plan.verification.map((entry) => entry.command),
     });
     const review = admitIssueWorkflow({
       role: "review",
@@ -403,6 +407,11 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       request.manifest.artifacts.implementationWorkflow,
       WORKFLOW_MEDIA_TYPE,
     );
+    const plan = parseGitHubIssuePlanText(
+      await this.#readTextBlob(request.runId, request.manifest.artifacts.plan, PLAN_MEDIA_TYPE),
+      "frozen GitHub issue plan",
+    );
+    assertFrozenVerificationCommands(request.manifest, plan);
     const admitted = admitIssueWorkflow({
       role: "implementation",
       source,
@@ -413,6 +422,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       model: request.manifest.implementationWorkflow.model,
       context: { kind: "issue", content: modelIssueContext(issueSnapshot) },
       allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+      verificationCommands: plan.verification.map((entry) => entry.command),
     });
     assertWorkflowIdentity(request.manifest, "implementation", admitted);
     const flowRunId = deriveNestedIssueWorkflowRunId(
@@ -555,6 +565,9 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       projectRoot: executionRoot,
       protectedPaths: admitted.protectedPaths,
       allowedWritePrefixes: admitted.allowedWritePrefixes,
+      ...(admitted.role === "implementation" && admitted.agentCommandAuthority !== undefined
+        ? { agentCommandAuthority: admitted.agentCommandAuthority }
+        : {}),
       ...(admitted.capabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: admitted.capabilitySnapshot }),
@@ -683,6 +696,20 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       .update("flow.issue.nested-workflow-evidence.v1\0")
       .update(JSON.stringify(events))
       .digest("hex");
+  }
+}
+
+function assertFrozenVerificationCommands(
+  manifest: FrozenIssueRunManifest,
+  plan: GitHubIssuePlan,
+): void {
+  const projection = plan.verification.map((entry) => ({
+    id: entry.id,
+    commandDigest: calculateFrozenIssueVerificationCommandDigest(entry.command),
+    timeoutMs: entry.command.timeoutMs,
+  }));
+  if (JSON.stringify(projection) !== JSON.stringify(manifest.verification)) {
+    throw new Error("frozen plan verification commands do not match the run manifest");
   }
 }
 

@@ -266,6 +266,7 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
       policyModelBinding,
       context: { kind: "issue", content: validationIssueContext(plan.repository.expected) },
       allowedWritePrefixes: plan.candidate.allowedPathPrefixes,
+      verificationCommands: plan.verification.map((entry) => entry.command),
     });
     completeIssueWorkflowBudget(implementation.workflow.budget, "implementation");
     const review = admitIssueWorkflow({

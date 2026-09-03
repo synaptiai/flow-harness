@@ -7,7 +7,11 @@ import {
 } from "../domain/adaptation/phase-routing-candidate.js";
 import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
 import { renderSupplementalMemoryRelationshipBlock } from "../domain/adaptation/supplemental-memory-relationships.js";
-import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
+import {
+  AGENT_COMMAND_PROTOCOL,
+  type AgentCommandAuthority,
+  type AgentCommandRequest,
+} from "../domain/agent-command.js";
 import {
   agentCommandApprovalRequestId,
   calculateAgentCommandApprovalRequestDigest,
@@ -151,6 +155,7 @@ export interface RunWorkflowOptions {
   readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
   readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly store: RunEventStore;
   readonly executor: NodeExecutor;
@@ -225,6 +230,9 @@ async function runWorkflowInternal(
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
       workspaceAuthorityDigest,
+      ...(options.agentCommandAuthority === undefined
+        ? {}
+        : { agentCommandAuthority: options.agentCommandAuthority }),
       workProfile,
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       executionCwd,
@@ -836,6 +844,9 @@ async function continueWorkflow(
                           ...(options.allowedWritePrefixes === undefined
                             ? {}
                             : { allowedWritePrefixes: options.allowedWritePrefixes }),
+                          ...(options.agentCommandAuthority === undefined
+                            ? {}
+                            : { agentCommandAuthority: options.agentCommandAuthority }),
                           ...(signal === undefined ? {} : { signal }),
                         },
                         options,
@@ -895,6 +906,9 @@ async function continueWorkflow(
                     ...(options.allowedWritePrefixes === undefined
                       ? {}
                       : { allowedWritePrefixes: options.allowedWritePrefixes }),
+                    ...(options.agentCommandAuthority === undefined
+                      ? {}
+                      : { agentCommandAuthority: options.agentCommandAuthority }),
                     ...(options.capabilitySnapshot === undefined
                       ? {}
                       : { capabilitySnapshot: options.capabilitySnapshot }),
@@ -4536,6 +4550,9 @@ async function executeChildNode(
     ...(context.allowedWritePrefixes === undefined
       ? {}
       : { allowedWritePrefixes: context.allowedWritePrefixes }),
+    ...(context.agentCommandAuthority === undefined
+      ? {}
+      : { agentCommandAuthority: context.agentCommandAuthority }),
     store,
     executor: options.executor,
     ...(options.workspaceIsolator === undefined
@@ -4593,6 +4610,9 @@ async function recoverChildNode(
         ...(options.allowedWritePrefixes === undefined
           ? {}
           : { allowedWritePrefixes: options.allowedWritePrefixes }),
+        ...(options.agentCommandAuthority === undefined
+          ? {}
+          : { agentCommandAuthority: options.agentCommandAuthority }),
         ...(childCapabilitySnapshot === undefined
           ? {}
           : { capabilitySnapshot: childCapabilitySnapshot }),
@@ -4640,6 +4660,9 @@ async function recoverChildNode(
         ...(options.allowedWritePrefixes === undefined
           ? {}
           : { allowedWritePrefixes: options.allowedWritePrefixes }),
+        ...(options.agentCommandAuthority === undefined
+          ? {}
+          : { agentCommandAuthority: options.agentCommandAuthority }),
         store,
         executor: options.executor,
         workspaceIsolator: options.workspaceIsolator,

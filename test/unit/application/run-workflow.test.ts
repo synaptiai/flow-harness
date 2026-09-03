@@ -14,6 +14,11 @@ import {
   resumeWorkflow,
   runWorkflow,
 } from "../../../src/application/run-workflow.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandAuthority,
+  normalizeAgentCommandRequest,
+} from "../../../src/domain/agent-command.js";
 import type { RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
@@ -69,6 +74,58 @@ describe("runWorkflow", () => {
       type: "run_started",
       workspaceAuthorityDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+  });
+
+  it("persists frozen command authority and passes it to every node context", async () => {
+    const request = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 120_000,
+    });
+    const authority = normalizeAgentCommandAuthority([calculateAgentCommandDigest(request)]);
+    const observed = new Map<string, unknown>();
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      observed.set(node.id, context.agentCommandAuthority);
+      return successfulOutcome(node.id);
+    });
+
+    const state = await runWorkflow(threeNodeWorkflow(), {
+      ...options(store, executor, "run-command-authority"),
+      agentCommandAuthority: authority,
+    });
+
+    expect(observed).toEqual(
+      new Map([
+        ["first", authority],
+        ["second", authority],
+        ["third", authority],
+      ]),
+    );
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      agentCommandAuthority: authority,
+    });
+    expect(state.agentCommandAuthority).toEqual(authority);
+  });
+
+  it("rejects changed frozen command authority on resume", async () => {
+    const first = normalizeAgentCommandAuthority(["a".repeat(64)]);
+    const second = normalizeAgentCommandAuthority(["b".repeat(64)]);
+    const workflow = threeNodeWorkflow();
+    const store = new MemoryRecoverableRunStore([]);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+    await runWorkflow(workflow, {
+      ...options(store, executor, "run-command-authority-resume"),
+      agentCommandAuthority: first,
+    });
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-command-authority-resume"),
+        agentCommandAuthority: second,
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
   });
 
   it("passes an agent's frozen output-token limit only to that node", async () => {
