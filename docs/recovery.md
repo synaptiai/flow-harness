@@ -607,6 +607,13 @@ dangling tool call, interrupted provider stream, provider handle, hidden reasoni
 state. It stores only the resume surface's digest, byte count, source head, and render version, so a
 later recovery doesn't embed generated resume surfaces recursively.
 
+Version 2 resume rendering keeps successful `flow_read` results inline through 32 KiB. For a larger
+result, the retry surface keeps the paired read call and replaces the text with its digest, byte
+count, boundary, and omission reason. The private ledger retains the complete result. A recovering
+agent can reread the required bounded range without making every later retry carry the entire prior
+file. Failed reads and non-read tool results remain inline because their diagnostics or effect
+context can be essential to safe recovery.
+
 Before each provider call, Flow commits an exact request identity. It binds the model route,
 runtime, instructions, tools, authority, history, surface, attempt, turn, and request. A changed or
 oversized surface fails before provider I/O.

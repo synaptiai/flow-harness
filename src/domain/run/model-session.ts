@@ -12,11 +12,12 @@ import {
 
 export const MODEL_SESSION_PROTOCOL = "flow.model-session/v1" as const;
 export const MODEL_SESSION_VERSION = 1 as const;
-export const MODEL_SESSION_RESUME_RENDER_VERSION = 1 as const;
+export const MODEL_SESSION_RESUME_RENDER_VERSION = 2 as const;
 export const MAX_MODEL_SESSION_EVENT_BYTES = 2 * 1024 * 1024;
 export const MAX_MODEL_SESSION_RECORD_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SESSION_EVENTS = 1_024;
 export const MAX_MODEL_SESSION_RESUME_BYTES = 1024 * 1024;
+const MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES = 32 * 1024;
 export const MAX_ROLLING_CONTEXT_EPOCHS = 8;
 export const MAX_ROLLING_CONTEXT_SUMMARY_BYTES = 64 * 1024;
 
@@ -237,7 +238,7 @@ export interface ModelSessionAttemptInterruptedEvent extends ModelSessionEventBa
 export interface ModelSessionResumeSurfaceEvent extends ModelSessionEventBase {
   readonly type: "resume_surface_prepared";
   readonly attempt: number;
-  readonly renderVersion: 1;
+  readonly renderVersion: 1 | 2;
   readonly sourceHead: string;
   readonly digest: string;
   readonly bytes: number;
@@ -508,7 +509,7 @@ export type ModelSessionEventInput =
   | {
       readonly type: "resume_surface_prepared";
       readonly attempt: number;
-      readonly renderVersion: 1;
+      readonly renderVersion: 1 | 2;
       readonly sourceHead: string;
       readonly digest: string;
       readonly bytes: number;
@@ -711,7 +712,7 @@ export interface ModelSessionSummary {
 }
 
 export interface ModelSessionResumeCapsule {
-  readonly renderVersion: 1;
+  readonly renderVersion: 2;
   readonly sourceHead: string;
   readonly digest: string;
   readonly bytes: number;
@@ -1081,7 +1082,7 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
     .extend({
       type: z.literal("resume_surface_prepared"),
       attempt: positiveSafeIntegerSchema,
-      renderVersion: z.literal(1),
+      renderVersion: z.union([z.literal(1), z.literal(2)]),
       sourceHead: sha256Schema,
       digest: sha256Schema,
       bytes: positiveSafeIntegerSchema,
@@ -1333,6 +1334,11 @@ export function renderModelSessionResumeCapsule(
       protocol: state.protocol,
       sessionId: state.sessionId,
       head: sourceHead,
+    },
+    readResultProjection: {
+      inlineLimitBytes: MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES,
+      omittedTextField: "textOmitted",
+      recovery: "Use the paired tool call to reread only the needed bounded range.",
     },
     events: sourceEvents.map(projectResumeEvent),
   };
@@ -1610,7 +1616,7 @@ export function calculatePortableHistoryIdentity(state: ModelSessionState): {
   readonly eventCount: number;
   readonly bytes: number;
 } {
-  const projected = state.primaryEvents.map(projectResumeEvent);
+  const projected = state.primaryEvents.map(projectPortableEvent);
   const canonical = canonicalJson(projected);
   return deepFreeze({
     sha256: sha256(canonical),
@@ -1673,7 +1679,7 @@ export function selectContextCompactionRange(
   ) {
     return null;
   }
-  const canonical = canonicalJson(selected.map(projectResumeEvent));
+  const canonical = canonicalJson(selected.map(projectPortableEvent));
   return deepFreeze({
     lastRequest: selectedSettlement.request,
     range: {
@@ -1715,7 +1721,7 @@ export function selectRollingContextRange(
   );
   const first = deltaEvents[0];
   if (first === undefined) return null;
-  const canonical = canonicalJson(deltaEvents.map(projectResumeEvent));
+  const canonical = canonicalJson(deltaEvents.map(projectPortableEvent));
   return deepFreeze({
     lastRequest: cumulative.lastRequest,
     cumulativeRange: cumulative.range,
@@ -2285,7 +2291,7 @@ function validateCompactionRange(state: ModelSessionState, range: ContextCompact
   ) {
     throw new ModelSessionReplayError("context compaction range cannot orphan a tool pair");
   }
-  const canonical = canonicalJson(selected.map(projectResumeEvent));
+  const canonical = canonicalJson(selected.map(projectPortableEvent));
   if (range.sha256 !== sha256(canonical) || range.bytes !== Buffer.byteLength(canonical, "utf8")) {
     throw new ModelSessionReplayError("context compaction range identity does not match");
   }
@@ -2593,6 +2599,37 @@ function isResumeSourceEvent(
 }
 
 function projectResumeEvent(
+  event: ModelSessionPrimaryEvent | ModelSessionAttemptInterruptedEvent,
+): Readonly<Record<string, unknown>> {
+  if (
+    event.type === "tool_result_committed" &&
+    event.toolName === "flow_read" &&
+    !event.isError &&
+    Buffer.byteLength(event.text, "utf8") > MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES
+  ) {
+    return {
+      type: event.type,
+      attempt: event.attempt,
+      turn: event.turn,
+      request: event.request,
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      textOmitted: {
+        reason: "oversized_successful_read_result",
+        sha256: sha256(event.text),
+        bytes: Buffer.byteLength(event.text, "utf8"),
+        inlineLimitBytes: MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES,
+      },
+      isError: false,
+      ...(event.referenceProjection === undefined
+        ? {}
+        : { referenceProjection: event.referenceProjection }),
+    };
+  }
+  return projectPortableEvent(event);
+}
+
+function projectPortableEvent(
   event: ModelSessionPrimaryEvent | ModelSessionAttemptInterruptedEvent,
 ): Readonly<Record<string, unknown>> {
   switch (event.type) {

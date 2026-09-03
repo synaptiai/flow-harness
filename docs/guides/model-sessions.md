@@ -126,6 +126,17 @@ Flow derives the capsule only from committed primary events and interruption bou
 only the derived surface's digest, byte count, source head, and render version, so later attempts
 don't embed earlier generated capsules recursively.
 
+Resume renderer version 2 keeps the complete primary record but projects an oversized successful
+`flow_read` result out of the retry capsule. A read result of at most 32,768 UTF-8 bytes remains
+inline. A larger result becomes a `textOmitted` reference that records its SHA-256 digest, exact
+byte count, reason, and inline boundary. The paired tool-call event still identifies the original
+path and range. The recovering agent can reread only the range that it needs.
+
+Flow doesn't project failed reads or results from other tools through this rule. An error can be
+the only explanation of an unsafe or unavailable source, and a mutating tool has separate effect
+evidence. Projection never removes or changes the original `tool_result_committed` event in the
+private record.
+
 ## Inspect a completed provider-failure retry
 
 An opted-in Pi agent might report a provider execution failure before any command, effect, or
@@ -198,6 +209,7 @@ The independent storage bounds are:
 | One session record | 16 MiB |
 | Events in one session record | 1,024 |
 | One rendered resume surface | 1 MiB and the selected-model limit |
+| One successful read result kept inline in a version 2 resume surface | 32 KiB |
 
 These limits serve different purposes. The byte limits bound memory and private storage. The event
 count bounds a large sequence of small events.

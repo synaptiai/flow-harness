@@ -1803,6 +1803,16 @@ canonical JSON user turn with a fixed untrusted-data instruction. `resume_surfac
 only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
 never primary history.
 
+Resume renderer version 2 deterministically projects a successful `flow_read` result when its text
+is larger than 32,768 UTF-8 bytes. The rendered event replaces `text` with `textOmitted`, which
+contains fixed `oversized_successful_read_result` reason, SHA-256 digest, exact byte count, and
+inline boundary. The paired call keeps the path and range needed for a bounded reread. Exactly
+32,768 bytes remains inline.
+
+Failed reads and other tool results remain inline. The complete primary event remains unchanged in
+the private record. Replay continues to accept a stored version 1 resume event. Newly rendered
+capsules use version 2.
+
 A completed provider execution failure can use the same declared fresh policy. Flow first appends
 `node_failed` with complete terminal evidence and resource accounting. It then appends
 `node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete` dispositions.
