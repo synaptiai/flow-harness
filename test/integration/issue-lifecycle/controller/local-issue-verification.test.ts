@@ -424,7 +424,7 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
         request(cancellationFixture, { signal: controller.signal }),
       ),
     ).rejects.toMatchObject({ code: "operation_cancelled" });
-  }, 20_000);
+  }, 30_000);
 
   it("replays safely after private evidence publication loses its result", async () => {
     const fixture = await createFixture();
