@@ -559,6 +559,28 @@ describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
     expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
   }, 20_000);
 
+  it("captures an exact review diff at the field-pilot scale above 128 KiB", async () => {
+    const fixture = await createFixture({ candidateContent: "x".repeat(190_000) });
+    const store = new MemoryPrivateStore(fixture.planBlob);
+    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+    const adapter = new LocalIssueReviewEvidence({
+      git: fixture.effects,
+      gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), fixture.root),
+      privateStore: store,
+      verification: provider(verification),
+    });
+
+    const evidence = await adapter.read({
+      runId: RUN_ID,
+      manifest: fixture.manifest,
+      candidateHead: fixture.candidateHead,
+      workspace: fixture.workspace,
+    });
+
+    expect(evidence.diffBlob.byteLength).toBeGreaterThan(131_072);
+    expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
+  }, 20_000);
+
   it("rejects a configured review diff boundary above the public maximum", async () => {
     const fixture = await createFixture();
     const store = new MemoryPrivateStore(fixture.planBlob);
