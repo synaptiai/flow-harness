@@ -159,6 +159,8 @@ the [Security policy](../SECURITY.md).
 - Proof-gated fresh recovery for eligible interrupted agent attempts and completed provider
   failures. A failed attempt can preserve earlier committed workspace edits only through the exact
   durable model-session continuation gate.
+- Explicit bounded recovery for a completed, nontruncated model-verifier response that violates the
+  strict verdict JSON contract. Semantic verdicts and open verifier attempts remain nonretryable.
 - Terminal, browser, and ACP v1 observation and steering.
 - Exact local ACP v1 executor selection for attached and detached runs.
 - One fresh contained process and session for each attempt.

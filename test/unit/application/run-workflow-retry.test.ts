@@ -346,6 +346,47 @@ describe("runWorkflow proof-safe fresh recovery", () => {
     expect(store.events.some((event) => event.type === "node_retry_scheduled")).toBe(false);
   });
 
+  it("fresh-retries malformed model-verifier output with complete accounting", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    const attempts: number[] = [];
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        attempts.push(context.attempt);
+        if (node.type === "agent") return successfulAgentOutcome();
+        if (node.type !== "verifier") return successfulCommandOutcome(node.id);
+        return context.attempt === 1
+          ? invalidModelVerifierOutcome()
+          : successfulModelVerifierOutcome();
+      },
+    };
+
+    const state = await runWorkflow(
+      verifierRecoveryWorkflow(),
+      options(store, executor, "run-verifier-retry"),
+    );
+
+    expect(attempts).toEqual([1, 1, 2]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      resources: { nodeStarts: 3, modelTokens: 12, modelCostUsdMicros: 4 },
+      recoveryRequirements: {
+        verify: { mode: "fresh", maxAttempts: 2, effectProtocol: "none" },
+      },
+      nodes: {
+        verify: {
+          status: "succeeded",
+          attempt: 2,
+          failedAttempts: [
+            {
+              attempt: 1,
+              evidence: { kind: "verifier", driver: "model", result: "invalid_output" },
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it("does not select one retry from a concurrent wave with multiple failures", async () => {
     const compiled = concurrentRetryWorkflow();
     const store = new MemoryRecoverableRunStore([]);
@@ -923,6 +964,104 @@ function retryableAgentFailure(
       sideEffectStatus: "none",
     },
     evidence,
+  };
+}
+
+function verifierRecoveryWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: verifier-retry }
+budget: { maxModelTokens: 100, maxCostUsd: 0.0001 }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: verify
+    type: verifier
+    dependsOn: [analyze]
+    verifier:
+      kind: model
+      prompt: Verify the report.
+      evidence: [{ nodeId: analyze, field: agent.text }]
+      model: { provider: test, id: deterministic }
+      recovery: { mode: fresh, maxAttempts: 2 }
+`);
+}
+
+function invalidModelVerifierOutcome(): NodeExecutionOutcome {
+  const raw = '{"verdict":"accepted","reason":"verified","extra":null}';
+  return {
+    status: "failed",
+    error: {
+      code: "verifier_inconclusive",
+      message: "model verifier output violated the strict verdict contract",
+      retryable: true,
+      sideEffectStatus: "none",
+    },
+    evidence: {
+      kind: "verifier",
+      driver: "model",
+      result: "invalid_output",
+      verdict: "inconclusive",
+      reason: "model verifier output violated the strict verdict contract",
+      reasonHash: sha256("model verifier output violated the strict verdict contract"),
+      provider: "test",
+      model: "deterministic",
+      raw,
+      rawHash: sha256(raw),
+      rawTruncated: false,
+      durationMs: 2,
+      usage: {
+        inputTokens: 3,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 4,
+      },
+      sources: [modelVerifierSource()],
+    },
+  };
+}
+
+function successfulModelVerifierOutcome(): NodeExecutionOutcome {
+  const raw = '{"verdict":"accepted","reason":"verified"}';
+  return {
+    status: "succeeded",
+    evidence: {
+      kind: "verifier",
+      driver: "model",
+      result: "parsed",
+      verdict: "accepted",
+      reason: "verified",
+      reasonHash: sha256("verified"),
+      provider: "test",
+      model: "deterministic",
+      raw,
+      rawHash: sha256(raw),
+      rawTruncated: false,
+      durationMs: 2,
+      usage: {
+        inputTokens: 4,
+        outputTokens: 3,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 0,
+      },
+      sources: [modelVerifierSource()],
+    },
+  };
+}
+
+function modelVerifierSource() {
+  return {
+    sourceNodeId: "analyze",
+    sourceAttempt: 1,
+    sourceField: "agent.text" as const,
+    sourceHash: sha256("implemented"),
   };
 }
 

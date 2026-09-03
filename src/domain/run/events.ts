@@ -2682,6 +2682,24 @@ const issueWorkflowVerifierInputPolicySchema = z.discriminatedUnion("role", [
     .strict(),
 ]);
 
+const controlFreshRecoverySchema = z
+  .object({
+    mode: z.literal("fresh"),
+    maxAttempts: z.number().int().min(2).max(16),
+    backoff: z
+      .object({
+        initialDelayMs: z.number().int().positive().max(300_000),
+        maxDelayMs: z.number().int().positive().max(900_000),
+      })
+      .strict()
+      .refine((backoff) => backoff.maxDelayMs >= backoff.initialDelayMs, {
+        message: "recovery backoff maxDelayMs must be at least initialDelayMs",
+        path: ["maxDelayMs"],
+      })
+      .optional(),
+  })
+  .strict();
+
 const controlModelVerifierSchema = z
   .object({
     kind: z.literal("model"),
@@ -2709,6 +2727,7 @@ const controlModelVerifierSchema = z
         thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
       })
       .strict(),
+    recovery: controlFreshRecoverySchema.optional(),
     maxOutputTokens: z.number().int().positive().safe().optional(),
     timeoutMs: z.number().int().positive().max(86_400_000),
     inputPolicy: issueWorkflowVerifierInputPolicySchema.optional(),
@@ -2823,6 +2842,7 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
           thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
         })
         .strict(),
+      recovery: controlFreshRecoverySchema.optional(),
       maxOutputTokens: z.number().int().positive().safe().optional(),
       timeoutMs: z.number().int().positive().max(86_400_000),
     })
@@ -6851,18 +6871,20 @@ export function appendRunEvent(
           eventIndex,
         ),
       });
-      goal = applyCriterionDecision(
-        goal,
-        {
-          runId: event.runId,
-          nodeId: event.nodeId,
-          attempt: event.attempt,
-          at: event.at,
-          outcome: isConclusiveVerifierRejection(event.evidence) ? "rejected" : "inconclusive",
-          evidenceAvailable: event.evidence !== null,
-        },
-        eventIndex,
-      );
+      if (!event.error.retryable) {
+        goal = applyCriterionDecision(
+          goal,
+          {
+            runId: event.runId,
+            nodeId: event.nodeId,
+            attempt: event.attempt,
+            at: event.at,
+            outcome: isConclusiveVerifierRejection(event.evidence) ? "rejected" : "inconclusive",
+            evidenceAvailable: event.evidence !== null,
+          },
+          eventIndex,
+        );
+      }
       break;
     }
     case "run_succeeded": {
@@ -9415,6 +9437,11 @@ function validateVerifierEvidenceProjection(
     }
   } else {
     const cancelledAfterVerdict = event.error.code === "workflow_aborted";
+    const retryableInvalidModelOutput =
+      evidence.driver === "model" &&
+      evidence.result === "invalid_output" &&
+      !evidence.rawTruncated &&
+      event.error.code === "verifier_inconclusive";
     if (evidence.verdict === "accepted" && !cancelledAfterVerdict) {
       throw new RunReplayError(eventIndex, "failed verifier evidence cannot be accepted");
     }
@@ -9423,7 +9450,7 @@ function validateVerifierEvidenceProjection(
     if (
       (!cancelledAfterVerdict && event.error.code !== expectedCode) ||
       (!cancelledAfterVerdict && event.error.message !== evidence.reason) ||
-      event.error.retryable
+      (event.error.retryable && !retryableInvalidModelOutput)
     ) {
       throw new RunReplayError(
         eventIndex,
@@ -11024,15 +11051,21 @@ export function canScheduleFailedAttemptRetry(state: RunState, nodeId: string): 
   }
   const limits = state.budget?.limits;
   const evidence = node.evidence;
-  if (evidence !== null && evidence.kind !== "agent") {
+  const modelEvidence =
+    evidence?.kind === "agent" || (evidence?.kind === "verifier" && evidence.driver === "model")
+      ? evidence
+      : null;
+  if (evidence !== null && modelEvidence === null) {
     return false;
   }
   const tokenAccountingComplete =
-    evidence?.kind === "agent" &&
-    (evidence.usage !== undefined || evidence.usageObservation?.modelTokens.status === "complete");
+    modelEvidence !== null &&
+    (modelEvidence.usage !== undefined ||
+      modelEvidence.usageObservation?.modelTokens.status === "complete");
   const costAccountingComplete =
-    evidence?.kind === "agent" &&
-    (evidence.usage !== undefined || evidence.usageObservation?.costUsd.status === "complete");
+    modelEvidence !== null &&
+    (modelEvidence.usage !== undefined ||
+      modelEvidence.usageObservation?.costUsd.status === "complete");
   return !(
     (limits?.maxModelTokens !== undefined && !tokenAccountingComplete) ||
     (limits?.maxCostUsdMicros !== undefined && !costAccountingComplete) ||

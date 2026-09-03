@@ -1580,6 +1580,17 @@ function freezeNode(
         prompt: source.verifier.prompt,
         evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
         model: Object.freeze({ ...source.verifier.model }),
+        ...(source.verifier.recovery === undefined
+          ? {}
+          : {
+              recovery: Object.freeze({
+                mode: source.verifier.recovery.mode,
+                maxAttempts: source.verifier.recovery.maxAttempts,
+                ...(source.verifier.recovery.backoff === undefined
+                  ? {}
+                  : { backoff: Object.freeze({ ...source.verifier.recovery.backoff }) }),
+              }),
+            }),
         ...(source.verifier.maxOutputTokens === undefined
           ? {}
           : { maxOutputTokens: source.verifier.maxOutputTokens }),
@@ -1607,6 +1618,17 @@ function freezeNode(
         package: Object.freeze({ ...source.verifier.package }),
         evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
         model: Object.freeze({ ...source.verifier.model }),
+        ...(source.verifier.recovery === undefined
+          ? {}
+          : {
+              recovery: Object.freeze({
+                mode: source.verifier.recovery.mode,
+                maxAttempts: source.verifier.recovery.maxAttempts,
+                ...(source.verifier.recovery.backoff === undefined
+                  ? {}
+                  : { backoff: Object.freeze({ ...source.verifier.recovery.backoff }) }),
+              }),
+            }),
         ...(source.verifier.maxOutputTokens === undefined
           ? {}
           : { maxOutputTokens: source.verifier.maxOutputTokens }),
@@ -2032,6 +2054,20 @@ function freezeLoopBodyNode(
           ),
         ),
         model: Object.freeze({ ...source.verifier.model }),
+        ...(source.verifier.recovery === undefined
+          ? {}
+          : {
+              recovery: Object.freeze({
+                mode: source.verifier.recovery.mode,
+                maxAttempts: source.verifier.recovery.maxAttempts,
+                ...(source.verifier.recovery.backoff === undefined
+                  ? {}
+                  : { backoff: Object.freeze({ ...source.verifier.recovery.backoff }) }),
+              }),
+            }),
+        ...(source.verifier.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: source.verifier.maxOutputTokens }),
         timeoutMs: source.verifier.timeoutMs,
       });
     } else if (source.verifier.kind === "lean-proof") {
@@ -2080,6 +2116,20 @@ function freezeLoopBodyNode(
           ),
         ),
         model: Object.freeze({ ...source.verifier.model }),
+        ...(source.verifier.recovery === undefined
+          ? {}
+          : {
+              recovery: Object.freeze({
+                mode: source.verifier.recovery.mode,
+                maxAttempts: source.verifier.recovery.maxAttempts,
+                ...(source.verifier.recovery.backoff === undefined
+                  ? {}
+                  : { backoff: Object.freeze({ ...source.verifier.recovery.backoff }) }),
+              }),
+            }),
+        ...(source.verifier.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: source.verifier.maxOutputTokens }),
         timeoutMs: source.verifier.timeoutMs,
       });
     }

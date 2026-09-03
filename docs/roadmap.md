@@ -523,6 +523,9 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 - Continue an eligible provider-failed agent from the exact model-session ledger after earlier
   workspace edits. Require a durable committed settlement for every edit. Refuse continuation when
   a command or delegation ran.
+- Retry a completed, nontruncated strict-invalid model-verifier response only under an explicit
+  bounded policy. Preserve each failed attempt and its resource use. Keep semantic verdicts,
+  truncated responses, provenance failures, and interrupted verifier requests nonretryable.
 
 #### Implemented hosted proof
 

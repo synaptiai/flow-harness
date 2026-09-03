@@ -1181,6 +1181,36 @@ nodes:
     });
   });
 
+  it("compiles explicit fresh recovery for a zero-tool model verifier", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      tools: [read]
+  - id: verify
+    type: verifier
+    dependsOn: [analyze]
+    verifier:
+      kind: model
+      prompt: Verify the analysis report.
+      evidence: [{ nodeId: analyze, field: agent.text }]
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      recovery: { mode: fresh, maxAttempts: 3 }
+`),
+    );
+
+    expect(workflow.nodes[1]).toMatchObject({
+      type: "verifier",
+      verifier: {
+        kind: "model",
+        recovery: { mode: "fresh", maxAttempts: 3 },
+      },
+    });
+  });
+
   it.each([
     ["unsupported mode", "{ mode: resume, maxAttempts: 2 }", "nodes.0.agent.recovery.mode"],
     ["one attempt", "{ mode: fresh, maxAttempts: 1 }", "nodes.0.agent.recovery.maxAttempts"],

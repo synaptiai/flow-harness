@@ -400,7 +400,13 @@ export class VerifierNodeExecutor implements VerifierExecutor {
         agentEvidence.durationMs,
         agentEvidence,
       );
-      return verifierFailure("inconclusive", evidence.reason, "none", evidence);
+      return verifierFailure(
+        "inconclusive",
+        evidence.reason,
+        "none",
+        evidence,
+        verifier.recovery !== undefined && context.attempt < verifier.recovery.maxAttempts,
+      );
     }
     const evidence = modelEvidence(
       verifier,
@@ -704,13 +710,14 @@ function verifierFailure(
   reason: string,
   sideEffectStatus: NodeFailure["sideEffectStatus"],
   evidence: VerifierEvidence,
+  retryable = false,
 ): NodeExecutionOutcome {
   return {
     status: "failed",
     error: {
       code: verdict === "rejected" ? "verifier_rejected" : "verifier_inconclusive",
       message: reason,
-      retryable: false,
+      retryable,
       sideEffectStatus,
     },
     evidence,

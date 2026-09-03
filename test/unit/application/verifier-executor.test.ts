@@ -342,8 +342,37 @@ describe("verifier node executor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "verifier_inconclusive", sideEffectStatus: "none" },
+      error: { code: "verifier_inconclusive", retryable: false, sideEffectStatus: "none" },
       evidence: { result: "invalid_output", verdict: "inconclusive", raw },
+    });
+  });
+
+  it("marks strict-invalid output retryable only while declared attempts remain", async () => {
+    const base = modelVerifier();
+    if (base.verifier.kind !== "model") throw new Error("fixture must use a model verifier");
+    const node: CompiledVerifierNode = {
+      ...base,
+      verifier: {
+        ...base.verifier,
+        recovery: { mode: "fresh", maxAttempts: 2 },
+      },
+    };
+    const raw = '{"verdict":"accepted","reason":"looks good","extra":null}';
+    const executor = new VerifierNodeExecutor(
+      fakeCommandExecutor(),
+      fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) }),
+    );
+
+    const first = await executor.execute(node, contextWithSources());
+    const final = await executor.execute(node, { ...contextWithSources(), attempt: 2 });
+
+    expect(first).toMatchObject({
+      status: "failed",
+      error: { code: "verifier_inconclusive", retryable: true },
+    });
+    expect(final).toMatchObject({
+      status: "failed",
+      error: { code: "verifier_inconclusive", retryable: false },
     });
   });
 

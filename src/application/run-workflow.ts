@@ -221,7 +221,7 @@ async function runWorkflowInternal(
     const verifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
     const toolPackageRequirements = workflowToolPackageRequirements(workflow);
     const workflowPackageRequirements = collectWorkflowPackageReferences(workflow);
-    const recoveryRequirements = agentRecoveryRequirements(workflow);
+    const recoveryRequirements = nodeRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
       ...eventBase(workflow, runId, 1, now),
@@ -2089,7 +2089,7 @@ function validateRecoveryCompatibility(
     );
   }
 
-  const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
+  const expectedRecoveryRequirements = nodeRecoveryRequirements(workflow);
   const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
     ([nodeId, requirement]) => ({ nodeId, ...requirement }),
   );
@@ -2342,6 +2342,9 @@ async function disposeProofSafeInterruptedAttempt(
         "workflow_mismatch",
         `run "${options.runId}" has no compiled node "${nodeId}"`,
       );
+    }
+    if (compiledNode.type !== "agent") {
+      continue;
     }
     let modelSession: ReturnType<typeof modelSessionSummary> | undefined;
     if (node.modelSession !== null && isModelBackedNode(compiledNode)) {
@@ -2983,26 +2986,36 @@ function workflowToolPackageRequirements(
   );
 }
 
-function agentRecoveryRequirements(
-  workflow: CompiledWorkflow,
-): readonly AgentRecoveryRequirement[] {
+function nodeRecoveryRequirements(workflow: CompiledWorkflow): readonly AgentRecoveryRequirement[] {
   return Object.freeze(
     workflow.nodes.flatMap((node) => {
-      if (node.type !== "agent" || node.agent.recovery === undefined) {
+      const recovery = nodeRecovery(node);
+      if (recovery === undefined) {
         return [];
       }
       const requirement: AgentRecoveryRequirement = Object.freeze({
         nodeId: node.id,
-        mode: node.agent.recovery.mode,
-        maxAttempts: node.agent.recovery.maxAttempts,
+        mode: recovery.mode,
+        maxAttempts: recovery.maxAttempts,
         effectProtocol: supportsDurableEffects(node) ? DURABLE_EFFECT_PROTOCOL : "none",
-        ...(node.agent.recovery.backoff === undefined
+        ...(recovery.backoff === undefined
           ? {}
-          : { backoff: Object.freeze({ ...node.agent.recovery.backoff }) }),
+          : { backoff: Object.freeze({ ...recovery.backoff }) }),
       });
       return [requirement];
     }),
   );
+}
+
+function nodeRecovery(node: CompiledNode): CompiledAgentNode["agent"]["recovery"] {
+  if (node.type === "agent") return node.agent.recovery;
+  if (
+    node.type === "verifier" &&
+    (node.verifier.kind === "model" || node.verifier.kind === "packaged-model")
+  ) {
+    return node.verifier.recovery;
+  }
+  return undefined;
 }
 
 function workflowControlGraph(workflow: CompiledWorkflow): ControlGraph | undefined {

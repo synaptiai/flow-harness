@@ -208,6 +208,14 @@ export type CompiledVerifierConfig =
         readonly id: string;
         readonly thinking: ThinkingLevel;
       };
+      readonly recovery?: {
+        readonly mode: "fresh";
+        readonly maxAttempts: number;
+        readonly backoff?: {
+          readonly initialDelayMs: number;
+          readonly maxDelayMs: number;
+        };
+      };
       readonly maxOutputTokens?: number;
       readonly timeoutMs: number;
     }
@@ -233,6 +241,14 @@ export type CompiledVerifierConfig =
         readonly provider: string;
         readonly id: string;
         readonly thinking: ThinkingLevel;
+      };
+      readonly recovery?: {
+        readonly mode: "fresh";
+        readonly maxAttempts: number;
+        readonly backoff?: {
+          readonly initialDelayMs: number;
+          readonly maxDelayMs: number;
+        };
       };
       readonly maxOutputTokens?: number;
       readonly timeoutMs: number;

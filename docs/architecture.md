@@ -14,6 +14,7 @@ directory creation, hash-anchored edits and complete replacements, argv-only age
 and fail-closed native command containment. It also adds exact deterministic-command
 approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
 recovery, exclusive local ownership, typed filesystem-effect reconciliation, proof-safe fresh agent attempts,
+bounded completed model-verifier format retries,
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
@@ -1341,9 +1342,14 @@ complete resource accounting and available budget. The ordinary path requires si
 evidence. Its effect, command, and delegation history must be empty.
 
 A committed-edit continuation requires durable committed edit settlements and an exact closed
-model-session record. The record
-must match the failed attempt and have no request-identity mismatch. Command and delegation history
-must be empty.
+model-session record. The record must match the failed attempt and have no request-identity
+mismatch. Command and delegation history must be empty.
+
+A model-verifier continuation is narrower. It requires an explicit bounded policy and complete,
+nontruncated `invalid_output` evidence from a strict verdict-contract failure. It retains the failed
+attempt and starts a fresh zero-tool model session from the original frozen verifier input. A valid
+semantic verdict, provenance defect, output truncation, or open verifier attempt cannot use this
+path.
 
 The next attempt uses a new Pi session and a digest-bound portable capsule. It never restores or
 repeats the failed stream.
@@ -1677,7 +1683,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Model-session record is missing, corrupt, unsafe, or over a limit | Refuse required recovery before provider I/O; never invent or replace private history |
 | Provider stream stops before a completed model event | Persist no partial model message; settle or interrupt the prepared request and apply only the workflow's proof-safe fresh recovery policy |
 | Model request surface exceeds selected-model capacity | Reject before provider I/O; never truncate protected instructions, tools, authority, or portable history implicitly |
-| Malformed model output | Schema-reject, retry within the node budget, then block with evidence |
+| Malformed model-verifier output | Schema-reject, retry only under its explicit attempt and run budgets, then block with retained evidence |
 | Unauthorized tool request | Deny before execution and record a policy event |
 | Stale or invalid edit before preparation | Reject the entire replacement before rename and record no effect event or receipt |
 | Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |

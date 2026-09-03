@@ -116,6 +116,12 @@ recovery policy and verifies effects, commands, approvals, attempts, and resourc
 4. Inspect the run again. A successful fresh recovery increments the attempt, interruption, and
    resume-surface counts. The node still needs new terminal evidence and any downstream verifier.
 
+This interruption procedure applies to eligible agent nodes. An open model-verifier attempt remains
+uncertain and isn't repeated. A model verifier can separately declare bounded recovery for a fully
+settled, nontruncated response that violates the strict verdict JSON contract. Flow schedules that
+fresh attempt within the same run, archives the prior evidence, and omits the malformed response
+from the retry conversation.
+
 Before the new attempt starts, Flow claims and replays the private record. It appends
 `attempt_interrupted` before the authoritative `node_attempt_interrupted` event. It then creates a
 new in-memory Pi session and sends one deterministic canonical JSON history capsule as a new user

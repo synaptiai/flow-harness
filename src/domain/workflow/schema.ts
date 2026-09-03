@@ -80,7 +80,7 @@ const retryBackoffSchema = z
     path: ["maxDelayMs"],
   });
 
-const agentRecoverySchema = z
+const freshRecoverySchema = z
   .object({
     mode: z.literal("fresh"),
     maxAttempts: z.number().int().min(2).max(16),
@@ -275,7 +275,7 @@ const agentConfigSchema = z
       )
       .default([]),
     toolApproval: agentToolApprovalSchema.optional(),
-    recovery: agentRecoverySchema.optional(),
+    recovery: freshRecoverySchema.optional(),
     contextCompaction: rollingContextCompactionSchema.optional(),
     policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
     maxOutputTokens: z.number().int().positive().safe().optional(),
@@ -383,6 +383,7 @@ const verifierNodeSchema = z
               "verifier evidence declarations must be unique",
             ),
           model: modelSchema,
+          recovery: freshRecoverySchema.optional(),
           maxOutputTokens: z.number().int().positive().safe().optional(),
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })
@@ -436,6 +437,7 @@ const verifierNodeSchema = z
               "verifier evidence declarations must be unique",
             ),
           model: modelSchema,
+          recovery: freshRecoverySchema.optional(),
           maxOutputTokens: z.number().int().positive().safe().optional(),
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })

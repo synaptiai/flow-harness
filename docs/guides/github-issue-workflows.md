@@ -143,6 +143,9 @@ nodes:
         provider: runtime
         id: selected-by-flow
         thinking: high
+      recovery:
+        mode: fresh
+        maxAttempts: 2
       maxOutputTokens: 8192
       timeoutMs: 300000
 ```
@@ -156,6 +159,12 @@ Select only the workspace tools needed by the task. The implementation workflow 
 command, approval, child, optimization, or command-tool-package authority. Flow also rejects
 `exec`. Put deterministic commands in the lifecycle plan so the trusted controller runs them
 against both the frozen base and the exact candidate as required.
+
+The verifier recovery policy is optional and bounded. It retries only a completed, nontruncated
+response that fails Flow's exact `verdict` and `reason` JSON contract. It doesn't retry a valid
+rejection, an inconclusive evidence judgment, a source or provenance defect, truncated output, or
+an interrupted request. Each failed attempt remains in the run evidence and consumes the declared
+aggregate budget.
 
 ## Create the review workflow
 

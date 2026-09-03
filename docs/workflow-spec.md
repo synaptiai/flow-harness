@@ -792,6 +792,7 @@ node, may appear inside a bounded loop body, and declares one strict driver:
       - { nodeId: plan, field: agent.text }
       - { nodeId: verify-tests, field: verifier.reason }
     model: { provider: anthropic, id: claude-sonnet-4-5, thinking: medium }
+    recovery: { mode: fresh, maxAttempts: 2 }
     maxOutputTokens: 8192
     timeoutMs: 120000
 ```
@@ -815,18 +816,38 @@ The value limits each provider response but doesn't replace the verifier's stric
 and JSON-shape checks. Use a smaller verifier cap when the required verdict is short. The `8192`
 value in the example is illustrative.
 
+An inline or packaged model verifier can also declare `recovery: { mode: fresh, maxAttempts: N }`,
+where `N` is from 2 through 16. An optional `backoff` has the same bounds and deterministic jitter
+as agent recovery. This policy applies only when a completed, nontruncated model response violates
+the strict verdict JSON contract and attempts remain. It doesn't retry a valid `rejected` or
+`inconclusive` verdict. It also doesn't retry missing, oversized, truncated, or identity-mismatched
+source evidence.
+
+Model provenance mismatches and unexpected tool activity are nonretryable. A
+response that exceeds the retained raw-byte limit is nonretryable. An open verifier attempt after
+process interruption is also nonretryable.
+
+Flow archives each failed verifier attempt and its raw output, usage, duration, source provenance,
+and model-session summary before it schedules a fresh attempt. The next request uses the original
+frozen verifier input plus bounded retry metadata. It doesn't include the malformed response as
+conversation history. The attempt ceiling includes the initial request. Configure the run-wide
+node, token, cost, time, and artifact budgets independently. Omit `recovery` when one model request
+is the intended contract.
+
 Verifier evidence records the driver, verdict, bounded reason and hash, duration, ordered source
 node/attempt/field/hash observations, and command or model provenance. Model evidence also retains
 bounded raw output, its complete hash/truncation state, and available Flow-owned usage. Only
-`accepted` may produce `node_succeeded`; `rejected` and `inconclusive` fail the node and current run,
-so no dependent is released. Cancellation overrides a late accepted result. Replay validates the
+`accepted` may produce `node_succeeded`. The `rejected` and `inconclusive` verdicts fail the node, so no dependent
+is released. An eligible strict-output failure may enter a declared fresh attempt before the run
+becomes terminal. Cancellation overrides a late accepted result. Replay validates the
 declaration, provenance, source identities, hashes, strict raw response, verdict/outcome pairing,
 failure classification, and resources without consulting a provider.
 
 The separate zero-tool session and delimiters reduce accidental instruction following; they do not
 make a probabilistic verifier prompt-injection-proof or equivalent to hidden deterministic tests.
 Command-verifier approval, remediation edges, fallback, and automatic retry of an interrupted
-verifier are not part of this contract.
+verifier are not part of this contract. The completed strict-output retry doesn't authorize any of
+those behaviors.
 
 ### Lean proof verifier
 
@@ -1803,6 +1824,11 @@ canonical JSON user turn with a fixed untrusted-data instruction. `resume_surfac
 only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
 never primary history.
 
+A completed strict-invalid model-verifier response uses the same append-only record and fresh
+attempt boundary, but it doesn't create `node_attempt_interrupted`. The prior attempt is already
+settled and fully accounted. The retry capsule retains the original verifier input and bounded
+settlement metadata while omitting the malformed model response.
+
 Resume renderer version 2 deterministically projects a successful `flow_read` result when its text
 is larger than 32,768 UTF-8 bytes. The rendered event replaces `text` with `textOmitted`, which
 contains fixed `oversized_successful_read_result` reason, SHA-256 digest, exact byte count, and
@@ -2775,7 +2801,20 @@ or package, change active runs, or delete artifacts.
 
 ## Current limitations
 
-- No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates, and pure evidence-bound graph nodes; command-verifier approval remains unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
+- No arbitrary cycles, nested or unbounded loops, nested optimization, or dynamic fan-out.
+- No general multi-condition joins, child patch promotion, terminal-failure retry, or fallback
+  semantics.
+- Bounded loop bodies and static ready DAG nodes can execute concurrently. Iterations are sequential
+  and share one workspace. Flow doesn't infer that iterations are conflict-free.
+- Ordinary child workflows isolate workspaces and histories and discard their changes. Only
+  compiler-generated bounded optimization candidates can use the typed promotion saga.
+- Conditions and loop stops use exact equality over complete durable fields. Supported fields come
+  from commands, agents, accepted verifiers, or typed results.
+- Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates,
+  and pure evidence-bound graph nodes. Command-verifier approval remains unavailable.
+- Recovery is limited to proof-safe fresh agent attempts and completed strict-invalid model-verifier
+  responses with explicit bounded policy. Interrupted verifier attempts are never retried
+  automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

@@ -2,15 +2,16 @@
 
 Flow can resume an interrupted run when its durable ledger proves that execution stopped between
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
-attempt applied no effects. The same opt-in can retry a completed provider execution failure. The
-terminal evidence must prove that the attempt performed no effect. It must also account for every
-bounded resource. Recovery remains conservative: ambiguous work is reported to the operator and is
-never repeated automatically.
+attempt applied no effects. The same opt-in can retry an eligible completed provider execution
+failure. A model verifier may opt into retrying a completed, nontruncated response that violates
+the strict verdict JSON contract. Terminal evidence must prove that the attempt performed no effect
+and must account for every bounded resource. Recovery remains conservative: ambiguous work is
+reported to the operator and is never repeated automatically.
 
 An interrupted agent attempt that selects `exec` never qualifies for fresh recovery. A completed
-agent attempt that prepared a command, effect, or delegation also doesn't qualify. Command
-attempts, model verifier attempts, and Lean proof verifier attempts remain ineligible. An open
-verifier start is refused as uncertain.
+agent attempt that prepared a command, effect, or delegation also doesn't qualify. Command and Lean
+proof verifier attempts remain ineligible. An open model verifier start is refused as uncertain,
+even when that verifier declares recovery. Only its fully settled strict-output failure qualifies.
 
 ## Lean proof appliance attempts
 
@@ -424,7 +425,8 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | A result source succeeded but no result transition is durable | Append `run_resumed`, reparse the durable source with the persisted schema, and publish or fail the result without invoking an executor |
 | `node_result_published` is durable | Verify source, schema, canonical value, and hashes during replay; continue after the result without republishing it |
 | All nodes succeeded or were omitted but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
-| `node_failed` is durable, no limit is exhausted, and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
+| An eligible retryable `node_failed` is durable, no limit is exhausted, and its retry disposition is absent | Append `run_resumed`, append one `node_retry_scheduled`, honor its persisted backoff, and start only the next declared attempt |
+| A terminal or ineligible `node_failed` is durable and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and don't retry the failed node |
 | A completed node outcome reaches a model-token, reported-cost, active-time, or artifact limit but `run_budget_exhausted` is absent | Replay the exact retained payload bytes, append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | A start limit is exhausted and pending work remains | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | `command_approval_requested` is pending | Append `run_resumed`, retain `waiting_for_approval`, and execute nothing |
@@ -681,13 +683,22 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 - The node has a persisted `recovery: { mode: fresh, ... }` policy.
 - The failed attempt is below `maxAttempts`.
 - The failure is retryable.
-- The attempt is side-effect-free, or it has only committed durable workspace edits.
+- The attempt is side-effect-free, or an agent attempt has only committed durable workspace edits.
 - A committed-edit attempt has a closed, matching model-session record for the failed attempt.
 - The attempt has no command or delegation record. Any edit history contains no open, unknown,
   uncertain, reconciled, or not-applied effect.
 - No declared run budget is exhausted.
 - When model tokens or cost are bounded, terminal evidence contains a complete usage observation.
 - When execution time is bounded, terminal evidence is present.
+
+For a model verifier, retry eligibility is narrower than the general list. The retained response
+must be complete and classified as `invalid_output`. This classification means that the response
+violates the strict verdict JSON contract.
+
+A valid `rejected` or `inconclusive` verdict is a semantic result, not a transport or
+format failure. Flow also doesn't retry truncated output or source and preflight failures. It never
+retries unexpected tool activity or model-provenance mismatch. An open verifier request is also
+nonretryable.
 
 `node_retry_scheduled` fixes the reason to `retryable_failure`, the disposition to `fresh_retry`,
 and resource accounting to `complete`. When `backoff` is declared, the event also records the
@@ -697,9 +708,12 @@ run identity.
 The reducer archives the terminal error, evidence, timestamps, protocols, effects, commands,
 delegations, and model-session summary under `failedAttempts`. It then returns only the current
 node projection to `pending`. The scheduler waits until `notBefore`, and replay rejects an early
-`node_started` event. The next start must use the next attempt number. For a committed-edit
-continuation, that attempt receives a new in-memory Pi session and a digest-bound resume capsule.
-It doesn't repeat or continue the failed provider stream.
+`node_started` event. The next start must use the next attempt number.
+
+For a committed-edit continuation or an eligible completed model-verifier failure, the next attempt
+receives a new in-memory Pi session. It also receives a digest-bound retry capsule. It doesn't
+repeat or continue the failed provider stream. A verifier retry retains the original frozen input
+and omits the strict-invalid response from the new conversation.
 
 If Flow stops after `node_failed` but before `node_retry_scheduled`, resume replays the charged
 failure and appends the missing retry disposition once. If Flow stops during a declared backoff,
