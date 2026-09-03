@@ -68,7 +68,7 @@ export const agentCommandAuthoritySchema = z
         "agent command authority digests must be unique",
       )
       .refine(
-        (digests) => digests.every((digest, index) => index === 0 || digests[index - 1]! < digest),
+        hasCanonicalDigestOrder,
         "agent command authority digests must use canonical order",
       ),
   })
@@ -212,4 +212,13 @@ export function calculateAgentCommandDigest(command: AgentCommandRequest): strin
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function hasCanonicalDigestOrder(digests: readonly string[]): boolean {
+  for (let index = 1; index < digests.length; index += 1) {
+    const previous = digests[index - 1];
+    const current = digests[index];
+    if (previous === undefined || current === undefined || previous >= current) return false;
+  }
+  return true;
 }
