@@ -151,7 +151,8 @@ const commandEvidenceSchema = z
     timedOut: z.boolean(),
     aborted: z.boolean(),
     durationMs: z.number().nonnegative().safe(),
-    processContainment: z.literal("linux-pid-namespace"),
+    processContainment: z.enum(["linux-pid-namespace", "process-group"]),
+    selectionAuthority: z.literal("frozen-verification").optional(),
     terminationStatus: z.enum(["confirmed", "not-required", "unconfirmed"]),
     sandbox: z
       .object({

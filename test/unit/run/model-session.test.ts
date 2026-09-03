@@ -283,7 +283,7 @@ describe("model session record", () => {
     expect(first.digest).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("renders a continuation capsule after a provider request and attempt settle as failed", () => {
+  it("renders a clean retry capsule after a provider request and attempt settle as failed", () => {
     let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
     state = append(state, { type: "attempt_started", attempt: 1 });
     state = append(state, {
@@ -300,6 +300,33 @@ describe("model session record", () => {
       identity: requestIdentity(state),
     });
     state = append(state, {
+      type: "model_message_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      text: "Stale failed-attempt analysis.",
+      stopReason: "tool_use",
+    });
+    state = append(state, {
+      type: "tool_call_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "read-stale",
+      toolName: "flow_read",
+      argumentsJson: JSON.stringify({ path: "stale.py" }),
+    });
+    state = append(state, {
+      type: "tool_result_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "read-stale",
+      toolName: "flow_read",
+      text: "STALE_FAILED_READ_RESULT",
+      isError: false,
+    });
+    state = append(state, {
       type: "model_request_settled",
       attempt: 1,
       turn: 1,
@@ -310,14 +337,35 @@ describe("model session record", () => {
     state = append(state, { type: "attempt_started", attempt: 2 });
 
     const capsule = renderModelSessionResumeCapsule(state);
+    const rendered = JSON.parse(capsule.text) as {
+      readonly retryProjection: Readonly<Record<string, unknown>>;
+      readonly events: readonly Record<string, unknown>[];
+    };
 
     expect(capsule.text).toContain(MODEL_SESSION_RESUME_INSTRUCTION);
     expect(capsule.text).toContain("Implement the bounded change.");
+    expect(capsule.text).not.toContain("Stale failed-attempt analysis.");
+    expect(capsule.text).not.toContain("STALE_FAILED_READ_RESULT");
     expect(capsule.text).not.toContain("model_request_settled");
+    expect(rendered.retryProjection).toEqual({
+      kind: "settled-failure",
+      attempt: 1,
+      outcome: "failed",
+      omittedEventCount: 3,
+      recovery:
+        "Treat the current workspace as source of truth and reread only the bounded regions needed to complete the original objective.",
+    });
+    expect(rendered.events).toEqual([
+      expect.objectContaining({
+        type: "user_message_committed",
+        origin: "primary_prompt",
+        text: "Implement the bounded change.",
+      }),
+    ]);
     expect(capsule.bytes).toBe(Buffer.byteLength(capsule.text, "utf8"));
   });
 
-  it("projects only oversized successful read results from a fresh retry capsule", () => {
+  it("projects only oversized successful read results from an interrupted recovery capsule", () => {
     let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
     state = append(state, { type: "attempt_started", attempt: 1 });
     state = append(state, {
@@ -376,7 +424,11 @@ describe("model session record", () => {
       request: 1,
       outcome: "failed",
     });
-    state = append(state, { type: "attempt_settled", attempt: 1, outcome: "failed" });
+    state = append(state, {
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
     state = append(state, { type: "attempt_started", attempt: 2 });
 
     const capsule = renderModelSessionResumeCapsule(state);
@@ -386,7 +438,7 @@ describe("model session record", () => {
     };
     const results = rendered.events.filter((event) => event.type === "tool_result_committed");
 
-    expect(capsule.renderVersion).toBe(2);
+    expect(capsule.renderVersion).toBe(3);
     expect(rendered.readResultProjection).toEqual({
       inlineLimitBytes: RESUME_INLINE_READ_BYTES,
       omittedTextField: "textOmitted",

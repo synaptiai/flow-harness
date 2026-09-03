@@ -12,7 +12,7 @@ import {
 
 export const MODEL_SESSION_PROTOCOL = "flow.model-session/v1" as const;
 export const MODEL_SESSION_VERSION = 1 as const;
-export const MODEL_SESSION_RESUME_RENDER_VERSION = 2 as const;
+export const MODEL_SESSION_RESUME_RENDER_VERSION = 3 as const;
 export const MAX_MODEL_SESSION_EVENT_BYTES = 2 * 1024 * 1024;
 export const MAX_MODEL_SESSION_RECORD_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SESSION_EVENTS = 1_024;
@@ -238,7 +238,7 @@ export interface ModelSessionAttemptInterruptedEvent extends ModelSessionEventBa
 export interface ModelSessionResumeSurfaceEvent extends ModelSessionEventBase {
   readonly type: "resume_surface_prepared";
   readonly attempt: number;
-  readonly renderVersion: 1 | 2;
+  readonly renderVersion: 1 | 2 | 3;
   readonly sourceHead: string;
   readonly digest: string;
   readonly bytes: number;
@@ -509,7 +509,7 @@ export type ModelSessionEventInput =
   | {
       readonly type: "resume_surface_prepared";
       readonly attempt: number;
-      readonly renderVersion: 1 | 2;
+      readonly renderVersion: 1 | 2 | 3;
       readonly sourceHead: string;
       readonly digest: string;
       readonly bytes: number;
@@ -712,7 +712,7 @@ export interface ModelSessionSummary {
 }
 
 export interface ModelSessionResumeCapsule {
-  readonly renderVersion: 2;
+  readonly renderVersion: 3;
   readonly sourceHead: string;
   readonly digest: string;
   readonly bytes: number;
@@ -1082,7 +1082,7 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
     .extend({
       type: z.literal("resume_surface_prepared"),
       attempt: positiveSafeIntegerSchema,
-      renderVersion: z.union([z.literal(1), z.literal(2)]),
+      renderVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
       sourceHead: sha256Schema,
       digest: sha256Schema,
       bytes: positiveSafeIntegerSchema,
@@ -1327,6 +1327,16 @@ export function renderModelSessionResumeCapsule(
   if (sourceHead === undefined) {
     throw new ModelSessionReplayError("resume capsule has no source head");
   }
+  const priorSettlement = latestPriorFailedAttemptSettlement(state);
+  const projectedEvents =
+    priorSettlement === undefined
+      ? sourceEvents.map(projectResumeEvent)
+      : sourceEvents
+          .filter(
+            (event): event is ModelSessionUserMessageEvent =>
+              event.type === "user_message_committed" && event.origin === "primary_prompt",
+          )
+          .map(projectPortableEvent);
   const capsule = {
     version: MODEL_SESSION_RESUME_RENDER_VERSION,
     instruction: MODEL_SESSION_RESUME_INSTRUCTION,
@@ -1335,12 +1345,25 @@ export function renderModelSessionResumeCapsule(
       sessionId: state.sessionId,
       head: sourceHead,
     },
-    readResultProjection: {
-      inlineLimitBytes: MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES,
-      omittedTextField: "textOmitted",
-      recovery: "Use the paired tool call to reread only the needed bounded range.",
-    },
-    events: sourceEvents.map(projectResumeEvent),
+    ...(priorSettlement === undefined
+      ? {
+          readResultProjection: {
+            inlineLimitBytes: MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES,
+            omittedTextField: "textOmitted",
+            recovery: "Use the paired tool call to reread only the needed bounded range.",
+          },
+        }
+      : {
+          retryProjection: {
+            kind: "settled-failure",
+            attempt: priorSettlement.attempt,
+            outcome: priorSettlement.outcome,
+            omittedEventCount: sourceEvents.length - projectedEvents.length,
+            recovery:
+              "Treat the current workspace as source of truth and reread only the bounded regions needed to complete the original objective.",
+          },
+        }),
+    events: projectedEvents,
   };
   const text = canonicalJson(capsule);
   const bytes = Buffer.byteLength(text, "utf8");
@@ -1356,6 +1379,21 @@ export function renderModelSessionResumeCapsule(
     bytes,
     text,
   });
+}
+
+function latestPriorFailedAttemptSettlement(
+  state: ModelSessionState,
+): ModelSessionAttemptSettledEvent | undefined {
+  const activeAttempt = state.activeAttempt;
+  if (activeAttempt === null || activeAttempt <= 1) return undefined;
+  return [...state.events]
+    .reverse()
+    .find(
+      (event): event is ModelSessionAttemptSettledEvent =>
+        event.type === "attempt_settled" &&
+        event.attempt === activeAttempt - 1 &&
+        event.outcome !== "succeeded",
+    );
 }
 
 export function renderRollingContextResumeBootstrap(
