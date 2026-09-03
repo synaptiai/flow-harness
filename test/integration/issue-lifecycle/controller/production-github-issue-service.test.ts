@@ -29,6 +29,7 @@ import type {
   GitHubIssueCliRequest,
   GitHubIssueCliService,
 } from "../../../../src/cli/github-issue.js";
+import { resolveProductionGitHubIssueHostRoot } from "../../../../src/cli/production-github-issue-service.js";
 import type {
   IssueExternalEffectResult,
   PublicIssueLifecycleState,
@@ -204,11 +205,7 @@ async function createDeterministicService(
   const projectRoot = await realpath(fixture.projectRoot);
   const durableRoot = join(projectRoot, ".flow", "issue-runs");
   const artifactRoot = join(durableRoot, "artifact-store");
-  const hostRoot = join(
-    await realpath(tmpdir()),
-    `flow-issue-host-${process.getuid?.() ?? 0}`,
-    createHash("sha256").update(projectRoot).digest("hex").slice(0, 32),
-  );
+  const hostRoot = resolveProductionGitHubIssueHostRoot(projectRoot);
   await ensureOwnedPrivateDirectory(durableRoot);
   await ensureOwnedPrivateDirectory(artifactRoot);
   await ensureOwnedPrivateDirectory(join(hostRoot, ".."));
@@ -378,14 +375,7 @@ async function createFixture(): Promise<Fixture> {
   await git(projectRoot, "push", "--quiet", "-u", "origin", "main");
   const baseCommit = await git(projectRoot, "rev-parse", "HEAD");
   const executable = await pinGitHubIssueHostExecutable(await gitPath(), projectRoot);
-  const hostRoot = join(
-    await realpath(tmpdir()),
-    `flow-issue-host-${process.getuid?.() ?? 0}`,
-    createHash("sha256")
-      .update(await realpath(projectRoot))
-      .digest("hex")
-      .slice(0, 32),
-  );
+  const hostRoot = resolveProductionGitHubIssueHostRoot(projectRoot);
   temporaryDirectories.push(hostRoot);
   return {
     projectRoot,

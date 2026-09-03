@@ -28,6 +28,9 @@ Keep these responsibilities separate:
 - The GitHub CLI credential store holds GitHub credentials.
 - Flow holds private run evidence under `.flow/issue-runs/<run-id>/` and exposes only its bounded
   public projection.
+- Flow holds candidate and verification Git worktrees under the owner-only
+  `<checkout-parent>/.flow-issue-host-<uid>/<project-hash>/worktrees/` collection. Keep this
+  collection on the same persistent storage boundary as the checkout.
 - The model implementation and review runtimes receive no GitHub credential or delivery authority.
 
 Actor labels are append-only attribution, not authenticated identities. The operating-system
@@ -236,6 +239,12 @@ response. The operation might have succeeded even when the client did not receiv
 Don't resume `merge_approval_required` or a terminal phase. The former requires an exact merge
 decision. The latter cannot accept another event.
 
+Restart from the same canonical checkout and operating-system account. Flow resolves the same
+owner-only sibling host collection from that checkout path. Don't move the checkout or its
+`.flow-issue-host-<uid>` sibling while a run is active. A missing candidate worktree, verification
+worktree, or ownership record makes recovery uncertain. Flow doesn't infer uncommitted edits from
+the branch or event ledger.
+
 Candidate inspection is read-only. Flow automatically retries the complete snapshot once when the
 pinned Git executable returns a malformed response. If both responses are malformed, the run fails
 with `git_response_invalid` before Flow prepares a commit effect. Preserve the terminal run and its
@@ -302,6 +311,10 @@ Don't force-delete a branch while external state is uncertain.
 Back up `.flow/issue-runs/<run-id>/` only to an access-controlled destination. Preserve file modes,
 event order, and bytes. A text archive, copied terminal output, or pull request comment isn't a
 replacement for the durable run root.
+
+For an active run that you might resume, also preserve its exact candidate and verification
+worktrees in the sibling `.flow-issue-host-<uid>` collection. The event ledger records identities
+and evidence, but it doesn't contain a reconstructable copy of every uncommitted workspace byte.
 
 Set a written retention period based on repository sensitivity, audit needs, incident-response
 requirements, and local storage. Keep at least:

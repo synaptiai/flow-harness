@@ -67,10 +67,7 @@ export const agentCommandAuthoritySchema = z
         (digests) => new Set(digests).size === digests.length,
         "agent command authority digests must be unique",
       )
-      .refine(
-        hasCanonicalDigestOrder,
-        "agent command authority digests must use canonical order",
-      ),
+      .refine(hasCanonicalDigestOrder, "agent command authority digests must use canonical order"),
   })
   .strict();
 const toolPackageInputValueSchema = z.union([

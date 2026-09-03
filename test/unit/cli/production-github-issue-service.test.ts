@@ -1,10 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createProductionGitHubIssueCliService } from "../../../src/cli/production-github-issue-service.js";
+import {
+  createProductionGitHubIssueCliService,
+  resolveProductionGitHubIssueHostRoot,
+} from "../../../src/cli/production-github-issue-service.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 
 const temporaryRoots: string[] = [];
@@ -191,11 +194,42 @@ spec:
     await expect(service.execute(request)).rejects.toThrow("resolver-attempt-2");
     expect(attempts).toBe(2);
   });
+
+  it("keeps resumable issue workspaces on the project's persistent storage boundary", async () => {
+    const projectRoot = await createProject();
+    const hostRoot = resolveProductionGitHubIssueHostRoot(projectRoot);
+    const service = createProductionGitHubIssueCliService({
+      projectRoot,
+      sandboxProfile: "native",
+      inspectProviderConfiguration: async () => undefined,
+      inspectSandbox: async () => undefined,
+      resolveExecutables: async () => {
+        throw new Error("stop after private runtime storage is prepared");
+      },
+    });
+
+    expect(dirname(dirname(hostRoot))).toBe(dirname(projectRoot));
+    expect(dirname(hostRoot)).toBe(
+      join(dirname(projectRoot), `.flow-issue-host-${process.getuid?.() ?? 0}`),
+    );
+    await expect(
+      service.execute({
+        kind: "run",
+        issueUrl: "https://github.com/example/project/issues/42",
+        planPath: ".flow/github-issue.plan.yaml",
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        commandId: "123e4567-e89b-42d3-a456-426614174000",
+      }),
+    ).rejects.toThrow("stop after private runtime storage is prepared");
+    await expect(access(join(hostRoot, "worktrees"))).resolves.toBeUndefined();
+  });
 });
 
 async function createProject(implementationSource = implementationWorkflow()): Promise<string> {
-  const projectRoot = await mkdtemp(join(tmpdir(), "flow-issue-cli-"));
-  temporaryRoots.push(projectRoot);
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "flow-issue-cli-"));
+  const projectRoot = join(fixtureRoot, "project");
+  temporaryRoots.push(fixtureRoot);
   await mkdir(join(projectRoot, ".flow", "workflows"), { recursive: true });
   await Promise.all([
     writeFile(join(projectRoot, ".flow", "github-issue.plan.yaml"), planSource()),
@@ -205,7 +239,7 @@ async function createProject(implementationSource = implementationWorkflow()): P
     ),
     writeFile(join(projectRoot, ".flow", "workflows", "review.workflow.yaml"), reviewWorkflow()),
   ]);
-  return projectRoot;
+  return await realpath(projectRoot);
 }
 
 function planSource(): string {

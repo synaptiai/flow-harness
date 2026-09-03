@@ -294,6 +294,15 @@ The run root is `.flow/issue-runs/<run-id>/`. The lifecycle stores append-only p
 and owner-only private evidence under that root. The controller must use the repository's
 single-owner and durable-tail rules when it appends or repairs the final partial record.
 
+The controller must store lifecycle-owned candidate and verification Git worktrees outside the
+checkout and outside an operating-system temporary directory. The production path is
+`<checkout-parent>/.flow-issue-host-<uid>/<project-hash>/worktrees/`, where `project-hash` is the
+first 32 hexadecimal characters of the SHA-256 digest of the canonical checkout path. The
+collection and project directory must be real, owner-only directories. Reconstructing a missing
+worktree from the branch or ledger is forbidden because the worktree might contain uncommitted
+model changes. Resume must fail closed when either worktree or its exact ownership record is
+missing or divergent.
+
 Every public event has this envelope:
 
 ```json

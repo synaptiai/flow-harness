@@ -124,6 +124,10 @@ and prepared external effects under one owner-only run root. The host retains Gi
 credential, deterministic verification, publication, and merge authority. Release qualification
 still requires the external-repository acceptance pilot.
 
+Lifecycle-owned candidate and verification Git worktrees live in an owner-only collection beside
+the canonical checkout. They share the project storage lifetime and remain available after a
+process restart or temporary-directory purge.
+
 Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
 retain the embedded Pi path.
 
@@ -199,9 +203,10 @@ flowchart TB
         artifacts[("Retained artifact blobs and catalog")]
         goalLedger[("Goal revision ledger")]
         stores[("Run, package, activation, and evaluation stores")]
-        workspaces[("Isolated workspaces")]
+        workspaces[("Disposable model workspaces")]
         proofState[("Proof runtime attestation and leases")]
         issueRuns[("Issue lifecycle events and frozen evidence")]
+        issueWorktrees[("Persistent issue Git worktrees<br/>Owner-only · project sibling")]
     end
 
     subgraph external["5. External systems"]
@@ -273,6 +278,8 @@ flowchart TB
     issueLifecycle -->|"Rechecks the exact merge gate"| rules
     issueLifecycle -->|"Appends effects and receipts"| issueRuns
     issueLifecycle -->|"Admits fixed host operations"| issueHost
+    issueHost -->|"Retains candidate and verification state"| issueWorktrees
+    issueWorktrees -->|"Binds exact Git identities"| project
     issueHost -->|"Owns bounded Git changes"| project
     issueHost -->|"Uses fixed GitHub operations"| github
     proofQualification -->|"Checks the complete declared denominator"| engine
@@ -405,7 +412,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
-| GitHub issue lifecycle | `src/cli/github-issue.ts`, `src/cli/production-github-issue-service.ts`, `src/domain/issue-lifecycle/`, `src/application/*-github-issue.ts`, `src/application/issue-*.ts`, `src/infrastructure/issue-lifecycle/`, `src/infrastructure/fs/issue-lifecycle-run-repository.ts`, `src/infrastructure/git/`, and `src/infrastructure/github/` | Freezes the issue, base, plan, workflows, budgets, write authority, and selected model; constructs one bounded replay-stable independent-review projection from exact private evidence; verifies a base-failing holdout and exact candidate checks; reconciles Git and GitHub effects; waits for exact-head hosted checks; requires an exact operator merge command; and proves the resulting base topology before completion. |
+| GitHub issue lifecycle | `src/cli/github-issue.ts`, `src/cli/production-github-issue-service.ts`, `src/domain/issue-lifecycle/`, `src/application/*-github-issue.ts`, `src/application/issue-*.ts`, `src/infrastructure/issue-lifecycle/`, `src/infrastructure/fs/issue-lifecycle-run-repository.ts`, `src/infrastructure/git/`, and `src/infrastructure/github/` | Freezes the issue, base, plan, workflows, budgets, write authority, and selected model; retains exact candidate and verification Git worktrees in an owner-only project-sibling collection; constructs one bounded replay-stable independent-review projection from exact private evidence; verifies a base-failing holdout and exact candidate checks; reconciles Git and GitHub effects; waits for exact-head hosted checks; requires an exact operator merge command; and proves the resulting base topology before completion. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
 | Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets; performs exclusive file creation, hash-bound exact editing, version-bound complete replacement, and nonrecursive directory creation under one target-lock and effect-journal contract; and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |

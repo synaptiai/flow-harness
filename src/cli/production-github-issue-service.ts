@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { cancelGitHubIssue } from "../application/cancel-github-issue.js";
 import { replayIssueLifecycleState } from "../application/continue-github-issue.js";
@@ -101,6 +100,17 @@ export function createProductionGitHubIssueCliService(
   return new ProductionGitHubIssueCliService(options);
 }
 
+/** Resolves private issue workspaces beside the project so they survive temporary-directory purges. */
+export function resolveProductionGitHubIssueHostRoot(projectRoot: string): string {
+  const canonicalProjectRoot = realpathSync(projectRoot);
+  const projectIdentity = createHash("sha256")
+    .update(canonicalProjectRoot)
+    .digest("hex")
+    .slice(0, 32);
+  const userIdentity = process.getuid?.() ?? 0;
+  return join(dirname(canonicalProjectRoot), `.flow-issue-host-${userIdentity}`, projectIdentity);
+}
+
 class ProductionGitHubIssueCliService implements GitHubIssueCliService {
   readonly #artifactRoot: string;
   readonly #durableRoot: string;
@@ -135,16 +145,7 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
     this.#inspectSandbox = options.inspectSandbox ?? inspectIssueSandbox;
     this.#durableRoot = join(this.#projectRoot, ".flow", "issue-runs");
     this.#artifactRoot = join(this.#durableRoot, "artifact-store");
-    const projectIdentity = createHash("sha256")
-      .update(this.#projectRoot)
-      .digest("hex")
-      .slice(0, 32);
-    const userIdentity = process.getuid?.() ?? 0;
-    this.#hostRoot = join(
-      realpathSync(tmpdir()),
-      `flow-issue-host-${userIdentity}`,
-      projectIdentity,
-    );
+    this.#hostRoot = resolveProductionGitHubIssueHostRoot(this.#projectRoot);
     this.#store = new JsonlIssueLifecycleStore(this.#durableRoot);
   }
 
