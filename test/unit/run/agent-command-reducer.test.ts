@@ -43,6 +43,85 @@ describe("durable agent command replay", () => {
     expect(Object.isFrozen(state.nodes.implement?.commands[0]?.settlement)).toBe(true);
   });
 
+  it("replays process-group evidence only for an exact frozen verification command", () => {
+    const events = preparedEvents();
+    const state = reduceRunEvents([
+      parseRunEvent({
+        ...events[0],
+        agentCommandAuthority: {
+          version: 1,
+          kind: "frozen-verification",
+          requestDigests: [commandDigest],
+        },
+      }),
+      events[1],
+      events[2],
+      parseRunEvent({
+        ...base(4),
+        type: "node_agent_command_settled",
+        nodeId: "implement",
+        attempt: 1,
+        commandId: "command-3",
+        outcome: {
+          status: "succeeded",
+          evidence: {
+            ...commandEvidence("ok", ""),
+            processContainment: "process-group",
+            selectionAuthority: "frozen-verification",
+          },
+        },
+      }),
+    ]);
+
+    expect(state.agentCommandAuthority).toEqual({
+      version: 1,
+      kind: "frozen-verification",
+      requestDigests: [commandDigest],
+    });
+  });
+
+  it("rejects a prepared command outside durable frozen verification authority", () => {
+    const events = preparedEvents();
+
+    expect(() =>
+      reduceRunEvents([
+        parseRunEvent({
+          ...events[0],
+          agentCommandAuthority: {
+            version: 1,
+            kind: "frozen-verification",
+            requestDigests: ["f".repeat(64)],
+          },
+        }),
+        events[1],
+        events[2],
+      ]),
+    ).toThrow(/frozen verification authority/i);
+  });
+
+  it("rejects process-group evidence without durable frozen verification authority", () => {
+    expect(() =>
+      reduceRunEvents([
+        ...preparedEvents(),
+        parseRunEvent({
+          ...base(4),
+          type: "node_agent_command_settled",
+          nodeId: "implement",
+          attempt: 1,
+          commandId: "command-3",
+          outcome: {
+            status: "succeeded",
+            evidence: {
+              ...commandEvidence("ok", ""),
+              processContainment: "process-group",
+              selectionAuthority: "frozen-verification",
+            },
+          },
+        }),
+      ]),
+    ).toThrow(/containment.*authority|authority.*containment/i);
+  });
+
   it("rejects a prepared request whose operation digest was changed", () => {
     const events = preparedEvents();
     const prepared = events[2];

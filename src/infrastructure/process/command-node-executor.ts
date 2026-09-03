@@ -15,7 +15,10 @@ import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
-import type { AgentCommandRequest } from "../../domain/agent-command.js";
+import {
+  calculateAgentCommandDigest,
+  type AgentCommandRequest,
+} from "../../domain/agent-command.js";
 import { MAX_AGENT_COMMAND_OUTPUT_BYTES } from "../../domain/command-envelope.js";
 import {
   type ArtifactReference,
@@ -332,6 +335,13 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     command: AgentCommandRequest,
     context: AgentCommandExecutionContext,
   ): Promise<AgentCommandSettlementOutcome> {
+    const authority = context.agentCommandAuthority;
+    if (
+      authority !== undefined &&
+      !authority.requestDigests.includes(calculateAgentCommandDigest(command))
+    ) {
+      return commandNotAllowedFailure();
+    }
     const { commandStdin: _commandStdin, ...agentContext } = context as NodeExecutionContext;
     const outcome = await this.#execute(
       {
@@ -345,7 +355,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
         },
       },
       agentContext,
-      true,
+      authority === undefined,
     );
     const commandEvidence = outcome.evidence;
     if (commandEvidence !== null && commandEvidence.kind !== "command") {
@@ -636,6 +646,7 @@ function commandEvidence(
           : "not-required"),
     sandbox: prepared.evidence,
   };
+  commandProcessContainment.set(evidence, prepared.processContainment);
   if (stdoutEvidence.artifactBytes !== undefined || stderrEvidence.artifactBytes !== undefined) {
     commandArtifactCandidates.set(evidence, {
       ...(stdoutEvidence.artifactBytes === undefined
@@ -659,13 +670,20 @@ async function toAgentCommandEvidence(
   const candidate = commandArtifactCandidates.get(evidence);
   const store = context.artifactStore;
   const producer = context.agentCommandArtifactProducer;
+  const processContainment = commandProcessContainment.get(evidence);
+  if (processContainment === undefined) {
+    throw new TypeError("agent command evidence is missing process containment");
+  }
   const baseEvidence: AgentCommandEvidence = {
     ...evidence,
     stdoutRetainedHash: hashText(evidence.stdout),
     stderrRetainedHash: hashText(evidence.stderr),
     stdoutRetainedBytes: Buffer.byteLength(evidence.stdout, "utf8"),
     stderrRetainedBytes: Buffer.byteLength(evidence.stderr, "utf8"),
-    processContainment: "linux-pid-namespace",
+    processContainment,
+    ...(context.agentCommandAuthority === undefined
+      ? {}
+      : { selectionAuthority: "frozen-verification" as const }),
     aborted: evidence.aborted ?? false,
     terminationStatus: requiredTerminationStatus(evidence),
     sandbox: evidence.sandbox,
@@ -1066,6 +1084,19 @@ function insufficientContainmentFailure(): NodeExecutionOutcome {
   };
 }
 
+function commandNotAllowedFailure(): AgentCommandSettlementOutcome {
+  return {
+    status: "failed",
+    error: {
+      code: "command_not_allowed",
+      message: "command does not match controller-frozen verification authority",
+      retryable: false,
+      sideEffectStatus: "none",
+    },
+    evidence: null,
+  };
+}
+
 function sandboxCleanupFailure(
   error: unknown,
   evidence: CommandEvidence | null,
@@ -1160,6 +1191,10 @@ class BoundedOutput {
 const commandArtifactCandidates = new WeakMap<
   CommandEvidence,
   { readonly stdout?: Buffer; readonly stderr?: Buffer }
+>();
+const commandProcessContainment = new WeakMap<
+  CommandEvidence,
+  PreparedCommand["processContainment"]
 >();
 
 function decodeBoundedUtf8(buffer: Buffer, maxBytes: number): string {

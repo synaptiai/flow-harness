@@ -3,7 +3,9 @@ import { isAbsolute, normalize } from "node:path";
 import { z } from "zod";
 import {
   AGENT_COMMAND_PROTOCOL,
+  type AgentCommandAuthority,
   type AgentCommandRequest,
+  agentCommandAuthoritySchema,
   agentCommandRequestSchema,
   calculateAgentCommandDigest,
 } from "../agent-command.js";
@@ -411,6 +413,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly workspaceAuthorityDigest?: string;
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly workProfile?: WorkProfile;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
@@ -989,7 +992,8 @@ export interface AgentCommandEvidence extends CommandEvidence {
   readonly stderrRetainedHash: string;
   readonly stdoutRetainedBytes: number;
   readonly stderrRetainedBytes: number;
-  readonly processContainment: "linux-pid-namespace";
+  readonly processContainment: "linux-pid-namespace" | "process-group";
+  readonly selectionAuthority?: "frozen-verification";
   readonly aborted: boolean;
   readonly terminationStatus: "confirmed" | "not-required" | "unconfirmed";
   readonly sandbox: SandboxEvidence;
@@ -1621,6 +1625,7 @@ export interface RunState {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly workspaceAuthorityDigest?: string;
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly workProfile: WorkProfile;
   readonly capabilitySnapshot: CapabilitySnapshot | null;
   readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
@@ -2167,7 +2172,8 @@ const agentCommandEvidenceSchema = commandEvidenceSchema.extend({
   stderrRetainedHash: z.string().regex(/^[a-f0-9]{64}$/),
   stdoutRetainedBytes: z.number().int().nonnegative().max(32_768),
   stderrRetainedBytes: z.number().int().nonnegative().max(32_768),
-  processContainment: z.literal("linux-pid-namespace"),
+  processContainment: z.enum(["linux-pid-namespace", "process-group"]),
+  selectionAuthority: z.literal("frozen-verification").optional(),
   aborted: z.boolean(),
   terminationStatus: z.enum(["confirmed", "not-required", "unconfirmed"]),
   sandbox: sandboxEvidenceSchema,
@@ -3179,6 +3185,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
       workspaceAuthorityDigest: sha256Schema.optional(),
+      agentCommandAuthority: agentCommandAuthoritySchema.optional(),
       workProfile: z.enum(WORK_PROFILES).optional(),
       capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
       capabilityRequirements: z
@@ -4461,6 +4468,9 @@ export function appendRunEvent(
       ...(event.workspaceAuthorityDigest === undefined
         ? {}
         : { workspaceAuthorityDigest: event.workspaceAuthorityDigest }),
+      ...(event.agentCommandAuthority === undefined
+        ? {}
+        : { agentCommandAuthority: deepFreeze(structuredClone(event.agentCommandAuthority)) }),
       workProfile: event.workProfile ?? "standard",
       capabilitySnapshot:
         event.capabilitySnapshot === undefined
@@ -6459,6 +6469,15 @@ export function appendRunEvent(
         );
       }
       validatePreparedAgentCommand(event, eventIndex);
+      if (
+        currentState.agentCommandAuthority !== undefined &&
+        !currentState.agentCommandAuthority.requestDigests.includes(event.operationDigest)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command does not match durable frozen verification authority",
+        );
+      }
       validateToolPackageCommandRequest(currentState, event.nodeId, event.request, eventIndex);
       const approvalRequirement = currentState.agentCommandApprovalRequirements[event.nodeId];
       let agentCommandApprovals = current.agentCommandApprovals;
@@ -6558,7 +6577,7 @@ export function appendRunEvent(
           `command "${event.commandId}" settled out of order before earlier command "${nextUnsettledCommand?.commandId ?? "none"}"`,
         );
       }
-      validateAgentCommandSettlement(command, event, eventIndex);
+      validateAgentCommandSettlement(currentState, command, event, eventIndex);
       const commands = [...current.commands];
       commands[commandIndex] = deepFreeze({
         ...command,
@@ -7001,6 +7020,9 @@ export function appendRunEvent(
     ...(currentState.workspaceAuthorityDigest === undefined
       ? {}
       : { workspaceAuthorityDigest: currentState.workspaceAuthorityDigest }),
+    ...(currentState.agentCommandAuthority === undefined
+      ? {}
+      : { agentCommandAuthority: currentState.agentCommandAuthority }),
     workProfile: currentState.workProfile,
     capabilitySnapshot: currentState.capabilitySnapshot,
     capabilityRequirements: currentState.capabilityRequirements,
@@ -10114,6 +10136,7 @@ function boundedToolPackageDetail(value: string): string {
 }
 
 function validateAgentCommandSettlement(
+  state: RunState,
   command: NodeAgentCommandRunState,
   event: NodeAgentCommandSettledEvent,
   eventIndex: number,
@@ -10146,6 +10169,16 @@ function validateAgentCommandSettlement(
     validateCommandArtifactProducer(evidence.stdoutArtifact, "stdout", command, event, eventIndex);
     validateCommandArtifactProducer(evidence.stderrArtifact, "stderr", command, event, eventIndex);
     validateAgentCommandTerminationEvidence(evidence, eventIndex);
+    const frozenVerification = state.agentCommandAuthority !== undefined;
+    if (
+      frozenVerification !== (evidence.selectionAuthority === "frozen-verification") ||
+      (!frozenVerification && evidence.processContainment !== "linux-pid-namespace")
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command containment does not match its durable selection authority",
+      );
+    }
   }
   if (
     outcome.status === "succeeded" &&
@@ -10179,6 +10212,7 @@ function validateFailedAgentCommandSettlement(
         "command_spawn_failed",
         "command_sandbox_unavailable",
         "command_sandbox_cleanup_failed",
+        "command_not_allowed",
       ].includes(outcome.error.code);
     const preparationUncertain =
       outcome.error.sideEffectStatus === "uncertain" &&
@@ -10721,7 +10755,21 @@ export function calculateRecoveryBackoffDelayMs(
 export function calculateWorkspaceAuthorityDigest(input: {
   readonly protectedPaths: readonly string[];
   readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
 }): string {
+  if (input.agentCommandAuthority !== undefined) {
+    return sha256(
+      JSON.stringify({
+        version: 2,
+        protectedPaths: [...input.protectedPaths].sort(compareCanonicalStrings),
+        allowedWritePrefixes:
+          input.allowedWritePrefixes === undefined
+            ? null
+            : [...input.allowedWritePrefixes].sort(compareCanonicalStrings),
+        agentCommandAuthority: input.agentCommandAuthority,
+      }),
+    );
+  }
   return sha256(
     JSON.stringify({
       version: 1,

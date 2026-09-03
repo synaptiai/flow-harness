@@ -11,6 +11,10 @@ import type {
   NodeEffectJournal,
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../../src/domain/agent-command.js";
 import { createArtifactReference } from "../../../../src/domain/artifact/reference.js";
 import { createAgentSkillSession } from "../../../../src/domain/capability/agent-skill-session.js";
 import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
@@ -162,6 +166,54 @@ describe("workspace-confined Pi tools", () => {
         outcome: "allowed",
       }),
     ]);
+  });
+
+  it("rejects a command outside frozen verification authority before policy or preparation", async () => {
+    const root = await createTemporaryDirectory();
+    const policy = policyBroker(["process.execute"]);
+    const journalEvents: string[] = [];
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 10_000,
+    });
+    const commandRecorder = new AgentCommandRecorder(
+      {
+        executeAgentCommand: async () => {
+          journalEvents.push("execute");
+          throw new Error("unreachable");
+        },
+      },
+      {
+        prepare: async () => {
+          journalEvents.push("prepare");
+          throw new Error("unreachable");
+        },
+      },
+      executionContext(root),
+    );
+    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, {
+      commandRecorder,
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+      },
+    });
+    const execTool = tools.definitions[0];
+    if (execTool === undefined) throw new Error("exec tool was not registered");
+
+    await expect(
+      execTool.execute(
+        "exec-call",
+        { ...allowed, args: ["run", "test"] },
+        new AbortController().signal,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrow(/frozen verification command/i);
+    expect(journalEvents).toEqual([]);
+    expect(policy.snapshot()).toEqual([]);
   });
 
   it("enforces confinement through the registered read tool", async () => {

@@ -17,7 +17,10 @@ import type {
   AgentCommandExecutionContext,
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
-import { normalizeAgentCommandRequest } from "../../../../src/domain/agent-command.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../../src/domain/agent-command.js";
 import {
   createArtifactReference,
   MAX_COMMAND_ARTIFACT_BYTES,
@@ -70,6 +73,79 @@ describe("CommandNodeExecutor sandbox boundary", () => {
       },
     });
     expect(sandbox.requests[0]).toMatchObject({ executable: "npm", args: ["test"] });
+  });
+
+  it("allows exact frozen verification commands with process-group containment", async () => {
+    const request = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 10_000,
+    });
+    const sandbox = new FakeCommandSandbox({
+      processContainment: "process-group",
+      launch: {
+        executable: process.execPath,
+        args: ["-e", 'process.stdout.write("verified")'],
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+      evidence: sandboxEvidence,
+    });
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.executeAgentCommand(request, {
+      ...context,
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(request)],
+      },
+    });
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        stdout: "verified",
+        processContainment: "process-group",
+        selectionAuthority: "frozen-verification",
+      },
+    });
+  });
+
+  it("rejects a command outside frozen verification authority before sandbox preparation", async () => {
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 10_000,
+    });
+    const sandbox = new FakeCommandSandbox({
+      processContainment: "process-group",
+      launch: { executable: process.execPath, args: [], env: {} },
+      evidence: sandboxEvidence,
+    });
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.executeAgentCommand(
+      normalizeAgentCommandRequest({
+        executable: "npm",
+        args: ["run", "test"],
+        timeoutMs: 10_000,
+      }),
+      {
+        ...context,
+        agentCommandAuthority: {
+          version: 1,
+          kind: "frozen-verification",
+          requestDigests: [calculateAgentCommandDigest(allowed)],
+        },
+      },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "command_not_allowed", sideEffectStatus: "none" },
+      evidence: null,
+    });
+    expect(sandbox.requests).toEqual([]);
   });
 
   it("does not pass holdout stdin through the agent-command boundary", async () => {

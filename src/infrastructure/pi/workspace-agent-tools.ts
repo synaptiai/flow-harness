@@ -13,6 +13,7 @@ import { type TSchema, Type } from "typebox";
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import type { NodeDelegationSession } from "../../application/ports.js";
 import {
+  type AgentCommandAuthority,
   calculateAgentCommandDigest,
   DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
   MAX_AGENT_COMMAND_ARG_BYTES,
@@ -291,6 +292,7 @@ export interface FlowAgentToolOptions {
   readonly allowedWritePrefixes?: readonly string[];
   readonly effectRecorder?: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly editFile?: typeof editHashAnchoredTextFile;
   readonly replaceFile?: typeof replaceHashAnchoredTextFile;
   readonly createFile?: typeof createHashAnchoredTextFile;
@@ -1069,6 +1071,12 @@ function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOption
       throwIfToolAborted(signal);
       const request = normalizeAgentCommandRequest(input);
       const operationDigest = calculateAgentCommandDigest(request);
+      if (
+        options.agentCommandAuthority !== undefined &&
+        !options.agentCommandAuthority.requestDigests.includes(operationDigest)
+      ) {
+        throw new Error("command does not match a controller-frozen verification command");
+      }
       const decision = policy.authorize({
         action: policyAction,
         target: request.executable,

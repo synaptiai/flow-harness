@@ -187,7 +187,7 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
       protectedPaths: ISSUE_WORKFLOW_PROTECTED_PATHS,
       allowedWritePrefixes,
       criteria: workflow.goal?.criteria ?? [],
-      ...(usesExec ? { agentCommandAuthority } : {}),
+      ...(usesExec && agentCommandAuthority !== undefined ? { agentCommandAuthority } : {}),
     });
   }
 

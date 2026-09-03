@@ -30,6 +30,7 @@ import {
   type PhaseRoutingDecision,
   parsePhaseRoutingDecision,
 } from "../../domain/adaptation/phase-routing-candidate.js";
+import type { AgentCommandAuthority } from "../../domain/agent-command.js";
 import { validateArtifactReference } from "../../domain/artifact/reference.js";
 import {
   type AgentSkillCatalogEntry,
@@ -125,6 +126,7 @@ export interface PiAgentRunRequest {
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
   readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly effectRecorder: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
   readonly capabilities?: {
@@ -519,6 +521,9 @@ export class PiAgentExecutor implements AgentExecutor {
           ...(context.allowedWritePrefixes === undefined
             ? {}
             : { allowedWritePrefixes: context.allowedWritePrefixes }),
+          ...(context.agentCommandAuthority === undefined
+            ? {}
+            : { agentCommandAuthority: context.agentCommandAuthority }),
           effectRecorder,
           commandRecorder,
           ...(context.artifactStore === undefined ? {} : { artifactStore: context.artifactStore }),
@@ -534,6 +539,7 @@ export class PiAgentExecutor implements AgentExecutor {
               context.allowedWritePrefixes === undefined
                 ? null
                 : [...context.allowedWritePrefixes].sort(),
+            agentCommandAuthority: context.agentCommandAuthority ?? null,
             capabilitySnapshot: context.capabilitySnapshot?.digest ?? null,
             toolPackages: toolPackages.map((item) => item.digest),
             commandApproval: context.agentCommandApprovalGate !== undefined,
@@ -1254,6 +1260,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         ...(request.allowedWritePrefixes === undefined
           ? {}
           : { allowedWritePrefixes: request.allowedWritePrefixes }),
+        ...(request.agentCommandAuthority === undefined
+          ? {}
+          : { agentCommandAuthority: request.agentCommandAuthority }),
         effectRecorder: request.effectRecorder,
         ...(request.commandRecorder === undefined
           ? {}
