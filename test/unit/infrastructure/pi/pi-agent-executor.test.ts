@@ -1413,12 +1413,47 @@ describe("PiAgentExecutor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "pi_agent_output_limit" },
+      error: { code: "pi_agent_output_limit", retryable: false },
       evidence: {
         kind: "agent",
         text: "x".repeat(1_024),
         textHash: createHash("sha256").update(completeText).digest("hex"),
         textTruncated: true,
+      },
+    });
+  });
+
+  it("marks oversized output retryable only with durable committed-edit continuation", async () => {
+    const completeText = "x".repeat(2_048);
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return { text: completeText, stopReason: "stop" };
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100, 5_000, 1_024).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_output_limit",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        text: "x".repeat(1_024),
+        textHash: createHash("sha256").update(completeText).digest("hex"),
+        textTruncated: true,
+        effectReceipts: [{ outcome: "committed" }],
       },
     });
   });

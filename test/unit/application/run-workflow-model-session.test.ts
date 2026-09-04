@@ -112,6 +112,7 @@ describe("runWorkflow model session coordination", () => {
     ["provider-rate-limited", "pi_provider_rate_limited"],
     ["provider-unavailable", "pi_provider_unavailable"],
     ["output-limited", "pi_agent_incomplete"],
+    ["report-output-limited", "pi_agent_output_limit"],
   ] as const)(
     "continues a %s edit attempt from its settled model-session ledger",
     async (_case, failureCode) => {

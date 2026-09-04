@@ -1332,6 +1332,15 @@ tool result, or effect can therefore consume an attempt without advancing the re
 Bound `recovery.maxAttempts` and the aggregate workflow budget independently of this per-response
 limit.
 
+The separate 64 KiB report limit remains fixed. When an agent exceeds it, Flow records
+`pi_agent_output_limit`. Flow retains only the bounded diagnostic text and complete stream hash.
+Flow never accepts the truncated report as node evidence.
+
+A configured fresh recovery can start another attempt only when a durable model session exists.
+Every normal recovery proof must also succeed. A committed-edit attempt must have only settled
+edits. It must have no command or delegation record. Recovery doesn't enlarge the report limit. It
+doesn't continue the overflowing provider stream.
+
 `flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
 Every request contains one canonical portable project path. Definition, reference, and hover
 requests also contain a zero-based line and character. A semantic workflow requires one exact
@@ -1472,6 +1481,10 @@ Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agen
 a 64 KiB limit independent of `maxOutputTokens`. The ledger retains the bounded text, complete
 stream hash, truncation status, policy decisions, and effect receipts. It classifies byte overflow
 as `pi_agent_output_limit` and a provider `length` stop as `pi_agent_incomplete`.
+
+Either result can be marked retryable when a durable model session exists. The scheduler still
+requires an explicit recovery policy. It also requires remaining budgets and attempts, and a proven
+side-effect boundary.
 
 Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason with a nonempty agent
 report can make the node succeed. A whitespace-only report produces `pi_agent_empty_output` and

@@ -670,6 +670,11 @@ shared `maxAttempts` ceiling still includes the initial attempt and every output
 transient-provider retry. This fail-closed ceiling prevents an unproductive response pattern from
 becoming an unbounded loop.
 
+A report that exceeds 64 KiB follows the same bounded fresh-attempt discipline when the model
+session is durable. Flow retains a truncated diagnostic projection and the complete stream hash,
+but that projection cannot satisfy the node or authorize downstream work. Recovery doesn't enlarge
+the report cap and doesn't continue the overflowing provider stream.
+
 Provider transport retry and Flow attempt recovery are separate bounded layers. Transport retry
 repeats only the current pre-stream provider request. It doesn't increment the Flow attempt or
 repeat completed tool work. Flow attempt recovery runs only after the transport layer is exhausted.
@@ -685,7 +690,8 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 - The failure is retryable.
 - The attempt is side-effect-free, or an agent attempt has only committed durable workspace edits.
 - A committed-edit agent failed with `pi_agent_error`, `pi_agent_failed`,
-  `pi_agent_incomplete`, `pi_provider_rate_limited`, or `pi_provider_unavailable`.
+  `pi_agent_incomplete`, `pi_agent_output_limit`, `pi_provider_rate_limited`, or
+  `pi_provider_unavailable`.
 - A committed-edit attempt has a closed, matching model-session record for the failed attempt.
 - The attempt has no command or delegation record. Any edit history contains no open, unknown,
   uncertain, reconciled, or not-applied effect.
@@ -698,9 +704,9 @@ must be complete and classified as `invalid_output`. This classification means t
 violates the strict verdict JSON contract.
 
 A valid `rejected` or `inconclusive` verdict is a semantic result, not a transport or
-format failure. Flow also doesn't retry truncated output or source and preflight failures. It never
-retries unexpected tool activity or model-provenance mismatch. An open verifier request is also
-nonretryable.
+format failure. Flow also doesn't retry truncated model-verifier output or source and preflight
+failures. It never retries unexpected tool activity or model-provenance mismatch. An open verifier
+request is also nonretryable.
 
 `node_retry_scheduled` fixes the reason to `retryable_failure`, the disposition to `fresh_retry`,
 and resource accounting to `complete`. When `backoff` is declared, the event also records the

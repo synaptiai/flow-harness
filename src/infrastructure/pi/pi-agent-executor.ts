@@ -797,11 +797,13 @@ export class PiAgentExecutor implements AgentExecutor {
         );
       }
       if (normalized.outputLimitExceeded) {
+        const effectStatus = currentSideEffectStatus();
         return agentFailure(
           "pi_agent_output_limit",
           `agent output exceeded ${maxOutputBytes} UTF-8 bytes`,
-          currentSideEffectStatus(),
+          effectStatus,
           evidence,
+          context.modelSession !== undefined,
         );
       }
       if (result.stopReason !== "stop") {

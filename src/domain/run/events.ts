@@ -11094,6 +11094,7 @@ function failedAttemptHasRetryBoundary(
     (node.error.code === "pi_agent_error" ||
       node.error.code === "pi_agent_failed" ||
       node.error.code === "pi_agent_incomplete" ||
+      node.error.code === "pi_agent_output_limit" ||
       node.error.code === "pi_provider_rate_limited" ||
       node.error.code === "pi_provider_unavailable") &&
     requirement.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
