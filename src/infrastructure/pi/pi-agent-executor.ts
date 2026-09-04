@@ -382,6 +382,7 @@ export class PiAgentExecutor implements AgentExecutor {
         commandSafetyController.abort(new Error("Flow command termination unconfirmed"));
         resolveCommandTerminationUnconfirmed();
       },
+      policyDecisionLimit,
     );
     let observedUsage: AgentModelUsage | undefined;
     let observedActivity: AgentActivity | undefined;

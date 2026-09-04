@@ -396,7 +396,7 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
     expect(error.message).not.toContain("private-output");
   });
 
-  it("fails closed on timeout, signal, and cancellation", async () => {
+  it("fails closed when a verification command times out", async () => {
     const timeoutFixture = await createFixture({
       verificationCommand: nodeCommand("setInterval(() => undefined, 1000);", 30),
     });
@@ -406,7 +406,9 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
         terminationConfirmationMs: 100,
       }).verify(request(timeoutFixture)),
     ).rejects.toMatchObject({ code: "command_timeout" });
+  }, 30_000);
 
+  it("fails closed when a verification command exits by signal", async () => {
     const signalFixture = await createFixture({
       verificationCommand: nodeCommand(`process.kill(process.pid, "SIGTERM");`),
     });
@@ -415,7 +417,9 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
     ).rejects.toMatchObject({
       code: "command_signaled",
     });
+  }, 30_000);
 
+  it("fails closed when verification is cancelled", async () => {
     const cancellationFixture = await createFixture();
     const controller = new AbortController();
     const sandbox = new RecordingProcessSandbox(() => controller.abort("operator cancelled"), 3);

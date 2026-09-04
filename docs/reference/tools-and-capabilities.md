@@ -416,7 +416,7 @@ Schema `default` annotations alone don't insert a value.
 
 | Identifier | Limit | Default | Scope |
 | --- | ---: | ---: | --- |
-| `agent-commands-per-attempt` | 32 items | — | Maximum flow_exec and command-tool-package executions started in one agent attempt. |
+| `agent-commands-per-attempt` | 128 items | 64 items | Maximum configurable flow_exec and command-tool-package executions started in one agent attempt. The effective limit equals the node policy-decision limit because every command consumes one policy decision. |
 | `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit, flow_replace, flow_create, and flow_mkdir effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |

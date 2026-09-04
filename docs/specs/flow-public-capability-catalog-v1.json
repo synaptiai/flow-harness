@@ -484,9 +484,10 @@
   "limits": [
     {
       "id": "agent-commands-per-attempt",
-      "value": 32,
+      "value": 128,
       "unit": "items",
-      "scope": "Maximum flow_exec and command-tool-package executions started in one agent attempt."
+      "scope": "Maximum configurable flow_exec and command-tool-package executions started in one agent attempt. The effective limit equals the node policy-decision limit because every command consumes one policy decision.",
+      "default": 64
     },
     {
       "id": "agent-effects-per-attempt",

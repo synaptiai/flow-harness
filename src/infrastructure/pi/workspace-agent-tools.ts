@@ -314,7 +314,8 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "agent-commands-per-attempt",
     MAX_AGENT_COMMANDS_PER_ATTEMPT,
     "items",
-    "Maximum flow_exec and command-tool-package executions started in one agent attempt.",
+    "Maximum configurable flow_exec and command-tool-package executions started in one agent attempt. The effective limit equals the node policy-decision limit because every command consumes one policy decision.",
+    DEFAULT_POLICY_DECISION_LIMIT,
   ),
   limit(
     "agent-effects-per-attempt",

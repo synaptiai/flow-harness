@@ -369,7 +369,7 @@ export interface ChildEvidence {
 }
 
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
-export const MAX_AGENT_COMMANDS_PER_ATTEMPT = 32;
+export const MAX_AGENT_COMMANDS_PER_ATTEMPT = MAX_POLICY_DECISION_LIMIT;
 export const MAX_RUN_EVENT_BYTES = 20 * 1024 * 1024;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
 export const EMPTY_DIRECTORY_STATE_SHA256 =
@@ -4790,12 +4790,10 @@ export function appendRunEvent(
       if (
         current.agentCommandApprovals.filter(
           (approval) => approval.request.attempt === event.attempt,
-        ).length >= MAX_AGENT_COMMANDS_PER_ATTEMPT
+        ).length >= agentCommandLimit(currentState, event.nodeId)
       ) {
-        throw new RunReplayError(
-          eventIndex,
-          `agent command limit of ${MAX_AGENT_COMMANDS_PER_ATTEMPT} was exceeded`,
-        );
+        const commandLimit = agentCommandLimit(currentState, event.nodeId);
+        throw new RunReplayError(eventIndex, `agent command limit of ${commandLimit} was exceeded`);
       }
       const pendingApproval = Object.entries(nodes).find(([, node]) =>
         node.agentCommandApprovals.some((approval) => approval.status === "pending"),
@@ -6466,11 +6464,9 @@ export function appendRunEvent(
           `command sequence ${event.commandSequence} does not match next command sequence ${expectedCommandSequence}`,
         );
       }
-      if (current.commands.length >= MAX_AGENT_COMMANDS_PER_ATTEMPT) {
-        throw new RunReplayError(
-          eventIndex,
-          `agent command limit of ${MAX_AGENT_COMMANDS_PER_ATTEMPT} was exceeded`,
-        );
+      const commandLimit = agentCommandLimit(currentState, event.nodeId);
+      if (current.commands.length >= commandLimit) {
+        throw new RunReplayError(eventIndex, `agent command limit of ${commandLimit} was exceeded`);
       }
       const fatalCommand = current.commands.find(
         (command) => command.settlement?.outcome.evidence?.terminationStatus === "unconfirmed",
@@ -9178,6 +9174,13 @@ function validateAgentPolicyDecisionLimit(
       `agent policy decision evidence exceeds configured limit of ${limit}`,
     );
   }
+}
+
+function agentCommandLimit(state: RunState, nodeId: string): number {
+  const controlNode = state.controlGraph?.nodes.find((node) => node.nodeId === nodeId);
+  return controlNode?.type === "agent"
+    ? (controlNode.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT)
+    : DEFAULT_POLICY_DECISION_LIMIT;
 }
 
 function validateChildEvidenceProjection(

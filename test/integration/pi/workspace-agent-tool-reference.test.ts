@@ -137,7 +137,11 @@ describe("production workspace-agent tool reference", () => {
     const catalog = createProductionPublicCapabilityCatalog();
     const limits = Object.fromEntries(catalog.limits.map((limit) => [limit.id, limit]));
 
-    expect(limits["agent-commands-per-attempt"]).toMatchObject({ value: 32, unit: "items" });
+    expect(limits["agent-commands-per-attempt"]).toMatchObject({
+      value: 128,
+      default: 64,
+      unit: "items",
+    });
     expect(limits["agent-effects-per-attempt"]).toMatchObject({ value: 32, unit: "items" });
     expect(limits["exec-artifact-bytes-per-stream"]).toMatchObject({
       value: 1_048_576,

@@ -8,6 +8,7 @@ import {
   calculateAgentCommandDigest,
 } from "../../domain/agent-command.js";
 import type { PolicyDecision } from "../../domain/policy/types.js";
+import { DEFAULT_POLICY_DECISION_LIMIT } from "../../domain/policy/limits.js";
 import {
   type AgentCommandSettlementOutcome,
   MAX_AGENT_COMMANDS_PER_ATTEMPT,
@@ -28,7 +29,18 @@ export class AgentCommandRecorder {
     readonly context: NodeExecutionContext,
     readonly onArtifactBudgetExhausted?: () => void,
     readonly onTerminationUnconfirmed?: () => void,
-  ) {}
+    readonly commandLimit = DEFAULT_POLICY_DECISION_LIMIT,
+  ) {
+    if (
+      !Number.isSafeInteger(commandLimit) ||
+      commandLimit < 1 ||
+      commandLimit > MAX_AGENT_COMMANDS_PER_ATTEMPT
+    ) {
+      throw new RangeError(
+        `agent command limit must be an integer between 1 and ${MAX_AGENT_COMMANDS_PER_ATTEMPT}`,
+      );
+    }
+  }
 
   async execute(
     request: AgentCommandRequest,
@@ -41,8 +53,8 @@ export class AgentCommandRecorder {
     if (this.executor === undefined || this.journal === undefined) {
       throw new AgentCommandJournalUnavailableError();
     }
-    if (this.#started >= MAX_AGENT_COMMANDS_PER_ATTEMPT) {
-      throw new AgentCommandAuditLimitError(MAX_AGENT_COMMANDS_PER_ATTEMPT);
+    if (this.#started >= this.commandLimit) {
+      throw new AgentCommandAuditLimitError(this.commandLimit);
     }
     const operationDigest = calculateAgentCommandDigest(request);
     validateDecision(request, operationDigest, decision);

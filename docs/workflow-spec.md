@@ -1271,6 +1271,13 @@ The count includes every allowed or denied operation made through a policy-backe
 record a policy decision. The model receives the effective limit in its system instructions so it
 can reserve capacity for final verification.
 
+The same value also limits `flow_exec` and command-tool-package executions in that attempt. Every
+command requires one `process.execute` policy decision. A smaller independent command ceiling would
+contradict the declared policy budget and could prevent an agent from recording final verification
+evidence. The command recorder and durable replay both derive their effective limit from the
+persisted node value. Other policy-backed operations consume decisions without consuming command
+capacity, so the number of commands can never exceed the policy-decision limit.
+
 The compiler binds an explicit value into the workflow digest. A non-default value also requires a
 persisted control graph, which records the override. Live execution stops at that value, and replay
 rejects terminal evidence that contains more decisions. Audit exhaustion aborts the model session
@@ -1280,7 +1287,8 @@ The values 64, 96, and 128 are Flow-specific operational bounds, not cross-frame
 Use the 64-decision default until durable run evidence shows that one coherent node needs more
 capacity. Prefer splitting a node when its evidence shows repeated broad reads, repeated rewrites,
 or unrelated responsibilities. Authorize an override independently of other bounds. Keep the node
-timeout, model-token budget, reported-cost budget, 32-effect limit, and path restrictions unchanged.
+timeout, model-token budget, reported-cost budget, 32-effect limit, event-log byte limit, and path
+restrictions unchanged.
 Change those bounds only when separate evidence supports the change.
 
 Treat 128 as a hard ceiling. It provides defense in depth. Don't treat it as a target.
