@@ -156,9 +156,36 @@ description must state an observable outcome. Don't use process-only wording suc
 updated.”
 
 Select only the workspace tools needed by the task. The implementation workflow can't contain
-command, approval, child, optimization, or command-tool-package authority. Flow also rejects
-`exec`. Put deterministic commands in the lifecycle plan so the trusted controller runs them
-against both the frozen base and the exact candidate as required.
+ordinary command, approval, child, optimization, or command-tool-package nodes. An implementation
+agent can select `exec` only when the lifecycle plan declares verification commands. Every request
+must match one plan command's executable, complete ordered arguments, and timeout exactly.
+
+Prefer a command verifier when a model doesn't need command output to repair the
+candidate. The verifier command must also match one plan verification command exactly:
+
+```yaml
+  - id: verify-tests
+    type: verifier
+    dependsOn:
+      - assess-implementation
+    verifier:
+      kind: command
+      command:
+        executable: npm
+        args: [test]
+        timeoutMs: 300000
+```
+
+A command verifier uses the production sandbox and accepts only an exit code of zero. An ordinary
+nonzero exit rejects the node. A timeout, signal, containment failure, or missing evidence is
+inconclusive. Keep the plan-owned command as the source of authority. Workflow YAML can't add or
+alter a command.
+
+Use agent `exec` only for a bounded repair loop that genuinely needs command output. Split broad
+loops by subsystem or check family so one provider session doesn't accumulate an unbounded tool
+history. Put command verifiers after the last repair node. The controller still repeats every plan
+verification command against the committed candidate before independent review, so an
+implementation-workflow verifier doesn't replace candidate-bound verification.
 
 The verifier recovery policy is optional and bounded. It retries only a completed, nontruncated
 response that fails Flow's exact `verdict` and `reason` JSON contract. It doesn't retry a valid
@@ -304,7 +331,8 @@ Use the reported stable condition to choose a correction:
 | Condition | Correction |
 | --- | --- |
 | The implementation workflow has no goal or criterion | Add a complete goal with stable criterion IDs and model-verifier ownership. |
-| The implementation requests a command or undeclared write path | Remove the authority from the workflow, and put fixed deterministic checks or admitted paths in the plan. |
+| An implementation command doesn't exactly match a plan verification command | Put the fixed command in `verification`, or remove it from the workflow. Don't loosen the digest match. |
+| A command-capable repair node grows across unrelated failures | Split it by subsystem or check family, then terminate the graph with exact command verifiers. |
 | The review workflow can mutate the workspace | Remove every mutating tool and revalidate the complete plan. |
 | A budget field is missing | Set all five dimensions explicitly in both workflows. |
 | Review output is malformed or incomplete | Clarify the review prompt without weakening the parser or criterion set, then require a fresh candidate-bound review. |

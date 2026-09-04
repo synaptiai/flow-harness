@@ -180,6 +180,62 @@ describe("issue workflow admission", () => {
     expect(Object.isFrozen(admitted.agentCommandAuthority?.requestDigests)).toBe(true);
   });
 
+  it("admits an implementation command verifier only for its frozen verification command", () => {
+    const command = { executable: "npm", args: ["test"], timeoutMs: 120_000 } as const;
+    const admitted = admitIssueWorkflow({
+      role: "implementation",
+      source: implementationCommandVerifierWorkflow(command),
+      sourceName: "implementation.workflow.yaml",
+      model: { provider: "openai", id: "gpt-5.6-sol" },
+      context: { kind: "issue", content: "Issue #197" },
+      allowedWritePrefixes: [],
+      verificationCommands: [command],
+    });
+    const verifier = admitted.workflow.nodes.find((node) => node.id === "verify-command");
+
+    expect(verifier?.type === "verifier" ? verifier.verifier.kind : undefined).toBe("command");
+    expect(admitted.agentCommandAuthority?.requestDigests).toEqual([
+      calculateAgentCommandDigest(normalizeAgentCommandRequest({ version: 1, ...command })),
+    ]);
+  });
+
+  it("rejects an implementation command verifier outside frozen verification authority", () => {
+    const command = { executable: "npm", args: ["test"], timeoutMs: 120_000 } as const;
+
+    expect(() =>
+      admitIssueWorkflow({
+        role: "implementation",
+        source: implementationCommandVerifierWorkflow(command),
+        sourceName: "implementation.workflow.yaml",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+        context: { kind: "issue", content: "Issue #197" },
+        allowedWritePrefixes: [],
+        verificationCommands: [{ executable: "npm", args: ["run", "lint"], timeoutMs: 120_000 }],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "unsafe_workflow" }));
+  });
+
+  it("validates every implementation command verifier after authority is already in use", () => {
+    const command = { executable: "npm", args: ["test"], timeoutMs: 120_000 } as const;
+    const undeclared = {
+      executable: "npm",
+      args: ["run", "lint"],
+      timeoutMs: 120_000,
+    } as const;
+
+    expect(() =>
+      admitIssueWorkflow({
+        role: "implementation",
+        source: implementationCommandVerifierWorkflow(command, undeclared),
+        sourceName: "implementation.workflow.yaml",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+        context: { kind: "issue", content: "Issue #197" },
+        allowedWritePrefixes: [],
+        verificationCommands: [command],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "unsafe_workflow" }));
+  });
+
   it("rejects implementation exec without frozen verification-command authority", () => {
     expect(() =>
       admitIssueWorkflow({
@@ -359,6 +415,7 @@ describe("issue workflow admission", () => {
       reviewWorkflow().replace("tools: [read, ls]", "tools: [read, edit]"),
     ],
     ["a command review node", commandReviewWorkflow()],
+    ["a command review verifier", commandVerifierReviewWorkflow()],
     ["an exec review agent", reviewWorkflow().replace("[read, ls]", "[read, exec]")],
   ])("rejects %s", (_name, source) => {
     expect(() =>
@@ -418,6 +475,58 @@ ${agentNode("implement", tools)}
     result:
       source: { nodeId: implement, field: agent.text }
       schema: { type: string, maxLength: 4096 }
+`;
+}
+
+function implementationCommandVerifierWorkflow(
+  command: {
+    readonly executable: string;
+    readonly args: readonly string[];
+    readonly timeoutMs: number;
+  },
+  trailingCommand?: {
+    readonly executable: string;
+    readonly args: readonly string[];
+    readonly timeoutMs: number;
+  },
+): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: issue-command-verification }
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata: { id: verify-issue-command }
+  outcome: The admitted implementation passes its frozen verification command.
+  criteria:
+    - id: command-passes
+      description: The controller-frozen verification command exits successfully.
+      verifier: { nodeId: verify-command }
+nodes:
+${agentNode("implement", "[read]")}
+  - id: verify-command
+    type: verifier
+    dependsOn: [implement]
+    verifier:
+      kind: command
+      command:
+        executable: ${command.executable}
+        args: [${command.args.join(", ")}]
+        timeoutMs: ${command.timeoutMs}
+${
+  trailingCommand === undefined
+    ? ""
+    : `  - id: verify-undeclared-command
+    type: verifier
+    dependsOn: [implement]
+    verifier:
+      kind: command
+      command:
+        executable: ${trailingCommand.executable}
+        args: [${trailingCommand.args.join(", ")}]
+        timeoutMs: ${trailingCommand.timeoutMs}
+`
+}
 `;
 }
 
@@ -605,6 +714,34 @@ nodes:
   - id: review
     type: command
     command: { executable: npm, args: [test] }
+`;
+}
+
+function commandVerifierReviewWorkflow(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: command-verifier-review }
+nodes:
+${agentNode("prepare", "[read]")}
+  - id: verify
+    type: verifier
+    dependsOn: [prepare]
+    verifier:
+      kind: command
+      command: { executable: npm, args: [test], timeoutMs: 120000 }
+  - id: review
+    type: agent
+    dependsOn: [verify]
+    agent:
+      prompt: Review the verified candidate.
+      model: { provider: anthropic, id: source-model, thinking: medium }
+      tools: [read]
+  - id: publish
+    type: result
+    dependsOn: [review]
+    result:
+      source: { nodeId: review, field: agent.text }
+      schema: { type: string, maxLength: 4096 }
 `;
 }
 

@@ -417,6 +417,20 @@ The implementation workflow can change only admitted candidate paths in the isol
 The resulting diff must be nonempty and task-relevant. A changed path outside the admitted prefixes
 fails the run.
 
+The implementation workflow cannot contain ordinary command, approval, child, optimization, or
+command-tool-package nodes. It can contain a command verifier when the command has an exact digest
+match in the plan's frozen `verification` list. The digest covers the normalized executable,
+complete ordered arguments, and timeout. An implementation agent can use `exec` under the same
+frozen command authority. Any undeclared command fails admission or execution.
+
+Review workflows remain read-only. They cannot contain command verifiers or command-capable
+agents.
+
+An admitted command verifier runs through the production command sandbox and records typed verdict
+evidence. It provides an early deterministic boundary inside the implementation graph. It doesn't
+replace the controller's later execution of every frozen verification command against the exact
+committed candidate.
+
 Before it prepares a commit effect, the controller constructs an exact candidate snapshot. The
 snapshot binds the base commit, changed paths, Git attributes, private candidate index, tree delta,
 and logical byte count. If the pinned Git executable returns one malformed response during it,

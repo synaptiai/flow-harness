@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 
-import type { AgentCommandAuthority } from "../domain/agent-command.js";
+import {
+  type AgentCommandAuthority,
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../domain/agent-command.js";
 import {
   type CapabilitySnapshot,
   validateCapabilitySnapshot,
@@ -158,7 +162,7 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
       input.verificationCommands === undefined
         ? undefined
         : createFrozenVerificationAgentCommandAuthority(input.verificationCommands);
-    const usesExec = validateImplementationWorkflow(
+    const usesCommandAuthority = validateImplementationWorkflow(
       workflow,
       allowedWritePrefixes,
       agentCommandAuthority,
@@ -187,7 +191,9 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
       protectedPaths: ISSUE_WORKFLOW_PROTECTED_PATHS,
       allowedWritePrefixes,
       criteria: workflow.goal?.criteria ?? [],
-      ...(usesExec && agentCommandAuthority !== undefined ? { agentCommandAuthority } : {}),
+      ...(usesCommandAuthority && agentCommandAuthority !== undefined
+        ? { agentCommandAuthority }
+        : {}),
     });
   }
 
@@ -366,7 +372,7 @@ function validateImplementationWorkflow(
   }
   let hasAgent = false;
   let hasMutatingAgent = false;
-  let usesExec = false;
+  let usesCommandAuthority = false;
   for (const node of workflow.nodes) {
     if (
       node.type === "command" ||
@@ -383,10 +389,17 @@ function validateImplementationWorkflow(
     if (node.type === "agent") {
       hasAgent = true;
       validateAgent(node, "implementation", agentCommandAuthority);
-      usesExec ||= node.agent.tools.includes("exec");
+      usesCommandAuthority ||= node.agent.tools.includes("exec");
       hasMutatingAgent ||= node.agent.tools.some((tool) => MUTATING_AGENT_TOOLS.has(tool));
     }
-    if (node.type === "verifier") validateVerifier(node);
+    if (node.type === "verifier") {
+      const verifierUsesCommandAuthority = validateVerifier(
+        node,
+        "implementation",
+        agentCommandAuthority,
+      );
+      usesCommandAuthority ||= verifierUsesCommandAuthority;
+    }
   }
   if (!hasAgent) {
     throw new IssueWorkflowAdmissionError(
@@ -400,7 +413,7 @@ function validateImplementationWorkflow(
       "a mutable implementation workflow requires at least one explicit write prefix",
     );
   }
-  return usesExec;
+  return usesCommandAuthority;
 }
 
 function validateReviewWorkflow(workflow: CompiledWorkflow): void {
@@ -414,7 +427,7 @@ function validateReviewWorkflow(workflow: CompiledWorkflow): void {
       unsafe(node, "review workflows must remain read-only and non-interactive");
     }
     if (node.type === "agent") validateAgent(node, "review", undefined);
-    if (node.type === "verifier") validateVerifier(node);
+    if (node.type === "verifier") validateVerifier(node, "review", undefined);
     if (node.type === "child") validateReviewWorkflow(node.child.workflow);
   }
 }
@@ -443,10 +456,22 @@ function validateAgent(
   }
 }
 
-function validateVerifier(node: CompiledVerifierNode): void {
-  if (node.verifier.kind !== "model") {
-    unsafe(node, "issue workflows can use only model verifiers");
+function validateVerifier(
+  node: CompiledVerifierNode,
+  role: IssueWorkflowRole,
+  agentCommandAuthority: AgentCommandAuthority | undefined,
+): boolean {
+  if (node.verifier.kind === "model") return false;
+  if (node.verifier.kind !== "command" || role === "review") {
+    unsafe(node, "issue workflows can use only model verifiers or frozen implementation commands");
   }
+  const commandDigest = calculateAgentCommandDigest(
+    normalizeAgentCommandRequest({ version: 1, ...node.verifier.command }),
+  );
+  if (!agentCommandAuthority?.requestDigests.includes(commandDigest)) {
+    unsafe(node, "implementation command verifier is outside frozen verification authority");
+  }
+  return true;
 }
 
 function unsafe(node: CompiledNode, reason: string): never {
