@@ -14,6 +14,12 @@ and operator interventions.
 The fresh target is [digital-twin issue 106](https://github.com/danielbentes/digital-twin/issues/106):
 a read-only JSON command for hook registration status. Preparation must leave that behavior absent.
 
+The [preparation PR](https://github.com/danielbentes/digital-twin/pull/107) merged as
+`7788170fe4d261865cc77a6aa198308217cef752`. Its checks passed without implementing the target
+behavior. The first [hosted attempt](https://github.com/danielbentes/digital-twin/actions/runs/33967000922)
+uses that base and Flow source `50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e`. Dispatch is not
+qualification: retain UC-01 as open until the installed lifecycle and independent observations pass.
+
 Execute these steps in order:
 
 1. Create one useful, previously unhandled digital-twin issue. Freeze its acceptance criteria,
