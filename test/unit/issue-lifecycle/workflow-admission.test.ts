@@ -175,9 +175,12 @@ describe("issue workflow admission", () => {
       requestDigests: [
         calculateAgentCommandDigest(normalizeAgentCommandRequest({ version: 1, ...command })),
       ],
+      requests: [{ version: 1, ...command }],
+      rejectionLimit: 3,
     });
     expect(Object.isFrozen(admitted.agentCommandAuthority)).toBe(true);
     expect(Object.isFrozen(admitted.agentCommandAuthority?.requestDigests)).toBe(true);
+    expect(Object.isFrozen(admitted.agentCommandAuthority?.requests)).toBe(true);
   });
 
   it("admits an implementation command verifier only for its frozen verification command", () => {
@@ -197,6 +200,28 @@ describe("issue workflow admission", () => {
     expect(admitted.agentCommandAuthority?.requestDigests).toEqual([
       calculateAgentCommandDigest(normalizeAgentCommandRequest({ version: 1, ...command })),
     ]);
+    expect(admitted.agentCommandAuthority?.requests).toBeUndefined();
+    expect(admitted.agentCommandAuthority?.rejectionLimit).toBeUndefined();
+  });
+
+  it("does not impose a model-facing catalog byte limit when no agent selects exec", () => {
+    const command = { executable: "npm", args: ["test"], timeoutMs: 120_000 };
+    const largeCommands = ["node", "python3"].map((executable) => ({
+      executable,
+      args: Array(4).fill("x".repeat(8_192)),
+      timeoutMs: 120_000,
+    }));
+    const admitted = admitIssueWorkflow({
+      role: "implementation",
+      source: implementationCommandVerifierWorkflow(command),
+      sourceName: "command-verifier.workflow.yaml",
+      model: { provider: "openai", id: "gpt-5.6-sol" },
+      context: { kind: "issue", content: "Use only the command verifier." },
+      allowedWritePrefixes: [],
+      verificationCommands: [command, ...largeCommands],
+    });
+    expect(admitted.agentCommandAuthority?.requestDigests).toHaveLength(3);
+    expect(admitted.agentCommandAuthority?.requests).toBeUndefined();
   });
 
   it("rejects an implementation command verifier outside frozen verification authority", () => {

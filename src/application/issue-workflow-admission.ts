@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import {
   type AgentCommandAuthority,
   calculateAgentCommandDigest,
+  normalizeAgentCommandAuthority,
   normalizeAgentCommandRequest,
 } from "../domain/agent-command.js";
 import {
@@ -26,6 +27,7 @@ import {
 } from "../domain/workflow/types.js";
 import {
   createFrozenVerificationAgentCommandAuthority,
+  DEFAULT_ISSUE_COMMAND_REJECTION_LIMIT,
   type FrozenIssueVerificationCommand,
 } from "./frozen-issue-command.js";
 import { compileWorkflowFromSnapshot } from "./workflow-package-admission.js";
@@ -158,10 +160,23 @@ export function admitIssueWorkflow(input: IssueWorkflowAdmissionInput): Admitted
 
   if (input.role === "implementation") {
     const allowedWritePrefixes = normalizeIssueWorkflowWritePrefixes(input.allowedWritePrefixes);
+    const exposesExec = workflow.nodes.some(
+      (node) => node.type === "agent" && node.agent.tools.includes("exec"),
+    );
     const agentCommandAuthority =
       input.verificationCommands === undefined
         ? undefined
-        : createFrozenVerificationAgentCommandAuthority(input.verificationCommands);
+        : exposesExec
+          ? createFrozenVerificationAgentCommandAuthority(input.verificationCommands, {
+              rejectionLimit: DEFAULT_ISSUE_COMMAND_REJECTION_LIMIT,
+            })
+          : normalizeAgentCommandAuthority(
+              input.verificationCommands.map((command) =>
+                calculateAgentCommandDigest(
+                  normalizeAgentCommandRequest({ version: 1, ...command }),
+                ),
+              ),
+            );
     const usesCommandAuthority = validateImplementationWorkflow(
       workflow,
       allowedWritePrefixes,

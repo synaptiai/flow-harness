@@ -1024,6 +1024,27 @@ describe("PiAgentExecutor", () => {
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_EDIT");
   });
 
+  it.each([
+    "pi_command_authority_rejections_exhausted",
+    "pi_command_authority_journal_unavailable",
+  ] as const)("does not retry %s or discard settled effects", async (failureCode) => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return { text: "", stopReason: "error", failureCode };
+      },
+    };
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      { ...contextWithEffectJournal(), modelSession: {} as ModelSessionJournal },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: failureCode, retryable: false, sideEffectStatus: "committed" },
+      evidence: { kind: "agent", effectReceipts: [{ outcome: "committed" }] },
+    });
+  });
+
   it("marks a committed provider failure retryable when a durable model session can continue it", async () => {
     const runner: PiAgentRunner = {
       async run(input) {

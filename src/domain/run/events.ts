@@ -1808,6 +1808,8 @@ const modelSessionSummarySchema = z
     primaryEventCount: z.number().int().nonnegative().safe(),
     requestCount: z.number().int().nonnegative().safe(),
     latestAttemptRawExecResultCount: z.number().int().nonnegative().safe().default(0),
+    commandAuthorityRejectionCount: z.number().int().positive().safe().optional(),
+    latestAttemptCommandAuthorityRejectionCount: z.number().int().positive().safe().optional(),
     interruptionCount: z.number().int().nonnegative().safe(),
     resumeSurfaceCount: z.number().int().nonnegative().safe(),
     compactionCount: z.number().int().nonnegative().safe().default(0),
@@ -1852,7 +1854,16 @@ const modelSessionSummarySchema = z
       .nullable(),
     mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(14),
   })
-  .strict();
+  .strict()
+  .refine(
+    (summary) =>
+      (summary.latestAttemptCommandAuthorityRejectionCount ?? 0) <=
+        summary.latestAttemptRawExecResultCount &&
+      (summary.latestAttemptCommandAuthorityRejectionCount ?? 0) <=
+        (summary.commandAuthorityRejectionCount ?? 0) &&
+      (summary.commandAuthorityRejectionCount ?? 0) <= summary.primaryEventCount,
+    "command authority rejection counts must fit cumulative history and latest raw exec results",
+  );
 
 const effectIdSchema = z
   .string()
@@ -11130,7 +11141,9 @@ function failedAttemptHasRetryBoundary(
       node.error?.sideEffectStatus === "uncertain") &&
     node.commandProtocol === AGENT_COMMAND_PROTOCOL &&
     node.commands.length > 0 &&
-    session.latestAttemptRawExecResultCount === node.commands.length &&
+    session.latestAttemptRawExecResultCount -
+      (session.latestAttemptCommandAuthorityRejectionCount ?? 0) ===
+      node.commands.length &&
     node.commands.every(commandHasProvenSettlement) &&
     node.delegations.length === 0 &&
     sessionCanContinue

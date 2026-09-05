@@ -14,10 +14,20 @@ Current source registers `flow issue`. The published `0.1.0-alpha.4` package doe
 Operate the lifecycle only from a release whose help and release notes identify it as qualified.
 Keep the release pinned for the complete run. Recovery rejects changed frozen identities.
 
+Keep the original binary for an active issue run created before command discovery was added.
+The updated runtime derives catalog-bearing authority for issue workflows that select `exec`.
+It refuses recovery when an existing nested run has the older digest-only identity. Reading old
+records remains supported, but this change does not migrate active issue runs between runtimes.
+
 The source-built controller completed its first external proof. The
 [issue 6 lifecycle field report](../field-reports/digital-twin-issue-6-alpha4.md) records the exact
 boundary, every full run, and remaining package qualification work. Don't treat that source result
 as evidence that the older alpha.4 package contains this command.
+
+The first installed hosted Linux x64 attempt failed before candidate acceptance and review. The
+[issue 106 field report](../field-reports/digital-twin-issue-106-installed.md) records the failure.
+Use the [usable-checkpoint plan](../usable-checkpoint-plan.md) to track corrections and remaining
+qualification. A source fix or successful local test does not qualify the installed lifecycle.
 
 ## Establish the operating boundary
 
@@ -178,6 +188,9 @@ Treat the plan as trusted executable policy. Review every field before `run`:
 - Keep `candidate.allowedPathPrefixes` no broader than the issue requires.
 - Prove that the holdout fails on the exact base for the intended reason.
 - Execute every deterministic verification command manually from a trusted checkout.
+- Review the complete executable, ordered arguments, and timeout for every public verification
+  command. When the implementation selects `exec`, these values are disclosed to the model.
+  Never put credentials in them.
 - Copy each exact hosted-check name and source app ID and slug from an observed GitHub Actions run.
 - Require `[P1, P2, P3]` as the blocking review severities.
 - Confirm that the selected merge method is allowed and that `deleteBranch` matches retention
@@ -220,6 +233,32 @@ Set operational alerts for these conditions:
 - the GitHub CLI account, repository permissions, remote, or branch policy changes.
 
 ## Recover after interruption
+
+### Diagnose command refusals
+
+Current source records a terminal `pi_command_authority_rejections_exhausted` error when a nested
+agent exhausts its frozen refusal allowance. The parent lifecycle reports
+`implementation_workflow_failed`. Published alpha.4 does not include this behavior.
+
+1. Inspect the parent with `flow issue inspect <run-id>` and `flow issue events <run-id>`. Preserve
+   its failure code and evidence digest. Do not treat the parent as an ordinary workflow run.
+2. If diagnosis needs more detail, use the trusted host to inspect the nested run under
+   `.flow/issue-runs/nested-runs/<nested-run-id>/events.jsonl`. Its failed-node evidence carries the
+   nested error code and safe model-session summary. The private session record is under
+   `.flow/issue-runs/model-sessions/<nested-run-id>/model-sessions/<session-id>/events.jsonl`.
+3. Review the cumulative and latest-attempt refusal counts. Compare the requested executable,
+   ordered arguments, and timeout with the frozen public catalog. Raw session records can contain
+   private task content. Do not copy them into shared terminals, tickets, or chats.
+4. Preserve the failed run and worktrees. Correct guidance or the contract in a reviewed new run.
+   A terminal parent cannot resume. Do not use generic `flow resume`, hand-edit the ledger, or raise
+   the resource budget to bypass this stop.
+
+The parent inspection command does not expose nested refusal counts, and ordinary `flow inspect`
+does not discover these issue-owned stores. A unified public diagnosis surface remains an
+onboarding task in the [usable-checkpoint plan](../usable-checkpoint-plan.md). This private-host
+procedure is a current operating limitation, not a completed convenience feature.
+
+### Recover the parent lifecycle
 
 Never repeat a Git or GitHub mutation manually after a timeout, crash, network loss, or missing
 response. The operation might have succeeded even when the client did not receive confirmation.
@@ -328,6 +367,8 @@ requirements, and local storage. Keep at least:
 - every merged run through the repository's audit period.
 - the corresponding plan, workflow revision, issue and base identities, pull request, hosted-check
   identities, gate digest, merge result, and post-merge proof.
+- the exact installed package archive, its SHA-256 digest, source revision, and qualification
+  receipts when the run is package-qualification evidence. A digest alone cannot restore bytes.
 
 Private evidence can contain source, diffs, issue content, model content, and command output. It is
 not suitable for public artifacts without a separate disclosure review.

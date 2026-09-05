@@ -27,6 +27,8 @@ export {
 
 export const AGENT_COMMAND_PROTOCOL = "flow.agent-commands/v1" as const;
 export const MAX_AGENT_COMMAND_AUTHORITY_REQUESTS = 32;
+// Bound the entire serialized model-facing catalog, including JSON escape amplification.
+export const MAX_AGENT_COMMAND_CATALOG_BYTES = 65_536;
 
 const boundedCommandString = (label: string, maxBytes: number) =>
   z
@@ -55,6 +57,9 @@ const commandFields = {
 };
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const agentCommandCatalogRequestSchema = z
+  .object({ version: z.literal(1), ...commandFields })
+  .strict();
 export const agentCommandAuthoritySchema = z
   .object({
     version: z.literal(1),
@@ -68,8 +73,41 @@ export const agentCommandAuthoritySchema = z
         "agent command authority digests must be unique",
       )
       .refine(hasCanonicalDigestOrder, "agent command authority digests must use canonical order"),
+    requests: z
+      .array(agentCommandCatalogRequestSchema)
+      .min(1)
+      .max(MAX_AGENT_COMMAND_AUTHORITY_REQUESTS)
+      .refine(
+        (requests) =>
+          Buffer.byteLength(JSON.stringify(requests), "utf8") <= MAX_AGENT_COMMAND_CATALOG_BYTES,
+        `agent command catalog must not exceed ${MAX_AGENT_COMMAND_CATALOG_BYTES} serialized UTF-8 bytes`,
+      )
+      .optional(),
+    rejectionLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((authority, context) => {
+    if (authority.requests !== undefined) {
+      const digests = authority.requests.map(calculateAgentCommandDigest);
+      if (
+        digests.length !== authority.requestDigests.length ||
+        digests.some((digest, index) => digest !== authority.requestDigests[index])
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["requests"],
+          message:
+            "agent command catalog must match every authority digest exactly once in canonical order",
+        });
+      }
+    } else if (authority.rejectionLimit !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["rejectionLimit"],
+        message: "agent command rejection limit requires a complete command catalog",
+      });
+    }
+  });
 const toolPackageInputValueSchema = z.union([
   z
     .string()
@@ -134,20 +172,42 @@ export interface AgentCommandAuthority {
   readonly version: 1;
   readonly kind: "frozen-verification";
   readonly requestDigests: readonly string[];
+  readonly requests?: readonly Omit<AgentCommandRequest, "source">[];
+  readonly rejectionLimit?: number;
 }
 
 export function normalizeAgentCommandAuthority(
   requestDigests: readonly string[],
+  requests?: readonly Omit<AgentCommandRequest, "source">[],
+  rejectionLimit?: number,
 ): AgentCommandAuthority {
   const canonical = [...new Set(requestDigests)].sort(compareStrings);
+  const catalog =
+    requests === undefined
+      ? undefined
+      : [
+          ...requests.map((request) => {
+            const parsed = agentCommandCatalogRequestSchema.parse(request);
+            return [calculateAgentCommandDigest(parsed), parsed] as const;
+          }),
+        ]
+          .sort(([left], [right]) => compareStrings(left, right))
+          .map(([, request]) => request);
   const parsed = agentCommandAuthoritySchema.parse({
     version: 1,
     kind: "frozen-verification",
     requestDigests: canonical,
+    ...(catalog === undefined ? {} : { requests: catalog }),
+    ...(rejectionLimit === undefined ? {} : { rejectionLimit }),
   });
   return Object.freeze({
-    ...parsed,
+    version: parsed.version,
+    kind: parsed.kind,
     requestDigests: Object.freeze([...parsed.requestDigests]),
+    ...(parsed.requests === undefined
+      ? {}
+      : { requests: Object.freeze(parsed.requests.map(normalizeAgentCommandRequest)) }),
+    ...(parsed.rejectionLimit === undefined ? {} : { rejectionLimit: parsed.rejectionLimit }),
   });
 }
 

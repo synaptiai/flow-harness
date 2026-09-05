@@ -241,6 +241,9 @@ describe("ProductionIssueWorkflowRunner", () => {
     });
     const authority = (fixture.executionContexts[0] as NodeExecutionContext).agentCommandAuthority;
     expect(authority?.requestDigests).not.toContain(holdoutDigest);
+    expect(authority?.requests).toEqual([
+      { version: 1, executable: "npm", args: ["test"], timeoutMs: 2_000 },
+    ]);
   });
 
   it("returns the exact untruncated review result-node text", async () => {

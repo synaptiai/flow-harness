@@ -38,9 +38,9 @@ declaration is independently callable.
 | Observation | Result | Why it matters |
 | --- | --- | --- |
 | Production TypeScript files | 370 | A broad root export would expose most of the product, not a small SDK. |
-| Exported top-level declarations | 3,375 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
-| Domain declarations | 1,597 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
-| Application declarations | 550 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
+| Exported top-level declarations | 3,377 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
+| Domain declarations | 1,598 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
+| Application declarations | 551 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
 | Infrastructure declarations | 1,081 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
 | Supervisor declarations | 122 | These declarations own queues, worker processes, control requests, and shutdown. |
 | CLI declarations | 25 | The CLI composes 338 of 370 production modules and is the intentional product boundary. |

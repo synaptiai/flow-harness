@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { createFrozenVerificationAgentCommandAuthority } from "../../../../src/application/frozen-issue-command.js";
 
 import type {
   AgentCommandExecutor,
@@ -133,7 +134,12 @@ describe("workspace-confined Pi tools", () => {
       },
     };
     const commandRecorder = new AgentCommandRecorder(executor, journal, executionContext(root));
-    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, { commandRecorder });
+    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, {
+      commandRecorder,
+      agentCommandAuthority: createFrozenVerificationAgentCommandAuthority([
+        { executable: "npm", args: ["test"], timeoutMs: 10_000 },
+      ]),
+    });
     const execTool = tools.definitions[0];
     if (execTool === undefined) {
       throw new Error("exec tool was not registered");
@@ -148,6 +154,9 @@ describe("workspace-confined Pi tools", () => {
     );
 
     expect(tools.names).toEqual(["flow_exec"]);
+    expect(execTool.description).toContain(
+      JSON.stringify({ executable: "npm", args: ["test"], timeoutMs: 10_000 }),
+    );
     expect(journalEvents).toEqual(["prepare", "execute", "settle"]);
     expect(result.content).toContainEqual({
       type: "text",
@@ -203,6 +212,12 @@ describe("workspace-confined Pi tools", () => {
     const execTool = tools.definitions[0];
     if (execTool === undefined) throw new Error("exec tool was not registered");
 
+    const unrestricted = await createWorkspaceAgentTools(root, ["exec"], policy, {
+      commandRecorder,
+    });
+    expect(execTool.description).toBe(unrestricted.definitions[0]?.description);
+    expect(execTool.promptGuidelines).toEqual(unrestricted.definitions[0]?.promptGuidelines);
+
     await expect(
       execTool.execute(
         "exec-call",
@@ -215,6 +230,50 @@ describe("workspace-confined Pi tools", () => {
     expect(journalEvents).toEqual([]);
     expect(policy.snapshot()).toEqual([]);
   });
+
+  it.each([
+    ["omitted timeout", { executable: "python3", args: ["-m", "pytest"] }],
+    ["wrong executable", { executable: "python", args: ["-m", "pytest"], timeoutMs: 300_000 }],
+    ["wrong argument order", { executable: "python3", args: ["pytest", "-m"], timeoutMs: 300_000 }],
+  ])(
+    "returns exact corrective invocations after %s without authorizing execution",
+    async (_label, input) => {
+      const root = await createTemporaryDirectory();
+      const policy = policyBroker(["process.execute"]);
+      const commandRecorder = new AgentCommandRecorder(
+        {
+          executeAgentCommand: async () => {
+            throw new Error("rejection must not execute");
+          },
+        },
+        {
+          prepare: async () => {
+            throw new Error("rejection must not prepare");
+          },
+        },
+        executionContext(root),
+      );
+      const invocation = { executable: "python3", args: ["-m", "pytest"], timeoutMs: 300_000 };
+      const tools = await createWorkspaceAgentTools(root, ["exec"], policy, {
+        commandRecorder,
+        agentCommandAuthority: createFrozenVerificationAgentCommandAuthority([invocation], {
+          rejectionLimit: 3,
+        }),
+      });
+      const execTool = tools.definitions[0];
+      if (execTool === undefined) throw new Error("exec tool missing");
+      expect(execTool.description).toContain(JSON.stringify(invocation));
+      expect(execTool.description).not.toContain('"version"');
+      expect(execTool.description).toContain("3 cumulative refused requests");
+      await expect(
+        execTool.execute("rejected-call", input, undefined, undefined, {} as never),
+      ).rejects.toThrow(JSON.stringify(invocation));
+      await expect(
+        execTool.execute("rejected-call-2", input, undefined, undefined, {} as never),
+      ).rejects.toThrow(/no command was executed/i);
+      expect(policy.snapshot()).toEqual([]);
+    },
+  );
 
   it("enforces confinement through the registered read tool", async () => {
     const root = await createTemporaryDirectory();

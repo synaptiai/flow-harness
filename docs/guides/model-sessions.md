@@ -11,6 +11,12 @@ The current source also adds an explicit production rolling-context policy for e
 nodes. The published `0.1.0-alpha.4` package doesn't include that policy. Reference-first
 three-mode comparison remains a separate evaluation path.
 
+Command-authority refusal classifications, refusal counts, and the refusal-stop codes described in
+this guide are also current-source additions. Published `0.1.0-alpha.4` does not include them.
+The ordinary workflow commands and paths in this guide do not inspect a parent GitHub issue run.
+For issue-owned nested sessions, use the
+[issue lifecycle diagnosis procedure](../operations/github-issue-lifecycle.md#diagnose-command-refusals).
+
 ## Understand the two durable records
 
 Flow keeps workflow authority separate from model context.
@@ -42,7 +48,7 @@ The append-only record contains only closed `flow.model-session/v1` events:
 | `model_request_prepared` | Binds the exact request identity before provider input/output (I/O). |
 | `model_message_committed` | Stores one completed assistant message and bounded usage. |
 | `tool_call_committed` | Stores one observed tool name, identifier, and canonical arguments. |
-| `tool_result_committed` | Stores one completed tool result or tool error. |
+| `tool_result_committed` | Stores one completed tool result or tool error, with an optional host-proven command-admission refusal classification. |
 | `model_request_settled` | Closes one prepared request as completed, failed, or output-limited. |
 | `attempt_settled` | Closes one attempt with its terminal adapter outcome. |
 | `attempt_interrupted` | Marks a process-interrupted attempt before workflow retry disposition. |
@@ -224,6 +230,15 @@ count bounds a large sequence of small events.
 
 ## Handle failures
 
+When present, `commandAuthorityRejectionCount` reports cumulative proven pre-execution command
+refusals. `latestAttemptCommandAuthorityRejectionCount` reports the current or most recent attempt's
+share. Zero counts are omitted for compatibility. These content-free counts are not failed-test
+counts.
+
+Raw exec result counts still include refusals. Recovery excludes only proven non-execution
+when matching results to command settlements. Unclassified historical errors remain conservative.
+The parent `flow issue inspect` projection does not expose these nested-session counts.
+
 | Condition | What Flow does | What you do |
 | --- | --- | --- |
 | Session record is missing, corrupt, oversized, or unsafe | Refuses inspection refresh or recovery before provider I/O. | Preserve the run directory and investigate the original storage failure. Don't create a replacement record. |
@@ -233,6 +248,8 @@ count bounds a large sequence of small events.
 | Provider stream was interrupted | Stores no partial model message and never continues the stream. | Use fresh recovery only when the workflow proof gate allows it. |
 | Provider execution failed with complete bounded-resource evidence | Records and charges the failed attempt. It can start the next declared attempt when the attempt was side-effect-free, when only durable workspace edits committed, or when raw `exec` commands settled with complete process evidence, confirmed termination, and no sandbox-cleanup failure. A side-effecting continuation requires the exact closed session. | Inspect `failedAttempts`, `node_retry_scheduled`, edit and command settlements, cleanup and termination status, the model-session head, and total resources. Repeated failures stop at the attempt or resource ceiling. |
 | Tool call has no completed result | Never invents a result. Effect or command settlement decides whether retry is safe. | Inspect the authoritative effect and command state before any new run. |
+| `pi_command_authority_rejections_exhausted` | Finishes recording the issued tool batch, then stops before another model request or context summary. The refusal count survives recovery and does not reset after useful work. | Inspect the frozen public commands and exact catalog inputs. Preserve the failed run. Correct the task guidance or contract in a reviewed new run; do not raise budgets or edit history to bypass the stop. |
+| `pi_command_authority_journal_unavailable` | Refuses a bounded command-authority session without its required durable record. | Preserve evidence and repair the host composition. Ordinary issue execution creates this record; do not disable the guard to bypass the failure. |
 | Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. If the current source and selected embedded Pi adapter meet your requirements, you can enable the explicit rolling policy in a new reviewed workflow. Don't raise limits by editing durable state. |
 
 ## Security and compatibility limits

@@ -93,7 +93,7 @@ describe("public documentation structure", () => {
       "utf8",
     );
     expect(libraryAssessment).toMatch(/^# Library API assessment$/mu);
-    expect(libraryAssessment).toContain("3,375");
+    expect(libraryAssessment).toContain("3,377");
     expect(libraryAssessment).toContain("Agent Client Protocol");
     expect(libraryAssessment).toContain("No supported library API");
   });

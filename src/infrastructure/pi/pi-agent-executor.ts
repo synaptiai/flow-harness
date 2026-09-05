@@ -7,6 +7,7 @@ import {
   type Tool,
   type ToolResultMessage,
   type UserMessage,
+  validateToolArguments,
 } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -17,7 +18,7 @@ import {
   type SessionStats,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import type {
   AgentExecutor,
@@ -30,7 +31,11 @@ import {
   type PhaseRoutingDecision,
   parsePhaseRoutingDecision,
 } from "../../domain/adaptation/phase-routing-candidate.js";
-import type { AgentCommandAuthority } from "../../domain/agent-command.js";
+import {
+  type AgentCommandAuthority,
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../domain/agent-command.js";
 import { validateArtifactReference } from "../../domain/artifact/reference.js";
 import {
   type AgentSkillCatalogEntry,
@@ -109,7 +114,11 @@ import {
   countProviderInputTokens,
   ProviderInputTokenCountError,
 } from "./provider-input-token-counter.js";
-import { createWorkspaceAgentTools, type SemanticToolSession } from "./workspace-agent-tools.js";
+import {
+  createWorkspaceAgentTools,
+  type SemanticToolSession,
+  WORKSPACE_AGENT_TOOL_REFERENCES,
+} from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
   readonly cwd: string;
@@ -982,6 +991,10 @@ function providerStopMessage(
   failureCode?: PiAgentFailureCode,
 ): string {
   switch (failureCode) {
+    case "pi_command_authority_rejections_exhausted":
+      return "agent exhausted its frozen command rejection allowance; no further model request was admitted";
+    case "pi_command_authority_journal_unavailable":
+      return "bounded command authority requires a durable model session";
     case "pi_provider_authentication_failed":
       return "agent provider authentication failed";
     case "pi_provider_quota_exhausted":
@@ -1167,6 +1180,16 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
   async run(request: PiAgentRunRequest): Promise<PiAgentRunResult> {
     throwIfAborted(request.signal);
     assertPhaseRoutingRequest(request);
+    if (
+      request.agentCommandAuthority?.rejectionLimit !== undefined &&
+      request.modelSession === undefined
+    ) {
+      return {
+        ...new BoundedAgentOutput(request.maxOutputBytes).result(),
+        stopReason: "error",
+        failureCode: "pi_command_authority_journal_unavailable",
+      };
+    }
 
     const modelRuntime = await this.createModelRuntime(request.signal);
     throwIfAborted(request.signal);
@@ -1422,7 +1445,11 @@ export type PiProviderFailureCode =
   | "pi_provider_request_rejected"
   | "pi_provider_unavailable";
 
-export type PiAgentFailureCode = PiModelContextFailureCode | PiProviderFailureCode;
+export type PiAgentFailureCode =
+  | PiModelContextFailureCode
+  | PiProviderFailureCode
+  | "pi_command_authority_rejections_exhausted"
+  | "pi_command_authority_journal_unavailable";
 
 export type PiModelContextFailureCode =
   | "pi_model_context_floor_exhausted"
@@ -2285,6 +2312,17 @@ function attachModelSessionRecorder(
       );
     }
     const state = await journal.read();
+    const rejectionLimit = request.agentCommandAuthority?.rejectionLimit;
+    const rejectionCount = state.events.filter(
+      (event) =>
+        event.type === "tool_result_committed" && event.commandAuthorityRejection !== undefined,
+    ).length;
+    if (rejectionLimit !== undefined && rejectionCount >= rejectionLimit) {
+      terminalFailureCode = "pi_command_authority_rejections_exhausted";
+      throw new Error(
+        `Frozen command rejection allowance exhausted (${rejectionCount}/${rejectionLimit}); no further model request is admitted`,
+      );
+    }
     const prepared = state.events.filter((event) => event.type === "model_request_prepared");
     const requestSequence = (prepared.at(-1)?.request ?? 0) + 1;
     const turn = prepared.filter((event) => event.attempt === state.activeAttempt).length + 1;
@@ -2509,6 +2547,14 @@ function attachModelSessionRecorder(
         toolName: event.message.toolName,
         text,
         isError: event.message.isError,
+        ...(isProvenCommandAuthorityRejection(
+          request,
+          await journal.read(),
+          attribution,
+          event.message,
+        )
+          ? { commandAuthorityRejection: "request_not_admitted" as const }
+          : {}),
         ...(referenceProjection === undefined ? {} : { referenceProjection }),
       });
       return;
@@ -2536,6 +2582,48 @@ function attachModelSessionRecorder(
     compactionUsage: () => compactionUsage,
     failureCode: () => terminalFailureCode,
   };
+}
+
+function isProvenCommandAuthorityRejection(
+  request: PiAgentRunRequest,
+  state: ModelSessionState,
+  attribution: { readonly attempt: number; readonly request: number },
+  result: ToolResultMessage,
+): boolean {
+  const authority = request.agentCommandAuthority;
+  if (authority?.requests === undefined || result.toolName !== "flow_exec" || !result.isError)
+    return false;
+  const call = state.events.find(
+    (event) =>
+      event.type === "tool_call_committed" &&
+      event.attempt === attribution.attempt &&
+      event.request === attribution.request &&
+      event.toolCallId === result.toolCallId,
+  );
+  if (call?.type !== "tool_call_committed" || call.toolName !== "flow_exec") return false;
+  const input: unknown = JSON.parse(call.argumentsJson);
+  const schema = WORKSPACE_AGENT_TOOL_REFERENCES.find(
+    (tool) => tool.name === "flow_exec",
+  )?.inputSchema;
+  if (schema === undefined) throw new Error("Flow exec public schema is unavailable");
+  try {
+    // Pi coerces arguments before invocation. Strict checks of the original model input could
+    // incorrectly label a command that already executed as a no-execution refusal.
+    const validated = validateToolArguments(
+      { name: "flow_exec", description: "Flow sandbox command", parameters: schema as TSchema },
+      {
+        type: "toolCall",
+        name: "flow_exec",
+        id: call.toolCallId,
+        arguments: input as Record<string, unknown>,
+      },
+    );
+    return !authority.requestDigests.includes(
+      calculateAgentCommandDigest(normalizeAgentCommandRequest(validated)),
+    );
+  } catch {
+    return true;
+  }
 }
 
 function assertPhaseRoutingRequest(request: PiAgentRunRequest): void {

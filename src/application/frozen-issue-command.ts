@@ -8,6 +8,7 @@ import {
 
 export const FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE = "application/vnd.flow.issue-holdout-stdin";
 export const MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES = 1_048_576;
+export const DEFAULT_ISSUE_COMMAND_REJECTION_LIMIT = 3;
 
 export interface FrozenIssueVerificationCommand {
   readonly executable: string;
@@ -29,10 +30,19 @@ export function calculateFrozenIssueVerificationCommandDigest(
 /** Converts public frozen verification vectors into exact agent execution authority. */
 export function createFrozenVerificationAgentCommandAuthority(
   commands: readonly FrozenIssueVerificationCommand[],
+  options: { readonly rejectionLimit?: number } = {},
 ): AgentCommandAuthority {
+  const requests = [
+    ...new Map(
+      commands.map((command) => {
+        const request = normalizeAgentCommandRequest({ version: 1, ...command });
+        return [calculateAgentCommandDigest(request), request] as const;
+      }),
+    ).values(),
+  ];
   return normalizeAgentCommandAuthority(
-    commands.map((command) =>
-      calculateAgentCommandDigest(normalizeAgentCommandRequest({ version: 1, ...command })),
-    ),
+    requests.map(calculateAgentCommandDigest),
+    requests,
+    options.rejectionLimit,
   );
 }

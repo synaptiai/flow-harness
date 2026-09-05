@@ -1,15 +1,54 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
+import { createFrozenVerificationAgentCommandAuthority } from "../../../src/application/frozen-issue-command.js";
 
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
-import { parseRunEvent, type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
+import {
+  calculateWorkspaceAuthorityDigest,
+  parseRunEvent,
+  type RunEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
 
 describe("durable agent command replay", () => {
+  it("replays a complete immutable catalog and binds its refusal limit into recovery identity", () => {
+    const authority = createFrozenVerificationAgentCommandAuthority([commandRequest], {
+      rejectionLimit: 3,
+    });
+    const events = preparedEvents();
+    const state = reduceRunEvents([
+      parseRunEvent({ ...events[0], agentCommandAuthority: authority }),
+      events[1],
+      events[2],
+    ]);
+    expect(state.agentCommandAuthority).toEqual(authority);
+    expect(Object.isFrozen(state.agentCommandAuthority?.requests)).toBe(true);
+    const differentLimit = createFrozenVerificationAgentCommandAuthority([commandRequest], {
+      rejectionLimit: 5,
+    });
+    expect(
+      calculateWorkspaceAuthorityDigest({ protectedPaths: [], agentCommandAuthority: authority }),
+    ).not.toBe(
+      calculateWorkspaceAuthorityDigest({
+        protectedPaths: [],
+        agentCommandAuthority: differentLimit,
+      }),
+    );
+    expect(() =>
+      parseRunEvent({
+        ...events[0],
+        agentCommandAuthority: {
+          ...authority,
+          requests: [{ ...commandRequest, timeoutMs: commandRequest.timeoutMs + 1 }],
+        },
+      }),
+    ).toThrow(/catalog/i);
+  });
   it("replays exact preparation and settlement and charges retained output once", () => {
     const state = reduceRunEvents([
       ...preparedEvents(),

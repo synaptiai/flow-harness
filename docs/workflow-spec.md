@@ -1852,6 +1852,30 @@ signatures, raw diagnostics, and native provider objects. An incomplete or uncer
 no invented result. The effect and agent-command protocols remain authoritative for external
 operations.
 
+A `tool_result_committed` event can include
+`commandAuthorityRejection: "request_not_admitted"` only for an unsuccessful `flow_exec` result.
+The host derives this classification from the matching committed arguments, the installed tool
+validator, and frozen command authority. Model text and tool-error prose do not establish it.
+Argument conversion must match the installed runtime: a raw argument that appears invalid can
+still become an admitted invocation before execution. A permitted command's execution failure
+must not be classified as proven non-execution.
+
+An optional complete `requests` catalog on frozen agent-command authority contains only version,
+executable, ordered arguments, and timeout. Its entries must match the sorted `requestDigests`
+exactly once and fit within 65,536 serialized UTF-8 bytes. An optional positive safe-integer
+`rejectionLimit` requires that catalog. Both fields participate in the existing authority identity.
+Historical digest-only authorities and unclassified results remain valid without synthesized
+fields. Do not enrich an active historical run during recovery.
+
+With a refusal limit, the runtime counts classified results across all attempts before each new
+model request, including before context-summary generation. At or above the limit it returns
+`pi_command_authority_rejections_exhausted`, not a retryable provider outage. The already-issued
+batch settles first. Successful work, compaction, and recovery do not reset the count. Public
+summaries expose positive cumulative and latest-attempt refusal counts without private inputs.
+
+Command recovery subtracts only those proven pre-execution refusals from raw exec result counts.
+All recorded commands still require their ordinary settlement and termination proof.
+
 An eligible fresh recovery appends `attempt_interrupted` to the private record before
 `node_attempt_interrupted` enters the run ledger. The next attempt creates a new in-memory Pi
 session. Flow renders committed primary history and interruption boundaries as one deterministic

@@ -225,8 +225,10 @@
         "exec-arguments-total-bytes",
         "exec-artifact-bytes-per-stream",
         "exec-executable-bytes",
+        "exec-frozen-catalog-bytes",
         "exec-output-bytes-per-stream",
         "exec-timeout-milliseconds",
+        "issue-command-refusals-per-session",
         "policy-decisions-per-attempt",
         "policy-target-bytes"
       ]
@@ -599,6 +601,12 @@
       "scope": "Maximum UTF-8 bytes in one executable value."
     },
     {
+      "id": "exec-frozen-catalog-bytes",
+      "value": 65536,
+      "unit": "bytes",
+      "scope": "Maximum serialized UTF-8 bytes in a complete controller-frozen command catalog, including JSON escapes. Oversized catalogs fail admission without truncation."
+    },
+    {
       "id": "exec-output-bytes-per-stream",
       "value": 32768,
       "unit": "bytes",
@@ -610,6 +618,13 @@
       "unit": "milliseconds",
       "scope": "Maximum command deadline.",
       "default": 120000
+    },
+    {
+      "id": "issue-command-refusals-per-session",
+      "value": 3,
+      "unit": "items",
+      "scope": "Default cumulative frozen-command refusals per durable implementation model session in new GitHub issue runs. After the issued tool batch settles, the next model request is denied. This policy is not an empirical optimum or a generic command-execution budget.",
+      "default": 3
     },
     {
       "id": "ls-entries",

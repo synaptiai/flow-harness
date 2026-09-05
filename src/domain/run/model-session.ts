@@ -212,6 +212,7 @@ export interface ModelSessionToolResultEvent extends ModelSessionEventBase {
   readonly toolName: string;
   readonly text: string;
   readonly isError: boolean;
+  readonly commandAuthorityRejection?: "request_not_admitted";
   readonly referenceProjection?: ModelSessionReferenceProjection;
 }
 
@@ -487,6 +488,7 @@ export type ModelSessionEventInput =
       readonly toolName: string;
       readonly text: string;
       readonly isError: boolean;
+      readonly commandAuthorityRejection?: "request_not_admitted";
       readonly referenceProjection?: ModelSessionReferenceProjection;
     }
   | {
@@ -633,6 +635,8 @@ export interface ModelSessionSummary {
   readonly primaryEventCount: number;
   readonly requestCount: number;
   readonly latestAttemptRawExecResultCount: number;
+  readonly commandAuthorityRejectionCount?: number;
+  readonly latestAttemptCommandAuthorityRejectionCount?: number;
   readonly interruptionCount: number;
   readonly resumeSurfaceCount: number;
   readonly compactionCount: number;
@@ -1055,6 +1059,7 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
       toolName: boundedIdentitySchema,
       text: z.string(),
       isError: z.boolean(),
+      commandAuthorityRejection: z.literal("request_not_admitted").optional(),
       referenceProjection: modelSessionReferenceProjectionSchema.optional(),
     })
     .strict(),
@@ -1498,6 +1503,13 @@ export function canonicalModelSessionJson(value: unknown): string {
 }
 
 export function modelSessionSummary(state: ModelSessionState): ModelSessionSummary {
+  const authorityRejections = state.events.filter(
+    (event): event is ModelSessionToolResultEvent =>
+      event.type === "tool_result_committed" && event.commandAuthorityRejection !== undefined,
+  );
+  const latestAttemptAuthorityRejections = authorityRejections.filter(
+    (event) => event.attempt === state.lastAttempt,
+  ).length;
   const latestRequest = [...state.events]
     .reverse()
     .find(
@@ -1532,6 +1544,12 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
         event.attempt === state.lastAttempt &&
         event.toolName === "flow_exec",
     ).length,
+    ...(authorityRejections.length === 0
+      ? {}
+      : { commandAuthorityRejectionCount: authorityRejections.length }),
+    ...(latestAttemptAuthorityRejections === 0
+      ? {}
+      : { latestAttemptCommandAuthorityRejectionCount: latestAttemptAuthorityRejections }),
     interruptionCount: state.events.filter((event) => event.type === "attempt_interrupted").length,
     resumeSurfaceCount: state.events.filter((event) => event.type === "resume_surface_prepared")
       .length,
@@ -2210,6 +2228,14 @@ function applyTransition(
     }
     case "tool_result_committed": {
       const active = requireActiveRequest(state, event);
+      if (
+        event.commandAuthorityRejection !== undefined &&
+        (event.toolName !== "flow_exec" || !event.isError)
+      ) {
+        throw new ModelSessionReplayError(
+          "command authority rejection requires an unsuccessful raw exec result",
+        );
+      }
       if (!active.toolCallIds.includes(event.toolCallId)) {
         throw new ModelSessionReplayError("tool result has no matching committed tool call");
       }
@@ -2710,6 +2736,9 @@ function projectPortableEvent(
         toolName: event.toolName,
         text: event.text,
         isError: event.isError,
+        ...(event.commandAuthorityRejection === undefined
+          ? {}
+          : { commandAuthorityRejection: event.commandAuthorityRejection }),
         ...(event.referenceProjection === undefined
           ? {}
           : { referenceProjection: event.referenceProjection }),

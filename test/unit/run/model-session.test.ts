@@ -34,6 +34,64 @@ const identity = {
 };
 
 describe("model session record", () => {
+  it("binds typed no-execution evidence into portable history without changing legacy projection", () => {
+    const history = sessionWithTwoSettledRequests(true);
+    const index = history.events.findIndex((event) => event.type === "tool_result_committed");
+    const before = reduceModelSessionEvents(history.events.slice(0, index));
+    const input = {
+      type: "tool_result_committed" as const,
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "call-1",
+      toolName: "flow_exec",
+      text: "tests passed",
+      isError: true,
+    };
+    const legacy = append(before, input);
+    const classified = append(before, {
+      ...input,
+      commandAuthorityRejection: "request_not_admitted",
+    });
+    expect(calculatePortableHistoryIdentity(classified)).not.toEqual(
+      calculatePortableHistoryIdentity(legacy),
+    );
+    expect(modelSessionSummary(classified)).toMatchObject({
+      commandAuthorityRejectionCount: 1,
+      latestAttemptCommandAuthorityRejectionCount: 1,
+    });
+  });
+
+  it.each([
+    { toolName: "flow_read", isError: true },
+    { toolName: "flow_exec", isError: false },
+  ])("rejects a false no-execution classification: %j", (invalid) => {
+    const history = sessionWithTwoSettledRequests(true);
+    const index = history.events.findIndex((event) => event.type === "tool_result_committed");
+    const state = reduceModelSessionEvents(history.events.slice(0, index));
+    expect(() =>
+      append(state, {
+        type: "tool_result_committed",
+        attempt: 1,
+        turn: 1,
+        request: 1,
+        toolCallId: "call-1",
+        text: "Not authority evidence.",
+        ...invalid,
+        commandAuthorityRejection: "request_not_admitted",
+      }),
+    ).toThrow(/command authority rejection/);
+  });
+
+  it("keeps legacy error results unclassified and preserves their raw execution count", () => {
+    const state = sessionWithTwoSettledRequests(true);
+    const summary = modelSessionSummary(state);
+    expect(summary.latestAttemptRawExecResultCount).toBe(1);
+    expect(summary).not.toHaveProperty("commandAuthorityRejectionCount");
+    expect(summary).not.toHaveProperty("latestAttemptCommandAuthorityRejectionCount");
+    expect(reduceModelSessionEvents(state.events)).toEqual(state);
+  });
+
   it("derives a deterministic opaque id from the complete node identity", () => {
     const first = modelSessionId(identity);
 

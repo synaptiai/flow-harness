@@ -185,6 +185,7 @@ flowchart TB
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
         issueLifecycle["GitHub issue controller<br/>Freeze · implement · review · verify · approve"]
+        commandAdmission["Frozen command admission<br/>Exact permitted inputs · refusal guard"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
@@ -277,6 +278,10 @@ flowchart TB
     phaseRouting -->|"Runs paired held-out profiles"| engine
     delegation -->|"Runs paired task classes"| engine
     issueLifecycle -->|"Runs bounded implementation and review"| engine
+    issueLifecycle -->|"Freezes public verification commands, not holdouts"| commandAdmission
+    commandAdmission -->|"Shows exact executable, arguments, and timeout"| workspaceTools
+    commandAdmission -->|"Stops new model requests after bounded refusals"| agents
+    sessions -->|"Preserves refusal evidence across attempts"| commandAdmission
     issueLifecycle -->|"Rechecks the exact merge gate"| rules
     issueLifecycle -->|"Appends effects and receipts"| issueRuns
     issueLifecycle -->|"Admits fixed host operations"| issueHost
@@ -416,6 +421,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | GitHub issue lifecycle | `src/cli/github-issue.ts`, `src/cli/production-github-issue-service.ts`, `src/domain/issue-lifecycle/`, `src/application/*-github-issue.ts`, `src/application/issue-*.ts`, `src/infrastructure/issue-lifecycle/`, `src/infrastructure/fs/issue-lifecycle-run-repository.ts`, `src/infrastructure/git/`, and `src/infrastructure/github/` | Freezes the issue, base, plan, workflows, budgets, write authority, and selected model; retains exact candidate and verification Git worktrees in an owner-only project-sibling collection; constructs one bounded replay-stable independent-review projection from exact private evidence; verifies a base-failing holdout and exact candidate checks; reconciles Git and GitHub effects; waits for exact-head hosted checks; requires an exact operator merge command; and proves the resulting base topology before completion. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
+| Frozen command admission | `src/domain/agent-command.ts`, `src/application/frozen-issue-command.ts`, `src/infrastructure/pi/workspace-agent-tools.ts`, `src/domain/run/model-session.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Validates a complete immutable catalog against exact authorized digests, shows copyable public command inputs, records host-proven pre-execution refusals privately, and stops the next model request when the frozen refusal policy is exhausted. |
 | Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets; performs exclusive file creation, hash-bound exact editing, version-bound complete replacement, and nonrecursive directory creation under one target-lock and effect-journal contract; and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
@@ -813,6 +819,18 @@ is a separate private record. Pi wraps the stream-function boundary and commits
 completed user, assistant, tool, usage, and settlement data. Provider handles, credentials, hidden
 reasoning, thought signatures, raw diagnostics, and streamed partials don't enter portable
 history.
+
+Frozen issue-command authority can also carry a validated public invocation catalog and refusal
+limit. The model sees complete executable, ordered arguments, and timeout values through the exec
+tool, but the existing digest, policy, and sandbox checks still decide execution. Private holdouts
+are not part of that catalog. A durable result can identify a proven pre-execution refusal without
+treating a verifier's nonzero exit as non-execution. The cumulative guard runs before another model
+request or context summary, after the already-issued tool batch settles. It does not interrupt a
+partially recorded batch or reset when the runtime creates a fresh recovery session.
+
+Legacy digest-only authorities remain unchanged when catalog and policy fields are absent. Adding
+those fields changes the bound authority identity. Recovery must not silently enrich an old run.
+The model-session record supplies evidence, not permission to execute a command or accept a goal.
 
 For the dedicated experiment, Pi can replace eligible large command results with validated
 artifact references before capacity checks. It can also generate one bounded summary from a closed

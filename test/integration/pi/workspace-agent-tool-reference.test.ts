@@ -143,6 +143,12 @@ describe("production workspace-agent tool reference", () => {
       unit: "items",
     });
     expect(limits["agent-effects-per-attempt"]).toMatchObject({ value: 32, unit: "items" });
+    expect(limits["exec-frozen-catalog-bytes"]).toMatchObject({ value: 65_536, unit: "bytes" });
+    expect(limits["issue-command-refusals-per-session"]).toMatchObject({
+      value: 3,
+      default: 3,
+      unit: "items",
+    });
     expect(limits["exec-artifact-bytes-per-stream"]).toMatchObject({
       value: 1_048_576,
       unit: "bytes",
@@ -275,8 +281,10 @@ describe("production workspace-agent tool reference", () => {
           "exec-arguments-total-bytes",
           "exec-artifact-bytes-per-stream",
           "exec-executable-bytes",
+          "exec-frozen-catalog-bytes",
           "exec-output-bytes-per-stream",
           "exec-timeout-milliseconds",
+          "issue-command-refusals-per-session",
           "policy-decisions-per-attempt",
           "policy-target-bytes",
         ],

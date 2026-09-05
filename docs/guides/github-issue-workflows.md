@@ -160,6 +160,29 @@ ordinary command, approval, child, optimization, or command-tool-package nodes. 
 agent can select `exec` only when the lifecycle plan declares verification commands. Every request
 must match one plan command's executable, complete ordered arguments, and timeout exactly.
 
+When an implementation agent selects `exec`, current source derives a complete invocation catalog
+from those public verification commands and
+includes it in `flow_exec` tool guidance. The model can copy a listed JSON object without guessing
+the timeout. The catalog does not include the private holdout and does not bypass policy or sandbox
+checks. Keep credentials out of public command arguments. The serialized catalog is limited to
+65,536 UTF-8 bytes. Admission rejects an oversized catalog instead of truncating its choices.
+
+For a schema-valid invocation that fails frozen matching, Flow refuses execution and returns exact
+permitted inputs. Schema-invalid requests receive the runtime's validation error. The catalog
+remains available in tool guidance.
+
+New issue workflows stop before the next model request after three cumulative command
+refusals within one durable agent session. Three is a provisional correction allowance, not an
+industry standard: one initial mistake and two opportunities to correct it. Reads, edits, valid
+commands, compaction, and recovery do not reset the count. An approved test command that exits
+nonzero is useful verification evidence and does not consume this allowance.
+
+Flow finishes recording an already-issued tool batch before stopping. The allowance therefore
+bounds later model requests, not the number of tool results in that batch. It does not replace the
+workflow's token, cost, time, command, or recovery limits. A refused request is not acceptance
+evidence. Read [issue lifecycle diagnosis](../operations/github-issue-lifecycle.md#diagnose-command-refusals) before deciding
+whether a stopped run needs a corrected new contract.
+
 Prefer a command verifier when a model doesn't need command output to repair the
 candidate. The verifier command must also match one plan verification command exactly:
 
