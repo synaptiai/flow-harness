@@ -122,8 +122,9 @@ Current Issue #197 source adds an end-to-end controller for one bounded `github.
 lifecycle. It admits an exact issue plan and separate implementation and review workflows. It binds
 model writes to explicit project-relative prefixes and persists lifecycle events, private evidence,
 and prepared external effects under one owner-only run root. The host retains Git, GitHub,
-credential, deterministic verification, publication, and merge authority. Release qualification
-still requires the external-repository acceptance pilot.
+credential, deterministic verification, publication, and merge authority. The source-built
+controller completed its first external-repository acceptance pilot. Public package qualification
+and a separately authorized prerelease remain pending.
 
 Lifecycle-owned candidate and verification Git worktrees live in an owner-only collection beside
 the canonical checkout. They share the project storage lifetime and remain available after a
@@ -1033,7 +1034,24 @@ prepared effect to a distinct allowed write decision. Terminal receipts project 
 committed or unknown effects. They must agree with their effect events. Recovery observations never
 become terminal receipts.
 
-For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal arguments, and deadline. The application appends `node_agent_command_prepared` before the shared sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded command outcome. Settlement charges retained stdout/stderr immediately, including when the outer agent turn is later interrupted, and terminal agent evidence does not charge it again. Open commands block terminal publication and recovery; arbitrary execution is never treated as proof-safe read-only work. The domain contract distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph nodes.
+For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal
+arguments, and deadline. The application appends `node_agent_command_prepared` before the shared
+sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded
+command outcome. Settlement charges retained stdout and stderr immediately, including when the
+outer agent turn is later interrupted. Terminal agent evidence doesn't charge that output again.
+Open commands block terminal publication and recovery. Flow never treats arbitrary execution as
+proof-safe read-only work.
+
+After an eligible completed provider failure, a raw-`exec` node can continue only after every
+command settles with process evidence. Termination must be confirmed, the model-session head must
+match, and its latest-attempt `flow_exec` result count must equal the command-ledger count. Sandbox
+cleanup must not have failed, and all other recovery proofs must pass. The next attempt consumes the
+recorded tool result instead of replaying the command.
+
+The domain contract distinguishes read, write, execute, network, credential, and destructive
+authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and
+network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph
+nodes.
 
 ### Command sandbox
 

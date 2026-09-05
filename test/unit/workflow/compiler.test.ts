@@ -1131,12 +1131,13 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", path);
   });
 
-  it("rejects fresh recovery for an agent with arbitrary command execution", () => {
-    const source = workflowWithNodes(`
+  it("compiles terminal recovery for an agent with durable command execution", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
   - id: analyze
     type: agent
     agent:
-      prompt: Run a command and recover if the session is interrupted.
+      prompt: Run a command and continue after a settled provider failure.
       model: { provider: anthropic, id: claude-sonnet-4-5 }
       tools: [exec]
       recovery: { mode: fresh, maxAttempts: 2 }
@@ -1144,9 +1145,16 @@ nodes:
     type: command
     dependsOn: [analyze]
     command: { executable: npm, args: [test] }
-`);
+`),
+    );
 
-    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.recovery");
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: {
+        tools: ["exec"],
+        recovery: { mode: "fresh", maxAttempts: 2 },
+      },
+    });
   });
 
   it("compiles bounded retry backoff for proof-safe fresh recovery", () => {

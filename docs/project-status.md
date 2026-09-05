@@ -27,6 +27,7 @@ on it.
 | Workflow validation and inspection | Implemented | Implemented | No provider is needed for credential-free examples. |
 | Offline compatibility check | Implemented | Implemented | Alpha.4 validates its packaged historical corpus without project, provider, or network access. Published alpha.3 doesn't contain this command. |
 | Guided quick start | Implemented | Implemented | The current checkpoint provides credential-free, zero-tool provider, and explicit bounded coding paths with durable inspection and browser commands. |
+| GitHub issue lifecycle | Implemented in current source | Implemented in current source | One source-built macOS controller run completed digital-twin issue 6 through independent review, hosted Linux x64 candidate CI, explicit approval, merge, and post-merge proof. Published alpha.4 doesn't include this command. |
 | Read-only environment diagnostics | Implemented | Implemented | The current checkpoint checks only the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
 | Agent `read`, `ls`, exclusive `create`, nonrecursive `mkdir`, hash-bound `edit`, and version-bound complete `replace` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
@@ -95,15 +96,18 @@ The coding path supports explicit Anthropic and OpenAI preview selections in an 
 uses only read, list, exclusive create, and hash-bound edit tools, then requires deterministic
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-Two adaptive field series against separate-repository issues produced reviewed, merged candidates.
-The first needed nine full attempts. The second needed 11 full attempts and four bounded repair
-workflows. Its successful candidate chain still required operator-authored repair selection. These
-results don't establish general unattended coding.
+Three adaptive field series against separate-repository issues produced reviewed, merged
+candidates. The first needed nine full attempts. The second needed 11 full attempts and four
+bounded repair workflows. The third exercised the complete GitHub issue lifecycle across 52 full
+runs and reached an exact approval-bound merge once. Its candidate passed hosted Linux x64 CI, but
+the controller ran from current source on macOS. These results don't establish general unattended
+coding or prove that published alpha.4 contains the lifecycle.
 
 They also don't establish autonomous recursive-repair effectiveness.
-Read the [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md) and
-[issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md) for fixed controls, complete
-denominators, evidence, and limitations.
+Read the [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md), the
+[issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md), and the
+[issue 6 lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md). They describe fixed
+controls, complete denominators, evidence, interventions, and limitations.
 
 Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),
@@ -157,8 +161,8 @@ the [Security policy](../SECURITY.md).
 - Attached and detached execution.
 - Durable FIFO admission, authenticated workers, cancellation, and event replay.
 - Proof-gated fresh recovery for eligible interrupted agent attempts and completed provider
-  failures. A failed attempt can preserve earlier committed workspace edits only through the exact
-  durable model-session continuation gate.
+  failures. Committed edits and settled raw-`exec` results use the exact durable model-session
+  continuation gate.
 - Explicit bounded recovery for a completed, nontruncated model-verifier response that violates the
   strict verdict JSON contract. Semantic verdicts and open verifier attempts remain nonretryable.
 - Terminal, browser, and ACP v1 observation and steering.

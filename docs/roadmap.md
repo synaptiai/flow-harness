@@ -521,8 +521,9 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 - Start a fresh process and session for eligible explicit recovery. Supply the bounded durable
   recovery capsule instead of resuming opaque provider or ACP state.
 - Continue an eligible provider-failed agent from the exact model-session ledger after earlier
-  workspace edits. Require a durable committed settlement for every edit. Refuse continuation when
-  a command or delegation ran.
+  workspace edits or settled raw-`exec` results. Require a durable committed settlement for every
+  edit and complete process evidence for every command. Refuse continuation after a delegation or
+  unconfirmed command termination. Also refuse continuation after a sandbox-cleanup failure.
 - Retry a completed, nontruncated strict-invalid model-verifier response only under an explicit
   bounded policy. Preserve each failed attempt and its resource use. Keep semantic verdicts,
   truncated responses, provenance failures, and interrupted verifier requests nonretryable.
@@ -823,7 +824,7 @@ that another user can apply to one supported `github.com` repository without bui
 
 ### Slice 13.2: Bind exact independent-review evidence
 
-**Implementation is active.**
+**Implemented in current source.**
 
 - Send the reviewer the frozen issue and complete criterion IDs and descriptions. Also send the base
   and candidate identities, changed paths, exact bounded diff, and deterministic verification
@@ -837,7 +838,7 @@ that another user can apply to one supported `github.com` repository without bui
 
 ### Slice 13.3: Prove the external-project lifecycle
 
-**Pending Slice 13.2 and provider-transmission authority.**
+**Implemented against the source-built controller.**
 
 - Use the packed release-candidate command through separate operating-system processes against
   `digital-twin` issue 6.
@@ -850,9 +851,16 @@ that another user can apply to one supported `github.com` repository without bui
 - Reopen the durable run from a fresh service instance and use separate CLI invocations to prove
   process-boundary recovery.
 
+The accepted issue 6 run reached `merged` after an unchanged private holdout, fresh independent
+review, exact-head hosted CI, and a separate digest-bound merge command. The 52-run denominator and
+all operator interventions remain in the
+[issue 6 lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md). The controller ran
+from current source on macOS. The candidate ran its required check on hosted Linux x64. This result
+doesn't qualify the older published alpha.4 package or every supported host.
+
 ### Slice 13.4: Qualify and publish the usable checkpoint
 
-**Pending the external-project proof.**
+**Pending exact-head Flow review, package qualification, and separate release authorization.**
 
 - Update all public lifecycle documentation from the accepted evidence. This set includes the task
   guide, workflow-authoring guide, operations runbook, specification, architecture, project status,
@@ -895,15 +903,17 @@ every repository, language, model, or issue.
   parent-owned process evidence.
 - A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
   OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
-- Two adaptive issue series in a separate repository produced reviewed, merged implementations.
+- Three adaptive issue series in a separate repository produced reviewed, merged implementations.
   The first used nine full attempts and exposed one false acceptance. The second used 11 full
   attempts and four bounded repair workflows, and strengthened review rejected one workflow
-  success.
+  success. The third used 52 full lifecycle runs. Private holdout and independent review rejected
+  incomplete candidates before one exact approval-bound merge.
   Every full and repair attempt remains in its reported denominator. These results are product
   evidence, not benchmarks, model-quality conclusions, or proof of autonomous repair selection.
   Read the
   [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md) and
-  [issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md).
+  [issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md), and the
+  [issue 6 lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md).
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
 Before extending that field sequence, freeze each later task's base, workflow, external holdout,

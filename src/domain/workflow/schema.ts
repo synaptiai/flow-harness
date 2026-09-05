@@ -290,14 +290,11 @@ const agentConfigSchema = z
         message: "agent skills require the declared read tool for progressive disclosure",
       });
     }
-    if (
-      agent.recovery !== undefined &&
-      (agent.tools.includes("exec") || agent.toolPackages.length > 0)
-    ) {
+    if (agent.recovery !== undefined && agent.toolPackages.length > 0) {
       context.addIssue({
         code: "custom",
         path: ["recovery"],
-        message: "fresh agent recovery is not supported with agent command execution",
+        message: "fresh agent recovery is not supported with command tool packages",
       });
     }
     if (

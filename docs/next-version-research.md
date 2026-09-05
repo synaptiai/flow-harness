@@ -66,8 +66,9 @@ non-goals, and status notes.
 
 - **Outcome:** Decide whether a new capability improves verified user outcomes under fixed controls.
 - **Maturity:** Partial. Flow has paired evaluators, native comparison adapters, private holdouts,
-  complete denominators, and two digital-twin field series.
-- **Missing research:** The evidence covers two issues in one repository and doesn't establish
+  complete denominators, and three digital-twin field series. The third series completed one
+  approval-bound GitHub issue lifecycle after 52 full runs.
+- **Missing research:** The evidence covers three issues in one repository and doesn't establish
   cross-repository, cross-language, cross-provider, crash-recovery, or unattended-repair behavior.
   The task taxonomy, minimum sample sizes, equivalence rules, leakage controls, and claim thresholds
   aren't frozen for a broader benchmark.
@@ -90,7 +91,10 @@ non-goals, and status notes.
   overflow recovery.
 - **Missing research:** Flow has not measured model-free pruning or cache-aware summary economics.
   It also lacks provider-specific overflow classification and post-request retry measurements. The
-  correct pressure and retained-tail policy remains workload-specific.
+  correct pressure and retained-tail policy remains workload-specific. The issue 6 lifecycle
+  series adds measured long-response latency, large cache-inclusive histories, retry
+  amplification, and zero production compaction events under OpenRouter. It does not identify
+  whether a provider request was generating, stalled, disconnected, or awaiting an upstream route.
 - **Authority change:** Low. A projection can change model-visible context but must never change
   primary events, workflow evidence, tools, policy, route, or output allowance.
 - **Prerequisites:** NV-01 and exact provider-adapter conformance tests.
@@ -104,8 +108,9 @@ non-goals, and status notes.
 - **Outcome:** Let Flow choose a safe repair class after deterministic rejection. Remove the need
   for an operator to author every next step.
 - **Maturity:** Partial. The second digital-twin series proves that bounded repair workflows can
-  recover an accepted change. An operator still selected and authored every repair. The series
-  doesn't prove autonomous selection.
+  recover an accepted change. The third series proves that deterministic holdout and review
+  feedback can drive repeated controller-contract corrections through a final merge. An operator
+  still selected and authored every correction. Neither series proves autonomous selection.
 - **Missing research:** Flow lacks a closed failure taxonomy and deterministic selection
   controller. It also lacks a progress measure, cross-cycle settlement contract, and adversarial
   holdouts. Comparison with operator-authored repair remains open. Flow needs separate tests for

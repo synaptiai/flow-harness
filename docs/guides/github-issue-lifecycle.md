@@ -21,9 +21,11 @@ Current source registers the `flow issue` command group. The published `0.1.0-al
 doesn't include it. Use the lifecycle only from a release whose `flow --help` output lists
 `flow issue`, and confirm that release's notes name the GitHub issue lifecycle as qualified.
 
-The first qualification uses one bounded external-repository issue. That evidence proves the
-frozen repository, issue, provider, model, host, and checks named by the run. It doesn't establish
-compatibility with every project or replace your repository's branch protections.
+The first source qualification completed one bounded external-repository issue. That evidence
+proves the frozen repository, issue, provider, model, host, and checks named by the run. It doesn't
+establish compatibility with every project or replace your repository's branch protections. Read
+the [issue 6 lifecycle field report](../field-reports/digital-twin-issue-6-alpha4.md) for the complete
+denominator and the distinction between source qualification and a published package.
 
 ## Before you begin
 

@@ -14,6 +14,11 @@ Current source registers `flow issue`. The published `0.1.0-alpha.4` package doe
 Operate the lifecycle only from a release whose help and release notes identify it as qualified.
 Keep the release pinned for the complete run. Recovery rejects changed frozen identities.
 
+The source-built controller completed its first external proof. The
+[issue 6 lifecycle field report](../field-reports/digital-twin-issue-6-alpha4.md) records the exact
+boundary, every full run, and remaining package qualification work. Don't treat that source result
+as evidence that the older alpha.4 package contains this command.
+
 ## Establish the operating boundary
 
 Use a dedicated development host or account boundary for issue runs. Don't run untrusted

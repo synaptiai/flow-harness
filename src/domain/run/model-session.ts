@@ -632,6 +632,7 @@ export interface ModelSessionSummary {
   readonly activeAttempt: number | null;
   readonly primaryEventCount: number;
   readonly requestCount: number;
+  readonly latestAttemptRawExecResultCount: number;
   readonly interruptionCount: number;
   readonly resumeSurfaceCount: number;
   readonly compactionCount: number;
@@ -1525,6 +1526,12 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
     activeAttempt: state.activeAttempt,
     primaryEventCount: state.primaryEvents.length,
     requestCount: state.events.filter((event) => event.type === "model_request_prepared").length,
+    latestAttemptRawExecResultCount: state.events.filter(
+      (event) =>
+        event.type === "tool_result_committed" &&
+        event.attempt === state.lastAttempt &&
+        event.toolName === "flow_exec",
+    ).length,
     interruptionCount: state.events.filter((event) => event.type === "attempt_interrupted").length,
     resumeSurfaceCount: state.events.filter((event) => event.type === "resume_surface_prepared")
       .length,

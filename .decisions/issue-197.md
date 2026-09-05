@@ -347,6 +347,49 @@ each with separate authority, evidence, and recovery history. This choice addres
 failures without increasing a token, attempt, cost, or time limit. Preserve both failed runs in the
 final acceptance denominator.
 
+## Final external-pilot outcome
+
+Run `issue-ef297140-9756-4dc5-92f0-4017a4bd5f07` completed the lifecycle at frozen base
+`99fb83a14e589fe7137b6f6cf3eac97b8535be0f`. The private holdout and frozen commands passed for
+candidate `c54b8105ea8c79c37be1ff4280f3b9163ca4cda4`. A fresh read-only review reported no blocking
+P1, P2, or P3 finding. GitHub pull request 105 passed its required `test` check on the exact head.
+
+The run then stopped at merge gate
+`f52e4a0f298a5b87164f086267e242d06a649cba99b638f33a432fe9227f0064`. A separate CLI command
+approved that exact pull request, head, and gate. Flow observed squash-merge commit
+`374b16b229e187004e5915942f95c296af03298f`, branch deletion, and issue closure before recording
+the terminal `merged` phase.
+
+The complete series contains 52 full parent runs. Its nested implementation and review evidence
+reported 247,516,376 aggregate tokens, including cache tokens, `$10.094325` in model cost, 9,429
+turns, 10,590 tool calls, and 2,532 settled filesystem effects. The
+[issue 6 field report](../docs/field-reports/digital-twin-issue-6-alpha4.md) owns the complete run
+and correction ledgers, interventions, limitations, and exact evidence.
+
+This proves the source-built controller on the named macOS host and the candidate's hosted Linux
+x64 check. It does not prove that the older published alpha.4 package contains `flow issue` or that
+the controller itself ran on hosted Linux x64. Exact package qualification and a separately
+authorized prerelease remain release gates.
+
+## Recovery correction from the final series
+
+The final series showed that a completed provider failure can occur after a raw `exec` command has
+fully settled. Categorically rejecting recovery repeats expensive model work even though Flow has
+the closed model session, command request, command result, and process evidence.
+
+Allow continuation only when every command is settled, process termination is confirmed, every
+workspace edit is committed, the exact model session closes without a mismatch, no delegation ran,
+the latest-attempt raw-exec result count equals the command-ledger count, the provider failure is
+eligible, and budget remains. The next attempt consumes the recorded tool result and does not replay
+the command. Keep interrupted, open, unconfirmed, package-provided, or otherwise uncertain commands
+ineligible.
+
+Deferred improvements remain separate research items: provider-request timeouts distinct from
+whole-node timeouts, trajectory and useful-effect telemetry, retry labels that distinguish a fresh
+model context from a preserved dirty workspace, and provider-specific compaction or overflow
+recovery. None is required to accept the proved candidate, and none gains authority from this
+decision.
+
 ### Outcome of the split-node `:nitro` rerun
 
 Run `issue-676b6dd2-9aba-4b1d-86ae-f09ca73172f7` completed its first 16 of 21 implementation

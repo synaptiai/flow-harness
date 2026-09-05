@@ -1807,6 +1807,7 @@ const modelSessionSummarySchema = z
     activeAttempt: z.number().int().positive().safe().nullable(),
     primaryEventCount: z.number().int().nonnegative().safe(),
     requestCount: z.number().int().nonnegative().safe(),
+    latestAttemptRawExecResultCount: z.number().int().nonnegative().safe().default(0),
     interruptionCount: z.number().int().nonnegative().safe(),
     resumeSurfaceCount: z.number().int().nonnegative().safe(),
     compactionCount: z.number().int().nonnegative().safe().default(0),
@@ -11089,25 +11090,64 @@ function failedAttemptHasRetryBoundary(
     return true;
   }
   const session = node.modelSession;
-  return (
-    node.error?.sideEffectStatus === "committed" &&
+  const providerCanContinue =
+    node.error !== null &&
     (node.error.code === "pi_agent_error" ||
       node.error.code === "pi_agent_failed" ||
       node.error.code === "pi_agent_incomplete" ||
       node.error.code === "pi_agent_output_limit" ||
       node.error.code === "pi_provider_rate_limited" ||
-      node.error.code === "pi_provider_unavailable") &&
-    requirement.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
-    node.effectProtocol === DURABLE_EFFECT_PROTOCOL &&
-    node.effects.length > 0 &&
-    node.effects.every((effect) => effect.settlement?.outcome === "committed") &&
-    node.commands.length === 0 &&
-    node.delegations.length === 0 &&
+      node.error.code === "pi_provider_unavailable");
+  const sessionCanContinue =
     session !== null &&
     session.activeAttempt === null &&
     session.lastAttempt === node.attempt &&
     session.latestRequest?.attempt === node.attempt &&
-    session.mismatchCategories.length === 0
+    session.mismatchCategories.length === 0;
+  if (!providerCanContinue || !sessionCanContinue || node.delegations.length > 0) {
+    return false;
+  }
+  const effectProtocolMatches =
+    requirement.effectProtocol === DURABLE_EFFECT_PROTOCOL
+      ? node.effectProtocol === DURABLE_EFFECT_PROTOCOL
+      : node.effectProtocol === null;
+  const effectsCanContinue =
+    effectProtocolMatches &&
+    (node.effects.length === 0 ||
+      node.effects.every((effect) => effect.settlement?.outcome === "committed"));
+  if (!effectsCanContinue) {
+    return false;
+  }
+  if (
+    node.error?.sideEffectStatus === "committed" &&
+    node.effects.length > 0 &&
+    node.commands.length === 0
+  ) {
+    return true;
+  }
+  return (
+    (node.error?.sideEffectStatus === "committed" ||
+      node.error?.sideEffectStatus === "uncertain") &&
+    node.commandProtocol === AGENT_COMMAND_PROTOCOL &&
+    node.commands.length > 0 &&
+    session.latestAttemptRawExecResultCount === node.commands.length &&
+    node.commands.every(commandHasProvenSettlement) &&
+    node.delegations.length === 0 &&
+    sessionCanContinue
+  );
+}
+
+function commandHasProvenSettlement(command: NodeAgentCommandRunState): boolean {
+  const settlement = command.settlement;
+  const evidence = settlement?.outcome.evidence;
+  return (
+    settlement !== null &&
+    settlement !== undefined &&
+    evidence !== null &&
+    evidence !== undefined &&
+    evidence.terminationStatus !== "unconfirmed" &&
+    (settlement.outcome.status === "succeeded" ||
+      settlement.outcome.error.code !== "command_sandbox_cleanup_failed")
   );
 }
 

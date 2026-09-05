@@ -1338,8 +1338,12 @@ Flow never accepts the truncated report as node evidence.
 
 A configured fresh recovery can start another attempt only when a durable model session exists.
 Every normal recovery proof must also succeed. A committed-edit attempt must have only settled
-edits. It must have no command or delegation record. Recovery doesn't enlarge the report limit. It
-doesn't continue the overflowing provider stream.
+edits. A completed raw-`exec` attempt must have only settled commands. It also requires complete
+process evidence, no unconfirmed termination, and no sandbox-cleanup failure. Neither form can have
+a delegation record.
+
+Recovery doesn't enlarge the report limit. It doesn't continue the overflowing provider stream.
+It also doesn't automatically execute a previous command again.
 
 `flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
 Every request contains one canonical portable project path. Definition, reference, and hover
@@ -1522,10 +1526,20 @@ writable state blocks. The retry also requires an attempt below `maxAttempts` an
 fresh recovery because interrupted consumption is incomplete. See [Recovery and interruption
 safety](recovery.md) for the event ordering and full refusal table.
 
-An agent selecting `exec` cannot declare `recovery`; the compiler rejects the combination because
-arbitrary process execution is never classified as read-only and has no general reconciliation
-proof. A prepared command blocks terminal settlement until its outcome is durable, and an open
-command-capable attempt is never replayed automatically.
+An agent selecting raw `exec` can declare `recovery`, but this policy applies only to an eligible
+completed provider failure. It doesn't make arbitrary process execution read-only or make an open
+command-capable attempt replayable. A prepared command blocks terminal settlement until its outcome
+is durable.
+
+The next attempt requires a closed matching model session. Command settlements must be complete,
+process termination must be confirmed, and sandbox cleanup must not have failed. The latest-attempt
+`flow_exec` result count must equal the command-ledger count. The provider failure must be supported
+and retryable. Required accounting must be complete, and budget must remain. The attempt cannot
+have a delegation or an unknown edit.
+
+The next attempt continues from the portable history after the recorded command result. The
+compiler still rejects recovery with `toolPackages`. Flow doesn't yet define their broader
+continuation contract.
 
 Flow disables Pi assistant-turn retries in the embedded session. Each provider request can make at
 most two transport retries before it returns an error to Flow. The pinned Pi transport retries only

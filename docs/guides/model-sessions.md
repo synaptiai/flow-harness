@@ -105,7 +105,9 @@ recovery policy and verifies effects, commands, approvals, attempts, and resourc
    ```
 
 2. Confirm that the affected agent node declared `recovery: { mode: fresh, ... }` and that public
-   state doesn't report an uncertain or committed effect or command.
+   state doesn't report an uncertain or committed effect or any command. This procedure applies to
+   an interrupted attempt. A completed provider failure uses the separate terminal-recovery proof
+   described in [Recovery and interruption safety](../recovery.md#recovery-boundaries).
 
 3. Resume with the exact workflow and execution directory that started the run:
 
@@ -229,7 +231,7 @@ count bounds a large sequence of small events.
 | Committed event or hash chain is invalid | Fails closed. | Restore the exact record from a trusted backup or keep the run for audit. Don't hand-edit history. |
 | Request surface no longer matches | Reports stable mismatch categories without private values. | Compare reviewed configuration and runtime changes. Start a new run when exact recovery isn't valid. |
 | Provider stream was interrupted | Stores no partial model message and never continues the stream. | Use fresh recovery only when the workflow proof gate allows it. |
-| Provider execution failed with complete bounded-resource evidence | Records and charges the failed attempt. It can start the next declared attempt when the attempt was side-effect-free, or when only durable workspace edits committed and the exact closed session can supply a continuation capsule. | Inspect `failedAttempts`, `node_retry_scheduled`, edit settlements, the model-session head, and total resources. Repeated failures stop at the attempt or resource ceiling. |
+| Provider execution failed with complete bounded-resource evidence | Records and charges the failed attempt. It can start the next declared attempt when the attempt was side-effect-free, when only durable workspace edits committed, or when raw `exec` commands settled with complete process evidence, confirmed termination, and no sandbox-cleanup failure. A side-effecting continuation requires the exact closed session. | Inspect `failedAttempts`, `node_retry_scheduled`, edit and command settlements, cleanup and termination status, the model-session head, and total resources. Repeated failures stop at the attempt or resource ceiling. |
 | Tool call has no completed result | Never invents a result. Effect or command settlement decides whether retry is safe. | Inspect the authoritative effect and command state before any new run. |
 | Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. If the current source and selected embedded Pi adapter meet your requirements, you can enable the explicit rolling policy in a new reviewed workflow. Don't raise limits by editing durable state. |
 

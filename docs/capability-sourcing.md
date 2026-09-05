@@ -245,11 +245,14 @@ session for each fresh attempt and archives the previous attempt only in Flow's 
 
 Prime Agent's daemon journals mutating client commands before dispatch and does not replay an
 uncertain side effect merely because its durable result is missing. Flow applies the same principle
-inside the agent node: automatic fresh recovery is legal only for read-only attempts or durable
-edits whose every effect is positively proven `not_applied`. Agent attempts with arbitrary `exec`
-are categorically ineligible because no general observation can prove a command was not applied.
-Applied, committed, open, and unknown
-states remain blocked. See [Prime Agent daemon
+inside the agent node. An interrupted attempt is eligible only when it is read-only or every
+durable edit is proven `not_applied`. An interrupted raw-`exec` attempt is ineligible because no
+general observation can prove that a command wasn't applied.
+
+A completed provider failure has a different proof boundary. Flow can continue after raw `exec`
+only when the command result is settled and process termination is confirmed. Sandbox cleanup must
+not fail, and the closed model session must contain the result. This continuation doesn't replay
+the command. Applied, committed, open, and unknown states remain blocked for interrupted attempts. See [Prime Agent daemon
 semantics](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/daemon.md)
 and [AWS idempotency guidance](https://docs.aws.amazon.com/durable-execution/patterns/best-practices/idempotency/).
 

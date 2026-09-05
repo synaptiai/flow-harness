@@ -5,13 +5,22 @@ node attempts. An agent node may also opt into a bounded fresh attempt when repl
 attempt applied no effects. The same opt-in can retry an eligible completed provider execution
 failure. A model verifier may opt into retrying a completed, nontruncated response that violates
 the strict verdict JSON contract. Terminal evidence must prove that the attempt performed no effect
-and must account for every bounded resource. Recovery remains conservative: ambiguous work is
-reported to the operator and is never repeated automatically.
+or reached one of Flow's durable continuation boundaries. Evidence must also account for every
+bounded resource. Recovery remains conservative: ambiguous work is reported to the operator and is
+never repeated automatically.
 
 An interrupted agent attempt that selects `exec` never qualifies for fresh recovery. A completed
-agent attempt that prepared a command, effect, or delegation also doesn't qualify. Command and Lean
-proof verifier attempts remain ineligible. An open model verifier start is refused as uncertain,
-even when that verifier declares recovery. Only its fully settled strict-output failure qualifies.
+agent attempt with an open command or a delegation also doesn't qualify. A completed raw-`exec`
+attempt can qualify after a supported provider failure.
+
+Every command must be settled. Every started process must have confirmed termination. Sandbox
+cleanup must not have failed. The model session must be closed and matching. Its latest-attempt
+`flow_exec` result count must equal the command-ledger count. Every workspace edit must be committed.
+
+Flow continues from the recorded command result. It doesn't execute the prior command again.
+Command-node and Lean proof verifier attempts remain ineligible. An open model verifier start is
+refused as uncertain. This rule applies even when that verifier declares recovery. Only its fully
+settled strict-output failure qualifies.
 
 ## Lean proof appliance attempts
 
@@ -347,10 +356,18 @@ from that prefix without duplicating events.
 
 Agent command execution has its own `flow.agent-commands/v1` write-ahead ledger. A normalized
 executable/argv/deadline request and its exact allowed `process.execute` decision are committed
-before spawn; the bounded outcome is committed afterward. Resume never runs an open or settled
-agent command again and cannot reconcile arbitrary process side effects from filesystem
-observation. The compiler therefore rejects `recovery: { mode: fresh, ... }` whenever the node
-selects `exec`, and a command-capable open attempt is reported as `uncertain_operation`.
+before spawn. The bounded outcome is committed afterward. Resume never runs an open command or
+automatically replays a settled command. It also cannot reconcile arbitrary process side effects
+from filesystem observation. A command-capable open attempt is therefore reported as
+`uncertain_operation`.
+
+A raw-`exec` agent can declare `recovery: { mode: fresh, ... }` for an eligible completed provider
+failure. Flow requires a closed matching model-session record, a settled command outcome with
+process evidence, a termination status other than `unconfirmed`, and no sandbox-cleanup failure.
+The portable history already contains the command result, so the next attempt continues after that
+result. The model can request another command only as a new tool call with a new write-ahead
+preparation, authorization decision, and settlement. Command tool packages remain ineligible
+because their broader recovery contract is not yet defined.
 
 Child recovery uses the child ledger as the execution commit marker and the workspace manifest as
 its isolation proof. The parent derives the same child run and workspace identities from its own run,
@@ -688,13 +705,19 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 - The node has a persisted `recovery: { mode: fresh, ... }` policy.
 - The failed attempt is below `maxAttempts`.
 - The failure is retryable.
-- The attempt is side-effect-free, or an agent attempt has only committed durable workspace edits.
-- A committed-edit agent failed with `pi_agent_error`, `pi_agent_failed`,
+- The attempt is side-effect-free or has only committed durable workspace edits.
+- A raw-`exec` attempt can instead have a fully settled command journal and no unknown workspace
+  edit.
+- A durable-continuation agent failed with `pi_agent_error`, `pi_agent_failed`,
   `pi_agent_incomplete`, `pi_agent_output_limit`, `pi_provider_rate_limited`, or
   `pi_provider_unavailable`.
-- A committed-edit attempt has a closed, matching model-session record for the failed attempt.
-- The attempt has no command or delegation record. Any edit history contains no open, unknown,
-  uncertain, reconciled, or not-applied effect.
+- A side-effecting attempt has a closed, matching model-session record for the failed attempt.
+- The attempt has no delegation record. Any edit history contains no open, unknown, uncertain,
+  reconciled, or not-applied effect.
+- Every prior command is settled with process evidence and has a termination status other than
+  `unconfirmed`. No command reports `command_sandbox_cleanup_failed`. The latest-attempt
+  `flow_exec` result count in the model-session summary equals the command-ledger count. The private
+  history contains those completed tool results.
 - No declared run budget is exhausted.
 - When model tokens or cost are bounded, terminal evidence contains a complete usage observation.
 - When execution time is bounded, terminal evidence is present.
@@ -1053,7 +1076,7 @@ diagnosis.
 | Code | Meaning | Operator action |
 | --- | --- | --- |
 | `uncertain_operation` | A node attempt started without a durable outcome, even if its edits were reconciled | Inspect the node and its settlement/reconciliation provenance; start a new reviewed run rather than editing the ledger |
-| `recovery_retry_ineligible` | The node opted into fresh recovery, but interruption, attempt, effect, protocol, or resource proof forbids the next start | Inspect `interruptedAttempts`, `failedAttempts`, effects, recovery requirement, and budget; don't hand-edit the ledger or rerun under a weakened workflow |
+| `recovery_retry_ineligible` | The node opted into fresh recovery, but interruption, attempt, effect, command, protocol, or resource proof forbids the next start | Inspect `interruptedAttempts`, `failedAttempts`, effects, commands, termination status, recovery requirement, and budget; don't hand-edit the ledger or rerun under a weakened workflow |
 | `reconciliation_unavailable` | An open typed effect was found but this embedding did not supply a reconciler | Use the production CLI/worker composition or configure a reviewed reconciler; do not retry the node |
 | `reconciliation_incomplete` | A reconciler returned no observation or attempted multiple publications | Preserve the ledger and diagnose the adapter contract before trying recovery again |
 | `terminal_run` | The run already has a terminal event | Use `flow inspect`; start a new run for new work |
