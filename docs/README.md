@@ -79,6 +79,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) | You need the controls, negative results, partial-effect evidence, limitations, or next actions from the bounded separate-repository coding attempts. |
 | [Digital-twin modularization field report](field-reports/digital-twin-issue-5-alpha4.md) | You need the complete 11-attempt denominator, durable replacement evidence, recursive repair record, final verification, or compaction conclusions from the second field issue. |
 | [Digital-twin lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md) | You need the complete 52-run denominator, recursive correction ledger, exact merge evidence, operator interventions, or limits of the first end-to-end GitHub issue proof. |
+| [Installed-package issue 106 field report](field-reports/digital-twin-issue-106-installed.md) | You need the failed hosted attempt, exact archive identity, command-discovery findings, token accounting, or next correction options. |
 | [Documentation style](documentation-style.md) | You write or review public documentation. |
 | [Code of conduct](../CODE_OF_CONDUCT.md) | You need the contributor conduct contract. |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | You need dependency attribution and copied-code notices. |

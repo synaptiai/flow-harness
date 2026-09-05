@@ -20,6 +20,11 @@ behavior. The first [hosted attempt](https://github.com/danielbentes/digital-twi
 uses that base and Flow source `50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e`. Dispatch is not
 qualification: retain UC-01 as open until the installed lifecycle and independent observations pass.
 
+That attempt failed at the implementation token gate before review or publication. The
+[issue 106 field report](field-reports/digital-twin-issue-106-installed.md) records the complete
+denominator, command-discovery gap, and correction alternatives. Evidence was authenticated and
+the dedicated Actions secrets were removed. No replacement attempt has started.
+
 Execute these steps in order:
 
 1. Create one useful, previously unhandled digital-twin issue. Freeze its acceptance criteria,
@@ -84,6 +89,7 @@ order does not authorize an unreviewed design or broaden model authority.
 | UC-05 | Prioritized research, not autonomous authority; Approach A maintainer | Complete NV-03 design using the field denominator and a frozen NV-01 comparison. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation and false-acceptance tests. | UC-04 design review or another operator-authored repair series. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
 | UC-07 | Parity research; Approach A maintainer | Inventory plugin review teams, challenge rounds, design, test-first development, visual checks, and reviewed learning against actual harness defaults. | Each feature is classified as enforced, optional, workflow-authored, missing, or intentionally excluded, with a runnable demonstration where supported. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
+| UC-08 | Qualification correction; Approach A maintainer | Design frozen command discovery and actionable mismatch feedback from the issue 106 failure. Also assess bounded ineffective-request stopping and exact archive retention. | The model can select complete admitted invocations without guessing. Invalid requests remain denied. Tests prove private-holdout exclusion, replay identity, and bounded failure behavior. | Before another hosted model attempt. |
 
 UC-03 through UC-07 are not evidence that Flow has left alpha. Qualification of one task is a
 bounded usability checkpoint. A broader readiness decision needs a support contract and repeatable
