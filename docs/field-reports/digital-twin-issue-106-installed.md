@@ -130,10 +130,11 @@ installed on a second host. A digest alone does not recover missing artifact byt
 | B: Project the frozen command catalog | Give the model complete, host-derived admitted invocations and actionable mismatch feedback. | Requires bound projection, replay, disclosure, and regression tests. It addresses the product gap without weakening authority. |
 | C: Remove agent command execution | Let the agent edit while trusted verifier nodes run all checks. | Avoids command guessing, but removes interactive repair feedback unless a separate bounded correction path exists. |
 
-Approach B is the recommended design direction, not an implemented or newly authorized contract.
-Pair it with a separately reviewed stop rule for repeated ineffective requests. Test valid command
-discovery, exact timeout handling, rejection feedback, private-holdout exclusion, replay identity,
-and refusal to expand authority.
+At the time of this failure analysis, Approach B was the recommended design direction, not an
+implemented correction. The user subsequently approved command discovery, actionable rejection
+feedback, and bounded ineffective-request stopping. That work is in progress. This failed attempt
+does not prove the correction. Test valid command discovery, exact timeout handling, rejection
+feedback, private-holdout exclusion, replay identity, and refusal to expand authority.
 
 Do not raise the token limit as the only correction. Preserve this failed attempt in the denominator
 and freeze any replacement contract before another model run. Track the remaining work in the

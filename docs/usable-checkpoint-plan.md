@@ -25,6 +25,12 @@ That attempt failed at the implementation token gate before review or publicatio
 denominator, command-discovery gap, and correction alternatives. Evidence was authenticated and
 the dedicated Actions secrets were removed. No replacement attempt has started.
 
+Approach B is now approved: make complete frozen verification commands discoverable, return
+actionable rejection feedback, and stop repeated ineffective requests within an explicit bound.
+UC-08 is implemented and locally verified in current source. It does not increase the pilot budget,
+authorize approximate command matching, or establish successful hosted qualification. Published
+alpha.4 does not include this correction.
+
 Execute these steps in order:
 
 1. Create one useful, previously unhandled digital-twin issue. Freeze its acceptance criteria,
@@ -88,12 +94,23 @@ order does not authorize an unreviewed design or broaden model authority.
 | UC-04 | Next delivery-design priority; Approach A maintainer | Design guided issue-to-plan preparation with UC-03. | Proposed criteria, commands, paths, budgets, and approval rules are explicit and reviewable. A human freezes the contract before execution; generated plans pass production admission. | UC-03 design review and every plan-authoring failure. |
 | UC-05 | Prioritized research, not autonomous authority; Approach A maintainer | Complete NV-03 design using the field denominator and a frozen NV-01 comparison. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation and false-acceptance tests. | UC-04 design review or another operator-authored repair series. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
-| UC-07 | Parity research; Approach A maintainer | Inventory plugin review teams, challenge rounds, design, test-first development, visual checks, and reviewed learning against actual harness defaults. | Each feature is classified as enforced, optional, workflow-authored, missing, or intentionally excluded, with a runnable demonstration where supported. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
-| UC-08 | Qualification correction; Approach A maintainer | Design frozen command discovery and actionable mismatch feedback from the issue 106 failure. Also assess bounded ineffective-request stopping and exact archive retention. | The model can select complete admitted invocations without guessing. Invalid requests remain denied. Tests prove private-holdout exclusion, replay identity, and bounded failure behavior. | Before another hosted model attempt. |
+| UC-07 | Parity research in progress; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md). Add runnable demonstrations for supported practices, and compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory alone does not close this row. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
+| UC-08 | Implemented and locally verified; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | Deterministic tests verify complete invocations, denied mismatches, private-holdout exclusion, replay identity, and bounded failure. The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent review has no remaining P1–P3 findings. Live catalog-following behavior remains part of UC-01. | Reassess refusal rates and false stops in the next separately approved hosted attempt. |
+| UC-08a | Separate open qualification gate; release maintainer | Retain the exact packed archive for the replacement qualification attempt. Reuse its bytes for both named host checks. | The retained archive matches its recorded digest and is the artifact installed on both hosts. A recorded digest without the archive is insufficient. | Before another hosted model attempt or package identity change. |
 
 UC-03 through UC-07 are not evidence that Flow has left alpha. Qualification of one task is a
 bounded usability checkpoint. A broader readiness decision needs a support contract and repeatable
 results from users who did not build the harness.
+
+UC-03 also owns a unified public path for diagnosing issue-owned nested failures. Today,
+`flow issue inspect` exposes parent lifecycle state, not nested command-refusal counts. The
+[private-host diagnosis procedure](operations/github-issue-lifecycle.md#diagnose-command-refusals)
+documents the current limitation. Close this part of onboarding only when an operator can identify
+the failed nested boundary and its content-free counters without opening private session records.
+
+Closing UC-08 or UC-08a does not close UC-01 or UC-02. Stopping ineffective requests also does not
+complete UC-05. Selecting a repair workflow from verification evidence adds a separate execution
+decision and requires its own research and approval.
 
 ## Keep deferrals bounded
 

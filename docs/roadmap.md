@@ -866,7 +866,10 @@ doesn't qualify the older published alpha.4 package or every supported host.
 The first installed-package attempt on hosted Linux x64 failed at the implementation token gate
 before candidate acceptance or review. The
 [issue 106 field report](field-reports/digital-twin-issue-106-installed.md) records its exact archive,
-complete denominator, command-discovery failure, and correction options. Slice 13.3 remains open.
+complete denominator, command-discovery failure, and approved correction. UC-08 in the
+[usable-checkpoint plan](usable-checkpoint-plan.md) tracks exact command discovery, actionable
+refusals, and bounded ineffective-request stopping. UC-08a separately requires retention of the
+exact archive bytes for the replacement qualification. Neither correction closes Slice 13.3.
 
 ### Slice 13.4: Qualify and publish the usable checkpoint
 

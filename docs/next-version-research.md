@@ -71,9 +71,11 @@ non-goals, and status notes.
 
 - **Outcome:** Decide whether a new capability improves verified user outcomes under fixed controls.
 - **Maturity:** Partial. Flow has paired evaluators, native comparison adapters, private holdouts,
-  complete denominators, and three digital-twin field series. The third series completed one
-  approval-bound GitHub issue lifecycle after 52 full runs.
-- **Missing research:** The evidence covers three issues in one repository and doesn't establish
+  complete denominators, and three merged digital-twin field series. The third series completed one
+  approval-bound GitHub issue lifecycle after 52 full runs. A fourth issue's first installed-package
+  attempt failed before acceptance or independent review. The
+  [issue 106 report](field-reports/digital-twin-issue-106-installed.md) preserves that result.
+- **Missing research:** The evidence covers four attempted issues in one repository and doesn't establish
   cross-repository, cross-language, cross-provider, crash-recovery, or unattended-repair behavior.
   The task taxonomy, minimum sample sizes, equivalence rules, leakage controls, and claim thresholds
   aren't frozen for a broader benchmark.
@@ -100,6 +102,9 @@ non-goals, and status notes.
   series adds measured long-response latency, large cache-inclusive histories, retry
   amplification, and zero production compaction events under OpenRouter. It does not identify
   whether a provider request was generating, stalled, disconnected, or awaiting an upstream route.
+  The issue 106 attempt also recorded zero compaction events and repeated rejected command requests.
+  That failure motivates command discovery and bounded stopping. It does not establish that
+  compaction would improve verified task completion.
 - **Authority change:** Low. A projection can change model-visible context but must never change
   primary events, workflow evidence, tools, policy, route, or output allowance.
 - **Prerequisites:** NV-01 and exact provider-adapter conformance tests.
@@ -122,6 +127,8 @@ non-goals, and status notes.
   oscillation, ineffective repair, and attempts to reinterpret a frozen contract.
 - **Authority change:** Medium. The controller selects execution that can mutate a workspace, even
   when every candidate workflow is predeclared.
+- **Related correction:** UC-08 covers stopping repeated ineffective command requests without selecting a
+  repair workflow. Completing that correction does not complete this research group.
 - **Prerequisites:** NV-01, stable effect reconciliation, frozen external holdouts, and a complete
   aggregate budget across every full and repair attempt.
 - **Research exit:** Build a deterministic controller that selects only predeclared repair classes
@@ -294,8 +301,11 @@ non-goals, and status notes.
 
 ## Respect the dependency order
 
-The dependency graph prevents high-authority features from entering a release before their
-measurement, process, and isolation foundations.
+The graph distinguishes required capability dependencies from useful evidence relationships.
+Solid arrows represent prerequisites named in the research entries. Dashed arrows mean one group's
+evidence can inform another group's design. They do not require completing that entire group first.
+The written entries also contain gates that are not capability groups, such as consumer demand,
+exact provider conformance, and a hosted product decision.
 
 ```mermaid
 flowchart TD
@@ -319,18 +329,24 @@ flowchart TD
     benchmark --> isolation
     benchmark --> compatibility
     benchmark --> packages
-    context --> repair
+    context -. informs .-> repair
     repair --> delegation
-    compatibility --> protocol
+    compatibility -. informs .-> protocol
     protocol --> remote
     isolation --> remote
     isolation --> extensions
     isolation --> distributed
-    remote --> distributed
-    packages --> extensions
+    distributed --> remote
+    packages -. informs .-> extensions
 ```
 
-The graph is a minimum ordering constraint, not a promise to implement every descendant.
+NV-07 requires NV-10's remote ownership and quota boundary. NV-10 requires a remote identity model,
+not a completed NV-07 interactive client. Design those shared contracts before consequential remote
+operation. NV-05's remote variants also require NV-07, NV-08, and NV-10. Local evaluation
+does not inherit those remote prerequisites.
+
+The graph is not a promise to implement every descendant. In particular, local command-discovery
+corrections do not depend on completing context research, remote operation, or stable-release work.
 
 ## Compare possible next-version shapes
 

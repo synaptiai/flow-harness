@@ -104,6 +104,22 @@ the controller ran from current source on macOS. These results don't establish g
 coding or prove that published alpha.4 contains the lifecycle.
 
 They also don't establish autonomous recursive-repair effectiveness.
+
+A fourth issue, digital-twin issue 106, tested an installed archive on hosted Linux x64. Its first
+attempt failed at the implementation token gate before candidate acceptance, independent review,
+publication, or merge. The model repeatedly requested commands that didn't match the frozen
+verification contract. The approved correction covers command discovery, actionable rejection
+feedback, and bounded ineffective-request stopping.
+
+This correction is implemented and locally verified in current source. Published alpha.4 does
+not include it. The installed lifecycle and
+release qualification gates remain open.
+
+Read the [installed-package field report](field-reports/digital-twin-issue-106-installed.md) and the
+[usable-checkpoint plan](usable-checkpoint-plan.md). The
+[Flow plugin comparison](flow-plugin-parity.md) distinguishes enforced runtime boundaries from
+optional practices, authored workflows, and missing convenience features.
+
 Read the [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md), the
 [issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md), and the
 [issue 6 lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md). They describe fixed

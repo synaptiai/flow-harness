@@ -68,6 +68,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |
 | [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |
 | [Usable-checkpoint execution plan](usable-checkpoint-plan.md) | You need qualification blockers, operator-burden priorities, owners, or deferral review triggers. |
+| [Flow plugin comparison](flow-plugin-parity.md) | You need the 23-command inventory, default versus optional behavior, source evidence, or remaining migration gaps. |
 | [Next-version capability research](next-version-research.md) | You need deferred-capability maturity, dependencies, research gaps, release-shaping alternatives, or the evidence required before implementation. |
 
 ## Develop and verify

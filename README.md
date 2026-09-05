@@ -77,7 +77,9 @@ Linux and macOS support ordinary workflow execution. Agent `exec`, the container
 and Prime Agent have narrower platform requirements.
 
 Read [Project status](docs/project-status.md) for the current feature and platform matrix. Read the
-[Delivery roadmap](docs/roadmap.md) for completed gates and planned work.
+[Delivery roadmap](docs/roadmap.md) for completed gates and planned work. The
+[Flow plugin comparison](docs/flow-plugin-parity.md) separates implemented boundaries from the
+developer workflows and installed qualification that remain open.
 
 ## Quick start
 
