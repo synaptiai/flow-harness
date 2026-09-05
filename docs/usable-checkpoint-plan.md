@@ -50,6 +50,26 @@ bounded by its frozen contract. A failed attempt triggers analysis and a recorde
 before any replacement run. This is an initial pilot limit, not a claim about an optimal agent
 budget or a standard industry limit.
 
+## Reuse the existing setup boundary
+
+Current source already provides `flow init`, a guided coding quick start, and `flow issue doctor`.
+The configuration initializer refuses implicit replacement and handles uncertain file publication.
+The issue diagnostic validates the authored workflows and checks the exact repository, provider,
+sandbox, and issue contract without starting model work.
+
+UC-03 and UC-04 must reuse those admission and storage boundaries. The missing product path is
+guided preparation of a real repository's issue contract, not another independent setup system.
+Review the
+[configuration initializer](https://github.com/synaptiai/flow-harness/blob/50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e/src/infrastructure/fs/flow-config-store.ts)
+and [issue diagnostic](https://github.com/synaptiai/flow-harness/blob/50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e/src/cli/production-github-issue-service.ts)
+when designing that path.
+
+The issue 106 preparation required 203 lines across its plan, implementation workflow, review
+workflow, and holdout. Its hosted orchestration, tests, and operating guide add separate work.
+These counts describe this preparation only. They do not measure general usability or user time.
+Treat the pilot-specific approval transport and credential exception as test infrastructure, not
+as completed product onboarding.
+
 ## Track the product priorities
 
 The maintainer executing Approach A owns every open row until a named owner accepts it. Priority
