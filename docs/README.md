@@ -67,6 +67,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [GitHub issue lifecycle specification](specs/github-issue-lifecycle.md) | You need the normative preview contract for plans, authority, durable effects, review, hosted checks, or merge approval. |
 | [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |
 | [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |
+| [Usable-checkpoint execution plan](usable-checkpoint-plan.md) | You need qualification blockers, operator-burden priorities, owners, or deferral review triggers. |
 | [Next-version capability research](next-version-research.md) | You need deferred-capability maturity, dependencies, research gaps, release-shaping alternatives, or the evidence required before implementation. |
 
 ## Develop and verify

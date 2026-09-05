@@ -8,6 +8,11 @@ The [delivery roadmap](roadmap.md) owns gate order and release commitments. This
 future-capability research and release-shaping alternatives. A row in this document is not a
 commitment, compatibility promise, or claim that Flow supports the capability.
 
+The [usable-checkpoint execution plan](usable-checkpoint-plan.md) assigns owners, dispositions,
+evidence gates, and reconsideration triggers to qualification and operator-burden priorities.
+It promotes NV-01 and NV-03 for decision work without marking their research complete. It also
+tracks repository onboarding, guided plan preparation, and plugin-default parity explicitly.
+
 ## Interpret research maturity
 
 Use these terms consistently when comparing candidates:

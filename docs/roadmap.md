@@ -47,6 +47,10 @@ Gate 13 applies that thesis to one production GitHub issue lifecycle. A user mus
 Flow and use it in another repository. The proof must cover implementation, independent review,
 deterministic verification, hosted checks, explicit approval, and verified merge.
 
+The [usable-checkpoint execution plan](usable-checkpoint-plan.md) tracks the remaining qualification
+work and operator-burden priorities. A deferred item must retain an owner, an evidence gate, and a
+reconsideration trigger. Deferral does not mean completion.
+
 Remaining targets include executable extensions, remote or multi-user UI hosts, stronger
 isolation, measured product benchmarks, and a future stable compatibility program.
 Each first-party host accepts exact A2UI-profile presentation packages.
@@ -838,10 +842,11 @@ that another user can apply to one supported `github.com` repository without bui
 
 ### Slice 13.3: Prove the external-project lifecycle
 
-**Implemented against the source-built controller.**
+**Partially qualified. Installed-package hosted Linux x64 acceptance remains open.**
 
-- Use the packed release-candidate command through separate operating-system processes against
-  `digital-twin` issue 6.
+- Preserve the source-built issue 6 result. Use the installed release-candidate archive through
+  separate operating-system processes against a fresh, previously unhandled `digital-twin` issue
+  on hosted Linux x64. Record the archive digest and source revision separately from its version.
 - Start from a frozen clean base. Predeclare the holdout, verification commands, hosted-check names,
   source app identities, budgets, stopping rules, and repair ceiling.
 - Preserve all attempts. For each failure, identify the responsible boundary and add a regression
