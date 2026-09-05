@@ -48,7 +48,7 @@ describe("production environment doctor", () => {
         command: {
           executable: "/trusted/node",
           args: ["-e", ""],
-          timeoutMs: 2_000,
+          timeoutMs: 10_000,
         },
       },
       {

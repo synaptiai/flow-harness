@@ -52,6 +52,12 @@ the installed command in operator procedures. Do not require users to clone or l
 
 Production modules may not contain mock executors, fake providers, fallback successes, placeholder results, or hidden network calls. Tests may use explicit test doubles at Flow-owned ports.
 
+For command-admission and model-session changes, test the complete boundary: frozen public
+verification commands, model-visible tool inputs, refused requests, durable results, and recovery.
+Prove that private holdouts stay private and that a failed verifier isn't classified as a refused
+command. Preserve historical authority identities when optional fields are absent. Do not infer
+safe non-execution from error prose or report local regression tests as hosted qualification.
+
 ## Live provider tests
 
 Default tests never use model credentials. To exercise a configured Pi provider explicitly:
@@ -97,3 +103,8 @@ npm run docs:capabilities:check
 ```
 
 Review both generated artifacts with the implementation. Don't edit either file directly.
+
+If you change internal exports or module dependencies, run `npm run analyze:library-api`. Update the
+current [library assessment](docs/library-api-assessment.md), its scaffold test, and the packaging
+documentation-structure test from that output.
+Keep immutable release notes unchanged. Their counts describe historical source.

@@ -11,7 +11,18 @@ import type {
   RecoverableRunEventStore,
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
-import { parseRunEvent, type RunEvent } from "../../../src/domain/run/events.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../src/domain/agent-command.js";
+import { PolicyBroker } from "../../../src/domain/policy/broker.js";
+import {
+  type AgentCommandEvidence,
+  parseRunEvent,
+  type RunEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
+import { evaluateModelRequestCapacity } from "../../../src/domain/run/model-request-capacity.js";
 import {
   calculatePortableHistoryIdentity,
   createModelSession,
@@ -25,10 +36,37 @@ import {
   selectContextCompactionRange,
   selectRollingContextRange,
 } from "../../../src/domain/run/model-session.js";
-import { evaluateModelRequestCapacity } from "../../../src/domain/run/model-request-capacity.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow model session coordination", () => {
+  it.each([
+    {
+      latestAttemptRawExecResultCount: 0,
+      commandAuthorityRejectionCount: 1,
+      latestAttemptCommandAuthorityRejectionCount: 1,
+    },
+    {
+      latestAttemptRawExecResultCount: 2,
+      commandAuthorityRejectionCount: 1,
+      latestAttemptCommandAuthorityRejectionCount: 2,
+    },
+    { latestAttemptRawExecResultCount: 1, latestAttemptCommandAuthorityRejectionCount: 1 },
+  ])("rejects inconsistent no-execution summary counts: %j", (counts) => {
+    const session = createModelSession(
+      identity("run-invalid-rejection-summary"),
+      "2026-08-22T00:00:00.000Z",
+    ).state;
+    const event = openAttemptEvents(workflow(), session)[1];
+    if (event?.type !== "node_started" || event.modelSession === undefined)
+      throw new Error("requires a model-backed node start");
+    expect(() =>
+      parseRunEvent({
+        ...event,
+        modelSession: { ...event.modelSession, primaryEventCount: 6, ...counts },
+      }),
+    ).toThrow();
+  });
+
   it("defaults compaction counters when replaying a pre-compaction run summary", () => {
     const session = createModelSession(
       identity("run-model-session-legacy"),
@@ -105,6 +143,453 @@ describe("runWorkflow model session coordination", () => {
       modelSession: { eventCount: 4, activeAttempt: null },
     });
   });
+
+  it.each([
+    ["provider-failed", "pi_agent_error"],
+    ["provider-rate-limited", "pi_provider_rate_limited"],
+    ["provider-unavailable", "pi_provider_unavailable"],
+    ["output-limited", "pi_agent_incomplete"],
+    ["report-output-limited", "pi_agent_output_limit"],
+  ] as const)(
+    "continues a %s edit attempt from its settled model-session ledger",
+    async (_case, failureCode) => {
+      const operations: string[] = [];
+      const store = new MemoryRunStore([], operations);
+      const sessions = new MemoryModelSessionStore(operations);
+      let agentExecutions = 0;
+      const executor: NodeExecutor = {
+        async execute(node, context): Promise<NodeExecutionOutcome> {
+          operations.push(`executor:${node.id}:${context.attempt}`);
+          if (node.type !== "agent") return successfulCommandOutcome(node.id);
+          agentExecutions += 1;
+          if (agentExecutions > 1) {
+            expect(context.modelSession?.state.events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  type: "attempt_settled",
+                  attempt: 1,
+                  outcome: "failed",
+                }),
+                expect.objectContaining({
+                  type: "tool_result_committed",
+                  toolCallId: "call-edit-1",
+                  isError: false,
+                }),
+                expect.objectContaining({ type: "attempt_started", attempt: 2 }),
+              ]),
+            );
+            return successfulAgentOutcome();
+          }
+
+          const session = context.modelSession;
+          const effectJournal = context.effectJournal;
+          if (session === undefined || effectJournal === undefined) {
+            throw new Error("test requires durable model-session and effect journals");
+          }
+          let modelState = await session.read();
+          modelState = await session.append({
+            type: "model_request_prepared",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            identity: requestIdentity(modelState, 1, 1),
+          });
+          modelState = await session.append({
+            type: "model_message_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            text: "I will update the bounded source file.",
+            stopReason: "tool_use",
+          });
+          modelState = await session.append({
+            type: "tool_call_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            toolCallId: "call-edit-1",
+            toolName: "flow_edit",
+            argumentsJson: '{"path":"source.ts"}',
+          });
+          const prepared = await effectJournal.prepare({
+            kind: "filesystem.edit",
+            target: resolve(process.cwd(), "source.ts"),
+            operationDigest: "a".repeat(64),
+            beforeSha256: "b".repeat(64),
+            afterSha256: "c".repeat(64),
+            mode: 0o644,
+          });
+          const receipt = await prepared.settle({
+            outcome: "committed",
+            reason: "directory_synced",
+          });
+          if (receipt === null) throw new Error("committed effect must return a receipt");
+          modelState = await session.append({
+            type: "tool_result_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            toolCallId: "call-edit-1",
+            toolName: "flow_edit",
+            text: "Updated source.ts.",
+            isError: false,
+          });
+          modelState = await session.append({
+            type: "model_request_settled",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            outcome: "completed",
+          });
+          modelState = await session.append({
+            type: "model_request_prepared",
+            attempt: 1,
+            turn: 2,
+            request: 2,
+            identity: requestIdentity(modelState, 2, 2),
+          });
+          await session.append({
+            type: "model_request_settled",
+            attempt: 1,
+            turn: 2,
+            request: 2,
+            outcome: failureCode === "pi_agent_incomplete" ? "output_limited" : "failed",
+          });
+          const policy = new PolicyBroker(
+            {
+              runId: context.runId,
+              workflowId: context.workflowId,
+              nodeId: node.id,
+              attempt: context.attempt,
+            },
+            ["filesystem.write"],
+          );
+          policy.authorize({
+            action: "filesystem.write",
+            target: receipt.target,
+            boundary: "inside",
+            operationDigest: receipt.operationDigest,
+          });
+          return {
+            status: "failed",
+            error: {
+              code: failureCode,
+              message: "agent provider execution failed",
+              retryable: true,
+              sideEffectStatus: "committed",
+            },
+            evidence: {
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text: "",
+              textHash: sha256(""),
+              textTruncated: false,
+              durationMs: 5,
+              usage: {
+                inputTokens: 2,
+                outputTokens: 1,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                costUsdMicros: 7,
+              },
+              policyDecisions: policy.close(),
+              effectReceipts: [receipt],
+            },
+          };
+        },
+      };
+
+      const state = await runWorkflow(editWorkflow(), {
+        ...runOptions(store, executor, sessions),
+        runId: `run-model-${failureCode}-continuation`,
+      });
+
+      expect(state).toMatchObject({
+        status: "succeeded",
+        resources: { nodeStarts: 3, modelTokens: 3, modelCostUsdMicros: 7 },
+        nodes: {
+          implement: {
+            status: "succeeded",
+            attempt: 2,
+            failedAttempts: [
+              {
+                attempt: 1,
+                error: { code: failureCode, sideEffectStatus: "committed" },
+                effects: [{ settlement: { outcome: "committed" } }],
+              },
+            ],
+          },
+        },
+      });
+      expect(operations).toContain("executor:implement:2");
+    },
+  );
+
+  it.each([false, true])(
+    "continues a provider failure after a settled command without executing it again (prior refusal: %s)",
+    async (withRefusal) => {
+      const operations: string[] = [];
+      const store = new MemoryRunStore([], operations);
+      const sessions = new MemoryModelSessionStore(operations);
+      let commandExecutions = 0;
+      const executor: NodeExecutor = {
+        async execute(node, context): Promise<NodeExecutionOutcome> {
+          operations.push(`executor:${node.id}:${context.attempt}`);
+          if (node.type !== "agent") return successfulCommandOutcome(node.id);
+          if (context.attempt === 2) {
+            expect(commandExecutions).toBe(1);
+            expect(context.modelSession?.state.events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  type: "tool_result_committed",
+                  toolCallId: "call-command-1",
+                  isError: true,
+                }),
+                expect.objectContaining({
+                  type: "attempt_settled",
+                  attempt: 1,
+                  outcome: "failed",
+                }),
+                expect.objectContaining({ type: "attempt_started", attempt: 2 }),
+              ]),
+            );
+            return successfulAgentOutcome();
+          }
+
+          const session = context.modelSession;
+          const commandJournal = context.agentCommandJournal;
+          if (session === undefined || commandJournal === undefined) {
+            throw new Error("test requires durable model-session and command journals");
+          }
+          let modelState = await session.read();
+          modelState = await session.append({
+            type: "model_request_prepared",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            identity: requestIdentity(modelState, 1, 1),
+          });
+          modelState = await session.append({
+            type: "model_message_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            text: "I will run the bounded diagnostic command.",
+            stopReason: "tool_use",
+          });
+          if (withRefusal) {
+            await session.append({
+              type: "tool_call_committed",
+              attempt: 1,
+              turn: 1,
+              request: 1,
+              toolCallId: "refused-command",
+              toolName: "flow_exec",
+              argumentsJson: '{"executable":"not-admitted"}',
+            });
+            modelState = await session.append({
+              type: "tool_result_committed",
+              attempt: 1,
+              turn: 1,
+              request: 1,
+              toolCallId: "refused-command",
+              toolName: "flow_exec",
+              text: "Choose an admitted command.",
+              isError: true,
+              commandAuthorityRejection: "request_not_admitted",
+            });
+          }
+          modelState = await session.append({
+            type: "tool_call_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            toolCallId: "call-command-1",
+            toolName: "flow_exec",
+            argumentsJson: '{"args":["test"],"executable":"npm"}',
+          });
+
+          const request = normalizeAgentCommandRequest({
+            executable: "npm",
+            args: ["test"],
+            timeoutMs: 10_000,
+          });
+          const operationDigest = calculateAgentCommandDigest(request);
+          const broker = new PolicyBroker(
+            {
+              runId: context.runId,
+              workflowId: context.workflowId,
+              nodeId: node.id,
+              attempt: context.attempt,
+            },
+            ["process.execute"],
+          );
+          const decision = broker.authorize({
+            action: "process.execute",
+            target: request.executable,
+            boundary: "inside",
+            operationDigest,
+          });
+          const prepared = await commandJournal.prepare({ request, operationDigest, decision });
+          commandExecutions += 1;
+          await prepared.settle({
+            status: "failed",
+            error: {
+              code: "command_failed",
+              message: "command exited with code 1",
+              retryable: false,
+              sideEffectStatus: "uncertain",
+            },
+            evidence: failedAgentCommandEvidence(),
+          });
+          modelState = await session.append({
+            type: "tool_result_committed",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            toolCallId: "call-command-1",
+            toolName: "flow_exec",
+            text: "exit code: 1\nstdout:\n1 failed",
+            isError: true,
+          });
+          modelState = await session.append({
+            type: "model_request_settled",
+            attempt: 1,
+            turn: 1,
+            request: 1,
+            outcome: "completed",
+          });
+          await session.append({
+            type: "model_request_prepared",
+            attempt: 1,
+            turn: 2,
+            request: 2,
+            identity: requestIdentity(modelState, 2, 2),
+          });
+
+          return {
+            status: "failed",
+            error: {
+              code: "pi_provider_unavailable",
+              message: "agent provider is temporarily unavailable",
+              retryable: true,
+              sideEffectStatus: "uncertain",
+            },
+            evidence: {
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text: "",
+              textHash: sha256(""),
+              textTruncated: false,
+              durationMs: 5,
+              usage: {
+                inputTokens: 2,
+                outputTokens: 1,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                costUsdMicros: 7,
+              },
+              policyDecisions: broker.close(),
+              effectReceipts: [],
+            },
+          };
+        },
+      };
+
+      const state = await runWorkflow(execRecoveryWorkflow(), {
+        ...runOptions(store, executor, sessions),
+        runId: "run-model-command-continuation",
+      });
+
+      expect(state).toMatchObject({
+        status: "succeeded",
+        nodes: {
+          implement: {
+            status: "succeeded",
+            attempt: 2,
+            failedAttempts: [
+              {
+                attempt: 1,
+                error: { code: "pi_provider_unavailable", sideEffectStatus: "uncertain" },
+                commandProtocol: "flow.agent-commands/v1",
+                commands: [
+                  {
+                    settlement: {
+                      outcome: { status: "failed", error: { code: "command_failed" } },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      expect(commandExecutions).toBe(1);
+
+      const missingModelResultEvents = store.events.map(
+        (event): RunEvent =>
+          event.type !== "node_failed" || event.attempt !== 1 || event.modelSession === undefined
+            ? structuredClone(event)
+            : {
+                ...structuredClone(event),
+                modelSession: {
+                  ...structuredClone(event.modelSession),
+                  latestAttemptRawExecResultCount: 0,
+                },
+              },
+      );
+      expect(() => reduceRunEvents(missingModelResultEvents)).toThrow(
+        /not eligible for fresh retry|invalid/i,
+      );
+
+      const unconfirmedEvents = store.events.map(
+        (event): RunEvent =>
+          event.type !== "node_agent_command_settled"
+            ? structuredClone(event)
+            : {
+                ...structuredClone(event),
+                outcome: {
+                  status: "failed",
+                  error: {
+                    code: "command_termination_failed",
+                    message: "command process-group termination could not be confirmed",
+                    retryable: false,
+                    sideEffectStatus: "uncertain",
+                  },
+                  evidence: {
+                    ...failedAgentCommandEvidence(),
+                    exitCode: null,
+                    timedOut: true,
+                    terminationStatus: "unconfirmed",
+                  },
+                },
+              },
+      );
+      expect(() => reduceRunEvents(unconfirmedEvents)).toThrow(/not eligible for fresh retry/i);
+
+      const cleanupFailedEvents = store.events.map(
+        (event): RunEvent =>
+          event.type !== "node_agent_command_settled"
+            ? structuredClone(event)
+            : {
+                ...structuredClone(event),
+                outcome: {
+                  status: "failed",
+                  error: {
+                    code: "command_sandbox_cleanup_failed",
+                    message: "command sandbox cleanup could not be proved",
+                    retryable: false,
+                    sideEffectStatus: "uncertain",
+                  },
+                  evidence: failedAgentCommandEvidence(),
+                },
+              },
+      );
+      expect(() => reduceRunEvents(cleanupFailedEvents)).toThrow(/not eligible for fresh retry/i);
+    },
+  );
 
   it("passes the compiled rolling-context policy to the model executor", async () => {
     const operations: string[] = [];
@@ -488,6 +973,77 @@ nodes:
     dependsOn: [implement]
     command: { executable: node, args: [--version] }
 `);
+}
+
+function editWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: model-session-workflow }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Implement the requested change.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+      recovery: { mode: fresh, maxAttempts: 3 }
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function execRecoveryWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: model-session-workflow }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Repair the bounded failing diagnostic.
+      model: { provider: test, id: deterministic }
+      tools: [read, exec]
+      recovery: { mode: fresh, maxAttempts: 2 }
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`);
+}
+
+function failedAgentCommandEvidence(): AgentCommandEvidence {
+  return {
+    kind: "command",
+    executable: "npm",
+    args: ["test"],
+    exitCode: 1,
+    signal: null,
+    stdout: "1 failed",
+    stderr: "",
+    stdoutHash: sha256("1 failed"),
+    stderrHash: sha256(""),
+    stdoutRetainedHash: sha256("1 failed"),
+    stderrRetainedHash: sha256(""),
+    stdoutRetainedBytes: Buffer.byteLength("1 failed", "utf8"),
+    stderrRetainedBytes: 0,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    timedOut: false,
+    aborted: false,
+    durationMs: 5,
+    processContainment: "linux-pid-namespace",
+    terminationStatus: "not-required",
+    sandbox: {
+      backend: "test-sandbox",
+      backendVersion: "1",
+      profile: "workspace-write-network-deny-v1",
+      policyDigest: "b".repeat(64),
+    },
+  };
 }
 
 function rollingWorkflow() {

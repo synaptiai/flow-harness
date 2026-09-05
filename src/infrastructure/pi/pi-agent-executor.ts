@@ -7,6 +7,7 @@ import {
   type Tool,
   type ToolResultMessage,
   type UserMessage,
+  validateToolArguments,
 } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -17,7 +18,7 @@ import {
   type SessionStats,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import type {
   AgentExecutor,
@@ -30,6 +31,11 @@ import {
   type PhaseRoutingDecision,
   parsePhaseRoutingDecision,
 } from "../../domain/adaptation/phase-routing-candidate.js";
+import {
+  type AgentCommandAuthority,
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../domain/agent-command.js";
 import { validateArtifactReference } from "../../domain/artifact/reference.js";
 import {
   type AgentSkillCatalogEntry,
@@ -47,6 +53,7 @@ import type { LanguageServerSnapshot } from "../../domain/capability/language-se
 import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
 import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
 import { type PolicyAuditLimitError, PolicyBroker } from "../../domain/policy/broker.js";
+import { DEFAULT_POLICY_DECISION_LIMIT } from "../../domain/policy/limits.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
 import {
@@ -101,11 +108,17 @@ import type {
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
+import { openRouterDynamicBaseModelId } from "./openrouter-dynamic-model.js";
+import { PI_CODING_AGENT_VERSION } from "./pi-package-pins.js";
 import {
   countProviderInputTokens,
   ProviderInputTokenCountError,
 } from "./provider-input-token-counter.js";
-import { createWorkspaceAgentTools, type SemanticToolSession } from "./workspace-agent-tools.js";
+import {
+  createWorkspaceAgentTools,
+  type SemanticToolSession,
+  WORKSPACE_AGENT_TOOL_REFERENCES,
+} from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
   readonly cwd: string;
@@ -121,6 +134,8 @@ export interface PiAgentRunRequest {
   readonly systemPrompt?: string;
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly effectRecorder: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
   readonly capabilities?: {
@@ -150,7 +165,7 @@ export interface PiAgentRunResult {
   readonly text: string;
   readonly stopReason: PiTerminalStopReason;
   readonly errorMessage?: string;
-  readonly failureCode?: PiModelContextFailureCode;
+  readonly failureCode?: PiAgentFailureCode;
   readonly outputLimitExceeded?: boolean;
   readonly textHash?: string;
   readonly textTruncated?: boolean;
@@ -214,9 +229,7 @@ export class PiAgentExecutor implements AgentExecutor {
     const maxOutputTokens = context.agentMaxOutputTokens;
     if (
       maxOutputTokens !== undefined &&
-      (!Number.isSafeInteger(maxOutputTokens) ||
-        maxOutputTokens <= 0 ||
-        maxOutputTokens > 1_000_000)
+      (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0)
     ) {
       return agentFailure(
         "pi_output_token_limit_invalid",
@@ -327,6 +340,7 @@ export class PiAgentExecutor implements AgentExecutor {
       attempt: context.attempt,
     } as const;
     const protectedPaths = context.protectedPaths ?? [];
+    const policyDecisionLimit = node.agent.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT;
     const policyAuditController = new AbortController();
     let policyAuditError: PolicyAuditLimitError | undefined;
     let resolvePolicyAuditExhaustion: () => void = () => undefined;
@@ -342,6 +356,7 @@ export class PiAgentExecutor implements AgentExecutor {
         policyAuditController.abort(error);
         resolvePolicyAuditExhaustion();
       },
+      policyDecisionLimit,
     );
     const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
     const commandBudgetController = new AbortController();
@@ -376,6 +391,7 @@ export class PiAgentExecutor implements AgentExecutor {
         commandSafetyController.abort(new Error("Flow command termination unconfirmed"));
         resolveCommandTerminationUnconfirmed();
       },
+      policyDecisionLimit,
     );
     let observedUsage: AgentModelUsage | undefined;
     let observedActivity: AgentActivity | undefined;
@@ -488,7 +504,10 @@ export class PiAgentExecutor implements AgentExecutor {
     };
     const systemPrompt = appendSupplementalMemory(
       appendGoalWorkspace(
-        appendModelWorkProfile(context.agentSystemPrompt, context.modelWorkProfile),
+        appendModelWorkProfile(
+          appendPolicyDecisionLimit(context.agentSystemPrompt, policyDecisionLimit),
+          context.modelWorkProfile,
+        ),
         context.agentGoalWorkspace,
       ),
       context.agentSupplementalMemory,
@@ -509,6 +528,12 @@ export class PiAgentExecutor implements AgentExecutor {
           ...(systemPrompt === undefined ? {} : { systemPrompt }),
           policyBroker,
           protectedPaths,
+          ...(context.allowedWritePrefixes === undefined
+            ? {}
+            : { allowedWritePrefixes: context.allowedWritePrefixes }),
+          ...(context.agentCommandAuthority === undefined
+            ? {}
+            : { agentCommandAuthority: context.agentCommandAuthority }),
           effectRecorder,
           commandRecorder,
           ...(context.artifactStore === undefined ? {} : { artifactStore: context.artifactStore }),
@@ -520,6 +545,11 @@ export class PiAgentExecutor implements AgentExecutor {
             attribution: policyBroker.attribution,
             actions: policyActionsForTools(node.agent.tools, toolPackages.length > 0),
             protectedPaths: [...protectedPaths].sort(),
+            allowedWritePrefixes:
+              context.allowedWritePrefixes === undefined
+                ? null
+                : [...context.allowedWritePrefixes].sort(),
+            agentCommandAuthority: context.agentCommandAuthority ?? null,
             capabilitySnapshot: context.capabilitySnapshot?.digest ?? null,
             toolPackages: toolPackages.map((item) => item.digest),
             commandApproval: context.agentCommandApprovalGate !== undefined,
@@ -776,11 +806,13 @@ export class PiAgentExecutor implements AgentExecutor {
         );
       }
       if (normalized.outputLimitExceeded) {
+        const effectStatus = currentSideEffectStatus();
         return agentFailure(
           "pi_agent_output_limit",
           `agent output exceeded ${maxOutputBytes} UTF-8 bytes`,
-          currentSideEffectStatus(),
+          effectStatus,
           evidence,
+          context.modelSession !== undefined,
         );
       }
       if (result.stopReason !== "stop") {
@@ -796,7 +828,7 @@ export class PiAgentExecutor implements AgentExecutor {
         );
         return agentFailure(
           code,
-          providerStopMessage(result.stopReason),
+          providerStopMessage(result.stopReason, result.failureCode),
           effectStatus,
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
@@ -818,9 +850,24 @@ export class PiAgentExecutor implements AgentExecutor {
                 completedCapabilityEvidence,
                 delegationReceipts,
               ),
-          result.stopReason === "error" &&
-            result.failureCode === undefined &&
-            effectStatus === "none",
+          providerFailureCanRetry(result.failureCode) &&
+            ((result.stopReason === "error" &&
+              (effectStatus === "none" || context.modelSession !== undefined)) ||
+              (result.stopReason === "length" && context.modelSession !== undefined)),
+        );
+      }
+
+      if (normalized.text.trim().length === 0) {
+        const effectStatus = combineSideEffectStatuses(
+          sideEffectStatus(effectReceipts),
+          commandRecorder.sideEffectStatus(),
+        );
+        return agentFailure(
+          "pi_agent_empty_output",
+          "agent completed without a report",
+          effectStatus,
+          evidence,
+          effectStatus === "none",
         );
       }
 
@@ -927,7 +974,7 @@ export class PiAgentExecutor implements AgentExecutor {
             : "agent provider execution failed",
         effectStatus,
         policyFailureEvidence(),
-        providerFailure && effectStatus === "none",
+        providerFailure && (effectStatus === "none" || context.modelSession !== undefined),
       );
     } finally {
       commandRecorder.close();
@@ -939,7 +986,26 @@ export class PiAgentExecutor implements AgentExecutor {
   }
 }
 
-function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string {
+function providerStopMessage(
+  stopReason: PiAgentRunResult["stopReason"],
+  failureCode?: PiAgentFailureCode,
+): string {
+  switch (failureCode) {
+    case "pi_command_authority_rejections_exhausted":
+      return "agent exhausted its frozen command rejection allowance; no further model request was admitted";
+    case "pi_command_authority_journal_unavailable":
+      return "bounded command authority requires a durable model session";
+    case "pi_provider_authentication_failed":
+      return "agent provider authentication failed";
+    case "pi_provider_quota_exhausted":
+      return "agent provider quota or credit balance is exhausted";
+    case "pi_provider_rate_limited":
+      return "agent provider rate limit remained unavailable after bounded transport retries";
+    case "pi_provider_request_rejected":
+      return "agent provider rejected the request";
+    case "pi_provider_unavailable":
+      return "agent provider remained unavailable after bounded transport retries";
+  }
   if (stopReason === "error") {
     return "agent provider execution failed";
   }
@@ -947,6 +1013,131 @@ function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string
     return "agent provider execution was aborted";
   }
   return "agent provider execution did not complete";
+}
+
+function classifyProviderFailure(message: string | undefined): PiProviderFailureCode | undefined {
+  if (message === undefined) return undefined;
+
+  const quotaCodes = new Set([
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "billing_hard_limit_reached",
+  ]);
+  const structured = parseEmbeddedProviderError(message);
+  if (hasProviderFailureCode(structured, quotaCodes)) {
+    return "pi_provider_quota_exhausted";
+  }
+
+  const normalized = message.trim().toLowerCase();
+  if (
+    /^you have no credits\b[^\r\n]{0,160}\badd credits\b[^\r\n]{0,120}https:\/\/platform\.openai\.com\/settings\/organization\/billing\/?\.?$/u.test(
+      normalized,
+    )
+  ) {
+    return "pi_provider_quota_exhausted";
+  }
+
+  const status = providerHttpStatus(message, structured);
+  if (status === 401) return "pi_provider_authentication_failed";
+  if (status === 402) return "pi_provider_quota_exhausted";
+  if (status === 429) return "pi_provider_rate_limited";
+  if (status === 400 || status === 403 || status === 404 || status === 413 || status === 422) {
+    return "pi_provider_request_rejected";
+  }
+  if (
+    status !== undefined &&
+    (status === 408 || status === 524 || status === 529 || status >= 500)
+  ) {
+    return "pi_provider_unavailable";
+  }
+  if (/\b(?:rate.?limit(?:ed|ing)?|too many requests)\b/iu.test(message)) {
+    return "pi_provider_rate_limited";
+  }
+  if (isRetryableProviderTransportFailure(message)) {
+    return "pi_provider_unavailable";
+  }
+  return undefined;
+}
+
+function isRetryableProviderTransportFailure(message: string): boolean {
+  return /\b(?:fetch failed|network error|connection (?:error|refused|lost)|other side closed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream connect|reset before headers|socket hang up|socket connection was closed|timed? out|timeout|websocket (?:closed|error)|stream ended before (?:message_stop|a terminal response event)|ended without|http2 request did not get a response|provider returned error|retry delay|please retry your request|try your request again)\b/iu.test(
+    message,
+  );
+}
+
+function providerHttpStatus(message: string, structured: unknown): number | undefined {
+  const embedded = findProviderHttpStatus(structured);
+  if (embedded !== undefined) return embedded;
+  for (const pattern of [
+    /^(\d{3})(?:\s|$)/u,
+    /\bapi error\s*\(?(\d{3})\)?/iu,
+    /\bhttp(?: error)?\s*[:=(]?\s*(\d{3})\b/iu,
+    /\bstatus(?: code)?\s*[:=(]?\s*(\d{3})\b/iu,
+  ]) {
+    const match = pattern.exec(message);
+    if (match?.[1] !== undefined) {
+      const status = Number.parseInt(match[1], 10);
+      if (status >= 100 && status <= 599) return status;
+    }
+  }
+  return undefined;
+}
+
+function findProviderHttpStatus(value: unknown): number | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const status = findProviderHttpStatus(item);
+      if (status !== undefined) return status;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "status" || key === "statusCode" || key === "status_code" || key === "code") {
+      const status = typeof item === "number" ? item : Number(item);
+      if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+    }
+    const nested = findProviderHttpStatus(item);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function providerFailureCanRetry(code: PiAgentFailureCode | undefined): boolean {
+  return (
+    code === undefined || code === "pi_provider_rate_limited" || code === "pi_provider_unavailable"
+  );
+}
+
+function parseEmbeddedProviderError(message: string): unknown {
+  for (let start = message.indexOf("{"); start >= 0; start = message.indexOf("{", start + 1)) {
+    const end = message.lastIndexOf("}");
+    if (end <= start) return undefined;
+    try {
+      return JSON.parse(message.slice(start, end + 1));
+    } catch {
+      // Try the next object boundary in the provider message.
+    }
+  }
+  return undefined;
+}
+
+function hasProviderFailureCode(value: unknown, codes: ReadonlySet<string>): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  if (Array.isArray(value)) return value.some((item) => hasProviderFailureCode(item, codes));
+  return Object.entries(value).some(
+    ([key, item]) =>
+      ((key === "type" || key === "code") && typeof item === "string" && codes.has(item)) ||
+      hasProviderFailureCode(item, codes),
+  );
+}
+
+class PiProviderFailureError extends Error {
+  override readonly name = "PiProviderFailureError";
+
+  constructor(readonly code: PiProviderFailureCode) {
+    super(code);
+  }
 }
 
 class PiCapabilityEvidenceError extends Error {
@@ -989,10 +1180,28 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
   async run(request: PiAgentRunRequest): Promise<PiAgentRunResult> {
     throwIfAborted(request.signal);
     assertPhaseRoutingRequest(request);
+    if (
+      request.agentCommandAuthority?.rejectionLimit !== undefined &&
+      request.modelSession === undefined
+    ) {
+      return {
+        ...new BoundedAgentOutput(request.maxOutputBytes).result(),
+        stopReason: "error",
+        failureCode: "pi_command_authority_journal_unavailable",
+      };
+    }
 
     const modelRuntime = await this.createModelRuntime(request.signal);
     throwIfAborted(request.signal);
-    const selectedModel = modelRuntime.getModel(request.provider, request.model);
+    const exactModel = modelRuntime.getModel(request.provider, request.model);
+    const dynamicBaseModelId = openRouterDynamicBaseModelId(request.provider, request.model);
+    const dynamicBaseModel =
+      exactModel === undefined && dynamicBaseModelId !== undefined
+        ? modelRuntime.getModel(request.provider, dynamicBaseModelId)
+        : undefined;
+    const selectedModel =
+      exactModel ??
+      (dynamicBaseModel === undefined ? undefined : { ...dynamicBaseModel, id: request.model });
     if (selectedModel === undefined) {
       throw new Error(`Pi model "${request.provider}/${request.model}" is not available`);
     }
@@ -1074,6 +1283,12 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       request.policyBroker,
       {
         protectedPaths: request.protectedPaths,
+        ...(request.allowedWritePrefixes === undefined
+          ? {}
+          : { allowedWritePrefixes: request.allowedWritePrefixes }),
+        ...(request.agentCommandAuthority === undefined
+          ? {}
+          : { agentCommandAuthority: request.agentCommandAuthority }),
         effectRecorder: request.effectRecorder,
         ...(request.commandRecorder === undefined
           ? {}
@@ -1105,7 +1320,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         retry: {
           enabled: false,
           maxRetries: 0,
-          provider: { maxRetries: 0 },
+          provider: { maxRetries: 2, maxRetryDelayMs: 60_000 },
         },
       }),
     });
@@ -1166,16 +1381,16 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       const capabilityReads = capabilitySession?.evidence().reads;
       const failureCode = modelSessionRecorder?.failureCode();
       if (promptError !== undefined) {
+        const message = promptError instanceof Error ? promptError.message : String(promptError);
+        const terminalFailureCode = failureCode ?? classifyProviderFailure(message);
         return {
           ...output.result(),
           usage,
           activity,
           ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: isAborted(request.signal) ? "aborted" : "error",
-          ...(failureCode === undefined ? {} : { failureCode }),
-          errorMessage: boundedMessage(
-            promptError instanceof Error ? promptError.message : String(promptError),
-          ),
+          ...(terminalFailureCode === undefined ? {} : { failureCode: terminalFailureCode }),
+          errorMessage: boundedMessage(message),
         };
       }
       const finalMessage = session.state.messages.at(-1);
@@ -1191,13 +1406,18 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
             : { errorMessage: "Pi session ended without a terminal assistant message" }),
         };
       }
+      const terminalFailureCode =
+        failureCode ??
+        (finalMessage.stopReason === "error"
+          ? classifyProviderFailure(finalMessage.errorMessage)
+          : undefined);
       return {
         ...output.result(),
         usage,
         activity,
         ...(capabilityReads === undefined ? {} : { capabilityReads }),
         stopReason: finalMessage.stopReason,
-        ...(failureCode === undefined ? {} : { failureCode }),
+        ...(terminalFailureCode === undefined ? {} : { failureCode: terminalFailureCode }),
         ...(output.truncated ? { outputLimitExceeded: true } : {}),
         ...(finalMessage.errorMessage === undefined
           ? {}
@@ -1213,10 +1433,23 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
   }
 }
 
-const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.84.0";
+const PI_MODEL_SESSION_RUNTIME_VERSION = `pi-${PI_CODING_AGENT_VERSION}`;
 const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const ROLLING_CONTEXT_OUTPUT_TOKEN_LIMITS = Object.freeze([4_096, 2_048] as const);
 const ROLLING_CONTEXT_MINIMUM_REDUCTION_BYTES = 4_096;
+
+export type PiProviderFailureCode =
+  | "pi_provider_authentication_failed"
+  | "pi_provider_quota_exhausted"
+  | "pi_provider_rate_limited"
+  | "pi_provider_request_rejected"
+  | "pi_provider_unavailable";
+
+export type PiAgentFailureCode =
+  | PiModelContextFailureCode
+  | PiProviderFailureCode
+  | "pi_command_authority_rejections_exhausted"
+  | "pi_command_authority_journal_unavailable";
 
 export type PiModelContextFailureCode =
   | "pi_model_context_floor_exhausted"
@@ -1582,7 +1815,10 @@ async function prepareRollingContextSummary(input: {
         },
       });
       message = await stream.result();
-    } catch {
+    } catch (error) {
+      const providerFailure = classifyProviderFailure(
+        error instanceof Error ? error.message : String(error),
+      );
       await input.journal.append({
         type: "rolling_context_epoch_settled",
         attempt: input.attempt,
@@ -1597,6 +1833,7 @@ async function prepareRollingContextSummary(input: {
         throw new PiAgentAbortError(abortMessage(input.request.signal));
       }
       if (requestFailure !== undefined) throw new PiModelContextError(requestFailure);
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     let usage: ModelSessionUsage;
@@ -1625,6 +1862,8 @@ async function prepareRollingContextSummary(input: {
     }
     const candidateText = summaryCandidateText(message);
     if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+      const providerFailure =
+        message.stopReason === "error" ? classifyProviderFailure(message.errorMessage) : undefined;
       await input.journal.append({
         type: "rolling_context_epoch_settled",
         attempt: input.attempt,
@@ -1637,6 +1876,7 @@ async function prepareRollingContextSummary(input: {
         },
       });
       if (requestFailure !== undefined) throw new PiModelContextError(requestFailure);
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     const candidate = validateContextSummaryCandidate({
@@ -2042,7 +2282,7 @@ function attachModelSessionRecorder(
 ): {
   readonly detach: () => void;
   readonly compactionUsage: () => ModelSessionUsage;
-  readonly failureCode: () => PiModelContextFailureCode | undefined;
+  readonly failureCode: () => PiAgentFailureCode | undefined;
 } {
   const authorityDigest = request.authorityDigest;
   if (authorityDigest === undefined) {
@@ -2054,7 +2294,7 @@ function attachModelSessionRecorder(
     | undefined;
   let acceptedSummary: AcceptedContextSummary | undefined;
   let compactionUsage = emptyModelSessionUsage();
-  let modelContextFailureCode: PiModelContextFailureCode | undefined;
+  let terminalFailureCode: PiAgentFailureCode | undefined;
   session.agent.streamFunction = async (model, context, options) => {
     if (
       request.phaseRouting !== undefined &&
@@ -2072,6 +2312,17 @@ function attachModelSessionRecorder(
       );
     }
     const state = await journal.read();
+    const rejectionLimit = request.agentCommandAuthority?.rejectionLimit;
+    const rejectionCount = state.events.filter(
+      (event) =>
+        event.type === "tool_result_committed" && event.commandAuthorityRejection !== undefined,
+    ).length;
+    if (rejectionLimit !== undefined && rejectionCount >= rejectionLimit) {
+      terminalFailureCode = "pi_command_authority_rejections_exhausted";
+      throw new Error(
+        `Frozen command rejection allowance exhausted (${rejectionCount}/${rejectionLimit}); no further model request is admitted`,
+      );
+    }
     const prepared = state.events.filter((event) => event.type === "model_request_prepared");
     const requestSequence = (prepared.at(-1)?.request ?? 0) + 1;
     const turn = prepared.filter((event) => event.attempt === state.activeAttempt).length + 1;
@@ -2088,16 +2339,26 @@ function attachModelSessionRecorder(
       acceptedSummary === undefined &&
       request.contextCompactionMode === "references-and-summary"
     ) {
-      const outcome = await prepareContextSummary({
-        model,
-        context: referenceContext,
-        options,
-        state,
-        request,
-        journal,
-        stream: originalStreamFunction,
-      });
-      compactionUsage = addModelSessionUsage(compactionUsage, outcome.usage);
+      let outcome: Awaited<ReturnType<typeof prepareContextSummary>>;
+      try {
+        outcome = await prepareContextSummary({
+          model,
+          context: referenceContext,
+          options,
+          state,
+          request,
+          journal,
+          stream: originalStreamFunction,
+          recordSummaryUsage: (usage) => {
+            compactionUsage = addModelSessionUsage(compactionUsage, usage);
+          },
+        });
+      } catch (error) {
+        if (error instanceof PiProviderFailureError) {
+          terminalFailureCode = error.code;
+        }
+        throw error;
+      }
       if (outcome.accepted !== undefined) {
         acceptedSummary = outcome.accepted;
         providerContext = applyAcceptedContextSummary(referenceContext, acceptedSummary);
@@ -2125,8 +2386,8 @@ function attachModelSessionRecorder(
         providerContext = outcome.context;
         admittedProviderRequest = outcome.admitted;
       } catch (error) {
-        if (error instanceof PiModelContextError) {
-          modelContextFailureCode = error.code;
+        if (error instanceof PiModelContextError || error instanceof PiProviderFailureError) {
+          terminalFailureCode = error.code;
         }
         throw error;
       }
@@ -2209,7 +2470,7 @@ function attachModelSessionRecorder(
           providerFetch,
           admitted: admittedProviderRequest,
           onFailure: (code) => {
-            modelContextFailureCode = code;
+            terminalFailureCode = code;
           },
         });
   };
@@ -2286,6 +2547,14 @@ function attachModelSessionRecorder(
         toolName: event.message.toolName,
         text,
         isError: event.message.isError,
+        ...(isProvenCommandAuthorityRejection(
+          request,
+          await journal.read(),
+          attribution,
+          event.message,
+        )
+          ? { commandAuthorityRejection: "request_not_admitted" as const }
+          : {}),
         ...(referenceProjection === undefined ? {} : { referenceProjection }),
       });
       return;
@@ -2311,8 +2580,50 @@ function attachModelSessionRecorder(
   return {
     detach,
     compactionUsage: () => compactionUsage,
-    failureCode: () => modelContextFailureCode,
+    failureCode: () => terminalFailureCode,
   };
+}
+
+function isProvenCommandAuthorityRejection(
+  request: PiAgentRunRequest,
+  state: ModelSessionState,
+  attribution: { readonly attempt: number; readonly request: number },
+  result: ToolResultMessage,
+): boolean {
+  const authority = request.agentCommandAuthority;
+  if (authority?.requests === undefined || result.toolName !== "flow_exec" || !result.isError)
+    return false;
+  const call = state.events.find(
+    (event) =>
+      event.type === "tool_call_committed" &&
+      event.attempt === attribution.attempt &&
+      event.request === attribution.request &&
+      event.toolCallId === result.toolCallId,
+  );
+  if (call?.type !== "tool_call_committed" || call.toolName !== "flow_exec") return false;
+  const input: unknown = JSON.parse(call.argumentsJson);
+  const schema = WORKSPACE_AGENT_TOOL_REFERENCES.find(
+    (tool) => tool.name === "flow_exec",
+  )?.inputSchema;
+  if (schema === undefined) throw new Error("Flow exec public schema is unavailable");
+  try {
+    // Pi coerces arguments before invocation. Strict checks of the original model input could
+    // incorrectly label a command that already executed as a no-execution refusal.
+    const validated = validateToolArguments(
+      { name: "flow_exec", description: "Flow sandbox command", parameters: schema as TSchema },
+      {
+        type: "toolCall",
+        name: "flow_exec",
+        id: call.toolCallId,
+        arguments: input as Record<string, unknown>,
+      },
+    );
+    return !authority.requestDigests.includes(
+      calculateAgentCommandDigest(normalizeAgentCommandRequest(validated)),
+    );
+  } catch {
+    return true;
+  }
 }
 
 function assertPhaseRoutingRequest(request: PiAgentRunRequest): void {
@@ -2360,6 +2671,7 @@ async function prepareContextSummary(input: {
   readonly request: PiAgentRunRequest;
   readonly journal: ModelSessionJournal;
   readonly stream: PiStreamFunction;
+  readonly recordSummaryUsage: (usage: ModelSessionUsage) => void;
 }): Promise<{
   readonly accepted?: AcceptedContextSummary;
   readonly usage: ModelSessionUsage;
@@ -2407,7 +2719,10 @@ async function prepareContextSummary(input: {
         contextSummaryInferenceOptions(input.options, outputTokenLimit),
       );
       message = await stream.result();
-    } catch {
+    } catch (error) {
+      const providerFailure = classifyProviderFailure(
+        error instanceof Error ? error.message : String(error),
+      );
       await input.journal.append({
         type: "context_compaction_settled",
         attempt,
@@ -2415,10 +2730,12 @@ async function prepareContextSummary(input: {
         generationAttempt,
         settlement: { outcome: "rejected", reason: "provider_error" },
       });
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     const usage = projectModelSessionUsage(message.usage);
     totalUsage = addModelSessionUsage(totalUsage, usage);
+    input.recordSummaryUsage(usage);
     if (message.stopReason === "aborted") {
       await input.journal.append({
         type: "context_compaction_settled",
@@ -2431,6 +2748,8 @@ async function prepareContextSummary(input: {
     }
     const candidateText = summaryCandidateText(message);
     if (message.stopReason !== "stop" && message.stopReason !== "toolUse") {
+      const providerFailure =
+        message.stopReason === "error" ? classifyProviderFailure(message.errorMessage) : undefined;
       await input.journal.append({
         type: "context_compaction_settled",
         attempt,
@@ -2442,6 +2761,7 @@ async function prepareContextSummary(input: {
           usage,
         },
       });
+      if (providerFailure !== undefined) throw new PiProviderFailureError(providerFailure);
       continue;
     }
     const candidate = validateContextSummaryCandidate({
@@ -3249,6 +3569,15 @@ const WORK_PROFILE_GUIDANCE: Readonly<Record<WorkProfile, string>> = Object.free
   standard: "Balance completeness, verification, and resource use.",
   long: "Use broader investigation and deeper verification within existing authority.",
 });
+
+function appendPolicyDecisionLimit(systemPrompt: string | undefined, limit: number): string {
+  const block = [
+    `Flow permits at most ${limit} recorded policy decisions across policy-backed tool operations during this agent attempt.`,
+    "The limit is shared by every policy-backed tool and includes allowed and denied operations.",
+    "Use tool operations deliberately and reserve enough capacity to verify the result.",
+  ].join("\n");
+  return [systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT, block].join("\n\n");
+}
 
 function appendModelWorkProfile(
   systemPrompt: string | undefined,

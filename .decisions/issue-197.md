@@ -216,3 +216,203 @@ probabilistic and cannot replace the explicit merge action.
 
 Every failed or incomplete attempt, harness change, operator intervention, cost, and duration remains
 in the acceptance denominator.
+
+## Policy-decision calibration for the issue 6 rerun
+
+The operator approved one per-agent `policyDecisionLimit` with a compatibility default of 64, a
+hard maximum of 128, and a 96-decision override for
+`repair-detector-integration-convergence`. These values are provisional Flow controls, not an
+industry standard.
+
+Primary-source comparison found materially different units and defaults: OpenAI Agents SDK uses 10
+model turns by default, CrewAI uses 20 agent iterations, AutoGen leaves team turns unlimited unless
+configured, OpenHands SDK uses 500 iterations, LangGraph uses 1,000 graph super-steps, and DeepSeek
+Harness Ralph uses 256 fresh-agent rounds. Claude Agent SDK exposes a configurable turn limit
+without a comparable public default. None counts Flow's individual authorization decisions, so the
+numbers cannot be transferred directly.
+
+The failed issue run recorded 64 allowed decisions, 65 tool calls, 16 committed effects, 44 turns,
+and 406,712 milliseconds in the convergence node before the 65th decision failed closed. The
+frozen workflow gave that node 900,000 milliseconds, so a prior 600,000-millisecond extrapolation
+was rejected as incorrect. The 96 override supplies 50% headroom over the compatibility default;
+128 remains a 2× explicit ceiling. A 96-decision exhaustion must produce new evidence and a new
+design decision. It doesn't authorize an automatic increase.
+
+The implementation keeps omitted workflow bytes unchanged for digest compatibility. Live execution
+and replay resolve omission to 64. Only an explicit override enters the compiled workflow and,
+when non-default, forces a persisted control graph. The model receives the effective value, and
+audit exhaustion remains fail-closed.
+
+## Provider-response calibration for the issue 6 rerun
+
+The preserved issue 6 model-session ledgers contain 639 settled messages with positive output-token
+usage. The base `z-ai/glm-5.3-flash` route contributed 318 messages: mean 2,306.6, median 350, 90th
+percentile 4,851, 95th percentile 7,511, 99th percentile 35,469, and maximum 50,718 output tokens.
+Eleven messages exceeded 16,384 tokens, eight exceeded 24,576, and six exceeded 32,768.
+
+The `z-ai/glm-5.3-flash:nitro` route contributed 321 messages: mean 1,194.4, median 421, 90th
+percentile 3,646, 95th percentile 4,973, 99th percentile 8,012, and maximum 19,615 output tokens.
+One message exceeded 16,384 tokens; none exceeded 24,576. This is observational evidence from the
+bounded pilot, not a controlled model-quality comparison. The routes ran different attempts and
+repository states, so route choice isn't the only possible cause of the distribution.
+
+The latest failed attempt strengthens the need for a response boundary but doesn't prove one exact
+value. Its installer and incremental-detector nodes settled, including one 15,235-token response.
+The state-integrity node then reached its 20-minute timeout during request 5. That request had no
+settled usage, so its eventual output length and provider cost are unknown. A timeout alone can't
+show whether the provider was generating, stalled, disconnected, or finishing an unusually long
+reasoning path.
+
+For the next issue 6 run, use the `:nitro` route and set each agent node to
+`maxOutputTokens: 24576`. This cap covers every observed settled `:nitro` response and about 97.5%
+of the observed base-route responses. Set model verifiers to `8192` because they return a strict,
+small JSON verdict; that verifier value is a conservative interface bound, not a percentile-derived
+model standard. Keep the existing run-wide token, cost, time, artifact, policy-decision, effect,
+and path controls unchanged unless separate evidence justifies a change.
+
+The rejected alternatives were an unlimited catalog maximum, a static upstream-provider pin, and
+a timeout increase by itself. The catalog maximum allowed a single request to inherit GLM's
+131,072-token output capacity. OpenRouter's endpoint response exposed no current latency or
+throughput samples for the eligible upstreams, so a hardcoded provider wasn't evidence-based. A
+larger timeout could increase both cost and uncertainty without creating a settled recovery
+boundary.
+
+Flow therefore adds an optional, digest-bound per-node response cap. A provider `length` stop is
+retryable only through the existing fresh-recovery contract with a complete durable model session,
+settled effects, sufficient attempts, and complete usage required by the run budget. Timeouts,
+cancellation, lost responses, unknown effects, and exhausted budgets remain nonretryable. This
+design can add another charged request after a capped response, so it trades bounded individual
+tails for possible retry cost; the aggregate workflow budget remains the controlling backstop.
+
+The workflow schema accepts a positive safe integer instead of inventing a model-independent hard
+maximum. The selected model's pinned output capability is the effective ceiling, and Pi applies the
+smaller value. This keeps numeric identity exact while allowing a future catalog update without a
+Flow schema migration. It doesn't make a value above the selected model's capability meaningful.
+
+### Outcome of the capped `:nitro` rerun
+
+Run `issue-8c53ad3c-fa7f-4837-88d2-b8b0abcce8cf` reached 14 of 20 implementation agent nodes before
+the `repair-installer-initialization-semantics` node exhausted its three attempts. The run preserved
+one settled outer preparation effect and a complete nested event ledger; it made no source changes
+in the operator checkout.
+
+The node's first attempt read two authorized files, then settled at exactly 24,576 output tokens
+with provider stop reason `length`. Its second attempt used the durable resume surface and again
+settled at exactly 24,576 output tokens with no tool calls or visible report. The third attempt
+prepared the next digest-bound request, then failed in 93 milliseconds with zero reported usage.
+The first two failures were `pi_agent_incomplete`; the last was `pi_agent_error`. All three were
+side-effect-free for this node. The attempt ceiling then stopped the run.
+
+This result falsifies two earlier assumptions. First, the prior `:nitro` sample maximum of 19,615
+didn't predict the next run: two later responses reached the new cap. Second, a durable resume
+surface doesn't imply that an output-limited response made portable progress. Flow intentionally
+doesn't retain provider-private reasoning or partial streams, and both limited messages had empty
+portable text. Raising the token cap or adding output-continuation attempts would therefore spend
+more without evidence that this route would converge.
+
+Keep `maxOutputTokens: 24576`, the three-attempt recovery ceiling, and the aggregate workflow
+budgets. For the next clean run, select the base `z-ai/glm-5.3-flash` identifier instead of
+`:nitro`. OpenRouter applies Auto Exacto automatically to tool-calling requests and ranks eligible
+providers using throughput, tool-call success, and benchmark signals. The `:nitro` suffix
+explicitly prioritizes throughput and overrides that quality-first ordering. This route change is
+an evidence-driven pilot variable, not a claim that one route is universally superior. Preserve
+the failed run in the final acceptance denominator.
+
+### Outcome of the base-route rerun
+
+Run `issue-c5fe72dd-55a8-464c-aa45-9a4d467102eb` selected the base
+`z-ai/glm-5.3-flash` route. It completed the first ten implementation nodes on their initial
+attempts, including the earlier state-integrity timeout regression and the public installer repair.
+One state-integrity response settled successfully at 16,960 output tokens, which confirms that the
+24,576-token cap leaves useful headroom for long but productive turns.
+
+The next `repair-detector-noop-performance` node read its two authorized files, then its second
+request settled as a retryable provider error after about 6.2 minutes. Attempt 2 settled as another
+provider error after about 19.3 minutes with zero reported usage. Attempt 3 reached the exact
+1,350,000-millisecond node timeout with zero reported usage. All three attempts were
+side-effect-free for that node. Flow recorded both retry dispositions, stopped at the configured
+attempt ceiling, and preserved the isolated candidate and failed outer run.
+
+This result doesn't identify one upstream endpoint or prove that Auto Exacto caused the failures.
+The failed streams supplied no settled endpoint identity, and provider availability can change
+between requests. It does prove that the base route didn't satisfy this workflow's end-to-end
+reliability requirement. The response-token cap and a node timeout also control different risks: a
+stream can remain active through provider-private progress until the node timeout without ever
+settling a model message whose output usage Flow can inspect.
+
+The next run returns to `z-ai/glm-5.3-flash:nitro`, which previously completed the large-context
+no-op repair. It keeps the 24,576-token response cap and three-attempt ceiling. It splits the later
+mixed installer-initialization repair into one product-contract node and one focused-test node,
+each with separate authority, evidence, and recovery history. This choice addresses both observed
+failures without increasing a token, attempt, cost, or time limit. Preserve both failed runs in the
+final acceptance denominator.
+
+## Final external-pilot outcome
+
+Run `issue-ef297140-9756-4dc5-92f0-4017a4bd5f07` completed the lifecycle at frozen base
+`99fb83a14e589fe7137b6f6cf3eac97b8535be0f`. The private holdout and frozen commands passed for
+candidate `c54b8105ea8c79c37be1ff4280f3b9163ca4cda4`. A fresh read-only review reported no blocking
+P1, P2, or P3 finding. GitHub pull request 105 passed its required `test` check on the exact head.
+
+The run then stopped at merge gate
+`f52e4a0f298a5b87164f086267e242d06a649cba99b638f33a432fe9227f0064`. A separate CLI command
+approved that exact pull request, head, and gate. Flow observed squash-merge commit
+`374b16b229e187004e5915942f95c296af03298f`, branch deletion, and issue closure before recording
+the terminal `merged` phase.
+
+The complete series contains 52 full parent runs. Its nested implementation and review evidence
+reported 247,516,376 aggregate tokens, including cache tokens, `$10.094325` in model cost, 9,429
+turns, 10,590 tool calls, and 2,532 settled filesystem effects. The
+[issue 6 field report](../docs/field-reports/digital-twin-issue-6-alpha4.md) owns the complete run
+and correction ledgers, interventions, limitations, and exact evidence.
+
+This proves the source-built controller on the named macOS host and the candidate's hosted Linux
+x64 check. It does not prove that the older published alpha.4 package contains `flow issue` or that
+the controller itself ran on hosted Linux x64. Exact package qualification and a separately
+authorized prerelease remain release gates.
+
+## Recovery correction from the final series
+
+The final series showed that a completed provider failure can occur after a raw `exec` command has
+fully settled. Categorically rejecting recovery repeats expensive model work even though Flow has
+the closed model session, command request, command result, and process evidence.
+
+Allow continuation only when every command is settled, process termination is confirmed, every
+workspace edit is committed, the exact model session closes without a mismatch, no delegation ran,
+the latest-attempt raw-exec result count equals the command-ledger count, the provider failure is
+eligible, and budget remains. The next attempt consumes the recorded tool result and does not replay
+the command. Keep interrupted, open, unconfirmed, package-provided, or otherwise uncertain commands
+ineligible.
+
+Deferred improvements remain separate research items: provider-request timeouts distinct from
+whole-node timeouts, trajectory and useful-effect telemetry, retry labels that distinguish a fresh
+model context from a preserved dirty workspace, and provider-specific compaction or overflow
+recovery. None is required to accept the proved candidate, and none gains authority from this
+decision.
+
+### Outcome of the split-node `:nitro` rerun
+
+Run `issue-676b6dd2-9aba-4b1d-86ae-f09ca73172f7` completed its first 16 of 21 implementation
+agent nodes on their initial attempts. This included the formerly failing no-op performance node
+and both halves of the installer-initialization split. The split therefore resolved the observed
+output-limit failure without increasing response, attempt, time, or aggregate resource bounds.
+
+The next runtime/performance convergence node made five completed model requests and proposed one
+edit, but the edit tool returned an error before any durable effect was prepared. Request 6 then
+settled as `pi_agent_error`. Fresh attempts 2 and 3 failed after about 10.6 seconds each with zero
+usage and no side effects. The run stopped at the existing three-attempt ceiling. It preserved the
+portable history, exact request identities, complete resource accounting, and a side-effect-free
+terminal failure.
+
+The evidence doesn't disclose the upstream response, so it cannot distinguish an account/request
+4xx from a transient 429 or gateway failure. It does prove that Flow's fixed public taxonomy was
+too coarse: a permanent provider rejection and a transient availability failure both became the
+same retryable `pi_agent_error`. Blind node-level backoff is rejected because Pi already retries an
+OpenRouter request up to six total transport attempts with exponential delays. Another generic
+retry layer would multiply traffic and cost without classifying the failure.
+
+Classify bounded provider HTTP status evidence into fixed Flow-owned codes. Authentication,
+payment/quota, and request-rejection statuses are nonretryable. A 429 or documented transient
+timeout/gateway/server status remains retryable when the node's ordinary effect and resource gates
+allow recovery. Keep raw provider text, credentials, and nested causes private. Rerun only after the
+selected provider credential is restored and `flow issue doctor` passes.

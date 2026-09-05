@@ -649,6 +649,20 @@ export function resolveVerifierPackageNode(
             node.verifier.kind === "packaged-model"
               ? Object.freeze({ ...node.verifier.model })
               : impossiblePackagedModel(node),
+          ...(node.verifier.kind === "packaged-model" && node.verifier.recovery !== undefined
+            ? {
+                recovery: Object.freeze({
+                  mode: node.verifier.recovery.mode,
+                  maxAttempts: node.verifier.recovery.maxAttempts,
+                  ...(node.verifier.recovery.backoff === undefined
+                    ? {}
+                    : { backoff: Object.freeze({ ...node.verifier.recovery.backoff }) }),
+                }),
+              }
+            : {}),
+          ...(node.verifier.kind === "packaged-model" && node.verifier.maxOutputTokens !== undefined
+            ? { maxOutputTokens: node.verifier.maxOutputTokens }
+            : {}),
           timeoutMs:
             node.verifier.kind === "packaged-model"
               ? node.verifier.timeoutMs

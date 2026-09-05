@@ -74,6 +74,27 @@ describe("GitHub issue plan", () => {
     ).toThrow(/implementation.*workflow/i);
   });
 
+  it("admits one private holdout stdin source only from .flow/verification", () => {
+    const source = validPlan().replace(
+      "holdout:\n  command:",
+      "holdout:\n  stdin: { path: .flow/verification/holdout.py }\n  command:",
+    );
+
+    expect(parseGitHubIssuePlanText(source).holdout.stdin).toEqual({
+      path: ".flow/verification/holdout.py",
+    });
+    expect(() =>
+      parseGitHubIssuePlanText(
+        source.replace(".flow/verification/holdout.py", ".flow/runs/private.py"),
+      ),
+    ).toThrow(/holdout.*stdin.*path/i);
+    expect(() =>
+      parseGitHubIssuePlanText(
+        source.replace(".flow/verification/holdout.py", ".flow/verification/../private.py"),
+      ),
+    ).toThrow(/holdout.*stdin.*path/i);
+  });
+
   it.each([
     [
       "repository mismatch syntax",

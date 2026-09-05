@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { parseRunEvent, reduceRunEvents, type RunEvent } from "../../../src/domain/run/events.js";
+import { parseRunEvent, type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
+import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 
 describe("durable control-flow replay", () => {
   it("reconstructs condition, omission, join, and resource-neutral control state", () => {
@@ -62,6 +63,100 @@ describe("durable control-flow replay", () => {
     ).toThrow();
   });
 
+  it("preserves inline and packaged model-verifier output limits at run start", () => {
+    const started = controlRunStarted();
+    const verifierNodes = [
+      {
+        nodeId: "bounded-inline-verifier",
+        type: "verifier" as const,
+        dependsOn: ["verify-final"],
+        verifier: {
+          kind: "model" as const,
+          prompt: "Verify the bounded evidence.",
+          evidence: [{ nodeId: "verify-final", field: "command.stdout" as const }],
+          model: { provider: "test", id: "deterministic", thinking: "off" as const },
+          maxOutputTokens: 8_192,
+          timeoutMs: 120_000,
+        },
+      },
+      {
+        nodeId: "bounded-packaged-verifier",
+        type: "verifier" as const,
+        dependsOn: ["bounded-inline-verifier"],
+        verifier: {
+          kind: "packaged-model" as const,
+          package: { name: "evidence-review", version: "1.2.0" },
+          evidence: [{ nodeId: "verify-final", field: "command.stdout" as const }],
+          model: { provider: "test", id: "deterministic", thinking: "off" as const },
+          maxOutputTokens: 4_096,
+          timeoutMs: 120_000,
+        },
+      },
+    ];
+    const event = {
+      ...started,
+      nodeIds: [...started.nodeIds, ...verifierNodes.map((node) => node.nodeId)],
+      controlGraph: {
+        ...started.controlGraph,
+        nodes: [...started.controlGraph.nodes, ...verifierNodes],
+      },
+    };
+
+    expect(parseRunEvent(event)).toMatchObject({
+      controlGraph: {
+        nodes: [
+          ...started.controlGraph.nodes,
+          { verifier: { kind: "model", maxOutputTokens: 8_192 } },
+          { verifier: { kind: "packaged-model", maxOutputTokens: 4_096 } },
+        ],
+      },
+    });
+  });
+
+  it.each([
+    [undefined, 64, 65],
+    [96, 96, 97],
+  ] as const)(
+    "rejects policy evidence above configured limit %s with effective limit %s",
+    (configuredLimit, effectiveLimit, evidenceCount) => {
+      const events = throughCondition();
+      const started = events[0];
+      if (started?.type !== "run_started" || started.controlGraph === undefined) {
+        throw new Error("expected a persisted control graph");
+      }
+      const agent = started.controlGraph.nodes.find((node) => node.nodeId === "implement");
+      if (agent?.type !== "agent") {
+        throw new Error("expected the implementation agent node");
+      }
+      const controlGraph = {
+        ...structuredClone(started.controlGraph),
+        nodes: started.controlGraph.nodes.map((node) =>
+          node.nodeId === "implement" && configuredLimit !== undefined
+            ? { ...node, policyDecisionLimit: configuredLimit }
+            : structuredClone(node),
+        ),
+      };
+      events[0] = { ...started, controlGraph };
+
+      expect(() =>
+        reduceRunEvents([
+          ...events,
+          { ...base(5), type: "node_started", nodeId: "implement", attempt: 1 },
+          {
+            ...base(6),
+            type: "node_succeeded",
+            nodeId: "implement",
+            attempt: 1,
+            evidence: {
+              ...agentEvidence("implemented"),
+              policyDecisions: policyDecisions(evidenceCount),
+            },
+          },
+        ] as unknown as RunEvent[]),
+      ).toThrowError(new RegExp(`policy decision evidence.*${effectiveLimit}`, "iu"));
+    },
+  );
+
   it("rejects an oversized serialized control graph through the public event parser", () => {
     const { controlGraph, nodeIds } = oversizedControlGraph();
 
@@ -75,6 +170,21 @@ describe("durable control-flow replay", () => {
         controlGraph,
       }),
     ).toThrow(/serialized control graph.*524288/i);
+  });
+
+  it("reports the review-policy control graph limit through the public event parser", () => {
+    const { controlGraph, nodeIds } = oversizedReviewControlGraph();
+
+    expect(() =>
+      parseRunEvent({
+        ...base(1),
+        type: "run_started",
+        nodeIds,
+        workflowApiVersion: "flow.synapti.ai/v1alpha1",
+        workflowDigest: "d".repeat(64),
+        controlGraph,
+      }),
+    ).toThrow(/serialized control graph.*1048576/i);
   });
 
   it("rejects a control graph whose ordered node projection differs from node ids", () => {
@@ -613,6 +723,32 @@ function oversizedControlGraph() {
   return { controlGraph: { nodes }, nodeIds: nodes.map((node) => node.nodeId) };
 }
 
+function oversizedReviewControlGraph() {
+  const verifier = (nodeId: string) => ({
+    nodeId,
+    type: "verifier" as const,
+    dependsOn: ["source"],
+    verifier: {
+      kind: "model" as const,
+      prompt: "r".repeat(600_000),
+      evidence: [{ nodeId: "source", field: "command.stdout" }],
+      model: { provider: "test", id: "deterministic", thinking: "medium" },
+      timeoutMs: 60_000,
+      inputPolicy: {
+        kind: "issue-workflow" as const,
+        role: "review" as const,
+        maxBytes: 786_432,
+      },
+    },
+  });
+  const nodes = [
+    { nodeId: "source", type: "command" as const, dependsOn: [] },
+    verifier("review-one"),
+    verifier("review-two"),
+  ];
+  return { controlGraph: { nodes }, nodeIds: nodes.map((node) => node.nodeId) };
+}
+
 function base(sequence: number) {
   return {
     version: 1 as const,
@@ -653,6 +789,28 @@ function agentEvidence(text: string) {
     policyDecisions: [],
     effectReceipts: [],
   };
+}
+
+function policyDecisions(count: number) {
+  const broker = new PolicyBroker(
+    {
+      runId: "run-control",
+      workflowId: "conditional-control",
+      nodeId: "implement",
+      attempt: 1,
+    },
+    ["filesystem.read"],
+    undefined,
+    128,
+  );
+  for (let index = 0; index < count; index += 1) {
+    broker.authorize({
+      action: "filesystem.read",
+      target: `/workspace/file-${index}`,
+      boundary: "inside",
+    });
+  }
+  return broker.close();
 }
 
 function sha256(value: string): string {

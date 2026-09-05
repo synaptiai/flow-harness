@@ -565,6 +565,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       },
     ],
     [
@@ -576,6 +577,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       },
     ],
     [
@@ -587,6 +589,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: OTHER_HEAD,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       },
     ],
     [
@@ -598,6 +601,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: false,
+        proofDigest: DIGEST,
       },
     ],
   ] as const)("binds the merge receipt to the applied %s result", (_label, result) => {
@@ -642,6 +646,7 @@ describe("issue lifecycle events", () => {
       mergeCommit: MERGE_COMMIT,
       deleteBranchRequested: false,
       branchDeleted: true,
+      proofDigest: DIGEST,
     });
 
     expect(
@@ -675,6 +680,7 @@ describe("issue lifecycle events", () => {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       }),
     ).toThrow(/branch policy/i);
   });
@@ -1154,7 +1160,13 @@ describe("issue lifecycle events", () => {
 
     let state = advanceTo("issue_frozen");
     state = reduceIssueLifecycleEvent(state, prepareEffect(state, "workspace"));
-    const projected = projectPublicIssueLifecycleState(state);
+    const projected = projectPublicIssueLifecycleState({
+      ...state,
+      acceptanceCriteria: [{ id: "criterion-one", description: "PRIVATE_CRITERION_DESCRIPTION" }],
+      changedPaths: ["PRIVATE_CHANGED_PATH.ts"],
+      diffContent: "PRIVATE_DIFF_CONTENT",
+      verificationDetails: "PRIVATE_VERIFICATION_DETAILS",
+    } as IssueLifecycleState);
 
     expect(projected).toEqual({
       version: 1,
@@ -1178,6 +1190,9 @@ describe("issue lifecycle events", () => {
     expect(projected).not.toHaveProperty("publication");
     expect(projected).not.toHaveProperty("appliedEffects");
     expect(JSON.stringify(projected)).not.toMatch(/secret|reason|content|absolute/i);
+    expect(JSON.stringify(projected)).not.toMatch(
+      /PRIVATE_CRITERION_DESCRIPTION|PRIVATE_CHANGED_PATH|PRIVATE_DIFF_CONTENT|PRIVATE_VERIFICATION_DETAILS/,
+    );
   });
 
   it("requires private-evidence digests for uncertain and failed outcomes", () => {
@@ -1323,6 +1338,7 @@ function effectResult(effectKind: IssueExternalEffectKind) {
         mergeCommit: MERGE_COMMIT,
         deleteBranchRequested: true,
         branchDeleted: true,
+        proofDigest: DIGEST,
       };
   }
 }

@@ -13,6 +13,7 @@ import {
   workflowPackageVersionSchema,
 } from "../capability/workflow-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
+import { MAX_POLICY_DECISION_LIMIT } from "../policy/limits.js";
 import {
   DEFAULT_ROLLING_CONTEXT_PRESSURE_THRESHOLD_PERCENT,
   MAX_PROTECTED_CONTEXT_CONSTRAINTS,
@@ -68,10 +69,22 @@ const commandApprovalSchema = z
   })
   .strict();
 
-const agentRecoverySchema = z
+const retryBackoffSchema = z
+  .object({
+    initialDelayMs: z.number().int().positive().max(300_000),
+    maxDelayMs: z.number().int().positive().max(900_000),
+  })
+  .strict()
+  .refine((backoff) => backoff.maxDelayMs >= backoff.initialDelayMs, {
+    message: "recovery backoff maxDelayMs must be at least initialDelayMs",
+    path: ["maxDelayMs"],
+  });
+
+const freshRecoverySchema = z
   .object({
     mode: z.literal("fresh"),
     maxAttempts: z.number().int().min(2).max(16),
+    backoff: retryBackoffSchema.optional(),
   })
   .strict();
 
@@ -262,8 +275,10 @@ const agentConfigSchema = z
       )
       .default([]),
     toolApproval: agentToolApprovalSchema.optional(),
-    recovery: agentRecoverySchema.optional(),
+    recovery: freshRecoverySchema.optional(),
     contextCompaction: rollingContextCompactionSchema.optional(),
+    policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
+    maxOutputTokens: z.number().int().positive().safe().optional(),
     timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
   })
   .strict()
@@ -275,14 +290,11 @@ const agentConfigSchema = z
         message: "agent skills require the declared read tool for progressive disclosure",
       });
     }
-    if (
-      agent.recovery !== undefined &&
-      (agent.tools.includes("exec") || agent.toolPackages.length > 0)
-    ) {
+    if (agent.recovery !== undefined && agent.toolPackages.length > 0) {
       context.addIssue({
         code: "custom",
         path: ["recovery"],
-        message: "fresh agent recovery is not supported with agent command execution",
+        message: "fresh agent recovery is not supported with command tool packages",
       });
     }
     if (
@@ -368,6 +380,8 @@ const verifierNodeSchema = z
               "verifier evidence declarations must be unique",
             ),
           model: modelSchema,
+          recovery: freshRecoverySchema.optional(),
+          maxOutputTokens: z.number().int().positive().safe().optional(),
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })
         .strict(),
@@ -420,6 +434,8 @@ const verifierNodeSchema = z
               "verifier evidence declarations must be unique",
             ),
           model: modelSchema,
+          recovery: freshRecoverySchema.optional(),
+          maxOutputTokens: z.number().int().positive().safe().optional(),
           timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
         })
         .strict(),

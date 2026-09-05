@@ -176,5 +176,84 @@ describe("provider input-token counter", () => {
     expect(failure).toMatchObject({ code: "request_failed" });
     expect(String(failure)).not.toContain("private-key");
     expect(String(failure)).not.toContain("proxy failure");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries one transient transport failure before admitting an exact count", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error("temporary connection failure"))
+      .mockResolvedValueOnce(Response.json({ object: "response.input_tokens", input_tokens: 55 }));
+
+    await expect(
+      countProviderInputTokens({
+        apiAdapter: "openai-responses",
+        inferenceUrl: "https://example.test/v1/responses",
+        inferenceHeaders: { authorization: "Bearer private-key" },
+        inferencePayload: { model: "gpt-5.6", input: "private prompt" },
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ inputTokens: 55, method: "provider_exact" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries one transient response-stream failure before admitting an exact count", async () => {
+    const failedStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("temporary response stream failure"));
+      },
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(failedStream, { headers: { "content-type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(Response.json({ object: "response.input_tokens", input_tokens: 56 }));
+
+    await expect(
+      countProviderInputTokens({
+        apiAdapter: "openai-responses",
+        inferenceUrl: "https://example.test/v1/responses",
+        inferenceHeaders: { authorization: "Bearer private-key" },
+        inferencePayload: { model: "gpt-5.6", input: "private prompt" },
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ inputTokens: 56, method: "provider_exact" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a provider status rejection", async () => {
+    const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 }));
+
+    await expect(
+      countProviderInputTokens({
+        apiAdapter: "openai-responses",
+        inferenceUrl: "https://example.test/v1/responses",
+        inferenceHeaders: { authorization: "Bearer private-key" },
+        inferencePayload: { model: "gpt-5.6", input: "private prompt" },
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ code: "response_status" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry after the caller aborts a failed request", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async () => {
+      controller.abort();
+      throw new Error("cancelled request details");
+    });
+
+    await expect(
+      countProviderInputTokens({
+        apiAdapter: "openai-responses",
+        inferenceUrl: "https://example.test/v1/responses",
+        inferenceHeaders: { authorization: "Bearer private-key" },
+        inferencePayload: { model: "gpt-5.6", input: "private prompt" },
+        fetchImpl,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: "request_failed" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });

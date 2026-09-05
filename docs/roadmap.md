@@ -39,9 +39,17 @@ Gate 11 starts the public compatibility program. Its first slice closes the npm 
 adds a real historical corpus with a read-only check. It classifies public surfaces and assesses a
 future library API without exporting one.
 
-Gate 12 is the next-version research and selection gate. It keeps deferred capabilities outside
-delivery commitments until their flows, authority changes, dependencies, failure behavior, and
-falsifiable evidence gates are explicit.
+Gate 12 selected Approach A, the evidence-first usable checkpoint, as the next release thesis. It
+keeps unrelated deferred capabilities outside delivery commitments until their flows, authority
+changes, dependencies, failure behavior, and falsifiable evidence gates are explicit.
+
+Gate 13 applies that thesis to one production GitHub issue lifecycle. A user must be able to install
+Flow and use it in another repository. The proof must cover implementation, independent review,
+deterministic verification, hosted checks, explicit approval, and verified merge.
+
+The [usable-checkpoint execution plan](usable-checkpoint-plan.md) tracks the remaining qualification
+work and operator-burden priorities. A deferred item must retain an owner, an evidence gate, and a
+reconsideration trigger. Deferral does not mean completion.
 
 Remaining targets include executable extensions, remote or multi-user UI hosts, stronger
 isolation, measured product benchmarks, and a future stable compatibility program.
@@ -516,6 +524,13 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 
 - Start a fresh process and session for eligible explicit recovery. Supply the bounded durable
   recovery capsule instead of resuming opaque provider or ACP state.
+- Continue an eligible provider-failed agent from the exact model-session ledger after earlier
+  workspace edits or settled raw-`exec` results. Require a durable committed settlement for every
+  edit and complete process evidence for every command. Refuse continuation after a delegation or
+  unconfirmed command termination. Also refuse continuation after a sandbox-cleanup failure.
+- Retry a completed, nontruncated strict-invalid model-verifier response only under an explicit
+  bounded policy. Preserve each failed attempt and its resource use. Keep semantic verdicts,
+  truncated responses, provenance failures, and interrupted verifier requests nonretryable.
 
 #### Implemented hosted proof
 
@@ -739,13 +754,19 @@ production authority, activate themselves, or change a supported contract.
 
 ### Slice 12.2: Select one release thesis
 
-- Choose an evidence-first usable checkpoint, long-horizon recovery, or integration-platform
-  direction.
-- Name the primary user, production scope, accepted authority change, compatibility level, and
-  evaluation budget.
-- Assign no semantic version until the selected thesis defines its compatibility level. The result
-  can be another governed alpha checkpoint, a breaking preview line, or a stable-support program.
-- Reject a scope that combines unrelated high-authority boundaries.
+**Implemented by the approved Approach A decision.**
+
+- Use the evidence-first usable checkpoint for the next version.
+- Serve a local command-line operator who needs to complete one issue in another GitHub repository.
+- Keep Git, GitHub credentials, publication, hosted-check observation, approval, and merge in the
+  trusted host controller. The model receives no new delivery authority.
+- Use another compatibility-governed alpha checkpoint unless qualification establishes a stronger
+  support contract. Assign no version until the release gate freezes it.
+- Require local fault and recovery coverage, hosted Linux x64 and macOS x64 package checks, and one
+  complete external-repository acceptance pilot. Preserve every failed attempt and human
+  intervention.
+- Keep long-horizon repair, programmatic integration, remote operation, and stronger isolation as
+  separate research tracks.
 
 ### Slice 12.3: Complete decision-grade research
 
@@ -781,6 +802,107 @@ Gate 12 does not promise implementation of every deferred capability. It does no
 stable release, hosted service, public library, remote API, executable-package ABI, or multi-tenant
 security boundary.
 
+## Gate 13: Complete one GitHub issue end to end
+
+Gate 13 delivers the selected evidence-first checkpoint. Completion requires a released command
+that another user can apply to one supported `github.com` repository without building Flow.
+
+### Slice 13.1: Implement the recoverable host controller
+
+**Implemented in current source.**
+
+- Freeze all task and repository inputs before mutation. These inputs include the open issue,
+  canonical repository, base commit, plan, workflows, budgets, and model. Also freeze candidate
+  paths, holdout, checks, branch, and merge policy.
+- Keep model work network-denied and credential-free. Give implementation only admitted workspace
+  writes, and give independent review read-only access.
+- Prepare and settle worktree, commit, push, pull-request, readiness, and merge effects through a
+  replay-validated durable ledger.
+- Reconcile an interrupted effect against exact local or GitHub identity before retry. Preserve
+  uncertainty when absence or completion can't be proved.
+- Bind an optional per-node model-response cap into the workflow and recovery identity. Continue
+  an output-limited response only from a settled durable model session. Don't infer safety from a
+  timeout or missing response.
+- Require one draft pull request and reuse that pull request after repair. Require exact-head checks
+  from named GitHub Apps, an exact operator merge command, and a post-merge topology proof.
+
+### Slice 13.2: Bind exact independent-review evidence
+
+**Implemented in current source.**
+
+- Send the reviewer the frozen issue and complete criterion IDs and descriptions. Also send the base
+  and candidate identities, changed paths, exact bounded diff, and deterministic verification
+  summary.
+- Bind the review request and structured result to the exact candidate, issue, workflow, and frozen
+  contract. Reject incomplete criteria, malformed JSON, P1 through P3 findings, and candidate drift.
+- Store exact diff and command evidence only in owner-protected private state. Keep public events and
+  inspection content-free.
+- Require explicit operator authority for the bounded repository-data transmission before the
+  first model-backed acceptance run.
+
+### Slice 13.3: Prove the external-project lifecycle
+
+**Partially qualified. Installed-package hosted Linux x64 acceptance remains open.**
+
+- Preserve the source-built issue 6 result. Use the installed release-candidate archive through
+  separate operating-system processes against a fresh, previously unhandled `digital-twin` issue
+  on hosted Linux x64. Record the archive digest and source revision separately from its version.
+- Start from a frozen clean base. Predeclare the holdout, verification commands, hosted-check names,
+  source app identities, budgets, stopping rules, and repair ceiling.
+- Preserve all attempts. For each failure, identify the responsible boundary and add a regression
+  test. Fix the general Flow defect, and repeat from an admitted state.
+- Require independent review with no P1, P2, or P3 findings. Also require successful local and
+  exact-head hosted checks, explicit gate-bound approval, and a proved merge.
+- Reopen the durable run from a fresh service instance and use separate CLI invocations to prove
+  process-boundary recovery.
+
+The accepted issue 6 run reached `merged` after an unchanged private holdout, fresh independent
+review, exact-head hosted CI, and a separate digest-bound merge command. The 52-run denominator and
+all operator interventions remain in the
+[issue 6 lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md). The controller ran
+from current source on macOS. The candidate ran its required check on hosted Linux x64. This result
+doesn't qualify the older published alpha.4 package or every supported host.
+
+The first installed-package attempt on hosted Linux x64 failed at the implementation token gate
+before candidate acceptance or review. The
+[issue 106 field report](field-reports/digital-twin-issue-106-installed.md) records its exact archive,
+complete denominator, command-discovery failure, and approved correction. UC-08 in the
+[usable-checkpoint plan](usable-checkpoint-plan.md) tracks exact command discovery, actionable
+refusals, and bounded ineffective-request stopping. UC-08a separately requires retention of the
+exact archive bytes for the replacement qualification. Neither correction closes Slice 13.3.
+
+### Slice 13.4: Qualify and publish the usable checkpoint
+
+**Pending exact-head Flow review, package qualification, and separate release authorization.**
+
+- Update all public lifecycle documentation from the accepted evidence. This set includes the task
+  guide, workflow-authoring guide, operations runbook, specification, architecture, project status,
+  release notes, and field report.
+- Test every published plan and workflow example through production admission. Check every command
+  against the shipped CLI help.
+- Verify one packed archive on hosted Ubuntu 24.04 x64 and macOS 15 x64. Include issue-command
+  discovery, read-only validation, and compatibility checks.
+- Complete independent code and test review. Merge only with no P1, P2, or P3 findings and all
+  required checks successful.
+- Publish a new immutable GitHub prerelease only after a separate exact publication authorization.
+  Stage and approve npm through the existing two-factor release procedure.
+
+### Gate 13 failure behavior and non-goals
+
+| Condition | Required behavior |
+| --- | --- |
+| The operator hasn't authorized bounded provider transmission | Stop before model execution and preserve the target repository. |
+| The base, issue, plan, workflow, provider, model, or hosted-check contract changes | Reject the stale run or gate. Freeze and review a replacement contract. |
+| A local or hosted check is missing, stale, skipped, or unsuccessful | Don't create or accept a merge gate. |
+| Review finds a P1, P2, or P3 issue | Block publication or merge, fix the candidate, and require fresh candidate-bound evidence. |
+| A Git or GitHub response is lost | Reconcile the prepared effect. Don't repeat it from process memory or manual inference. |
+| The pilot doesn't prove the complete lifecycle | Report the attempt and keep the release unqualified. Don't convert partial success into a readiness claim. |
+
+Gate 13 doesn't support forks, merge queues, GitHub Enterprise, multiple remotes, or cross-host
+relocation. It also excludes autonomous merge approval, administrator bypass, remote multi-user
+control, and a hostile multi-tenant boundary. One accepted pilot doesn't prove compatibility with
+every repository, language, model, or issue.
+
 ## Product benchmark gate
 
 - Reproducible harness evaluation is implemented for two Flow profiles. It includes paired
@@ -794,15 +916,17 @@ security boundary.
   parent-owned process evidence.
 - A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
   OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
-- Two adaptive issue series in a separate repository produced reviewed, merged implementations.
+- Three adaptive issue series in a separate repository produced reviewed, merged implementations.
   The first used nine full attempts and exposed one false acceptance. The second used 11 full
   attempts and four bounded repair workflows, and strengthened review rejected one workflow
-  success.
+  success. The third used 52 full lifecycle runs. Private holdout and independent review rejected
+  incomplete candidates before one exact approval-bound merge.
   Every full and repair attempt remains in its reported denominator. These results are product
   evidence, not benchmarks, model-quality conclusions, or proof of autonomous repair selection.
   Read the
   [issue 4 field report](field-reports/digital-twin-issue-4-alpha4.md) and
-  [issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md).
+  [issue 5 field report](field-reports/digital-twin-issue-5-alpha4.md), and the
+  [issue 6 lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md).
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
 Before extending that field sequence, freeze each later task's base, workflow, external holdout,

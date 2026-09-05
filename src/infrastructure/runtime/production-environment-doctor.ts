@@ -7,6 +7,8 @@ import type { NodeExecutionContext } from "../../application/ports.js";
 import type { CompiledCommandNode } from "../../domain/workflow/types.js";
 import { createProductionNodeExecutor } from "./production-node-executor.js";
 
+const NATIVE_SANDBOX_PROBE_COMMAND_TIMEOUT_MS = 10_000;
+
 interface NativeSandboxProbeExecutor {
   execute(
     node: CompiledCommandNode,
@@ -56,7 +58,7 @@ export async function inspectProductionNativeSandbox(
       command: Object.freeze({
         executable: options.nodeExecutable ?? process.execPath,
         args: Object.freeze(["-e", ""]),
-        timeoutMs: 2_000,
+        timeoutMs: NATIVE_SANDBOX_PROBE_COMMAND_TIMEOUT_MS,
       }),
     });
     const context: NodeExecutionContext = Object.freeze({

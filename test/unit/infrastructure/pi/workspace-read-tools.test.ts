@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { createFrozenVerificationAgentCommandAuthority } from "../../../../src/application/frozen-issue-command.js";
 
 import type {
   AgentCommandExecutor,
@@ -11,6 +12,10 @@ import type {
   NodeEffectJournal,
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../../src/domain/agent-command.js";
 import { createArtifactReference } from "../../../../src/domain/artifact/reference.js";
 import { createAgentSkillSession } from "../../../../src/domain/capability/agent-skill-session.js";
 import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
@@ -129,7 +134,12 @@ describe("workspace-confined Pi tools", () => {
       },
     };
     const commandRecorder = new AgentCommandRecorder(executor, journal, executionContext(root));
-    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, { commandRecorder });
+    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, {
+      commandRecorder,
+      agentCommandAuthority: createFrozenVerificationAgentCommandAuthority([
+        { executable: "npm", args: ["test"], timeoutMs: 10_000 },
+      ]),
+    });
     const execTool = tools.definitions[0];
     if (execTool === undefined) {
       throw new Error("exec tool was not registered");
@@ -144,6 +154,9 @@ describe("workspace-confined Pi tools", () => {
     );
 
     expect(tools.names).toEqual(["flow_exec"]);
+    expect(execTool.description).toContain(
+      JSON.stringify({ executable: "npm", args: ["test"], timeoutMs: 10_000 }),
+    );
     expect(journalEvents).toEqual(["prepare", "execute", "settle"]);
     expect(result.content).toContainEqual({
       type: "text",
@@ -163,6 +176,104 @@ describe("workspace-confined Pi tools", () => {
       }),
     ]);
   });
+
+  it("rejects a command outside frozen verification authority before policy or preparation", async () => {
+    const root = await createTemporaryDirectory();
+    const policy = policyBroker(["process.execute"]);
+    const journalEvents: string[] = [];
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 10_000,
+    });
+    const commandRecorder = new AgentCommandRecorder(
+      {
+        executeAgentCommand: async () => {
+          journalEvents.push("execute");
+          throw new Error("unreachable");
+        },
+      },
+      {
+        prepare: async () => {
+          journalEvents.push("prepare");
+          throw new Error("unreachable");
+        },
+      },
+      executionContext(root),
+    );
+    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, {
+      commandRecorder,
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+      },
+    });
+    const execTool = tools.definitions[0];
+    if (execTool === undefined) throw new Error("exec tool was not registered");
+
+    const unrestricted = await createWorkspaceAgentTools(root, ["exec"], policy, {
+      commandRecorder,
+    });
+    expect(execTool.description).toBe(unrestricted.definitions[0]?.description);
+    expect(execTool.promptGuidelines).toEqual(unrestricted.definitions[0]?.promptGuidelines);
+
+    await expect(
+      execTool.execute(
+        "exec-call",
+        { ...allowed, args: ["run", "test"] },
+        new AbortController().signal,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrow(/frozen verification command/i);
+    expect(journalEvents).toEqual([]);
+    expect(policy.snapshot()).toEqual([]);
+  });
+
+  it.each([
+    ["omitted timeout", { executable: "python3", args: ["-m", "pytest"] }],
+    ["wrong executable", { executable: "python", args: ["-m", "pytest"], timeoutMs: 300_000 }],
+    ["wrong argument order", { executable: "python3", args: ["pytest", "-m"], timeoutMs: 300_000 }],
+  ])(
+    "returns exact corrective invocations after %s without authorizing execution",
+    async (_label, input) => {
+      const root = await createTemporaryDirectory();
+      const policy = policyBroker(["process.execute"]);
+      const commandRecorder = new AgentCommandRecorder(
+        {
+          executeAgentCommand: async () => {
+            throw new Error("rejection must not execute");
+          },
+        },
+        {
+          prepare: async () => {
+            throw new Error("rejection must not prepare");
+          },
+        },
+        executionContext(root),
+      );
+      const invocation = { executable: "python3", args: ["-m", "pytest"], timeoutMs: 300_000 };
+      const tools = await createWorkspaceAgentTools(root, ["exec"], policy, {
+        commandRecorder,
+        agentCommandAuthority: createFrozenVerificationAgentCommandAuthority([invocation], {
+          rejectionLimit: 3,
+        }),
+      });
+      const execTool = tools.definitions[0];
+      if (execTool === undefined) throw new Error("exec tool missing");
+      expect(execTool.description).toContain(JSON.stringify(invocation));
+      expect(execTool.description).not.toContain('"version"');
+      expect(execTool.description).toContain("3 cumulative refused requests");
+      await expect(
+        execTool.execute("rejected-call", input, undefined, undefined, {} as never),
+      ).rejects.toThrow(JSON.stringify(invocation));
+      await expect(
+        execTool.execute("rejected-call-2", input, undefined, undefined, {} as never),
+      ).rejects.toThrow(/no command was executed/i);
+      expect(policy.snapshot()).toEqual([]);
+    },
+  );
 
   it("enforces confinement through the registered read tool", async () => {
     const root = await createTemporaryDirectory();
@@ -210,6 +321,31 @@ describe("workspace-confined Pi tools", () => {
       outcome: "denied",
       reason: "target_outside_workspace",
     });
+  });
+
+  it("protects Git metadata from reads when issue composition supplies .git", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, ".git"));
+    await writeFile(join(root, ".git", "config"), "private Git configuration", "utf8");
+    const policy = policyBroker(["filesystem.read"]);
+    const tools = await createWorkspaceAgentTools(root, ["read"], policy, {
+      protectedPaths: [".git"],
+    });
+    const readTool = tools.definitions[0];
+    if (readTool === undefined) {
+      throw new Error("read tool was not registered");
+    }
+
+    await expect(
+      readTool.execute("git-read", { path: ".git/config" }, undefined, undefined, {} as never),
+    ).rejects.toThrowError(/protected/i);
+    expect(policy.snapshot()).toEqual([
+      expect.objectContaining({
+        action: "filesystem.read",
+        outcome: "denied",
+        reason: "target_protected",
+      }),
+    ]);
   });
 
   it("routes directory listing operations through the policy broker", async () => {
@@ -572,6 +708,134 @@ describe("workspace-confined Pi tools", () => {
         outcome: "committed",
       }),
     ]);
+  });
+
+  it("enforces the optional exact write prefixes before a create effect", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "test"));
+    const policy = policyBroker(["filesystem.write"]);
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(root, ["create"], policy, {
+      allowedWritePrefixes: ["src"],
+      effectRecorder: effects,
+    });
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "allowed-create",
+        { path: "src/allowed.ts", content: "export {};\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      createTool.execute(
+        "denied-create",
+        { path: "test/denied.ts", content: "export {};\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrowError(/protected/i);
+
+    expect(await readFile(join(root, "src", "allowed.ts"), "utf8")).toBe("export {};\n");
+    await expect(readFile(join(root, "test", "denied.ts"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(effects.snapshot()).toHaveLength(1);
+  });
+
+  it("denies a lexical write-prefix symlink escape before an effect is prepared", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "private"));
+    await symlink(join(root, "private"), join(root, "src", "linked-private"));
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(
+      root,
+      ["create"],
+      policyBroker(["filesystem.write"]),
+      { allowedWritePrefixes: ["src"], effectRecorder: effects },
+    );
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "escape-create",
+        { path: "src/linked-private/escaped.ts", content: "escaped\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrowError(/protected/i);
+
+    await expect(readFile(join(root, "private", "escaped.ts"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(effects.snapshot()).toEqual([]);
+  });
+
+  it.each(["src/..", "src/./nested", "src//nested", "/tmp/output"])(
+    "rejects a noncanonical write prefix %s before creating tools",
+    async (allowedWritePrefix) => {
+      const root = await createTemporaryDirectory();
+
+      await expect(
+        createWorkspaceAgentTools(root, ["create"], policyBroker(["filesystem.write"]), {
+          allowedWritePrefixes: [allowedWritePrefix],
+          effectRecorder: effectRecorder(),
+        }),
+      ).rejects.toThrowError(/canonical relative path|escapes the workspace/i);
+    },
+  );
+
+  it("rejects every existing symlink component in an admitted write prefix", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "real"));
+    await mkdir(join(root, "safe"));
+    await symlink(join(root, "real"), join(root, "safe", "linked"));
+
+    await expect(
+      createWorkspaceAgentTools(root, ["create"], policyBroker(["filesystem.write"]), {
+        allowedWritePrefixes: ["safe/linked/nested"],
+        effectRecorder: effectRecorder(),
+      }),
+    ).rejects.toThrowError(/symlink/i);
+  });
+
+  it("keeps the existing unrestricted in-workspace write behavior when no allowlist is supplied", async () => {
+    const root = await createTemporaryDirectory();
+    await mkdir(join(root, "unlisted"));
+    const tools = await createWorkspaceAgentTools(
+      root,
+      ["create"],
+      policyBroker(["filesystem.write"]),
+      { effectRecorder: effectRecorder() },
+    );
+    const createTool = tools.definitions[0];
+    if (createTool === undefined) {
+      throw new Error("create tool was not registered");
+    }
+
+    await expect(
+      createTool.execute(
+        "legacy-create",
+        { path: "unlisted/compatible.ts", content: "compatible\n" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).resolves.toBeDefined();
+    expect(await readFile(join(root, "unlisted", "compatible.ts"), "utf8")).toBe("compatible\n");
   });
 
   it("refuses to replace an existing file through flow_create", async () => {

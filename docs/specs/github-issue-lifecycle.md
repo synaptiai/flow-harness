@@ -10,9 +10,9 @@ authority.
 
 ## Availability
 
-The current published CLI does not register `flow issue`. This document defines the normative
-preview contract for the controller under implementation. The command surface is unavailable until
-`flow --help` lists the `issue` command group in a later release.
+Current source registers `flow issue`. The published `0.1.0-alpha.4` package doesn't include the
+command group. The lifecycle becomes a qualified public preview only when a later release's help
+and release notes identify it and the external-repository acceptance pilot passes.
 
 ## Command surface
 
@@ -20,14 +20,14 @@ The preview command surface is:
 
 ```text
 flow issue validate <plan.yaml>
-flow issue doctor <issue-url> --plan <plan.yaml>
-flow issue run <issue-url> --plan <plan.yaml> --provider <provider> --model <model>
+flow issue doctor <issue-url> --plan <plan.yaml> --provider <provider> --model <model>
+flow issue run <issue-url> --plan <plan.yaml> --provider <provider> --model <model> [--command-id <uuid>]
 flow issue inspect <run-id>
 flow issue events <run-id> [--after <sequence>] [--limit <count>]
-flow issue resume <run-id>
-flow issue cancel <run-id> --actor <label> [--reason <text>]
+flow issue resume <run-id> [--command-id <uuid>]
+flow issue cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>]
 flow issue merge <run-id> --actor <label> --expected-pr <number> \
-  --expected-head <40-lowercase-hex> --expected-gate-digest <sha256>
+  --expected-head <40-lowercase-hex> --expected-gate-digest <sha256> [--command-id <uuid>]
 ```
 
 `run`, `resume`, `cancel`, and `merge` accept `--command-id <uuid>` for idempotent submission.
@@ -93,9 +93,11 @@ implementation:
 candidate:
   allowedPathPrefixes: [src/, tests/]
 holdout:
+  stdin:
+    path: .flow/verification/issue-holdout.py
   command:
-    executable: npm
-    args: [run, test:holdout]
+    executable: python3
+    args: ["-"]
     timeoutMs: 120000
 verification:
   - id: test
@@ -130,6 +132,7 @@ merge:
 | `implementation.workflow` | Must be a project-relative regular-file path to a valid Flow workflow. It can use `.flow/workflows/**` but must exclude `.git` and private `.flow` state. |
 | `candidate.allowedPathPrefixes` | Must be a nonempty, unique list of project-relative exact files or directory prefixes. Entries must stay within the repository and exclude `.git` and `.flow`. |
 | `holdout.command` | Must be one fixed command vector. It must return nonzero on the frozen base and zero on the candidate. |
+| `holdout.stdin.path` | Optional. Must identify one regular file below `.flow/verification/`. The controller freezes at most 1,048,576 bytes and streams the exact bytes to both holdout executions without exposing the source path to the command. |
 | `verification` | Must be a nonempty list of commands with unique `id` values. Every command must return zero on the exact candidate. |
 | `hostedChecks.required` | Must be a nonempty list of strict `{name, sourceApp: {id, slug}}` objects with unique names. The app ID must be a positive safe integer, and the slug must be canonical lowercase. Every named check must come from that exact app and settle successfully for the exact published head. |
 | `review.workflow` | Must be a project-relative regular-file path to a valid, read-only Flow workflow. It has the same path restrictions as `implementation.workflow`. |
@@ -149,6 +152,7 @@ Plan admission applies these exact limits:
 | Input | Limit |
 | --- | --- |
 | Complete plan | 65,536 UTF-8 bytes |
+| Private holdout standard input | 1,048,576 bytes |
 | Verification commands | 32 |
 | Required hosted checks | 32 |
 | Candidate path prefixes | 64 |
@@ -194,9 +198,10 @@ inside that root after lexical and real-path resolution. Absolute paths, empty s
 `..` traversal, NUL bytes, platform aliases, symbolic-link escapes, `.git`, and private `.flow`
 run state are invalid.
 
-The plan can store workflow inputs under `.flow/workflows/**`. It cannot select `.git`,
-`.flow/runs`, `.flow/issue-runs`, or another private `.flow` path. The runtime must reject a path
-whose real path or symbolic-link target escapes its admitted namespace.
+The plan can store workflow inputs under `.flow/workflows/**`. It can select one optional private
+holdout input below `.flow/verification/**`. It cannot select `.git`, `.flow/runs`,
+`.flow/issue-runs`, or another private `.flow` path. The runtime must reject a path whose real path
+or symbolic-link target escapes its admitted namespace.
 
 `candidate.allowedPathPrefixes` cannot grant the model write access to `.flow` or `.git`. A
 workflow path identifies immutable input. It doesn't create a candidate write permission.
@@ -213,7 +218,7 @@ The initial frozen identity contains digests or bounded identities for:
 - issue node, number, state, content digest, and exact update time.
 - configured base branch and the exact commit observed at its remote `refs/heads/<baseBranch>` ref.
 - frozen contract, plan, implementation template workflow, review template workflow, verification
-  commands, holdout, and budgets.
+  commands, holdout command, optional private holdout input, and budgets.
 - derived Flow-owned branch.
 - run and idempotency identities.
 
@@ -289,6 +294,15 @@ The run root is `.flow/issue-runs/<run-id>/`. The lifecycle stores append-only p
 and owner-only private evidence under that root. The controller must use the repository's
 single-owner and durable-tail rules when it appends or repairs the final partial record.
 
+The controller must store lifecycle-owned candidate and verification Git worktrees outside the
+checkout and outside an operating-system temporary directory. The production path is
+`<checkout-parent>/.flow-issue-host-<uid>/<project-hash>/worktrees/`, where `project-hash` is the
+first 32 hexadecimal characters of the SHA-256 digest of the canonical checkout path. The
+collection and project directory must be real, owner-only directories. Reconstructing a missing
+worktree from the branch or ledger is forbidden because the worktree might contain uncommitted
+model changes. Resume must fail closed when either worktree or its exact ownership record is
+missing or divergent.
+
 Every public event has this envelope:
 
 ```json
@@ -330,7 +344,7 @@ An applied settlement must bind the effect to its observed result:
 | `push` | `kind`, `candidateHead`, `branch` |
 | `pull_request` | `kind`, `repositoryIdentity`, `candidateHead`, `headBranch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `isDraft` as `true` |
 | `pull_request_ready` | `kind`, `repositoryIdentity`, `candidateHead`, `headBranch`, `baseBranch`, `pullRequestNumber`, `pullRequestNodeId`, `isDraft` as `false` |
-| `merge` | `kind`, `candidateHead`, `gateDigest`, `mergeCommit`, `deleteBranchRequested`, `branchDeleted` |
+| `merge` | `kind`, `candidateHead`, `gateDigest`, `mergeCommit`, `deleteBranchRequested`, `branchDeleted`, `proofDigest` |
 
 A `not_applied` settlement has no `result`. The result kind must equal the prepared effect kind,
 and every identity must match the current frozen or approved lifecycle identity.
@@ -403,10 +417,53 @@ The implementation workflow can change only admitted candidate paths in the isol
 The resulting diff must be nonempty and task-relevant. A changed path outside the admitted prefixes
 fails the run.
 
+The implementation workflow cannot contain ordinary command, approval, child, optimization, or
+command-tool-package nodes. It can contain a command verifier when the command has an exact digest
+match in the plan's frozen `verification` list. The digest covers the normalized executable,
+complete ordered arguments, and timeout. An implementation agent can use `exec` under the same
+frozen command authority. Any undeclared command fails admission or execution.
+
+Review workflows remain read-only. They cannot contain command verifiers or command-capable
+agents.
+
+An admitted command verifier runs through the production command sandbox and records typed verdict
+evidence. It provides an early deterministic boundary inside the implementation graph. It doesn't
+replace the controller's later execution of every frozen verification command against the exact
+committed candidate.
+
+Before it prepares a commit effect, the controller constructs an exact candidate snapshot. The
+snapshot binds the base commit, changed paths, Git attributes, private candidate index, tree delta,
+and logical byte count. If the pinned Git executable returns one malformed response during it,
+the controller retries the complete snapshot once. The second snapshot repeats every branch,
+ancestry, path, filter, symbolic-link, tree-drift, and byte-limit check. A second malformed response
+fails closed with `git_response_invalid`. This retry cannot create a commit, update a branch,
+contact GitHub, or authorize an external effect.
+
 The controller runs the frozen holdout twice:
 
 1. The untouched frozen base must return nonzero.
 2. The exact candidate must return zero.
+
+If `holdout.stdin.path` is present, the freezer reads the source before the first mutable effect.
+It binds the raw SHA-256 digest and the typed, content-addressed private blob reference into the run
+manifest.
+
+Verification retrieves only that blob. It verifies the media type, size, blob identity, and raw
+digest. It then sends copied bytes to both commands through standard input. Verification never
+reads the live plan path.
+
+Command evidence contains `stdinHash` only after transport write settlement. It doesn't prove that
+the application consumed the input. Use an interpreter mode whose successful execution requires
+reading standard input. The executor rejects missing, substituted, or oversized input. The native
+executor also rejects a pipe that errors or closes before write settlement.
+
+Command evidence has no dedicated input-byte field. Standard output and standard error remain
+exact owner-only private evidence. A holdout that echoes its input can copy source bytes into that
+evidence. Public projections and model context don't include private command evidence.
+
+The native process sandbox supports this input channel. A managed backend that can't prove stdin
+delivery must fail before command execution. The preview container backend does so because its
+current attach protocol transports output only.
 
 The controller then runs every `verification` command against the exact candidate. Each result
 binds the command identity, executable and argument-vector digest, timeout, exit result, bounded
@@ -427,6 +484,39 @@ two stages:
    contradictory coverage.
 2. Evaluate security, correctness, performance, reliability, maintainability, test quality, and
    documentation.
+
+Before provider input/output, the host must validate the private review evidence. It must then
+construct one replay-stable projection. The projection must include:
+
+- All frozen criterion IDs and descriptions.
+- The expected result identities and frozen contract digest.
+- The frozen base, candidate, tree, sorted changed paths, and logical byte count.
+- The exact UTF-8 diff and its content-addressed metadata.
+- Stable negative-control, deterministic-check, and candidate-delta outcomes.
+
+The projection must exclude workspace identity, absolute paths, and raw command output. It must
+also exclude GitHub node IDs, credentials, and volatile evidence-instance digests.
+
+The exact diff must not exceed 131,072 UTF-8 bytes. The complete serialized JSON projection must
+not exceed 262,144 UTF-8 bytes after escaping. These reviewer-only limits don't change the 65,536
+UTF-8-byte issue-workflow context limit. Flow must reject an oversized diff or projection without
+truncating or omitting any field. Reconstructing the same candidate and frozen contract from a
+later process must produce the same projection even when private verification timestamps and
+evidence-instance digests differ.
+
+The projection must be one canonical JSON object. Trusted admission embeds the object directly in
+the review context envelope and rejects a noncanonical representation. This rule prevents another
+JSON string layer from consuming the bounded model-input surface.
+
+Trusted issue admission binds the review projection to each review model prompt. A bound prompt
+can contain at most 786,432 characters. A review model verifier can receive at most 786,432 UTF-8
+bytes of rubric, projection, evidence, and work-profile context. Repository-authored workflow
+source cannot request this review-only policy. Generic model verifiers retain the 262,144-byte
+aggregate input limit.
+
+Flow frames untrusted verifier rubric and evidence with deterministic boundaries that don't occur
+in the corresponding content. It also binds the rubric's exact UTF-8 byte length and SHA-256
+digest.
 
 Every finding has a stable identity and one severity from `P1`, `P2`, or `P3`. Any severity listed
 in `review.blockingSeverities` blocks publication or invalidates a later merge gate. A reviewer
@@ -625,6 +715,7 @@ The lifecycle fails closed under these conditions:
 | Closed, transferred, changed, or repository-mismatched issue | Reject before mutation |
 | Base movement before implementation | Require a new freeze. Never silently adopt it |
 | Base movement after implementation begins | Fail and preserve the workspace |
+| Malformed Git response during a candidate snapshot | Retry the complete read-only snapshot once. Fail and preserve the workspace if the second response is malformed |
 | Holdout, verifier, or review failure | Preserve evidence. Don't publish or merge |
 | Branch or pull-request collision | Reconcile only an exact prepared identity. Reuse the stable ready pull request after candidate repair. Otherwise fail |
 | Lost external acknowledgement | Enter `external_state_uncertain` and reconcile before retry |

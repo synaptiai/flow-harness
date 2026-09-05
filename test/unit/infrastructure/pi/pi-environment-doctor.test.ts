@@ -70,6 +70,47 @@ describe("Pi environment doctor", () => {
     expect(runtime.hasConfiguredAuth).toHaveBeenCalledWith("anthropic");
   });
 
+  it.each(["nitro", "floor", "exacto"])(
+    "admits OpenRouter's %s route from the configured base model",
+    async (variant) => {
+      const getModel = vi.fn((provider: string, model: string) =>
+        provider === "openrouter" && model === "z-ai/glm-5.3-flash"
+          ? { provider, id: model }
+          : undefined,
+      );
+
+      await inspectPiProviderConfiguration(
+        [{ provider: "openrouter", model: `z-ai/glm-5.3-flash:${variant}` }],
+        new AbortController().signal,
+        {
+          createRuntime: async () => ({
+            getModel,
+            hasConfiguredAuth: (provider) => provider === "openrouter",
+          }),
+        },
+      );
+
+      expect(getModel).toHaveBeenNthCalledWith(1, "openrouter", `z-ai/glm-5.3-flash:${variant}`);
+      expect(getModel).toHaveBeenNthCalledWith(2, "openrouter", "z-ai/glm-5.3-flash");
+    },
+  );
+
+  it("does not reinterpret an unknown OpenRouter suffix as a configured model", async () => {
+    await expect(
+      inspectPiProviderConfiguration(
+        [{ provider: "openrouter", model: "z-ai/glm-5.3-flash:PRIVATE_ROUTE" }],
+        new AbortController().signal,
+        {
+          createRuntime: async () => ({
+            getModel: (_provider, model) =>
+              model === "z-ai/glm-5.3-flash" ? { id: model } : undefined,
+            hasConfiguredAuth: () => true,
+          }),
+        },
+      ),
+    ).rejects.toThrow("selected provider configuration is unavailable");
+  });
+
   it.each([
     {
       label: "missing model",

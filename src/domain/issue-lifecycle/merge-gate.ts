@@ -276,7 +276,32 @@ export type MergeGateInput = z.input<typeof mergeGateInputSchema>;
 
 export function calculateMergeGateDigest(input: MergeGateInput): string {
   const gate = mergeGateInputSchema.parse(input);
-  const canonical = {
+  return digestGate("flow.issue.merge-gate.v1", canonicalGate(gate));
+}
+
+/**
+ * Calculates the operator-approval identity while excluding per-execution evidence receipts.
+ * Fresh verification must reproduce the same claims, but its timestamps and durations differ.
+ */
+export function calculateMergeApprovalDigest(input: MergeGateInput): string {
+  const gate = mergeGateInputSchema.parse(input);
+  const canonical = canonicalGate(gate);
+  return digestGate("flow.issue.merge-approval.v1", {
+    ...canonical,
+    negativeControl: {
+      baseCommit: canonical.negativeControl.baseCommit,
+      baseOutcome: canonical.negativeControl.baseOutcome,
+      candidateHead: canonical.negativeControl.candidateHead,
+      candidateOutcome: canonical.negativeControl.candidateOutcome,
+    },
+    deterministicVerification: canonical.deterministicVerification.map(
+      ({ evidenceDigest: _evidenceDigest, ...verification }) => verification,
+    ),
+  });
+}
+
+function canonicalGate(gate: ReturnType<typeof mergeGateInputSchema.parse>) {
+  return {
     ...gate,
     requirements: {
       deterministicVerification: [...gate.requirements.deterministicVerification].sort(
@@ -293,10 +318,10 @@ export function calculateMergeGateDigest(input: MergeGateInput): string {
       compareStrings(left.name, right.name),
     ),
   };
-  return createHash("sha256")
-    .update("flow.issue.merge-gate.v1\0")
-    .update(canonicalize(canonical))
-    .digest("hex");
+}
+
+function digestGate(domain: string, gate: unknown): string {
+  return createHash("sha256").update(`${domain}\0`).update(canonicalize(gate)).digest("hex");
 }
 
 function uniqueBy<T>(items: readonly T[], identity: (item: T) => string): boolean {

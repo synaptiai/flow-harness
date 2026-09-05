@@ -1,0 +1,134 @@
+# Usable-checkpoint execution plan
+
+This plan helps maintainers deliver the approved evidence-first checkpoint and reduce the work
+required to use Flow in another repository. The [roadmap](roadmap.md) owns capability gates. The
+[research register](next-version-research.md) owns detailed future-capability research.
+
+## Complete qualification first
+
+As of September 5, 2026, the source-built controller completed digital-twin issue 6 through verified
+merge. This proves neither the installed package on hosted Linux x64 nor a generally unattended
+service. The [field report](field-reports/digital-twin-issue-6-alpha4.md) retains all 52 parent runs
+and operator interventions.
+
+The fresh target is [digital-twin issue 106](https://github.com/danielbentes/digital-twin/issues/106):
+a read-only JSON command for hook registration status. Preparation must leave that behavior absent.
+
+The [preparation PR](https://github.com/danielbentes/digital-twin/pull/107) merged as
+`7788170fe4d261865cc77a6aa198308217cef752`. Its checks passed without implementing the target
+behavior. The first [hosted attempt](https://github.com/danielbentes/digital-twin/actions/runs/33967000922)
+uses that base and Flow source `50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e`. Dispatch is not
+qualification: retain UC-01 as open until the installed lifecycle and independent observations pass.
+
+That attempt failed at the implementation token gate before review or publication. The
+[issue 106 field report](field-reports/digital-twin-issue-106-installed.md) records the complete
+denominator, command-discovery gap, and correction alternatives. Evidence was authenticated and
+the dedicated Actions secrets were removed. No replacement attempt has started.
+
+Approach B is now approved: make complete frozen verification commands discoverable, return
+actionable rejection feedback, and stop repeated ineffective requests within an explicit bound.
+UC-08 is implemented and locally verified in current source. It does not increase the pilot budget,
+authorize approximate command matching, or establish successful hosted qualification. Published
+alpha.4 does not include this correction.
+
+Execute these steps in order:
+
+1. Create one useful, previously unhandled digital-twin issue. Freeze its acceptance criteria,
+   negative-control holdout, candidate paths, verification commands, provider, and budgets before
+   the first model invocation. Do not implement its outcome during pilot preparation.
+2. Review the hosted pilot configuration before adding credentials. Build from a pinned Flow
+   commit and pack once. Record the archive SHA-256 digest. Install that archive into a separate
+   consumer directory. Invoke only the installed command for the lifecycle.
+3. Use one hosted Ubuntu 24.04 x64 runner for the entire lifecycle. Include implementation,
+   verification, independent review, check observation, explicit approval, merge, and post-merge verification. Do not restore private
+   run state onto a different host. This pilot does not establish cross-host recovery.
+4. Reuse the existing OpenRouter credential. Keep model and GitHub credentials in dedicated Actions
+   secrets, outside the candidate workspace and model context. Do not create another provider key.
+   Remove run-specific secrets after the run no longer needs them.
+5. Retain the exact package identity and content-free phase evidence. Record all model attempts,
+   failures, costs when available, and human interventions. Stop on uncertain effects, budget
+   exhaustion, or a changed frozen contract. Do not silently restart with larger budgets.
+6. Inspect the reviewed candidate and gate before issuing a separate exact-head merge command.
+   Automation must not manufacture approval from passing checks. An approval transport used only
+   by this pilot must remain distinct from a supported remote-control interface.
+7. Require the installed command to record `merged`. Independently confirm the approved head,
+   checks, merge, issue state, and branch outcome on GitHub. Close Slice 13.3 only after both checks.
+8. Complete exact-head review and all required Flow checks. Publish a new immutable release only
+   after separate authorization for its exact version. Verify the published install instructions.
+
+The first hosted attempt has a ceiling of one full lifecycle run. Workflow-level recovery remains
+bounded by its frozen contract. A failed attempt triggers analysis and a recorded disposition
+before any replacement run. This is an initial pilot limit, not a claim about an optimal agent
+budget or a standard industry limit.
+
+## Reuse the existing setup boundary
+
+Current source already provides `flow init`, a guided coding quick start, and `flow issue doctor`.
+The configuration initializer refuses implicit replacement and handles uncertain file publication.
+The issue diagnostic validates the authored workflows and checks the exact repository, provider,
+sandbox, and issue contract without starting model work.
+
+UC-03 and UC-04 must reuse those admission and storage boundaries. The missing product path is
+guided preparation of a real repository's issue contract, not another independent setup system.
+Review the
+[configuration initializer](https://github.com/synaptiai/flow-harness/blob/50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e/src/infrastructure/fs/flow-config-store.ts)
+and [issue diagnostic](https://github.com/synaptiai/flow-harness/blob/50e5e4c5c21bd1518ff6445a8cc3f93f5a93132e/src/cli/production-github-issue-service.ts)
+when designing that path.
+
+The issue 106 preparation required 203 lines across its plan, implementation workflow, review
+workflow, and holdout. Its hosted orchestration, tests, and operating guide add separate work.
+These counts describe this preparation only. They do not measure general usability or user time.
+Treat the pilot-specific approval transport and credential exception as test infrastructure, not
+as completed product onboarding.
+
+## Track the product priorities
+
+The maintainer executing Approach A owns every open row until a named owner accepts it. Priority
+order does not authorize an unreviewed design or broaden model authority.
+
+| ID | Disposition and owner | Dependency and next action | Evidence required to close | Reconsideration trigger |
+| --- | --- | --- | --- | --- |
+| UC-01 | Release blocker; Approach A maintainer | Complete the installed hosted pilot described in this plan. | Exact archive identity and complete issue-to-merge evidence, with all attempts retained. | Every pilot settlement. |
+| UC-02 | Release blocker; release maintainer | After UC-01, complete Slice 13.4 and obtain exact publication authorization. | Qualified package on both named hosts, no P1–P3 findings, successful required CI, and verified public installation. | UC-01 passes or package identity changes. |
+| UC-03 | Next delivery-design priority; Approach A maintainer | Design repository onboarding and reusable configuration after qualification. | A new user configures a separate clean repository from the guide without maintainer-authored hidden files; measure steps, time, and interventions. Missing checks or credentials fail safely. | UC-01 settles; reassess before selecting another infrastructure feature. |
+| UC-04 | Next delivery-design priority; Approach A maintainer | Design guided issue-to-plan preparation with UC-03. | Proposed criteria, commands, paths, budgets, and approval rules are explicit and reviewable. A human freezes the contract before execution; generated plans pass production admission. | UC-03 design review and every plan-authoring failure. |
+| UC-05 | Prioritized research, not autonomous authority; Approach A maintainer | Complete NV-03 design using the field denominator and a frozen NV-01 comparison. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation and false-acceptance tests. | UC-04 design review or another operator-authored repair series. |
+| UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
+| UC-07 | Parity research in progress; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md). Add runnable demonstrations for supported practices, and compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory alone does not close this row. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
+| UC-08 | Implemented and locally verified; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | Deterministic tests verify complete invocations, denied mismatches, private-holdout exclusion, replay identity, and bounded failure. The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent review has no remaining P1–P3 findings. Live catalog-following behavior remains part of UC-01. | Reassess refusal rates and false stops in the next separately approved hosted attempt. |
+| UC-08a | Separate open qualification gate; release maintainer | Retain the exact packed archive for the replacement qualification attempt. Reuse its bytes for both named host checks. | The retained archive matches its recorded digest and is the artifact installed on both hosts. A recorded digest without the archive is insufficient. | Before another hosted model attempt or package identity change. |
+
+UC-03 through UC-07 are not evidence that Flow has left alpha. Qualification of one task is a
+bounded usability checkpoint. A broader readiness decision needs a support contract and repeatable
+results from users who did not build the harness.
+
+UC-03 also owns a unified public path for diagnosing issue-owned nested failures. Today,
+`flow issue inspect` exposes parent lifecycle state, not nested command-refusal counts. The
+[private-host diagnosis procedure](operations/github-issue-lifecycle.md#diagnose-command-refusals)
+documents the current limitation. Close this part of onboarding only when an operator can identify
+the failed nested boundary and its content-free counters without opening private session records.
+
+Closing UC-08 or UC-08a does not close UC-01 or UC-02. Stopping ineffective requests also does not
+complete UC-05. Selecting a repair workflow from verification evidence adds a separate execution
+decision and requires its own research and approval.
+
+## Keep deferrals bounded
+
+Use the stable NV identifiers for existing research. Do not create a second detailed inventory.
+UC-03 and UC-04 cover onboarding and plan preparation, which were not explicit delivery priorities
+in that inventory. UC-05 and UC-06 promote NV-03 and NV-01 for decision work without declaring their
+research complete.
+
+At every qualification settlement and version-scope review:
+
+1. Review every open UC row and every NV item implicated by the latest failure or intervention.
+2. Keep, promote, split, or retire each reviewed item with a reason and evidence link.
+3. Assign an owner and the next evidence gate before moving work out of the active slice.
+4. Reconsider optional infrastructure only after comparing its user benefit with UC-03 through
+   UC-07. Do not let an easy infrastructure task displace a demonstrated usability blocker.
+5. Preserve unresolved findings as open. A workaround, pilot script, or documentation warning is
+   not an implemented product capability.
+
+Remote multi-user operation, executable extensions, broader package automation, and VM-grade
+isolation remain in the research register. They are not prerequisites for the current single-user
+checkpoint unless qualification demonstrates a concrete dependency.

@@ -1710,6 +1710,7 @@ describe("local capability package store", () => {
     });
   });
 
+  // This boundary fixture creates 513 real files and performs two complete recovery scans.
   it("previews the exact recovery entry boundary and rejects entry 513", async () => {
     const projectRoot = await projectDirectory();
     const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
@@ -1723,7 +1724,7 @@ describe("local capability package store", () => {
     await writeRetiredBlobs(blobDirectory, 1, 512);
     await expect(store.previewPrune()).rejects.toMatchObject({ code: "unsafe_state" });
     expect(await readdir(blobDirectory)).toHaveLength(513);
-  });
+  }, 30_000);
 
   it.each(["symbolic link", "hard link", "directory"] as const)(
     "rejects a retired-blob %s without changing its external source",

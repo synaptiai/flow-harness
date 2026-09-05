@@ -3,7 +3,9 @@ import { isAbsolute, normalize } from "node:path";
 import { z } from "zod";
 import {
   AGENT_COMMAND_PROTOCOL,
+  type AgentCommandAuthority,
   type AgentCommandRequest,
+  agentCommandAuthoritySchema,
   agentCommandRequestSchema,
   calculateAgentCommandDigest,
 } from "../agent-command.js";
@@ -64,12 +66,12 @@ import {
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
+import { calculatePolicyRequestDigest, classifyPolicyAction } from "../policy/broker.js";
 import {
-  calculatePolicyRequestDigest,
-  classifyPolicyAction,
-  MAX_POLICY_DECISIONS,
+  DEFAULT_POLICY_DECISION_LIMIT,
+  MAX_POLICY_DECISION_LIMIT,
   MAX_POLICY_TARGET_BYTES,
-} from "../policy/broker.js";
+} from "../policy/limits.js";
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
 import {
@@ -108,10 +110,14 @@ import {
   type CompiledWorkflowConcurrency,
   type ConditionSourceField,
   type EvidenceSourceField,
+  MAX_AUTHORED_MODEL_VERIFIER_PROMPT_CHARACTERS,
   MAX_COMPILED_WORKFLOW_NODES,
   MAX_CONCURRENT_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_ISSUE_REVIEW_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES,
   MAX_LOOP_ITERATIONS,
+  MAX_MODEL_VERIFIER_INPUT_BYTES,
   MAX_OPTIMIZATION_CANDIDATES,
   MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES,
   MAX_RESULT_VALUE_BYTES,
@@ -155,6 +161,7 @@ export interface CommandEvidence {
   readonly stderr: string;
   readonly stdoutHash: string;
   readonly stderrHash: string;
+  readonly stdinHash?: string;
   readonly stdoutRetainedHash?: string;
   readonly stderrRetainedHash?: string;
   readonly stdoutRetainedBytes?: number;
@@ -362,7 +369,7 @@ export interface ChildEvidence {
 }
 
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
-export const MAX_AGENT_COMMANDS_PER_ATTEMPT = 32;
+export const MAX_AGENT_COMMANDS_PER_ATTEMPT = MAX_POLICY_DECISION_LIMIT;
 export const MAX_RUN_EVENT_BYTES = 20 * 1024 * 1024;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
 export const EMPTY_DIRECTORY_STATE_SHA256 =
@@ -405,6 +412,8 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly workspaceAuthorityDigest?: string;
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly workProfile?: WorkProfile;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
@@ -461,6 +470,7 @@ export interface NodeRetryScheduledEvent extends RunEventBase {
   readonly reason: "retryable_failure";
   readonly disposition: "fresh_retry";
   readonly resourceAccounting: "complete";
+  readonly notBefore?: string;
 }
 
 export interface NodeDelegationPreparedEvent extends RunEventBase {
@@ -524,6 +534,8 @@ export interface ControlGraphCommandNode extends ControlGraphNodeBase {
 export interface ControlGraphAgentNode extends ControlGraphNodeBase {
   readonly type: "agent";
   readonly when?: ControlBranchGuard;
+  readonly policyDecisionLimit?: number;
+  readonly maxOutputTokens?: number;
   readonly model?: {
     readonly provider: string;
     readonly id: string;
@@ -980,7 +992,8 @@ export interface AgentCommandEvidence extends CommandEvidence {
   readonly stderrRetainedHash: string;
   readonly stdoutRetainedBytes: number;
   readonly stderrRetainedBytes: number;
-  readonly processContainment: "linux-pid-namespace";
+  readonly processContainment: "linux-pid-namespace" | "process-group";
+  readonly selectionAuthority?: "frozen-verification";
   readonly aborted: boolean;
   readonly terminationStatus: "confirmed" | "not-required" | "unconfirmed";
   readonly sandbox: SandboxEvidence;
@@ -1140,6 +1153,10 @@ export interface AgentRecoveryRequirement {
   readonly mode: "fresh";
   readonly maxAttempts: number;
   readonly effectProtocol: "none" | typeof DURABLE_EFFECT_PROTOCOL;
+  readonly backoff?: {
+    readonly initialDelayMs: number;
+    readonly maxDelayMs: number;
+  };
 }
 
 export interface AgentCapabilityRequirement {
@@ -1411,6 +1428,7 @@ export interface NodeRunState {
   readonly delegations: readonly NodeDelegationRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
   readonly failedAttempts: readonly FailedNodeAttemptState[];
+  readonly retryNotBefore: string | null;
   readonly control: NodeControlRunState | null;
   readonly omission: NodeOmissionRunState | null;
   readonly optimization: OptimizationCheckRunState | null;
@@ -1606,6 +1624,8 @@ export interface RunState {
   readonly workflowId: string;
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly workspaceAuthorityDigest?: string;
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly workProfile: WorkProfile;
   readonly capabilitySnapshot: CapabilitySnapshot | null;
   readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
@@ -1787,6 +1807,9 @@ const modelSessionSummarySchema = z
     activeAttempt: z.number().int().positive().safe().nullable(),
     primaryEventCount: z.number().int().nonnegative().safe(),
     requestCount: z.number().int().nonnegative().safe(),
+    latestAttemptRawExecResultCount: z.number().int().nonnegative().safe().default(0),
+    commandAuthorityRejectionCount: z.number().int().positive().safe().optional(),
+    latestAttemptCommandAuthorityRejectionCount: z.number().int().positive().safe().optional(),
     interruptionCount: z.number().int().nonnegative().safe(),
     resumeSurfaceCount: z.number().int().nonnegative().safe(),
     compactionCount: z.number().int().nonnegative().safe().default(0),
@@ -1831,7 +1854,16 @@ const modelSessionSummarySchema = z
       .nullable(),
     mismatchCategories: z.array(modelRequestMismatchCategorySchema).max(14),
   })
-  .strict();
+  .strict()
+  .refine(
+    (summary) =>
+      (summary.latestAttemptCommandAuthorityRejectionCount ?? 0) <=
+        summary.latestAttemptRawExecResultCount &&
+      (summary.latestAttemptCommandAuthorityRejectionCount ?? 0) <=
+        (summary.commandAuthorityRejectionCount ?? 0) &&
+      (summary.commandAuthorityRejectionCount ?? 0) <= summary.primaryEventCount,
+    "command authority rejection counts must fit cumulative history and latest raw exec results",
+  );
 
 const effectIdSchema = z
   .string()
@@ -2121,6 +2153,10 @@ const commandEvidenceSchema = z
     stderr: commandOutputSchema,
     stdoutHash: z.string().regex(/^[a-f0-9]{64}$/),
     stderrHash: z.string().regex(/^[a-f0-9]{64}$/),
+    stdinHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     stdoutRetainedHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -2148,7 +2184,8 @@ const agentCommandEvidenceSchema = commandEvidenceSchema.extend({
   stderrRetainedHash: z.string().regex(/^[a-f0-9]{64}$/),
   stdoutRetainedBytes: z.number().int().nonnegative().max(32_768),
   stderrRetainedBytes: z.number().int().nonnegative().max(32_768),
-  processContainment: z.literal("linux-pid-namespace"),
+  processContainment: z.enum(["linux-pid-namespace", "process-group"]),
+  selectionAuthority: z.literal("frozen-verification").optional(),
   aborted: z.boolean(),
   terminationStatus: z.enum(["confirmed", "not-required", "unconfirmed"]),
   sandbox: sandboxEvidenceSchema,
@@ -2189,7 +2226,7 @@ const agentEvidenceSchema = z
         message: "agent tool errors cannot exceed tool calls",
       })
       .optional(),
-    policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISIONS).default([]),
+    policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISION_LIMIT).default([]),
     effectReceipts: z
       .array(
         z
@@ -2640,6 +2677,100 @@ const controlVerifierCommandSchema = z
   })
   .strict();
 
+const issueWorkflowVerifierInputPolicySchema = z.discriminatedUnion("role", [
+  z
+    .object({
+      kind: z.literal("issue-workflow"),
+      role: z.literal("implementation"),
+      maxBytes: z.literal(MAX_MODEL_VERIFIER_INPUT_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("issue-workflow"),
+      role: z.literal("review"),
+      maxBytes: z.literal(MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES),
+    })
+    .strict(),
+]);
+
+const controlFreshRecoverySchema = z
+  .object({
+    mode: z.literal("fresh"),
+    maxAttempts: z.number().int().min(2).max(16),
+    backoff: z
+      .object({
+        initialDelayMs: z.number().int().positive().max(300_000),
+        maxDelayMs: z.number().int().positive().max(900_000),
+      })
+      .strict()
+      .refine((backoff) => backoff.maxDelayMs >= backoff.initialDelayMs, {
+        message: "recovery backoff maxDelayMs must be at least initialDelayMs",
+        path: ["maxDelayMs"],
+      })
+      .optional(),
+  })
+  .strict();
+
+const controlModelVerifierSchema = z
+  .object({
+    kind: z.literal("model"),
+    prompt: z.string().min(1).max(MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES),
+    evidence: z
+      .array(
+        z
+          .object({
+            nodeId: identifierSchema,
+            field: evidenceSourceFieldSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(16)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
+        "verifier evidence sources must be unique",
+      ),
+    model: z
+      .object({
+        provider: z.string().min(1).max(96),
+        id: z.string().min(1).max(256),
+        thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+      })
+      .strict(),
+    recovery: controlFreshRecoverySchema.optional(),
+    maxOutputTokens: z.number().int().positive().safe().optional(),
+    timeoutMs: z.number().int().positive().max(86_400_000),
+    inputPolicy: issueWorkflowVerifierInputPolicySchema.optional(),
+  })
+  .strict()
+  .superRefine((verifier, context) => {
+    const maxPromptCharacters =
+      verifier.inputPolicy?.role === "review"
+        ? MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES
+        : verifier.inputPolicy?.role === "implementation"
+          ? MAX_MODEL_VERIFIER_INPUT_BYTES
+          : MAX_AUTHORED_MODEL_VERIFIER_PROMPT_CHARACTERS;
+    if (verifier.prompt.length > maxPromptCharacters) {
+      context.addIssue({
+        code: "too_big",
+        maximum: maxPromptCharacters,
+        inclusive: true,
+        origin: "string",
+        path: ["prompt"],
+        message: `Too big: expected string to have <=${maxPromptCharacters} characters`,
+      });
+    }
+    if (verifier.prompt !== verifier.prompt.trim()) {
+      context.addIssue({
+        code: "custom",
+        path: ["prompt"],
+        message: "verifier prompt must not contain surrounding whitespace",
+      });
+    }
+  });
+
 const controlVerifierSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -2647,42 +2778,7 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
       command: controlVerifierCommandSchema,
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal("model"),
-      prompt: z
-        .string()
-        .min(1)
-        .max(16_384)
-        .refine((value) => value === value.trim(), {
-          message: "verifier prompt must not contain surrounding whitespace",
-        }),
-      evidence: z
-        .array(
-          z
-            .object({
-              nodeId: identifierSchema,
-              field: evidenceSourceFieldSchema,
-            })
-            .strict(),
-        )
-        .min(1)
-        .max(16)
-        .refine(
-          (items) =>
-            new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
-          "verifier evidence sources must be unique",
-        ),
-      model: z
-        .object({
-          provider: z.string().min(1).max(96),
-          id: z.string().min(1).max(256),
-          thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
-        })
-        .strict(),
-      timeoutMs: z.number().int().positive().max(86_400_000),
-    })
-    .strict(),
+  controlModelVerifierSchema,
   z
     .object({
       kind: z.literal("lean-proof"),
@@ -2758,6 +2854,8 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
           thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
         })
         .strict(),
+      recovery: controlFreshRecoverySchema.optional(),
+      maxOutputTokens: z.number().int().positive().safe().optional(),
       timeoutMs: z.number().int().positive().max(86_400_000),
     })
     .strict(),
@@ -2776,6 +2874,8 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
       ...controlNodeBaseShape,
       type: z.literal("agent"),
       when: controlBranchGuardSchema.optional(),
+      policyDecisionLimit: z.number().int().min(1).max(MAX_POLICY_DECISION_LIMIT).optional(),
+      maxOutputTokens: z.number().int().positive().safe().optional(),
       model: z
         .object({
           provider: z.string().min(1).max(96),
@@ -3017,11 +3117,22 @@ const controlGraphSchema = z
       ),
   })
   .strict()
-  .refine(
-    (graph) =>
-      Buffer.byteLength(JSON.stringify(graph), "utf8") <= MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
-    `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
-  );
+  .superRefine((graph, context) => {
+    const maxBytes = graph.nodes.some(
+      (node) =>
+        node.type === "verifier" &&
+        node.verifier.kind === "model" &&
+        node.verifier.inputPolicy?.role === "review",
+    )
+      ? MAX_ISSUE_REVIEW_CONTROL_GRAPH_SERIALIZED_BYTES
+      : MAX_CONTROL_GRAPH_SERIALIZED_BYTES;
+    if (Buffer.byteLength(JSON.stringify(graph), "utf8") > maxBytes) {
+      context.addIssue({
+        code: "custom",
+        message: `serialized control graph must not exceed ${maxBytes} UTF-8 bytes`,
+      });
+    }
+  });
 
 const optimizationEvaluationReasonSchema = z.enum([
   "improved",
@@ -3105,6 +3216,8 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
+      workspaceAuthorityDigest: sha256Schema.optional(),
+      agentCommandAuthority: agentCommandAuthoritySchema.optional(),
       workProfile: z.enum(WORK_PROFILES).optional(),
       capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
       capabilityRequirements: z
@@ -3200,6 +3313,17 @@ export const runEventSchema = z.discriminatedUnion("type", [
               mode: z.literal("fresh"),
               maxAttempts: z.number().int().min(2).max(16),
               effectProtocol: z.enum(["none", DURABLE_EFFECT_PROTOCOL]),
+              backoff: z
+                .object({
+                  initialDelayMs: z.number().int().positive().max(300_000),
+                  maxDelayMs: z.number().int().positive().max(900_000),
+                })
+                .strict()
+                .refine((backoff) => backoff.maxDelayMs >= backoff.initialDelayMs, {
+                  message: "recovery backoff maxDelayMs must be at least initialDelayMs",
+                  path: ["maxDelayMs"],
+                })
+                .optional(),
             })
             .strict(),
         )
@@ -3419,6 +3543,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       reason: z.literal("retryable_failure"),
       disposition: z.literal("fresh_retry"),
       resourceAccounting: z.literal("complete"),
+      notBefore: z.iso.datetime({ offset: true }).optional(),
     })
     .strict(),
   z
@@ -4126,6 +4251,9 @@ export function appendRunEvent(
           mode: requirement.mode,
           maxAttempts: requirement.maxAttempts,
           effectProtocol: requirement.effectProtocol,
+          ...(requirement.backoff === undefined
+            ? {}
+            : { backoff: Object.freeze({ ...requirement.backoff }) }),
         }),
       ]),
     );
@@ -4369,6 +4497,12 @@ export function appendRunEvent(
       workflowId: event.workflowId,
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
+      ...(event.workspaceAuthorityDigest === undefined
+        ? {}
+        : { workspaceAuthorityDigest: event.workspaceAuthorityDigest }),
+      ...(event.agentCommandAuthority === undefined
+        ? {}
+        : { agentCommandAuthority: deepFreeze(structuredClone(event.agentCommandAuthority)) }),
       workProfile: event.workProfile ?? "standard",
       capabilitySnapshot:
         event.capabilitySnapshot === undefined
@@ -4668,12 +4802,10 @@ export function appendRunEvent(
       if (
         current.agentCommandApprovals.filter(
           (approval) => approval.request.attempt === event.attempt,
-        ).length >= MAX_AGENT_COMMANDS_PER_ATTEMPT
+        ).length >= agentCommandLimit(currentState, event.nodeId)
       ) {
-        throw new RunReplayError(
-          eventIndex,
-          `agent command limit of ${MAX_AGENT_COMMANDS_PER_ATTEMPT} was exceeded`,
-        );
+        const commandLimit = agentCommandLimit(currentState, event.nodeId);
+        throw new RunReplayError(eventIndex, `agent command limit of ${commandLimit} was exceeded`);
       }
       const pendingApproval = Object.entries(nodes).find(([, node]) =>
         node.agentCommandApprovals.some((approval) => approval.status === "pending"),
@@ -5109,6 +5241,15 @@ export function appendRunEvent(
           `node start attempt ${event.attempt} does not match next node attempt ${current.attempt + 1}`,
         );
       }
+      if (
+        current.retryNotBefore !== null &&
+        Date.parse(event.at) < Date.parse(current.retryNotBefore)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" started before its durable retry backoff elapsed`,
+        );
+      }
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "running",
@@ -5127,6 +5268,7 @@ export function appendRunEvent(
         commandProtocol: event.commandProtocol ?? null,
         commands: Object.freeze([]),
         delegations: Object.freeze([]),
+        retryNotBefore: null,
       });
       resources = addResourcesForStart(resources, eventIndex);
       break;
@@ -5293,6 +5435,7 @@ export function appendRunEvent(
         commands: Object.freeze([]),
         delegations: Object.freeze([]),
         failedAttempts: Object.freeze([...current.failedAttempts, failedAttempt]),
+        retryNotBefore: event.notBefore ?? null,
       });
       break;
     }
@@ -6333,11 +6476,9 @@ export function appendRunEvent(
           `command sequence ${event.commandSequence} does not match next command sequence ${expectedCommandSequence}`,
         );
       }
-      if (current.commands.length >= MAX_AGENT_COMMANDS_PER_ATTEMPT) {
-        throw new RunReplayError(
-          eventIndex,
-          `agent command limit of ${MAX_AGENT_COMMANDS_PER_ATTEMPT} was exceeded`,
-        );
+      const commandLimit = agentCommandLimit(currentState, event.nodeId);
+      if (current.commands.length >= commandLimit) {
+        throw new RunReplayError(eventIndex, `agent command limit of ${commandLimit} was exceeded`);
       }
       const fatalCommand = current.commands.find(
         (command) => command.settlement?.outcome.evidence?.terminationStatus === "unconfirmed",
@@ -6356,6 +6497,15 @@ export function appendRunEvent(
         );
       }
       validatePreparedAgentCommand(event, eventIndex);
+      if (
+        currentState.agentCommandAuthority !== undefined &&
+        !currentState.agentCommandAuthority.requestDigests.includes(event.operationDigest)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command does not match durable frozen verification authority",
+        );
+      }
       validateToolPackageCommandRequest(currentState, event.nodeId, event.request, eventIndex);
       const approvalRequirement = currentState.agentCommandApprovalRequirements[event.nodeId];
       let agentCommandApprovals = current.agentCommandApprovals;
@@ -6455,7 +6605,7 @@ export function appendRunEvent(
           `command "${event.commandId}" settled out of order before earlier command "${nextUnsettledCommand?.commandId ?? "none"}"`,
         );
       }
-      validateAgentCommandSettlement(command, event, eventIndex);
+      validateAgentCommandSettlement(currentState, command, event, eventIndex);
       const commands = [...current.commands];
       commands[commandIndex] = deepFreeze({
         ...command,
@@ -6558,6 +6708,12 @@ export function appendRunEvent(
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       requireNoOpenAgentCommandApproval(current, eventIndex);
+      validateAgentPolicyDecisionLimit(
+        currentState.controlGraph,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       validateDelegationEvidenceProjection(current, event.evidence, event, eventIndex);
@@ -6647,6 +6803,12 @@ export function appendRunEvent(
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       requireNoOpenAgentCommandApproval(current, eventIndex);
+      validateAgentPolicyDecisionLimit(
+        currentState.controlGraph,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       validateDelegationEvidenceProjection(current, event.evidence, event, eventIndex);
@@ -6717,18 +6879,20 @@ export function appendRunEvent(
           eventIndex,
         ),
       });
-      goal = applyCriterionDecision(
-        goal,
-        {
-          runId: event.runId,
-          nodeId: event.nodeId,
-          attempt: event.attempt,
-          at: event.at,
-          outcome: isConclusiveVerifierRejection(event.evidence) ? "rejected" : "inconclusive",
-          evidenceAvailable: event.evidence !== null,
-        },
-        eventIndex,
-      );
+      if (!event.error.retryable) {
+        goal = applyCriterionDecision(
+          goal,
+          {
+            runId: event.runId,
+            nodeId: event.nodeId,
+            attempt: event.attempt,
+            at: event.at,
+            outcome: isConclusiveVerifierRejection(event.evidence) ? "rejected" : "inconclusive",
+            evidenceAvailable: event.evidence !== null,
+          },
+          eventIndex,
+        );
+      }
       break;
     }
     case "run_succeeded": {
@@ -6883,6 +7047,12 @@ export function appendRunEvent(
     workflowId: currentState.workflowId,
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
+    ...(currentState.workspaceAuthorityDigest === undefined
+      ? {}
+      : { workspaceAuthorityDigest: currentState.workspaceAuthorityDigest }),
+    ...(currentState.agentCommandAuthority === undefined
+      ? {}
+      : { agentCommandAuthority: currentState.agentCommandAuthority }),
     workProfile: currentState.workProfile,
     capabilitySnapshot: currentState.capabilitySnapshot,
     capabilityRequirements: currentState.capabilityRequirements,
@@ -8998,6 +9168,33 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
   }
 }
 
+function validateAgentPolicyDecisionLimit(
+  graph: ControlGraph | null,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  evidence: NodeEvidence | null,
+  eventIndex: number,
+): void {
+  if (evidence?.kind !== "agent") return;
+  const controlNode = graph?.nodes.find((node) => node.nodeId === event.nodeId);
+  const limit =
+    controlNode?.type === "agent"
+      ? (controlNode.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT)
+      : DEFAULT_POLICY_DECISION_LIMIT;
+  if (evidence.policyDecisions.length > limit) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent policy decision evidence exceeds configured limit of ${limit}`,
+    );
+  }
+}
+
+function agentCommandLimit(state: RunState, nodeId: string): number {
+  const controlNode = state.controlGraph?.nodes.find((node) => node.nodeId === nodeId);
+  return controlNode?.type === "agent"
+    ? (controlNode.policyDecisionLimit ?? DEFAULT_POLICY_DECISION_LIMIT)
+    : DEFAULT_POLICY_DECISION_LIMIT;
+}
+
 function validateChildEvidenceProjection(
   graph: ControlGraph | null,
   nodes: Readonly<Record<string, NodeRunState>>,
@@ -9255,6 +9452,11 @@ function validateVerifierEvidenceProjection(
     }
   } else {
     const cancelledAfterVerdict = event.error.code === "workflow_aborted";
+    const retryableInvalidModelOutput =
+      evidence.driver === "model" &&
+      evidence.result === "invalid_output" &&
+      !evidence.rawTruncated &&
+      event.error.code === "verifier_inconclusive";
     if (evidence.verdict === "accepted" && !cancelledAfterVerdict) {
       throw new RunReplayError(eventIndex, "failed verifier evidence cannot be accepted");
     }
@@ -9263,7 +9465,7 @@ function validateVerifierEvidenceProjection(
     if (
       (!cancelledAfterVerdict && event.error.code !== expectedCode) ||
       (!cancelledAfterVerdict && event.error.message !== evidence.reason) ||
-      event.error.retryable
+      (event.error.retryable && !retryableInvalidModelOutput)
     ) {
       throw new RunReplayError(
         eventIndex,
@@ -9976,6 +10178,7 @@ function boundedToolPackageDetail(value: string): string {
 }
 
 function validateAgentCommandSettlement(
+  state: RunState,
   command: NodeAgentCommandRunState,
   event: NodeAgentCommandSettledEvent,
   eventIndex: number,
@@ -9987,6 +10190,12 @@ function validateAgentCommandSettlement(
       throw new RunReplayError(
         eventIndex,
         "agent command settlement evidence is missing sandbox provenance",
+      );
+    }
+    if (evidence.stdinHash !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command settlement evidence contains unauthorized standard input",
       );
     }
     if (
@@ -10002,6 +10211,16 @@ function validateAgentCommandSettlement(
     validateCommandArtifactProducer(evidence.stdoutArtifact, "stdout", command, event, eventIndex);
     validateCommandArtifactProducer(evidence.stderrArtifact, "stderr", command, event, eventIndex);
     validateAgentCommandTerminationEvidence(evidence, eventIndex);
+    const frozenVerification = state.agentCommandAuthority !== undefined;
+    if (
+      frozenVerification !== (evidence.selectionAuthority === "frozen-verification") ||
+      (!frozenVerification && evidence.processContainment !== "linux-pid-namespace")
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command containment does not match its durable selection authority",
+      );
+    }
   }
   if (
     outcome.status === "succeeded" &&
@@ -10035,6 +10254,7 @@ function validateFailedAgentCommandSettlement(
         "command_spawn_failed",
         "command_sandbox_unavailable",
         "command_sandbox_cleanup_failed",
+        "command_not_allowed",
       ].includes(outcome.error.code);
     const preparationUncertain =
       outcome.error.sideEffectStatus === "uncertain" &&
@@ -10553,6 +10773,61 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function calculateRecoveryBackoffDelayMs(
+  runId: string,
+  nodeId: string,
+  failedAttempt: number,
+  backoff: { readonly initialDelayMs: number; readonly maxDelayMs: number },
+): number {
+  if (!Number.isSafeInteger(failedAttempt) || failedAttempt <= 0) {
+    throw new RangeError("recovery backoff requires a positive failed attempt");
+  }
+  const exponentialCeiling = Math.min(
+    backoff.maxDelayMs,
+    backoff.initialDelayMs * 2 ** Math.min(failedAttempt - 1, 30),
+  );
+  const minimumDelay = Math.ceil(exponentialCeiling / 2);
+  const jitterRange = exponentialCeiling - minimumDelay + 1;
+  const sample = BigInt(
+    `0x${sha256(`${runId}\u0000${nodeId}\u0000${failedAttempt}`).slice(0, 16)}`,
+  );
+  return minimumDelay + Number(sample % BigInt(jitterRange));
+}
+
+export function calculateWorkspaceAuthorityDigest(input: {
+  readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
+}): string {
+  if (input.agentCommandAuthority !== undefined) {
+    return sha256(
+      JSON.stringify({
+        version: 2,
+        protectedPaths: [...input.protectedPaths].sort(compareCanonicalStrings),
+        allowedWritePrefixes:
+          input.allowedWritePrefixes === undefined
+            ? null
+            : [...input.allowedWritePrefixes].sort(compareCanonicalStrings),
+        agentCommandAuthority: input.agentCommandAuthority,
+      }),
+    );
+  }
+  return sha256(
+    JSON.stringify({
+      version: 1,
+      protectedPaths: [...input.protectedPaths].sort(compareCanonicalStrings),
+      allowedWritePrefixes:
+        input.allowedWritePrefixes === undefined
+          ? null
+          : [...input.allowedWritePrefixes].sort(compareCanonicalStrings),
+    }),
+  );
+}
+
+function compareCanonicalStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function pendingNodeState(): NodeRunState {
   return Object.freeze({
     status: "pending",
@@ -10573,6 +10848,7 @@ function pendingNodeState(): NodeRunState {
     delegations: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),
     failedAttempts: Object.freeze([]),
+    retryNotBefore: null,
     control: null,
     omission: null,
     optimization: null,
@@ -10752,6 +11028,27 @@ function validateFailedAttemptRecovery(
   if (!canScheduleFailedAttemptRetry(state, event.nodeId)) {
     throw new RunReplayError(eventIndex, "terminal failure is not eligible for fresh retry");
   }
+  if (requirement?.backoff === undefined) {
+    if (event.notBefore !== undefined) {
+      throw new RunReplayError(eventIndex, "terminal retry backoff was not declared");
+    }
+    return;
+  }
+  if (event.notBefore === undefined) {
+    throw new RunReplayError(eventIndex, "terminal retry is missing its declared backoff");
+  }
+  const expectedNotBefore = new Date(
+    Date.parse(event.at) +
+      calculateRecoveryBackoffDelayMs(
+        event.runId,
+        event.nodeId,
+        event.attempt,
+        requirement.backoff,
+      ),
+  ).toISOString();
+  if (event.notBefore !== expectedNotBefore) {
+    throw new RunReplayError(eventIndex, "terminal retry backoff does not match its run identity");
+  }
 }
 
 export function canScheduleFailedAttemptRetry(state: RunState, nodeId: string): boolean {
@@ -10760,31 +11057,110 @@ export function canScheduleFailedAttemptRetry(state: RunState, nodeId: string): 
   if (
     node?.status !== "failed" ||
     node.error?.retryable !== true ||
-    node.error.sideEffectStatus !== "none" ||
     requirement === undefined ||
     node.attempt >= requirement.maxAttempts ||
-    node.effects.length > 0 ||
-    node.commands.length > 0 ||
-    node.delegations.length > 0 ||
+    !failedAttemptHasRetryBoundary(node, requirement) ||
     (state.budget?.exhausted.length ?? 0) > 0
   ) {
     return false;
   }
   const limits = state.budget?.limits;
   const evidence = node.evidence;
-  if (evidence !== null && evidence.kind !== "agent") {
+  const modelEvidence =
+    evidence?.kind === "agent" || (evidence?.kind === "verifier" && evidence.driver === "model")
+      ? evidence
+      : null;
+  if (evidence !== null && modelEvidence === null) {
     return false;
   }
   const tokenAccountingComplete =
-    evidence?.kind === "agent" &&
-    (evidence.usage !== undefined || evidence.usageObservation?.modelTokens.status === "complete");
+    modelEvidence !== null &&
+    (modelEvidence.usage !== undefined ||
+      modelEvidence.usageObservation?.modelTokens.status === "complete");
   const costAccountingComplete =
-    evidence?.kind === "agent" &&
-    (evidence.usage !== undefined || evidence.usageObservation?.costUsd.status === "complete");
+    modelEvidence !== null &&
+    (modelEvidence.usage !== undefined ||
+      modelEvidence.usageObservation?.costUsd.status === "complete");
   return !(
     (limits?.maxModelTokens !== undefined && !tokenAccountingComplete) ||
     (limits?.maxCostUsdMicros !== undefined && !costAccountingComplete) ||
     (limits?.maxExecutionMs !== undefined && evidence === null)
+  );
+}
+
+function failedAttemptHasRetryBoundary(
+  node: NodeRunState,
+  requirement: Omit<AgentRecoveryRequirement, "nodeId">,
+): boolean {
+  if (
+    node.error?.sideEffectStatus === "none" &&
+    node.effects.length === 0 &&
+    node.commands.length === 0 &&
+    node.delegations.length === 0
+  ) {
+    return true;
+  }
+  const session = node.modelSession;
+  const providerCanContinue =
+    node.error !== null &&
+    (node.error.code === "pi_agent_error" ||
+      node.error.code === "pi_agent_failed" ||
+      node.error.code === "pi_agent_incomplete" ||
+      node.error.code === "pi_agent_output_limit" ||
+      node.error.code === "pi_provider_rate_limited" ||
+      node.error.code === "pi_provider_unavailable");
+  const sessionCanContinue =
+    session !== null &&
+    session.activeAttempt === null &&
+    session.lastAttempt === node.attempt &&
+    session.latestRequest?.attempt === node.attempt &&
+    session.mismatchCategories.length === 0;
+  if (!providerCanContinue || !sessionCanContinue || node.delegations.length > 0) {
+    return false;
+  }
+  const effectProtocolMatches =
+    requirement.effectProtocol === DURABLE_EFFECT_PROTOCOL
+      ? node.effectProtocol === DURABLE_EFFECT_PROTOCOL
+      : node.effectProtocol === null;
+  const effectsCanContinue =
+    effectProtocolMatches &&
+    (node.effects.length === 0 ||
+      node.effects.every((effect) => effect.settlement?.outcome === "committed"));
+  if (!effectsCanContinue) {
+    return false;
+  }
+  if (
+    node.error?.sideEffectStatus === "committed" &&
+    node.effects.length > 0 &&
+    node.commands.length === 0
+  ) {
+    return true;
+  }
+  return (
+    (node.error?.sideEffectStatus === "committed" ||
+      node.error?.sideEffectStatus === "uncertain") &&
+    node.commandProtocol === AGENT_COMMAND_PROTOCOL &&
+    node.commands.length > 0 &&
+    session.latestAttemptRawExecResultCount -
+      (session.latestAttemptCommandAuthorityRejectionCount ?? 0) ===
+      node.commands.length &&
+    node.commands.every(commandHasProvenSettlement) &&
+    node.delegations.length === 0 &&
+    sessionCanContinue
+  );
+}
+
+function commandHasProvenSettlement(command: NodeAgentCommandRunState): boolean {
+  const settlement = command.settlement;
+  const evidence = settlement?.outcome.evidence;
+  return (
+    settlement !== null &&
+    settlement !== undefined &&
+    evidence !== null &&
+    evidence !== undefined &&
+    evidence.terminationStatus !== "unconfirmed" &&
+    (settlement.outcome.status === "succeeded" ||
+      settlement.outcome.error.code !== "command_sandbox_cleanup_failed")
   );
 }
 

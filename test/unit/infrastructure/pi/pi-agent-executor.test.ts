@@ -4,6 +4,7 @@ import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type {
   AgentCommandExecutor,
+  ModelSessionJournal,
   NodeAgentCommandJournal,
   NodeEffectJournal,
   NodeExecutionContext,
@@ -23,11 +24,7 @@ import {
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../../src/domain/capability/agent-skills.js";
-import {
-  MAX_POLICY_DECISIONS,
-  PolicyAuditLimitError,
-  PolicyBroker,
-} from "../../../../src/domain/policy/broker.js";
+import { PolicyAuditLimitError, PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
 import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../../src/domain/run/work-profile.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
@@ -52,9 +49,11 @@ const context: NodeExecutionContext = {
 describe("PiAgentExecutor", () => {
   it("fails an attempt when policy audit exhaustion is followed by a normal model stop", async () => {
     let observedAbort = false;
+    let observedSystemPrompt: string | undefined;
     const runner: PiAgentRunner = {
       async run(input) {
-        for (let index = 0; index < MAX_POLICY_DECISIONS; index += 1) {
+        observedSystemPrompt = input.systemPrompt;
+        for (let index = 0; index < 2; index += 1) {
           input.policyBroker.authorize({
             action: "filesystem.read",
             target: `${input.cwd}/file-${index}.txt`,
@@ -73,21 +72,23 @@ describe("PiAgentExecutor", () => {
       },
     };
 
-    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["read", "ls"], 2),
+      context,
+    );
 
     expect(observedAbort).toBe(true);
+    expect(observedSystemPrompt).toContain("2 recorded policy decisions");
     expect(outcome).toMatchObject({
       status: "failed",
       error: {
         code: "pi_agent_policy_audit_exhausted",
-        message: `agent reached policy audit limit of ${MAX_POLICY_DECISIONS} decisions`,
+        message: "agent reached policy audit limit of 2 decisions",
         sideEffectStatus: "none",
       },
       evidence: {
         text: "",
-        policyDecisions: expect.arrayContaining([
-          expect.objectContaining({ sequence: MAX_POLICY_DECISIONS }),
-        ]),
+        policyDecisions: expect.arrayContaining([expect.objectContaining({ sequence: 2 })]),
       },
     });
   });
@@ -299,6 +300,25 @@ describe("PiAgentExecutor", () => {
         effectReceipts: [],
       },
     });
+  });
+
+  it("passes and authority-binds the optional workspace write prefixes", async () => {
+    const requests: PiAgentRunRequest[] = [];
+    const runner: PiAgentRunner = {
+      async run(input) {
+        requests.push(input);
+        return { text: "Authority observed.", stopReason: "stop" };
+      },
+    };
+    const executor = new PiAgentExecutor(runner, () => 100);
+
+    await executor.execute(agentNode(), { ...context, allowedWritePrefixes: ["src"] });
+    await executor.execute(agentNode(), { ...context, allowedWritePrefixes: ["test"] });
+
+    expect(requests[0]?.allowedWritePrefixes).toEqual(["src"]);
+    expect(requests[1]?.allowedWritePrefixes).toEqual(["test"]);
+    expect(requests[0]?.authorityDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(requests[0]?.authorityDigest).not.toBe(requests[1]?.authorityDigest);
   });
 
   it.each([
@@ -598,10 +618,9 @@ describe("PiAgentExecutor", () => {
       agentMaxOutputBytes: 16_384,
     });
 
-    expect(request).toMatchObject({
-      systemPrompt: "Verifier system contract.",
-      maxOutputBytes: 16_384,
-    });
+    expect(request?.systemPrompt).toContain("Verifier system contract.");
+    expect(request?.systemPrompt).toContain("64 recorded policy decisions");
+    expect(request).toMatchObject({ maxOutputBytes: 16_384 });
     expect(outcome).toMatchObject({ status: "succeeded", evidence: { text: "accepted" } });
   });
 
@@ -764,6 +783,49 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("rejects an empty agent report and permits a side-effect-free retry", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return { text: "", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_empty_output",
+        message: "agent completed without a report",
+        retryable: true,
+        sideEffectStatus: "none",
+      },
+    });
+  });
+
+  it("rejects an empty report without retrying after a committed edit", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return { text: "", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      agentNode(300_000, ["edit"]),
+      contextWithEffectJournal(),
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_empty_output",
+        retryable: false,
+        sideEffectStatus: "committed",
+      },
+    });
+  });
+
   it("keeps invalid provider telemetry non-retryable", async () => {
     const runner: PiAgentRunner = {
       async run() {
@@ -823,6 +885,76 @@ describe("PiAgentExecutor", () => {
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_STREAM");
   });
+
+  it("fails closed without retrying when the provider credit balance is exhausted", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "",
+          stopReason: "error",
+          errorMessage: "PRIVATE_PROVIDER_BILLING_DETAIL",
+          failureCode: "pi_provider_quota_exhausted",
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "pi_provider_quota_exhausted",
+        message: "agent provider quota or credit balance is exhausted",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
+  });
+
+  it.each([
+    ["pi_provider_authentication_failed", "agent provider authentication failed", false],
+    ["pi_provider_request_rejected", "agent provider rejected the request", false],
+    [
+      "pi_provider_rate_limited",
+      "agent provider rate limit remained unavailable after bounded transport retries",
+      true,
+    ],
+    [
+      "pi_provider_unavailable",
+      "agent provider remained unavailable after bounded transport retries",
+      true,
+    ],
+  ] as const)(
+    "maps %s to fixed public evidence and retryability",
+    async (failureCode, message, retryable) => {
+      const runner: PiAgentRunner = {
+        async run() {
+          return {
+            text: "",
+            stopReason: "error",
+            errorMessage: "PRIVATE_PROVIDER_DETAIL",
+            failureCode,
+          };
+        },
+      };
+
+      const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+      expect(outcome).toEqual({
+        status: "failed",
+        error: {
+          code: failureCode,
+          message,
+          retryable,
+          sideEffectStatus: "none",
+        },
+        evidence: null,
+      });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_DETAIL");
+    },
+  );
 
   it("preserves policy decisions when the runtime fails after a tool operation", async () => {
     const runner: PiAgentRunner = {
@@ -890,6 +1022,144 @@ describe("PiAgentExecutor", () => {
       },
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_EDIT");
+  });
+
+  it.each([
+    "pi_command_authority_rejections_exhausted",
+    "pi_command_authority_journal_unavailable",
+  ] as const)("does not retry %s or discard settled effects", async (failureCode) => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return { text: "", stopReason: "error", failureCode };
+      },
+    };
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      { ...contextWithEffectJournal(), modelSession: {} as ModelSessionJournal },
+    );
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: failureCode, retryable: false, sideEffectStatus: "committed" },
+      evidence: { kind: "agent", effectReceipts: [{ outcome: "committed" }] },
+    });
+  });
+
+  it("marks a committed provider failure retryable when a durable model session can continue it", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        throw new Error("PRIVATE_PROVIDER_AFTER_EDIT");
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_failed",
+        message: "agent provider execution failed",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: { kind: "agent", effectReceipts: [{ outcome: "committed" }] },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_EDIT");
+  });
+
+  it("marks a committed terminal provider error retryable for durable continuation", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return {
+          text: "",
+          stopReason: "error",
+          errorMessage: "PRIVATE_PROVIDER_TERMINAL_AFTER_EDIT",
+          usage: {
+            inputTokens: 8,
+            outputTokens: 1,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 0,
+            costUsdMicros: 9,
+          },
+        };
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_error",
+        message: "agent provider execution failed",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        usage: { inputTokens: 8, outputTokens: 1, costUsdMicros: 9 },
+        effectReceipts: [{ outcome: "committed" }],
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_TERMINAL_AFTER_EDIT");
+  });
+
+  it("marks an output-limited terminal result retryable only with durable continuation", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return {
+          text: "partial report",
+          stopReason: "length",
+          usage: {
+            inputTokens: 8,
+            outputTokens: 24_576,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 0,
+            costUsdMicros: 9,
+          },
+        };
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_incomplete",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        usage: { outputTokens: 24_576 },
+        effectReceipts: [{ outcome: "committed" }],
+      },
+    });
   });
 
   it("fails a terminal agent result when an edit receipt is uncertain", async () => {
@@ -1164,12 +1434,47 @@ describe("PiAgentExecutor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "pi_agent_output_limit" },
+      error: { code: "pi_agent_output_limit", retryable: false },
       evidence: {
         kind: "agent",
         text: "x".repeat(1_024),
         textHash: createHash("sha256").update(completeText).digest("hex"),
         textTruncated: true,
+      },
+    });
+  });
+
+  it("marks oversized output retryable only with durable committed-edit continuation", async () => {
+    const completeText = "x".repeat(2_048);
+    const runner: PiAgentRunner = {
+      async run(input) {
+        await recordEditEffect(input, "committed");
+        return { text: completeText, stopReason: "stop" };
+      },
+    };
+    const durableContext: NodeExecutionContext = {
+      ...contextWithEffectJournal(),
+      modelSession: {} as ModelSessionJournal,
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100, 5_000, 1_024).execute(
+      agentNode(300_000, ["edit"]),
+      durableContext,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_output_limit",
+        retryable: true,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        text: "x".repeat(1_024),
+        textHash: createHash("sha256").update(completeText).digest("hex"),
+        textTruncated: true,
+        effectReceipts: [{ outcome: "committed" }],
       },
     });
   });
@@ -1260,6 +1565,52 @@ describe("EmbeddedPiAgentRunner", () => {
     ).rejects.toThrow(/phase-routing decision does not match/i);
     expect(runtimeInitializations).toBe(0);
   });
+
+  it.each(["nitro", "floor", "exacto"])(
+    "runs OpenRouter's %s route with base-model capabilities",
+    async (variant) => {
+      let sessionModel: { readonly id?: string } | undefined;
+      const modelLookups: Array<readonly [string, string]> = [];
+      const getModel = (provider: string, modelId: string) => {
+        modelLookups.push([provider, modelId]);
+        return modelId === "z-ai/glm-5.3-flash"
+          ? {
+              provider: "openrouter",
+              id: modelId,
+              maxTokens: 131_072,
+              reasoning: true,
+            }
+          : undefined;
+      };
+      const fakeSession = {
+        state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+        subscribe: () => () => undefined,
+        prompt: async () => undefined,
+        abort: async () => undefined,
+        getSessionStats: () => sessionStats(),
+        dispose: () => undefined,
+      };
+      const createSession = (async (options: Parameters<typeof createAgentSession>[0]) => {
+        if (options === undefined) throw new Error("expected session options");
+        sessionModel = options.model;
+        return { session: fakeSession };
+      }) as unknown as typeof createAgentSession;
+      const runner = new EmbeddedPiAgentRunner(async () => ({ getModel }) as never, createSession);
+
+      await runner.run({
+        ...agentRequest(),
+        provider: "openrouter",
+        model: `z-ai/glm-5.3-flash:${variant}`,
+        thinking: "low",
+      });
+
+      expect(modelLookups).toEqual([
+        ["openrouter", `z-ai/glm-5.3-flash:${variant}`],
+        ["openrouter", "z-ai/glm-5.3-flash"],
+      ]);
+      expect(sessionModel?.id).toBe(`z-ai/glm-5.3-flash:${variant}`);
+    },
+  );
 
   it("counts turns, tool calls, and tool errors from one settled session", async () => {
     const messages: Array<Record<string, unknown>> = [];
@@ -1466,7 +1817,7 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(sessionOptions?.resourceLoader?.getExtensions().extensions).toEqual([]);
   });
 
-  it("keeps retry ownership in Flow by disabling Pi turn and provider retries", async () => {
+  it("keeps agent retry ownership in Flow and bounds provider transport retries", async () => {
     let sessionOptions: Parameters<typeof createAgentSession>[0];
     const fakeSession = {
       state: { messages: [{ role: "assistant", stopReason: "stop" }] },
@@ -1493,7 +1844,8 @@ describe("EmbeddedPiAgentRunner", () => {
       baseDelayMs: 2000,
     });
     expect(sessionOptions?.settingsManager?.getProviderRetrySettings()).toMatchObject({
-      maxRetries: 0,
+      maxRetries: 2,
+      maxRetryDelayMs: 60_000,
     });
     expect(sessionOptions?.settingsManager?.getCompactionEnabled()).toBe(false);
   });
@@ -1688,6 +2040,226 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(disposed).toBe(true);
   });
 
+  it("classifies a structured provider credit-exhaustion error", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          'OpenAI API error (429): {"type":"insufficient_quota","code":"credit_balance_exhausted","message":"PRIVATE_PROVIDER_BILLING_DETAIL"}',
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_quota_exhausted");
+    expect(result.errorMessage).toContain("PRIVATE_PROVIDER_BILLING_DETAIL");
+  });
+
+  it.each([
+    [401, "pi_provider_authentication_failed"],
+    [402, "pi_provider_quota_exhausted"],
+    [400, "pi_provider_request_rejected"],
+    [429, "pi_provider_rate_limited"],
+    [503, "pi_provider_unavailable"],
+    [524, "pi_provider_unavailable"],
+    [529, "pi_provider_unavailable"],
+  ] as const)("classifies an OpenRouter HTTP %i failure as %s", async (status, failureCode) => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          `OpenRouter API error (${status}): {"error":{"code":${status},"message":"PRIVATE_OPENROUTER_DETAIL"}}`,
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe(failureCode);
+    expect(result.errorMessage).toContain("PRIVATE_OPENROUTER_DETAIL");
+  });
+
+  it.each([
+    "TypeError: fetch failed",
+    "Provider returned error",
+    "Stream ended without finish_reason",
+  ])("classifies a retryable provider transport failure: %s", async (message) => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(message);
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_unavailable");
+    expect(result.errorMessage).toBe(message);
+  });
+
+  it("classifies a statusless provider rate limit separately from transport failures", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error("Provider rate limit exceeded");
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_rate_limited");
+  });
+
+  it("does not classify a textual number outside the HTTP status range", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error("OpenRouter API error (700): PRIVATE_NON_HTTP_DETAIL");
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBeUndefined();
+    expect(result.stopReason).toBe("error");
+  });
+
+  it("classifies Pi's friendly exhausted-credit message", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          "You have no credits. Add credits at https://platform.openai.com/settings/organization/billing.",
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_quota_exhausted");
+  });
+
+  it("does not misclassify an ordinary rate limit as exhausted credit", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          'OpenAI API error (429): {"type":"rate_limit_error","code":"rate_limit_exceeded"}',
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_rate_limited");
+    expect(result.stopReason).toBe("error");
+  });
+
+  it("ignores quota words outside structured provider code fields", async () => {
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error(
+          'OpenAI API error (429): {"type":"rate_limit_error","code":"rate_limit_exceeded","message":"insufficient_quota: no credits; add credits"}',
+        );
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.failureCode).toBe("pi_provider_rate_limited");
+    expect(result.stopReason).toBe("error");
+  });
+
   it("rejects invalid provider usage instead of persisting it", async () => {
     const fakeSession = {
       state: { messages: [{ role: "assistant", stopReason: "stop" }] },
@@ -1854,6 +2426,7 @@ describe("EmbeddedPiAgentRunner", () => {
 function agentNode(
   timeoutMs = 300_000,
   tools: CompiledAgentNode["agent"]["tools"] = ["read", "ls"],
+  policyDecisionLimit?: number,
 ): CompiledAgentNode {
   return {
     id: "analyze",
@@ -1869,6 +2442,7 @@ function agentNode(
       tools,
       skills: [],
       toolPackages: [],
+      ...(policyDecisionLimit === undefined ? {} : { policyDecisionLimit }),
       timeoutMs,
     },
   };

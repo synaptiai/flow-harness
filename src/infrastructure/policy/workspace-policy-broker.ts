@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { PolicyBroker } from "../../domain/policy/broker.js";
@@ -12,6 +12,8 @@ export class WorkspacePolicyBroker {
     readonly canonicalRoot: string,
     readonly policy: PolicyBroker,
     readonly protectedWritePaths: readonly string[] = [],
+    readonly allowedLexicalWritePrefixes?: readonly string[],
+    readonly allowedCanonicalWritePrefixes?: readonly string[],
   ) {}
 
   async execute<T>(
@@ -21,14 +23,25 @@ export class WorkspacePolicyBroker {
     options: { readonly operationDigest?: string } = {},
   ): Promise<T> {
     const resolved = await resolveWorkspaceTarget(this.canonicalRoot, inputPath);
+    const outsideWriteAllowlist =
+      isWriteAction(action) &&
+      this.allowedLexicalWritePrefixes !== undefined &&
+      this.allowedCanonicalWritePrefixes !== undefined &&
+      (!this.allowedLexicalWritePrefixes.some((prefix) =>
+        isAtOrWithin(resolved.lexicalTarget, prefix),
+      ) ||
+        !this.allowedCanonicalWritePrefixes.some((prefix) =>
+          isAtOrWithin(resolved.target, prefix),
+        ));
     const boundary =
       resolved.boundary === "inside" &&
-      (isProtectedTarget(
-        this.canonicalRoot,
-        resolved.lexicalTarget,
-        this.protectedWritePaths,
-        action,
-      ) ||
+      (outsideWriteAllowlist ||
+        isProtectedTarget(
+          this.canonicalRoot,
+          resolved.lexicalTarget,
+          this.protectedWritePaths,
+          action,
+        ) ||
         isProtectedTarget(this.canonicalRoot, resolved.target, this.protectedWritePaths, action))
         ? "protected"
         : resolved.boundary;
@@ -57,12 +70,80 @@ export async function createWorkspacePolicyBroker(
   cwd: string,
   policy: PolicyBroker,
   protectedWritePaths: readonly string[] = [],
+  allowedWritePrefixes?: readonly string[],
 ): Promise<WorkspacePolicyBroker> {
   const canonicalRoot = await realpath(cwd);
   const canonicalProtectedPaths = await Promise.all(
     protectedWritePaths.map((path) => canonicalizeExistingAncestor(resolve(canonicalRoot, path))),
   );
-  return new WorkspacePolicyBroker(canonicalRoot, policy, Object.freeze(canonicalProtectedPaths));
+  const lexicalWritePrefixes = allowedWritePrefixes?.map((prefix) => {
+    const segments = validateCanonicalWritePrefix(prefix);
+    const target = resolve(canonicalRoot, prefix);
+    if (!isWithinRoot(canonicalRoot, target)) {
+      throw new TypeError(`workspace write prefix "${prefix}" escapes the workspace`);
+    }
+    return { prefix, segments, target };
+  });
+  if (lexicalWritePrefixes !== undefined) {
+    for (const { prefix, segments } of lexicalWritePrefixes) {
+      await assertNoSymlinkPrefixComponent(canonicalRoot, prefix, segments);
+    }
+  }
+  const lexicalWritePrefixTargets = lexicalWritePrefixes?.map(({ target }) => target);
+  const canonicalWritePrefixes =
+    lexicalWritePrefixTargets === undefined
+      ? undefined
+      : await Promise.all(lexicalWritePrefixTargets.map(canonicalizeExistingAncestor));
+  return new WorkspacePolicyBroker(
+    canonicalRoot,
+    policy,
+    Object.freeze(canonicalProtectedPaths),
+    lexicalWritePrefixTargets === undefined ? undefined : Object.freeze(lexicalWritePrefixTargets),
+    canonicalWritePrefixes === undefined ? undefined : Object.freeze(canonicalWritePrefixes),
+  );
+}
+
+function validateCanonicalWritePrefix(prefix: string): readonly string[] {
+  const segments = prefix.split("/");
+  if (
+    prefix.length === 0 ||
+    isAbsolute(prefix) ||
+    prefix.includes("\\") ||
+    prefix.includes("\0") ||
+    segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+  ) {
+    throw new TypeError(`workspace write prefix "${prefix}" must be a canonical relative path`);
+  }
+  return segments;
+}
+
+async function assertNoSymlinkPrefixComponent(
+  canonicalRoot: string,
+  prefix: string,
+  segments: readonly string[],
+): Promise<void> {
+  let candidate = canonicalRoot;
+  for (const [index, segment] of segments.entries()) {
+    candidate = resolve(candidate, segment);
+    try {
+      const metadata = await lstat(candidate);
+      if (metadata.isSymbolicLink()) {
+        throw new TypeError(`workspace write prefix "${prefix}" contains a symlink component`);
+      }
+      if (index < segments.length - 1 && !metadata.isDirectory()) {
+        throw new TypeError(
+          `workspace write prefix "${prefix}" contains a non-directory component`,
+        );
+      }
+    } catch (error) {
+      if (isNodeErrorWithCode(error, "ENOENT")) return;
+      throw error;
+    }
+  }
+}
+
+function isNodeErrorWithCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 interface ResolvedWorkspaceTarget {

@@ -14,6 +14,7 @@ directory creation, hash-anchored edits and complete replacements, argv-only age
 and fail-closed native command containment. It also adds exact deterministic-command
 approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
 recovery, exclusive local ownership, typed filesystem-effect reconciliation, proof-safe fresh agent attempts,
+bounded completed model-verifier format retries,
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
@@ -56,10 +57,11 @@ records make the operation restart-safe. A settled record consumes the authority
 reinstallation. Explicit retired-blob maintenance previews a bounded physical store and applies one
 digest-bound plan under the package mutation lock. POSIX open-file handles preserve complete reader
 generations.
-Opaque provider-session continuation, fallback routing, and retry policy beyond a completed,
-side-effect-free provider execution failure remain later work. The same is true for broader
-configurable policy, model network tools, and arbitrary evaluator runtimes. Stronger virtual
-machine (VM) or managed sandbox backends also remain later work.
+Opaque provider-session continuation, fallback routing, and replay of a failed provider stream
+remain later work. Flow can start a new attempt from its provider-neutral model-session ledger
+after an eligible provider failure, including when earlier turns committed fully settled workspace
+edits. Broader configurable policy, model network tools, arbitrary evaluator runtimes, and stronger
+virtual machine (VM) or managed sandbox backends also remain later work.
 
 Gate 8 provides the first installable preview, current source-build environment diagnostics, and a
 guided quick start. The diagnostic checks only the selected requirements. Quick start publishes a
@@ -116,6 +118,18 @@ depth, and call count. Durable preparation and settlement reuse isolated child-r
 recovery, replay, cancellation, cleanup, and accounting. Paired evaluation reports both
 delegation-suitable and sequential-control tasks, but no result can activate delegation.
 
+Current Issue #197 source adds an end-to-end controller for one bounded `github.com` issue
+lifecycle. It admits an exact issue plan and separate implementation and review workflows. It binds
+model writes to explicit project-relative prefixes and persists lifecycle events, private evidence,
+and prepared external effects under one owner-only run root. The host retains Git, GitHub,
+credential, deterministic verification, publication, and merge authority. The source-built
+controller completed its first external-repository acceptance pilot. Public package qualification
+and a separately authorized prerelease remain pending.
+
+Lifecycle-owned candidate and verification Git worktrees live in an owner-only collection beside
+the canonical checkout. They share the project storage lifetime and remain available after a
+process restart or temporary-directory purge.
+
 Recovery starts a fresh session only when the durable proof permits it. Runs without the selection
 retain the embedded Pi path.
 
@@ -170,12 +184,15 @@ flowchart TB
         rolling["Rolling context admission<br/>Exact count · durable projection · fail closed"]
         memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
+        issueLifecycle["GitHub issue controller<br/>Freeze · implement · review · verify · approve"]
+        commandAdmission["Frozen command admission<br/>Exact permitted inputs · refusal guard"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
         direction LR
         agents["Agent router and adapters<br/>Pi · local ACP · OMP · Prime"]
         workspaceTools["Workspace tool broker and mutation adapters<br/>Read · list · create · mkdir · edit"]
+        issueHost["Trusted issue host<br/>Git · GitHub CLI · credentials · exact merge proof"]
         acpProcess["Isolated local ACP agent<br/>Fresh process · fresh session · prompt-only"]
         semantic["Semantic query service<br/>Short-lived LSP · read-only projection"]
         commands["Command sandboxes<br/>SRT · Docker"]
@@ -189,8 +206,10 @@ flowchart TB
         artifacts[("Retained artifact blobs and catalog")]
         goalLedger[("Goal revision ledger")]
         stores[("Run, package, activation, and evaluation stores")]
-        workspaces[("Isolated workspaces")]
+        workspaces[("Disposable model workspaces")]
         proofState[("Proof runtime attestation and leases")]
+        issueRuns[("Issue lifecycle events and frozen evidence")]
+        issueWorktrees[("Persistent issue Git worktrees<br/>Owner-only · project sibling")]
     end
 
     subgraph external["5. External systems"]
@@ -199,6 +218,7 @@ flowchart TB
         project["Project files and Git"]
         sources["HTTPS, OCI, and TUF package sources"]
         docker["Local Docker Engine<br/>Linux x64 · cgroup v2"]
+        github["GitHub<br/>Issues · pull requests · hosted checks"]
     end
 
     people -->|"Reviews one package version"| releaseIdentity
@@ -234,6 +254,7 @@ flowchart TB
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
     cli -->|"Reviews or selects a goal revision"| goals
+    cli -->|"Starts or resumes one issue"| issueLifecycle
     quickstart -->|"Publishes reviewed configuration and fixture"| project
     quickstart -->|"Selects an explicit bounded policy"| rules
     quickstart -->|"Starts one attached run"| engine
@@ -256,6 +277,18 @@ flowchart TB
     qualification -->|"Runs a complete paired schedule"| engine
     phaseRouting -->|"Runs paired held-out profiles"| engine
     delegation -->|"Runs paired task classes"| engine
+    issueLifecycle -->|"Runs bounded implementation and review"| engine
+    issueLifecycle -->|"Freezes public verification commands, not holdouts"| commandAdmission
+    commandAdmission -->|"Shows exact executable, arguments, and timeout"| workspaceTools
+    commandAdmission -->|"Stops new model requests after bounded refusals"| agents
+    sessions -->|"Preserves refusal evidence across attempts"| commandAdmission
+    issueLifecycle -->|"Rechecks the exact merge gate"| rules
+    issueLifecycle -->|"Appends effects and receipts"| issueRuns
+    issueLifecycle -->|"Admits fixed host operations"| issueHost
+    issueHost -->|"Retains candidate and verification state"| issueWorktrees
+    issueWorktrees -->|"Binds exact Git identities"| project
+    issueHost -->|"Owns bounded Git changes"| project
+    issueHost -->|"Uses fixed GitHub operations"| github
     proofQualification -->|"Checks the complete declared denominator"| engine
     compaction -->|"Runs held-out trials"| engine
     engine -->|"Selects one explicit Pi policy"| rolling
@@ -386,7 +419,9 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
+| GitHub issue lifecycle | `src/cli/github-issue.ts`, `src/cli/production-github-issue-service.ts`, `src/domain/issue-lifecycle/`, `src/application/*-github-issue.ts`, `src/application/issue-*.ts`, `src/infrastructure/issue-lifecycle/`, `src/infrastructure/fs/issue-lifecycle-run-repository.ts`, `src/infrastructure/git/`, and `src/infrastructure/github/` | Freezes the issue, base, plan, workflows, budgets, write authority, and selected model; retains exact candidate and verification Git worktrees in an owner-only project-sibling collection; constructs one bounded replay-stable independent-review projection from exact private evidence; verifies a base-failing holdout and exact candidate checks; reconciles Git and GitHub effects; waits for exact-head hosted checks; requires an exact operator merge command; and proves the resulting base topology before completion. |
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
+| Frozen command admission | `src/domain/agent-command.ts`, `src/application/frozen-issue-command.ts`, `src/infrastructure/pi/workspace-agent-tools.ts`, `src/domain/run/model-session.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Validates a complete immutable catalog against exact authorized digests, shows copyable public command inputs, records host-proven pre-execution refusals privately, and stops the next model request when the frozen refusal policy is exhausted. |
 | Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets; performs exclusive file creation, hash-bound exact editing, version-bound complete replacement, and nonrecursive directory creation under one target-lock and effect-journal contract; and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |
@@ -402,7 +437,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
-| Portable model-session boundary | `src/domain/run/model-session.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/fs/jsonl-model-session-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Records completed provider-neutral context and write-ahead request identities privately, renders bounded fresh-turn recovery context, and exposes only redacted integrity metadata. |
+| Portable model-session boundary | `src/domain/run/model-session.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/fs/jsonl-model-session-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Records completed provider-neutral context and write-ahead request identities privately, renders bounded fresh-turn recovery context with deterministic oversized-read references, and exposes only redacted integrity metadata. |
 | Rolling context admission | `src/domain/run/model-request-capacity.ts`, `src/domain/run/context-compaction.ts`, `src/domain/run/model-session.ts`, `src/domain/workflow/schema.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/pi/provider-input-token-counter.ts`, `src/infrastructure/pi/pi-agent-executor.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Compiles one explicit policy, measures Pi's exact serialized provider payload, derives bounded reference and summary projections from append-only history, persists restart-safe checkpoints, and fails unsupported or changed request surfaces before inference. |
 | Context compaction experiment | `src/domain/run/context-compaction.ts`, `src/domain/evaluation/context-compaction-evaluation.ts`, `src/application/evaluation-adapter.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-plan.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Projects verified artifact references, records bounded summary lifecycle evidence, runs the balanced three-mode evaluation, and prevents production activation. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
@@ -764,8 +799,10 @@ the same executable and position-checked secure lifecycle tail. Flow rejects unk
 process-group-only macOS preparation is released and denied. The deadline covers sandbox
 preparation and is checked again at spawn. Unconfirmed descendant termination is attempt-fatal:
 the command settles durably, later command preparations are denied, Pi is aborted, and terminal
-success is rejected. Flow disables Pi assistant-turn and provider retry layers; the adapter executes
-one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
+success is rejected. Flow disables Pi assistant-turn retries. The adapter permits at most two
+provider transport retries before a response stream yields tool authority. It uses the pinned Pi
+backoff and a 60-second server-delay cap. The adapter still executes one Flow attempt. Only durable
+Flow policy can authorize a later fresh attempt.
 
 ### Portable model sessions
 
@@ -782,6 +819,18 @@ is a separate private record. Pi wraps the stream-function boundary and commits
 completed user, assistant, tool, usage, and settlement data. Provider handles, credentials, hidden
 reasoning, thought signatures, raw diagnostics, and streamed partials don't enter portable
 history.
+
+Frozen issue-command authority can also carry a validated public invocation catalog and refusal
+limit. The model sees complete executable, ordered arguments, and timeout values through the exec
+tool, but the existing digest, policy, and sandbox checks still decide execution. Private holdouts
+are not part of that catalog. A durable result can identify a proven pre-execution refusal without
+treating a verifier's nonzero exit as non-execution. The cumulative guard runs before another model
+request or context summary, after the already-issued tool batch settles. It does not interrupt a
+partially recorded batch or reset when the runtime creates a fresh recovery session.
+
+Legacy digest-only authorities remain unchanged when catalog and policy fields are absent. Adding
+those fields changes the bound authority identity. Recovery must not silently enrich an old run.
+The model-session record supplies evidence, not permission to execute a command or accept a goal.
 
 For the dedicated experiment, Pi can replace eligible large command results with validated
 artifact references before capacity checks. It can also generate one bounded summary from a closed
@@ -970,6 +1019,13 @@ exact run, node, and attempt. One read or directory listing is one logical autho
 the implementation checks access separately or returns many bounded entries. Create, directory
 create, and edit authorization bind a digest of the complete model request.
 
+Each agent uses one attempt-scoped decision limit. Omission preserves the compatibility default of
+64. An explicit workflow value from 1 through 128 is digest-bound. Flow projects a non-default
+value into the durable control graph and shows the effective value to the model. The live broker
+aborts at the effective value. The reducer independently applies the same default or persisted
+override to terminal evidence. This count limits authorization activity. It doesn't replace time,
+token, cost, effect, path, approval, or sandbox boundaries.
+
 For writable attempts, the application supplies a narrow provider-neutral effect journal. The
 mutation layer holds one target lock. Before mutation, it records the operation kind, canonical
 target, operation digest, after hash, and permission mode. An edit also records the before hash.
@@ -996,7 +1052,24 @@ prepared effect to a distinct allowed write decision. Terminal receipts project 
 committed or unknown effects. They must agree with their effect events. Recovery observations never
 become terminal receipts.
 
-For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal arguments, and deadline. The application appends `node_agent_command_prepared` before the shared sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded command outcome. Settlement charges retained stdout/stderr immediately, including when the outer agent turn is later interrupted, and terminal agent evidence does not charge it again. Open commands block terminal publication and recovery; arbitrary execution is never treated as proof-safe read-only work. The domain contract distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph nodes.
+For `exec`, the broker binds `process.execute` authorization to the normalized executable, literal
+arguments, and deadline. The application appends `node_agent_command_prepared` before the shared
+sandbox executor can spawn, then appends `node_agent_command_settled` with the complete bounded
+command outcome. Settlement charges retained stdout and stderr immediately, including when the
+outer agent turn is later interrupted. Terminal agent evidence doesn't charge that output again.
+Open commands block terminal publication and recovery. Flow never treats arbitrary execution as
+proof-safe read-only work.
+
+After an eligible completed provider failure, a raw-`exec` node can continue only after every
+command settles with process evidence. Termination must be confirmed, the model-session head must
+match, and its latest-attempt `flow_exec` result count must equal the command-ledger count. Sandbox
+cleanup must not have failed, and all other recovery proofs must pass. The next attempt consumes the
+recorded tool result instead of replaying the command.
+
+The domain contract distinguishes read, write, execute, network, credential, and destructive
+authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and
+network tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph
+nodes.
 
 ### Command sandbox
 
@@ -1297,9 +1370,25 @@ start. Validation requires the persisted opt-in, attempt cap, effect proof, and 
 A completed provider execution failure follows a separate append-only boundary. `node_failed` first
 records terminal evidence and charges resources. Then `node_retry_scheduled` archives the failure
 under `failedAttempts` and returns the node to pending. The scheduler and reducer share one
-eligibility rule. Live execution and replay require the same fresh policy, remaining attempt,
-side-effect-free evidence, and empty effect, command, and delegation history. They also require
-complete bounded-resource accounting and available budget.
+eligibility rule. An optional recovery backoff adds a deterministic, jittered `notBefore` deadline
+to that event. Live execution waits for the deadline, and replay rejects an early start.
+
+Live execution and replay require the same fresh policy and a remaining attempt. They also require
+complete resource accounting and available budget. The ordinary path requires side-effect-free
+evidence. Its effect, command, and delegation history must be empty.
+
+A committed-edit continuation requires durable committed edit settlements and an exact closed
+model-session record. The record must match the failed attempt and have no request-identity
+mismatch. Command and delegation history must be empty.
+
+A model-verifier continuation is narrower. It requires an explicit bounded policy and complete,
+nontruncated `invalid_output` evidence from a strict verdict-contract failure. It retains the failed
+attempt and starts a fresh zero-tool model session from the original frozen verifier input. A valid
+semantic verdict, provenance defect, output truncation, or open verifier attempt cannot use this
+path.
+
+The next attempt uses a new Pi session and a digest-bound portable capsule. It never restores or
+repeats the failed stream.
 
 Fresh and recovered execution publish an atomic per-run ownership record before appending. The
 record contains a process ID and random token. A live owner blocks competitors. Flow can displace
@@ -1630,7 +1719,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Model-session record is missing, corrupt, unsafe, or over a limit | Refuse required recovery before provider I/O; never invent or replace private history |
 | Provider stream stops before a completed model event | Persist no partial model message; settle or interrupt the prepared request and apply only the workflow's proof-safe fresh recovery policy |
 | Model request surface exceeds selected-model capacity | Reject before provider I/O; never truncate protected instructions, tools, authority, or portable history implicitly |
-| Malformed model output | Schema-reject, retry within the node budget, then block with evidence |
+| Malformed model-verifier output | Schema-reject, retry only under its explicit attempt and run budgets, then block with retained evidence |
 | Unauthorized tool request | Deny before execution and record a policy event |
 | Stale or invalid edit before preparation | Reject the entire replacement before rename and record no effect event or receipt |
 | Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |

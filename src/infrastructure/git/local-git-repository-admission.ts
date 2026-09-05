@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import {
   GitHubIssueHostAdmissionError,
@@ -8,6 +8,7 @@ import {
   type LocalGitRepositoryObservation,
 } from "../../application/github-issue-ports.js";
 import { canonicalGitHubRepositoryIdentity } from "../../domain/issue-lifecycle/identity.js";
+import { parseExactLocalGitOriginConfiguration } from "./exact-local-git-origin-configuration.js";
 import type { PinnedGitHubIssueHostExecutable } from "./fixed-host-executables.js";
 import { runStrictReadProcess, StrictReadProcessError } from "./strict-read-process.js";
 
@@ -19,14 +20,26 @@ const COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 export interface LocalGitRepositoryAdmissionOptions {
   readonly gitExecutable: PinnedGitHubIssueHostExecutable;
   readonly timeoutMs?: number;
+  /** @internal Permits one exact local bare remote for real-repository tests. */
+  readonly testOnlyLocalRemotePath?: string;
 }
 
 export class LocalGitRepositoryAdmission implements GitRepositoryAdmissionPort {
   readonly #gitExecutable: PinnedGitHubIssueHostExecutable;
+  readonly #testOnlyLocalRemotePath: string | undefined;
   readonly #timeoutMs: number;
 
   constructor(options: LocalGitRepositoryAdmissionOptions) {
     this.#gitExecutable = options.gitExecutable;
+    if (
+      options.testOnlyLocalRemotePath !== undefined &&
+      (!isAbsolute(options.testOnlyLocalRemotePath) ||
+        resolve(options.testOnlyLocalRemotePath) !== options.testOnlyLocalRemotePath ||
+        options.testOnlyLocalRemotePath.includes("\0"))
+    ) {
+      throw new Error("test-only local Git remote must be an absolute normalized path");
+    }
+    this.#testOnlyLocalRemotePath = options.testOnlyLocalRemotePath;
     this.#timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   }
 
@@ -65,7 +78,7 @@ export class LocalGitRepositoryAdmission implements GitRepositoryAdmissionPort {
       if (
         final.branchOutput !== initial.branchOutput ||
         final.headOutput !== initial.headOutput ||
-        final.originOutput !== initial.originOutput
+        final.originConfigurationOutput !== initial.originConfigurationOutput
       ) {
         throw new GitHubIssueHostAdmissionError("command_response_invalid");
       }
@@ -77,7 +90,20 @@ export class LocalGitRepositoryAdmission implements GitRepositoryAdmissionPort {
       if (!COMMIT_PATTERN.test(head)) {
         throw new GitHubIssueHostAdmissionError("command_response_invalid");
       }
-      const origin = parseGitHubOrigin(parseSingleLine(final.originOutput));
+      let originSource: string;
+      try {
+        originSource = parseExactLocalGitOriginConfiguration(final.originConfigurationOutput);
+      } catch {
+        throw new GitHubIssueHostAdmissionError("repository_origin_unsupported");
+      }
+      const origin =
+        this.#testOnlyLocalRemotePath !== undefined &&
+        originSource === this.#testOnlyLocalRemotePath
+          ? Object.freeze({
+              ...expectedRepository,
+              canonicalUrl: `https://github.com/${expectedRepository.owner}/${expectedRepository.name}`,
+            })
+          : parseGitHubOrigin(originSource);
       if (!sameRepository(origin, expectedRepository)) {
         throw new GitHubIssueHostAdmissionError("repository_identity_mismatch");
       }
@@ -136,17 +162,21 @@ export class LocalGitRepositoryAdmission implements GitRepositoryAdmissionPort {
     readonly status: string;
     readonly branchOutput: string;
     readonly headOutput: string;
-    readonly originOutput: string;
+    readonly originConfigurationOutput: string;
   }> {
     const branchOutput = await this.#git(["rev-parse", "--abbrev-ref", "HEAD"], root, signal);
     const headOutput = await this.#git(["rev-parse", "--verify", "HEAD"], root, signal);
-    const originOutput = await this.#git(["remote", "get-url", "origin"], root, signal);
+    const originConfigurationOutput = await this.#git(
+      ["config", "--local", "--null", "--list"],
+      root,
+      signal,
+    );
     const status = await this.#git(
       ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
       root,
       signal,
     );
-    return { status, branchOutput, headOutput, originOutput };
+    return { status, branchOutput, headOutput, originConfigurationOutput };
   }
 
   async #assertFlowRuntimeIgnored(root: string, signal?: AbortSignal): Promise<void> {

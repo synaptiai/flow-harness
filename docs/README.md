@@ -16,7 +16,8 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You intentionally need the historical first-alpha contract. |
 | [Getting started](getting-started.md) | You want to confirm the `flow` command and complete one credential-free run. |
 | [Complete the coding quick start](guides/coding-quickstart.md) | You want to prove one bounded provider-backed edit and inspect its evidence. |
-| [Complete a GitHub issue with Flow](guides/github-issue-lifecycle.md) | You want to prepare for the bounded end-to-end GitHub issue lifecycle that is under implementation. |
+| [Configure model providers](guides/model-providers.md) | You need Anthropic, OpenAI, or OpenRouter setup, GLM 5.3 Flash selection, privacy and spending controls, or context-policy compatibility. |
+| [Complete a GitHub issue with Flow](guides/github-issue-lifecycle.md) | You want to implement, review, verify, and explicitly merge one issue in another GitHub repository. |
 | [Diagnose the Flow environment](guides/diagnose-environment.md) | You need a read-only host, project, workflow, provider, sandbox, or Prime preflight. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
 | [Configuration](configuration.md) | You need project settings, operator ceilings, sandbox selection, or policy-change rules. |
@@ -35,6 +36,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Evaluate reference-first context compaction](guides/context-compaction.md) | You need to compare complete history, artifact references, and bounded summaries on held-out tasks. |
 | [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) | You need to author, review, activate, recover, or roll back evidence-backed relationships between exact memory entries. |
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
+| [Author GitHub issue workflows](guides/github-issue-workflows.md) | You need complete implementation and independent-review workflow templates, budgets, provider-data boundaries, or review-result guidance. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
 | [Qualify two local ACP agents](guides/qualify-acp-agents.md) | You need to verify two exact production ACP agents against one prompt-only workflow and private result contract. |
@@ -65,6 +67,8 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [GitHub issue lifecycle specification](specs/github-issue-lifecycle.md) | You need the normative preview contract for plans, authority, durable effects, review, hosted checks, or merge approval. |
 | [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |
 | [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |
+| [Usable-checkpoint execution plan](usable-checkpoint-plan.md) | You need qualification blockers, operator-burden priorities, owners, or deferral review triggers. |
+| [Flow plugin comparison](flow-plugin-parity.md) | You need the 23-command inventory, default versus optional behavior, source evidence, or remaining migration gaps. |
 | [Next-version capability research](next-version-research.md) | You need deferred-capability maturity, dependencies, research gaps, release-shaping alternatives, or the evidence required before implementation. |
 
 ## Develop and verify
@@ -75,6 +79,8 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Testing and evaluation](testing-and-evaluation.md) | You need test layers, release gates, runtime smoke checks, or live-provider policy. |
 | [Alpha.4 digital-twin field report](field-reports/digital-twin-issue-4-alpha4.md) | You need the controls, negative results, partial-effect evidence, limitations, or next actions from the bounded separate-repository coding attempts. |
 | [Digital-twin modularization field report](field-reports/digital-twin-issue-5-alpha4.md) | You need the complete 11-attempt denominator, durable replacement evidence, recursive repair record, final verification, or compaction conclusions from the second field issue. |
+| [Digital-twin lifecycle field report](field-reports/digital-twin-issue-6-alpha4.md) | You need the complete 52-run denominator, recursive correction ledger, exact merge evidence, operator interventions, or limits of the first end-to-end GitHub issue proof. |
+| [Installed-package issue 106 field report](field-reports/digital-twin-issue-106-installed.md) | You need the failed hosted attempt, exact archive identity, command-discovery findings, token accounting, or next correction options. |
 | [Documentation style](documentation-style.md) | You write or review public documentation. |
 | [Code of conduct](../CODE_OF_CONDUCT.md) | You need the contributor conduct contract. |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | You need dependency attribution and copied-code notices. |

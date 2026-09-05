@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyPolicyAction,
-  MAX_POLICY_DECISIONS,
   PolicyAuditClosedError,
   PolicyAuditLimitError,
   PolicyBroker,
   PolicyDeniedError,
 } from "../../../src/domain/policy/broker.js";
+import {
+  DEFAULT_POLICY_DECISION_LIMIT,
+  MAX_POLICY_DECISION_LIMIT,
+} from "../../../src/domain/policy/limits.js";
 
 const attribution = {
   runId: "run-policy",
@@ -197,7 +200,7 @@ describe("PolicyBroker", () => {
     const broker = new PolicyBroker(attribution, ["filesystem.read"], (error) => {
       exhausted.push(error);
     });
-    for (let index = 0; index < MAX_POLICY_DECISIONS; index += 1) {
+    for (let index = 0; index < DEFAULT_POLICY_DECISION_LIMIT; index += 1) {
       broker.authorize({
         action: "filesystem.read",
         target: `/workspace/file-${index}`,
@@ -219,9 +222,54 @@ describe("PolicyBroker", () => {
         boundary: "inside",
       }),
     ).toThrowError(PolicyAuditLimitError);
-    expect(broker.snapshot()).toHaveLength(MAX_POLICY_DECISIONS);
+    expect(broker.snapshot()).toHaveLength(DEFAULT_POLICY_DECISION_LIMIT);
     expect(exhausted).toHaveLength(1);
-    expect(exhausted[0]?.limit).toBe(MAX_POLICY_DECISIONS);
+    expect(exhausted[0]?.limit).toBe(DEFAULT_POLICY_DECISION_LIMIT);
+  });
+
+  it("fails closed at an explicit per-attempt audit limit", () => {
+    const exhausted: PolicyAuditLimitError[] = [];
+    const broker = new PolicyBroker(
+      attribution,
+      ["filesystem.read"],
+      (error) => exhausted.push(error),
+      2,
+    );
+
+    for (const target of ["/workspace/first", "/workspace/second"]) {
+      broker.authorize({ action: "filesystem.read", target, boundary: "inside" });
+    }
+
+    expect(() =>
+      broker.authorize({
+        action: "filesystem.read",
+        target: "/workspace/overflow",
+        boundary: "inside",
+      }),
+    ).toThrowError(PolicyAuditLimitError);
+    expect(broker.snapshot()).toHaveLength(2);
+    expect(exhausted).toHaveLength(1);
+    expect(exhausted[0]?.limit).toBe(2);
+  });
+
+  it.each([0, 1.5, MAX_POLICY_DECISION_LIMIT + 1])(
+    "rejects invalid configured policy decision limit %s",
+    (limit) => {
+      expect(
+        () => new PolicyBroker(attribution, ["filesystem.read"], undefined, limit),
+      ).toThrowError(RangeError);
+    },
+  );
+
+  it("admits the documented hard maximum", () => {
+    const broker = new PolicyBroker(
+      attribution,
+      ["filesystem.read"],
+      undefined,
+      MAX_POLICY_DECISION_LIMIT,
+    );
+
+    expect(broker.decisionLimit).toBe(MAX_POLICY_DECISION_LIMIT);
   });
 
   it("closes immutably and rejects late authorizations", () => {

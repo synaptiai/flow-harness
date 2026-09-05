@@ -17,10 +17,15 @@ host preparation and interruption handling, read the
 
 ## Availability
 
-The current published CLI does not register `flow issue`. This page documents the bounded preview
-contract while its controller is under implementation. Treat every `flow issue` command as
-unavailable until `flow --help` lists the `issue` command group in a later release. You can prepare
-and review the plan and workflow files now, but don't start an issue run with the current release.
+Current source registers the `flow issue` command group. The published `0.1.0-alpha.4` package
+doesn't include it. Use the lifecycle only from a release whose `flow --help` output lists
+`flow issue`, and confirm that release's notes name the GitHub issue lifecycle as qualified.
+
+The first source qualification completed one bounded external-repository issue. That evidence
+proves the frozen repository, issue, provider, model, host, and checks named by the run. It doesn't
+establish compatibility with every project or replace your repository's branch protections. Read
+the [issue 6 lifecycle field report](../field-reports/digital-twin-issue-6-alpha4.md) for the complete
+denominator and the distinction between source qualification and a published package.
 
 ## Before you begin
 
@@ -52,6 +57,17 @@ flow compatibility check
 The help output must list the `issue` command group. The compatibility report must have an
 `overall` value of `compatible`. If either check fails, the lifecycle remains unavailable. Stop
 before you use any other command in this guide.
+
+Use [Author GitHub issue workflows](github-issue-workflows.md) to create and validate the two
+workflow files. That guide includes complete templates, budget guidance, the structured review
+result, and the exact data sent to the selected model provider.
+
+Use [Configure model providers](model-providers.md) to select and secure the model route. The
+current source supports OpenRouter alongside existing OpenAI and Anthropic routes. OpenRouter with
+GLM 5.3 Flash uses `--provider openrouter --model z-ai/glm-5.3-flash` and requires
+`OPENROUTER_API_KEY` in the host environment. OpenRouter's supported dynamic route variants and
+their tradeoffs are documented in
+[Configure model providers](model-providers.md#choose-an-openrouter-provider-route).
 
 Check the active GitHub account without displaying its token:
 
@@ -111,9 +127,11 @@ candidate:
     - docs/
     - README.md
 holdout:
+  stdin:
+    path: .flow/verification/issue-holdout.py
   command:
-    executable: npm
-    args: [run, test:issue-holdout]
+    executable: python3
+    args: ["-"]
     timeoutMs: 120000
 verification:
   - id: format
@@ -158,6 +176,32 @@ identity. Copy the positive numeric app ID and canonical lowercase app slug from
 Use a holdout that tests behavior specific to the issue. A general test command that already
 passes on the frozen base doesn't prove that the candidate implemented the issue.
 
+For a private holdout, store the reviewed source below `.flow/verification/` and set
+`holdout.stdin.path`. Flow freezes the exact regular-file bytes before implementation. It binds the
+SHA-256 digest and private blob reference into the run manifest.
+
+Flow sends the bytes to the holdout command through standard input. The command uses the
+verification worktree as its working
+directory. Resolve repository files from that directory. The interpreter reads source from
+standard input. Therefore, don't use `__file__` to locate the repository.
+
+Choose an interpreter mode that reads a program from standard input. For example, use
+`executable: python3` with `args: ["-"]` for Python or `executable: node` with `args: ["-"]` for
+Node.js. The command receives the same frozen bytes for the base negative control and the candidate
+positive control. Flow records `stdinHash` only after the process input pipe accepts all bytes.
+This transport evidence doesn't prove that the application consumed the input. Choose an
+interpreter mode whose successful execution requires reading standard input.
+
+Flow doesn't add a dedicated input-byte field to command evidence. However, it retains exact
+standard output and standard error as owner-only private evidence. A holdout that echoes its input
+can copy source bytes into that evidence. Don't write private holdouts that print their source.
+Public status, public events, and model context don't include private command output.
+
+The native process sandbox supports private holdout input. The current container command backend
+has an output-only attach channel and rejects stdin-enabled commands before execution. Use the
+native sandbox for this preview feature, or omit `holdout.stdin` and use a nonprivate command whose
+source is available in both Git trees.
+
 A repository name can start with a dot. For example, `example/.github` is a valid canonical
 repository identity. The owner component cannot start with a dot, and all repository identities
 remain subject to the exact canonical syntax and length limits.
@@ -183,10 +227,13 @@ Check the live host, checkout, GitHub identity, issue, and plan without mutating
 
 ```sh
 flow issue doctor https://github.com/example/widgets/issues/42 \
-  --plan .flow/github-issue.plan.yaml
+  --plan .flow/github-issue.plan.yaml \
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash
 ```
 
-The diagnostic must succeed before you start. Flow reads the exact configured remote
+Use the same provider and model for `doctor` and `run`. The diagnostic must succeed before you
+start. Flow reads the exact configured remote
 `refs/heads/<baseBranch>` ref and rejects a local or remote base mismatch. It also rejects a closed
 or changed issue, repository mismatch, unsafe checkout, missing tool, authentication failure,
 unsupported repository policy, or unavailable model sandbox.
@@ -196,14 +243,14 @@ URL, remote, base branch, or required checks to a less restrictive value.
 
 ## Start the issue run
 
-Create and persist one universally unique identifier (UUID) if a caller might retry after losing
-the command response. Submit the frozen issue and reviewed plan:
+Create and persist one universally unique identifier (UUID) before you call `run`. Reuse that UUID
+only if the same command response is lost or uncertain. Submit the frozen issue and reviewed plan:
 
 ```sh
 flow issue run https://github.com/example/widgets/issues/42 \
   --plan .flow/github-issue.plan.yaml \
-  --provider openai \
-  --model <supported-model> \
+  --provider openrouter \
+  --model z-ai/glm-5.3-flash \
   --command-id <uuid>
 ```
 
@@ -222,8 +269,8 @@ It commits and pushes the replacement candidate, then observes the same pull req
 new head. It doesn't create another pull request for the same run.
 
 The command stops at a failure, a recoverable interruption, or `merge_approval_required`. It never
-merges as part of `run`. Preserve the returned run ID. Repeating the same command ID with different
-input is a conflict.
+merges as part of `run`. Preserve the returned run ID and command ID. Repeating the same command ID
+with different input is a conflict.
 
 ## Observe the lifecycle
 
@@ -350,9 +397,9 @@ Use the phase and stable code from `inspect` to select an action from this table
 | Condition | Meaning | Action |
 | --- | --- | --- |
 | `flow_runtime_not_ignored` | The private run path isn't ignored, contains tracked content, or has unsafe directory ancestry | Preserve existing data. Configure `.flow/issue-runs/` as ignored, remove tracked runtime content through a reviewed repository change, and replace a symbolic-link or non-directory component with a real directory before retrying from a clean checkout |
-| Base holdout passes | The negative control cannot prove the candidate caused the behavior | Strengthen the holdout, create a new plan identity, and start a new run |
-| Candidate holdout fails | The implementation didn't satisfy the issue-specific behavior | Inspect private evidence, repair the reviewed workflow or plan, and start or resume only as directed |
-| Verification fails | A deterministic project command failed | Preserve the workspace and inspect the command's private evidence |
+| `negative_control_mismatch` | The base holdout passed, so the negative control cannot prove that the candidate caused the behavior | Strengthen the holdout, create a new plan identity, and start a new run |
+| `candidate_holdout_failed` | The base holdout failed as required, but the candidate didn't satisfy the issue-specific behavior | Inspect private evidence, repair the reviewed workflow or plan, and start a new run with the replacement frozen identity |
+| `verification_failed` | A deterministic project command failed | Preserve the workspace and inspect the command's private evidence |
 | Review reports P1, P2, or P3 | The exact candidate has a blocking finding | Don't publish or merge. Fix the candidate and require a fresh review |
 | Hosted check is missing, pending, skipped, or failed | The configured exact-head CI gate isn't complete | Correct CI or wait, then resume from the durable observation cursor |
 | Gate is stale | A bound GitHub or repository fact changed after evidence was created | Reverify, rereview, and approve the replacement gate |
@@ -361,5 +408,7 @@ Use the phase and stable code from `inspect` to select an action from this table
 
 Public failures use stable codes such as `executable_unavailable`, `repository_dirty`,
 `github_authentication_failed`, `github_issue_not_open`, `command_timed_out`, and
-`command_output_limit_exceeded`. Use the code and bounded recovery action for automation. Read
+`command_output_limit_exceeded`. Holdout failures use `negative_control_mismatch` for an invalid
+base control and `candidate_holdout_failed` for an ordinary nonzero candidate result. Use the code
+and bounded recovery action for automation. Read
 owner-only evidence on the trusted host when you need the private cause.

@@ -6,6 +6,7 @@ import {
   createAgentCommandApprovalRequest,
 } from "../../../src/domain/approval/command-approval.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
+import { DEFAULT_POLICY_DECISION_LIMIT } from "../../../src/domain/policy/limits.js";
 import {
   MAX_AGENT_COMMANDS_PER_ATTEMPT,
   parseRunEvent,
@@ -198,6 +199,27 @@ describe("durable agent command approval replay", () => {
 
   it("rejects approval history beyond the runtime command-attempt limit", () => {
     const events: RunEvent[] = [...startedEvents()];
+    for (let index = 0; index < DEFAULT_POLICY_DECISION_LIMIT; index += 1) {
+      const requestSequence = events.length + 1;
+      const requestId = `agent-approval-${requestSequence}`;
+      events.push(requestedEvent(requestSequence, requestId));
+      events.push(deniedEvent(events.length + 1, requestId));
+    }
+
+    expect(reduceRunEvents(events).nodes.implement?.agentCommandApprovals).toHaveLength(
+      DEFAULT_POLICY_DECISION_LIMIT,
+    );
+    const requestSequence = events.length + 1;
+    expect(() =>
+      reduceRunEvents([
+        ...events,
+        requestedEvent(requestSequence, `agent-approval-${requestSequence}`),
+      ]),
+    ).toThrow(/agent command limit/i);
+  });
+
+  it("replays approval history up to the agent's explicit policy budget", () => {
+    const events: RunEvent[] = [...startedEvents(MAX_AGENT_COMMANDS_PER_ATTEMPT)];
     for (let index = 0; index < MAX_AGENT_COMMANDS_PER_ATTEMPT; index += 1) {
       const requestSequence = events.length + 1;
       const requestId = `agent-approval-${requestSequence}`;
@@ -208,13 +230,6 @@ describe("durable agent command approval replay", () => {
     expect(reduceRunEvents(events).nodes.implement?.agentCommandApprovals).toHaveLength(
       MAX_AGENT_COMMANDS_PER_ATTEMPT,
     );
-    const requestSequence = events.length + 1;
-    expect(() =>
-      reduceRunEvents([
-        ...events,
-        requestedEvent(requestSequence, `agent-approval-${requestSequence}`),
-      ]),
-    ).toThrow(/agent command limit/i);
   });
 });
 
@@ -239,16 +254,31 @@ const approvalReference = {
   operationDigest: approvalRequest.operationDigest,
 };
 
-function startedEvents(): readonly [RunEvent, RunEvent] {
+function startedEvents(policyDecisionLimit?: number): readonly [RunEvent, RunEvent] {
   return [
     parseRunEvent({
       ...base(1),
       type: "run_started",
-      nodeIds: ["implement"],
+      nodeIds: policyDecisionLimit === undefined ? ["implement"] : ["implement", "verify"],
       workflowApiVersion: "flow.synapti.ai/v1alpha1",
       workflowDigest: "a".repeat(64),
       executionCwd: "/workspace/project",
       agentCommandApprovalRequirements: [{ nodeId: "implement", grantTtlMs: 300_000 }],
+      ...(policyDecisionLimit === undefined
+        ? {}
+        : {
+            controlGraph: {
+              nodes: [
+                {
+                  nodeId: "implement",
+                  dependsOn: [],
+                  type: "agent",
+                  policyDecisionLimit,
+                },
+                { nodeId: "verify", dependsOn: ["implement"], type: "command" },
+              ],
+            },
+          }),
     }),
     parseRunEvent({
       ...base(2),
