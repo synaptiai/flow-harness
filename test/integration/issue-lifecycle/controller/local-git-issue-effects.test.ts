@@ -39,7 +39,8 @@ afterEach(async () => {
   );
 });
 
-describe("LocalGitIssueEffects", () => {
+// These tests create isolated repositories and launch many real Git processes.
+describe("LocalGitIssueEffects", { timeout: 30_000 }, () => {
   it("normalizes equivalent GitHub origin spellings and rejects identity drift", () => {
     expect(normalizeGitHubIssueOrigin("https://github.com/Example/Project.git")).toEqual({
       repositoryIdentity: "example/project",
