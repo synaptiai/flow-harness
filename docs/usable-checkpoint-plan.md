@@ -166,19 +166,25 @@ corrected before final qualification.
 
 Local verification passed 6,683 coverage tests, 44 runtime
 tests, and two browser tests, plus build, type checking, formatting, lint, and documentation gates.
-The runtime suite skipped 42 platform-specific tests. Hosted Linux x64 and installed-package live
-qualification remain open. The internal decision log retains failed attempts and their corrections.
+The local runtime suite skipped 42 platform-specific tests. Installed-package live qualification
+remains open. The internal decision log retains failed attempts and their corrections.
 These results do not qualify a published package or complete UC-01.
 
 Hosted [quality verification](https://github.com/synaptiai/flow-harness/actions/runs/34052845375/job/101539421891)
 passed on September 6, 2026, for the file tree of source `a4e5aee`. It passed all 6,687 coverage
 tests, two browser tests, and 82 runtime tests. Four Lean proof runtime tests were skipped in that
-job. The separate proof job remains active. Build, static checks, dependency audits, compiled CLI
+job. Build, static checks, dependency audits, compiled CLI
 smoke verification, and clean package-install checks also passed.
+
+The separate [proof runtime job](https://github.com/synaptiai/flow-harness/actions/runs/34052845375/job/101539421770)
+also passed. It prepared the reproducible proof image, verified its identity, and passed all four
+Lean proof runtime tests without skips. The tests cover accepted proof checks, incomplete-source
+rejection, restricted axiom authority, recovery, cancellation, and cleanup. All three CI jobs
+passed for the `a4e5aee` source tree. Subsequent documentation commits need their own checks.
 
 The temporary package check
 does not replace retained same-bytes two-host qualification or the live installed issue lifecycle.
-Overall CI, BR-06, and UC-01 remain open.
+BR-06 and UC-01 remain open.
 
 Retain one recovery limitation in future planning: cancellation after a reservation but before a
 child ledger exists stays requested. Flow retains the reservation instead of inventing zero usage.

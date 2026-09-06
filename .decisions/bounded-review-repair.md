@@ -242,3 +242,22 @@ completion in these states or silently charge zero usage.
 - Documentation commits `2f2f7fb` and `f608d34` are local and unpushed, with their own passing
   documentation checks. They are not included in the hosted `a4e5aee` snapshot. Keep the remaining
   proof job running before pushing the queued documentation and this evidence update.
+
+## Completed hosted source verification
+
+- On September 6, 2026, run `34052845375` completed successfully. All three jobs passed for
+  source head `a4e5aeec84ce26867c0300e097c9f43d59397288` and the previously verified tree identity.
+  Proof job `101539421770` finished in 1 hour 9 minutes 30 seconds. Preparation took 66 minutes
+  28 seconds; this was a successful reproducibility build, not a timeout or failed attempt.
+- The preparation script compares two clean image identities before publishing its attestation.
+  The job then verified image `sha256:73559bb7a6d90c71601661ff13e82e59e1efa7ba05db22b5fb3e619f7e146a73`.
+  Its build-attestation digest is `a596e473178598a22f42a2ea0ac4a16bd484c0d9b4ea073aa32b7a305f47cd75`.
+  These identify the proof appliance, not an npm package archive or a live pilot artifact.
+- The enabled Linux x64 proof suite passed all four tests in 110.59 seconds, with no skips.
+  Source assertions cover exact-theorem acceptance after compiler, SafeVerify, Nanoda, and
+  confirmed cleanup; incomplete-source rejection; rejection of unsupported axiom authority;
+  durable-intent reconciliation, blocked automatic retry, and cancellation cleanup.
+- Hosted source CI is now satisfied for the tested revision. The new documentation-only commits
+  are not part of that tested snapshot. Push the reviewed documentation now that doing so cannot
+  cancel this completed run, and inspect the new head's checks separately. BR-06 numeric limits,
+  another paid run, target merge, installed lifecycle qualification, and release remain open.
