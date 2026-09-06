@@ -1,13 +1,14 @@
-# Bounded review repair experiment proposal
+# Bounded review repair experiment
 
-This proposal helps maintainers choose the first installed-package repair experiment, BR-06.
-It does not authorize model execution, credential provisioning, a preparation merge, a candidate
-merge, or publication. The [execution plan](usable-checkpoint-plan.md) owns progress, and the
+The user approved option B and one pilot on September 6, 2026. Prepare and verify the exact
+configuration before dispatch. This approval covers the documented resource limits and repair
+disclosure on the existing provider route. Preparation merge, exact candidate merge, and publication
+remain separate approval gates. The [execution plan](usable-checkpoint-plan.md) owns progress, and the
 [repair design](bounded-review-repair-design.md) owns the approved runtime contract.
 
 ## Choose the experiment
 
-Recommend option B: continue digital-twin issue 106 with one permitted repair cycle and smaller
+Selected option B: continue digital-twin issue 106 with one permitted repair cycle and smaller
 fixed child allowances inside the existing combined $3 reported-cost ceiling. Keep the original
 criteria, holdout, permitted paths, verification commands, and P1–P3 blocking rules. Retain
 OpenRouter `z-ai/glm-5.3-flash` with low thinking. This is another attempt on the same task, not a
@@ -55,7 +56,7 @@ The proposed policy permits at most one repair cycle. Preserve both approved run
 [authoring guide](guides/github-issue-review-repair.md#add-the-policy-to-the-lifecycle-plan).
 The initial implementation and every review remain separately bounded child workflows.
 
-Use these values only after approval. One MiB is 1,048,576 bytes. The cost column uses integer
+Use these approved values for the single new pilot. One MiB is 1,048,576 bytes. The cost column uses integer
 microdollars: 1,000,000 microdollars equals $1. Authored workflow `maxCostUsd` uses dollars.
 Aggregate plan `maxCostUsdMicros` uses microdollars.
 
@@ -146,13 +147,15 @@ This experiment does not remove verification or introduce caching to make its ti
 
 ## Prepare the exact experiment before execution
 
-As of September 6, 2026, the reviewed Flow source is `a4e5aeec84ce26867c0300e097c9f43d59397288` on draft
-[PR 201](https://github.com/synaptiai/flow-harness/pull/201). Its hosted qualification is pending.
-The target's draft [PR 110](https://github.com/danielbentes/digital-twin/pull/110), at
-`683d37d1bb0285b62dba7b2aeafff0aa1275bfa4`, only corrects report validation. The target pilot still
-pins the older Flow source and has no repair policy. Neither preparation implements issue 106.
+The selected Flow source is `544aebc13bfc50879de52396062a869ca975c367` on draft
+[PR 201](https://github.com/synaptiai/flow-harness/pull/201). All three jobs in
+[source CI](https://github.com/synaptiai/flow-harness/actions/runs/34056651615) passed, including all
+four Lean proof runtime tests without skips. This is source verification, not installed pilot
+qualification. The target's draft [PR 110](https://github.com/danielbentes/digital-twin/pull/110)
+is being extended from report validation to the approved repair configuration. Preparation must
+not implement issue 106.
 
-Complete these preparation gates after the experimental limits are selected:
+Complete these preparation gates before the approved dispatch:
 
 1. Add the exact approved policy and repair workflow to the target preparation. Preserve the
    original holdout bytes, criterion descriptions, permitted paths, and command identities.
@@ -170,7 +173,7 @@ Complete these preparation gates after the experimental limits are selected:
    Old two-host evidence does not qualify new package bytes.
 6. Validate the plan with the installed binary and pass the credential-free baseline. Keep that
    baseline distinct from the frozen holdout negative control and from a comparative benchmark.
-7. Request authorization for one dispatch and the additional provider disclosure of selected
+7. Use the authorization for one dispatch and the additional provider disclosure of selected
    review findings and criterion evidence. Reuse the existing OpenRouter credential. Configure
    dedicated Actions secrets only for that authorized run. Do not create another provider key.
 

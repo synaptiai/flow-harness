@@ -261,3 +261,31 @@ completion in these states or silently charge zero usage.
   are not part of that tested snapshot. Push the reviewed documentation now that doing so cannot
   cancel this completed run, and inspect the new head's checks separately. BR-06 numeric limits,
   another paid run, target merge, installed lifecycle qualification, and release remain open.
+
+## Option B execution approval
+
+- The user said: "proceed with the option-b pilot". This selects the full documented option B
+  limits and authorizes one new pilot with the existing OpenRouter route, including selected
+  review findings and criterion evidence needed for repair. Reuse the existing provider key.
+  Keep preparation merge, exact candidate merge, and release as separate approval gates.
+- Source `544aebc13bfc50879de52396062a869ca975c367` passed all three CI jobs in run `34056651615`.
+  The proof job passed all four tests without skips and produced the same proof-image digest as
+  the prior source run. Pin these qualified bytes for package preparation, not a later docs commit.
+- Main agent owns policy, workflow, package-order checks, and documentation. The independent
+  evidence agent owns collector regression tests and any collector correction. Neither task
+  implements issue 106. Existing target PR 110 is the preparation vehicle.
+- Preparation starts with failing resource/disposition tests, then production CLI plan validation.
+  Full target tests, review, same-bytes host qualification, installed baseline, and private evidence
+  custody must pass before the corresponding next boundary. No automatic retry or budget increase.
+- Preparation verification: 35 target control tests and 124 Python tests passed. Ruff, mypy,
+  compileall, shell syntax, diff checks, and production CLI plan admission passed. Actual compiler
+  output independently confirmed microdollar conversion and all five child-pool sums. The
+  independent reviewer passed 176 focused Flow tests and found zero remaining P1/P2/P3 issues.
+- Collector regression exposed inclusion of unrelated host projects. Narrowed the collection to
+  the target canonical-path hash using Flow's host-root identity. Both archive stages now pass
+  real tar/encrypt/authenticate/decrypt tests with retained repair/review ledgers and candidate
+  files. Stored repair context resides in the child control graph's bound verifier prompt, not a
+  dedicated repair blob. Independent source checks corrected an initially incomplete description.
+- The original plan prefix, holdout bytes, criteria, candidate paths, and host verification commands
+  remain unchanged. Public installer help still lists only install/uninstall. Preparation does
+  not implement the target status feature. Selected Flow source stays at qualified `544aebc`.

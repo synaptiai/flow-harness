@@ -150,13 +150,32 @@ decision and requires its own research and approval.
 Refined Approach B is approved for implementation. The
 [bounded review repair design](bounded-review-repair-design.md) owns the approved contracts
 and BR-01 through BR-06 implementation and verification phases.
-Numeric experimental limits, another pilot, and merge remain separately approval-bound.
+Option B's numeric limits and one new pilot are approved. Preparation merge, exact candidate merge,
+and publication remain separately approval-bound.
 UC-05 remains open. The report-classification correction is separate from repair.
 
-The [BR-06 experiment proposal](bounded-review-repair-experiment.md) records the next resource
-decision and exact preparation gates. It recommends smaller fixed children within the existing
+The [BR-06 experiment](bounded-review-repair-experiment.md) records the approved resource
+decision and exact preparation gates. It uses smaller fixed children within the existing
 aggregate token, cost, active-time, and artifact allowances, with explicit aggregate node-start
-limits. This proposal is not an approved experiment or a completed qualification gate.
+limits. Preparation and installed qualification remain open. Approval does not close either gate.
+
+Execution checklist for the approved attempt:
+
+- [x] Author the exact option B policy and repair workflow without changing the target behavior.
+- [x] Verify original scope, resource units, repair dispositions, and complete evidence collection.
+- [x] Complete independent preparation review and local target checks with no P1–P3 findings.
+- [ ] Pass target hosted CI and merge the preparation after exact-head approval.
+- [ ] Build one retained package from qualified source `544aebc` and verify the same bytes on both hosts.
+- [ ] Validate the installed plan and baseline before credentials, then start the approved model lifecycle.
+- [ ] Retain authenticated evidence and request exact-head approval only for a passing candidate.
+- [ ] Reconcile the result against BR-06 and UC-01 without removing earlier failures from the denominator.
+
+Preparation passed 35 control tests and 124 Python tests, plus linting, type checking, compilation,
+shell checks, and production CLI plan validation. An independent reviewer also passed 176 focused
+Flow tests and checked the actual admitted workflow budgets and context bindings. Collector tests
+run the real archive and encryption path. They verify retained repair and review ledgers, private
+context and workflow records, candidate files, and isolation from unrelated host projects. These
+results establish local preparation integrity, not a completed hosted lifecycle.
 
 Current source contains strict optional policy admission, frozen resource pools, durable
 dispatch and settlement records, candidate-tree tracking, and the repair controller path.
@@ -215,7 +234,7 @@ handoff or live host restoration mechanism.
 
 The approved implementation contract defines eligible review classes, preauthorized same-host
 selection, aggregate role pools, an explicit cycle limit, and a disputed-finding stop. Exact
-experimental values still require approval and explicit pilot or evaluation rationale, not an
+experimental values now have approval and explicit pilot rationale, not an
 invented industry-standard claim. Per-run workflow budgets cannot silently reset when a new
 repair child starts.
 
