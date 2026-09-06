@@ -170,6 +170,16 @@ The runtime suite skipped 42 platform-specific tests. Hosted Linux x64 and insta
 qualification remain open. The internal decision log retains failed attempts and their corrections.
 These results do not qualify a published package or complete UC-01.
 
+Hosted [quality verification](https://github.com/synaptiai/flow-harness/actions/runs/34052845375/job/101539421891)
+passed on September 6, 2026, for the file tree of source `a4e5aee`. It passed all 6,687 coverage
+tests, two browser tests, and 82 runtime tests. Four Lean proof runtime tests were skipped in that
+job. The separate proof job remains active. Build, static checks, dependency audits, compiled CLI
+smoke verification, and clean package-install checks also passed.
+
+The temporary package check
+does not replace retained same-bytes two-host qualification or the live installed issue lifecycle.
+Overall CI, BR-06, and UC-01 remain open.
+
 Retain one recovery limitation in future planning: cancellation after a reservation but before a
 child ledger exists stays requested. Flow retains the reservation instead of inventing zero usage.
 An authenticated never-started-dispatch abandonment protocol requires a separate contract.

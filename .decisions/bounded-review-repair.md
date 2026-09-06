@@ -219,3 +219,26 @@ completion in these states or silently charge zero usage.
   The unchanged 90/30/180-minute deadlines remain explicit earlier-stop experimental choices.
   No deadline increased and no verification was removed. The proposal now makes that tradeoff
   concrete rather than leaving feasibility as an unspecified preparation check.
+
+## Hosted quality evidence
+
+- Run `34052845375`, quality job `101539421891`, passed in 28 minutes 53 seconds. GitHub reports
+  source head `a4e5aeec84ce26867c0300e097c9f43d59397288`. Checkout logs identify synthetic merge
+  `144f7e0499776db8964fddf0cb93f8f07bbe164f` with parents `f4deb0f` and `a4e5aee`. GitHub's Git
+  object API and local Git independently agree that the tested merge and implementation both have
+  tree `a1859a52a262efa633483fbc398dba2eeab9cc11`. The base is an ancestor of the implementation.
+- Hosted coverage passed all 467 files and all 6,687 tests in 818.68 seconds. Coverage reports
+  statements 85.04%, branches 79.94%, functions 92.52%, and lines 85.63%. Browser verification
+  passed two tests in 1.63 seconds. Runtime verification passed 82 tests and skipped four Lean OCI
+  tests in 325.05 seconds. The separate proof job remains in progress; these skips do not pass it.
+- The fail-fast `scripts/ci-local.mjs` sequence also passed formatting, lint, documentation style
+  and links, changed-prose checks, type checking, build, capability reference checks, Go tests,
+  fresh Prime preparation, compiled CLI smoke, package checks, and dependency audits. The final
+  audit reports zero vulnerabilities. An independent source/log audit corroborated this scope.
+- The package log confirms clean installation and CLI execution. Its printed `5dfe0f...` value is
+  `effective.policyDigest`, not the package archive SHA-256 digest. The package checker deletes its
+  temporary archive. This does not qualify retained same-bytes artifacts on two hosts or execute
+  the provider-backed issue/repair/merge lifecycle. Overall CI, BR-06, UC-01, and release remain open.
+- Documentation commits `2f2f7fb` and `f608d34` are local and unpushed, with their own passing
+  documentation checks. They are not included in the hosted `a4e5aee` snapshot. Keep the remaining
+  proof job running before pushing the queued documentation and this evidence update.
