@@ -886,7 +886,7 @@ and the lifecycle stopped before publication. All three attempts remain in the d
 
 All aggregate budgets remain unchanged. UC-01 and Slice 13.3 remain open.
 
-The [usable-checkpoint plan](usable-checkpoint-plan.md#decide-how-to-handle-blocking-review)
+The [usable-checkpoint plan](usable-checkpoint-plan.md#design-bounded-review-repair)
 promotes UC-05's repair design for a decision before another attempt. Correct review-report
 classification without waiving findings. A repair loop needs explicit frozen authority,
 lifecycle-wide accounting, progress checks, and fresh exact-candidate verification. It is not

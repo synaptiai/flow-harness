@@ -145,7 +145,13 @@ Closing UC-08 or UC-08a does not close UC-01 or UC-02. Stopping ineffective requ
 complete UC-05. Selecting a repair workflow from verification evidence adds a separate execution
 decision and requires its own research and approval.
 
-## Decide how to handle blocking review
+## Design bounded review repair
+
+Approach B is approved for detailed design. The
+[bounded review repair design](bounded-review-repair-design.md) owns the proposed contracts,
+remaining approval decisions, and BR-01 through BR-06 implementation and verification phases.
+Runtime repair, numeric experimental limits, another pilot, and merge are not authorized by this
+design selection. UC-05 remains open. The report-classification correction is separate from repair.
 
 The third attempt exposed a concrete UC-05 gap. A verified candidate had a small, real review
 finding, and the controller had no approved repair path. This promotes design
@@ -158,7 +164,7 @@ must reach the host parser and remain a blocked candidate. Review-workflow accep
 candidate acceptance. Preserve identity, complete criterion mapping, evidence checks, and the
 zero-findings publication gate.
 
-Then select a repair scope:
+The architecture decision considered these repair scopes:
 
 | Approach | User experience | Main tradeoff |
 | --- | --- | --- |
@@ -166,8 +172,8 @@ Then select a repair scope:
 | B: Frozen controller-selected repair loop | Approve bounded repair eligibility and workflows before execution; select repairs from durable review evidence and rerun all gates on each new candidate. | Best match for the plugin's address-and-review loop. Requires a closed failure taxonomy, lifecycle-wide budgets, progress and oscillation checks, and disputed-finding handling. |
 | C: Linked candidate handoff | Admit an immutable candidate artifact into a separately authorized repair run, preserving provenance and the original failed run. | Supports ephemeral-host work but adds candidate export/import, secret screening, ancestry, replay, and cross-run accounting contracts. |
 
-Recommend designing B for same-host execution, with A as an optional human-confirmed mode. Keep C
-as a separate portability decision. An encrypted forensic archive is not a supported candidate
+The selected B design covers same-host execution. A remains a possible human-confirmed mode, not
+part of the first implementation. Keep C as a separate portability decision. An encrypted forensic archive is not a supported candidate
 handoff or live host restoration mechanism.
 
 Before implementation, approve the eligible failure classes, automatic versus per-cycle authority,

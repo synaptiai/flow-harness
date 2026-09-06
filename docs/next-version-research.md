@@ -115,6 +115,12 @@ non-goals, and status notes.
 
 ### NV-03: Bounded verifier-directed recovery
 
+Approach B is approved for detailed design of same-host blocked-review repair. The
+[design proposal](bounded-review-repair-design.md) records source-level hazards, a proposed
+selection and settlement contract, adversarial tests, remaining decisions, and staged evidence
+gates. Runtime implementation and live repair remain unproven. This narrower slice does not
+complete general deterministic-verifier recovery or cross-host candidate transfer.
+
 - **Outcome:** Let Flow choose a safe repair class after deterministic rejection. Remove the need
   for an operator to author every next step.
 - **Maturity:** Partial. The second digital-twin series proves that bounded repair workflows can

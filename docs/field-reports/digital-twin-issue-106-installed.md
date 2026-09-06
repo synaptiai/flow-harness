@@ -397,5 +397,5 @@ another nested workflow, so adding a retry without lifecycle-wide accounting cou
 budgets. Promote UC-05's bounded repair design for an explicit decision before another attempt.
 Keep the frozen criteria, holdout, allowed paths, and P1–P3 gate unchanged. Do not fix the archived
 candidate manually and call it a harness success. The
-[usable-checkpoint plan](../usable-checkpoint-plan.md#decide-how-to-handle-blocking-review)
+[usable-checkpoint plan](../usable-checkpoint-plan.md#design-bounded-review-repair)
 records the alternatives and remaining authority boundary.
