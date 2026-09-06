@@ -153,6 +153,11 @@ and BR-01 through BR-06 implementation and verification phases.
 Numeric experimental limits, another pilot, and merge remain separately approval-bound.
 UC-05 remains open. The report-classification correction is separate from repair.
 
+The [BR-06 experiment proposal](bounded-review-repair-experiment.md) records the next resource
+decision and exact preparation gates. It recommends smaller fixed children within the existing
+aggregate token, cost, active-time, and artifact allowances, with explicit aggregate node-start
+limits. This proposal is not an approved experiment or a completed qualification gate.
+
 Current source contains strict optional policy admission, frozen resource pools, durable
 dispatch and settlement records, candidate-tree tracking, and the repair controller path.
 Focused compiler, reducer, persisted-ledger, and real-Git tests have passed. Usage and operations

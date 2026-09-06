@@ -169,6 +169,10 @@ After a 32,387-token review, another 500,000-token review does not fit a 500,000
 Choose smaller explicit child envelopes in a separately approved experiment manifest or stop.
 Do not silently enlarge the pools or recompile smaller workflows during execution.
 
+The [first experiment proposal](bounded-review-repair-experiment.md) compares three options and
+records complete proposed limits, reservation arithmetic, evidence gaps, and preparation gates.
+Its numeric values remain unapproved. The proposal does not authorize another model run.
+
 ## Record decisions before effects
 
 Use owner-protected append-only events with strict validation. Proposed logical events are:

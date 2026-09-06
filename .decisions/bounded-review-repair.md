@@ -178,3 +178,33 @@ Cancellation stays requested and the reservation stays visible. An incomplete ch
 stays reserved and does not restart automatically. A future explicit, authenticated
 never-started-dispatch abandonment protocol is separate work; do not claim automatic cancellation
 completion in these states or silently charge zero usage.
+
+## Delivery and experiment preparation follow-up
+
+- The authorized implementation commit is `a4e5aeec84ce26867c0300e097c9f43d59397288`,
+  `feat: add bounded independent-review repair`. The exact revision was pushed to existing draft
+  PR 201 and verified against the remote. The worktree was clean after delivery. Hosted CI run
+  `34052845375` is testing that source; dependency audit passed and quality/proof remain running
+  at this observation. Unlike the earlier run, Docker installation passed in both jobs.
+- Read-only independent audits checked the target preparation and proposed experimental budgets.
+  Target draft PR 110 remains preparation only at `683d37d1bb0285b62dba7b2aeafff0aa1275bfa4`.
+  Its existing check passes, but no repair policy or repair workflow is authored yet. Issue 106's
+  requested status behavior remains absent. No model call, secret provisioning, dispatch, or
+  merge occurred.
+- `docs/bounded-review-repair-experiment.md` records three choices and recommends smaller fixed
+  children with complete explicit role pools. These new numeric limits remain unapproved. The
+  recommendation preserves the existing aggregate token/cost/time/artifact amounts while using
+  explicitly larger aggregate node-start pools. The first audit incorrectly allocated only two
+  repair starts by assuming a single agent. Admission and guide review corrected the proposed
+  graph to an agent plus terminal disposition verifier, four starts, and a ten-start implementation
+  pool. Two reviews likewise fit a ten-start review pool. Independent arithmetic and JavaScript
+  integer checks confirm positive unused capacity in every dimension.
+- Independent review found one broken research anchor, now corrected. Automated style/clarity
+  checks also identified wording and paragraph issues, all corrected before the final pass.
+  Final documentation style, links, clarity, and diff whitespace checks pass. Independent source
+  and document review reports no remaining P1-P3 findings. This does not validate unimplemented
+  pilot YAML, prove runtime resource sufficiency, or establish causal improvement.
+- Keep the current source CI running. Its workflow cancels an in-progress run when a new commit
+  is pushed to the branch. The documentation-only proposal can be committed locally, but defer
+  its push until the current qualification run settles. Routine commit confirmation is not needed
+  under the user's explicit instruction. Experimental values and live execution remain decisions.
