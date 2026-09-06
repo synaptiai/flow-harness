@@ -289,3 +289,22 @@ completion in these states or silently charge zero usage.
 - The original plan prefix, holdout bytes, criteria, candidate paths, and host verification commands
   remain unchanged. Public installer help still lists only install/uninstall. Preparation does
   not implement the target status feature. Selected Flow source stays at qualified `544aebc`.
+
+## Approved preparation merge and option B dispatch
+
+- In response to the exact-head preparation merge request, the user instructed us to stop asking
+  routine questions and proceed with rigor. Revalidated `331eb9f4441236ceb4e38327fafd9cd2ba569417`,
+  its passing checks, no requested changes, and zero unresolved review threads. Marked PR 110
+  ready and squash-merged with an exact head guard. The remote preparation branch was removed.
+- Merge `109fac8e78db17a178cc59e5d6ef91bb9b95d603` has exactly the reviewed preparation tree.
+  The dedicated local checkout is clean and detached at that base. Issue 106 remains open with
+  unchanged issue metadata. Hosted CI passed 35 controls and 123 Python tests; the existing
+  maintainer-private corpus test skips on CI. Local Python verification passed all 124.
+- Reused the existing owner-only .env provider key, current GitHub credential, and retained
+  evidence key through the existing helper. Verified only secret names/timestamps. No credential
+  values were displayed and no new provider key was created. Three dedicated pilot secrets must
+  be removed after evidence custody is settled.
+- Dispatched exactly once: Actions run `34065692695`, created `2026-09-06T23:01:43Z`, base
+  `109fac8e78db17a178cc59e5d6ef91bb9b95d603`, source `544aebc`. The run is in progress. No rerun
+  or replacement is authorized by an observation timeout or a failed result. Candidate merge
+  still requires the fresh exact-head/gate approval record.

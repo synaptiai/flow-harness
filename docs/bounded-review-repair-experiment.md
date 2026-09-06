@@ -2,8 +2,8 @@
 
 The user approved option B and one pilot on September 6, 2026. Prepare and verify the exact
 configuration before dispatch. This approval covers the documented resource limits and repair
-disclosure on the existing provider route. Preparation merge, exact candidate merge, and publication
-remain separate approval gates. The [execution plan](usable-checkpoint-plan.md) owns progress, and the
+disclosure on the existing provider route. Preparation merged after approval. Exact candidate merge
+and publication remain separate approval gates. The [execution plan](usable-checkpoint-plan.md) owns progress, and the
 [repair design](bounded-review-repair-design.md) owns the approved runtime contract.
 
 ## Choose the experiment
@@ -151,9 +151,10 @@ The selected Flow source is `544aebc13bfc50879de52396062a869ca975c367` on draft
 [PR 201](https://github.com/synaptiai/flow-harness/pull/201). All three jobs in
 [source CI](https://github.com/synaptiai/flow-harness/actions/runs/34056651615) passed, including all
 four Lean proof runtime tests without skips. This is source verification, not installed pilot
-qualification. The target's draft [PR 110](https://github.com/danielbentes/digital-twin/pull/110)
-is being extended from report validation to the approved repair configuration. Preparation must
-not implement issue 106.
+qualification. The target's [PR 110](https://github.com/danielbentes/digital-twin/pull/110)
+merged the reviewed repair configuration as `109fac8e78db17a178cc59e5d6ef91bb9b95d603` without
+implementing issue 106. The [approved attempt](https://github.com/danielbentes/digital-twin/actions/runs/34065692695)
+uses that base. Its installed and live qualification remains open until the result is verified.
 
 Complete these preparation gates before the approved dispatch:
 

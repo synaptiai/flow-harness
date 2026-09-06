@@ -150,21 +150,22 @@ decision and requires its own research and approval.
 Refined Approach B is approved for implementation. The
 [bounded review repair design](bounded-review-repair-design.md) owns the approved contracts
 and BR-01 through BR-06 implementation and verification phases.
-Option B's numeric limits and one new pilot are approved. Preparation merge, exact candidate merge,
-and publication remain separately approval-bound.
+Option B's numeric limits and one new pilot are approved. The reviewed preparation merged after
+approval. Exact candidate merge and publication remain separately approval-bound.
+
 UC-05 remains open. The report-classification correction is separate from repair.
 
 The [BR-06 experiment](bounded-review-repair-experiment.md) records the approved resource
 decision and exact preparation gates. It uses smaller fixed children within the existing
 aggregate token, cost, active-time, and artifact allowances, with explicit aggregate node-start
-limits. Preparation and installed qualification remain open. Approval does not close either gate.
+limits. Preparation is complete. Installed qualification remains open.
 
 Execution checklist for the approved attempt:
 
 - [x] Author the exact option B policy and repair workflow without changing the target behavior.
 - [x] Verify original scope, resource units, repair dispositions, and complete evidence collection.
 - [x] Complete independent preparation review and local target checks with no P1–P3 findings.
-- [ ] Pass target hosted CI and merge the preparation after exact-head approval.
+- [x] Pass target hosted CI and merge the preparation after exact-head approval.
 - [ ] Build one retained package from qualified source `544aebc` and verify the same bytes on both hosts.
 - [ ] Validate the installed plan and baseline before credentials, then start the approved model lifecycle.
 - [ ] Retain authenticated evidence and request exact-head approval only for a passing candidate.
@@ -176,6 +177,14 @@ Flow tests and checked the actual admitted workflow budgets and context bindings
 run the real archive and encryption path. They verify retained repair and review ledgers, private
 context and workflow records, candidate files, and isolation from unrelated host projects. These
 results establish local preparation integrity, not a completed hosted lifecycle.
+
+Hosted preparation CI passed all 35 control tests and 123 Python tests. One existing
+maintainer-private corpus test was skipped on the hosted runner. Preparation PR 110 merged as
+`109fac8e78db17a178cc59e5d6ef91bb9b95d603`. The merged tree matches the reviewed `331eb9f` tree.
+
+The single approved [option B attempt](https://github.com/danielbentes/digital-twin/actions/runs/34065692695)
+started from that base. Dispatch is not qualification. Retain the previous three failures in the
+denominator and settle this attempt from its actual evidence.
 
 Current source contains strict optional policy admission, frozen resource pools, durable
 dispatch and settlement records, candidate-tree tracking, and the repair controller path.
