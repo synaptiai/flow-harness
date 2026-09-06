@@ -115,10 +115,11 @@ non-goals, and status notes.
 
 ### NV-03: Bounded verifier-directed recovery
 
-Approach B is approved for detailed design of same-host blocked-review repair. The
-[design proposal](bounded-review-repair-design.md) records source-level hazards, a proposed
-selection and settlement contract, adversarial tests, remaining decisions, and staged evidence
-gates. Runtime implementation and live repair remain unproven. This narrower slice does not
+Refined Approach B is approved for implementation of same-host blocked-review repair. The
+[design contract](bounded-review-repair-design.md) records source-level hazards, frozen
+selection and settlement rules, adversarial tests, remaining decisions, and staged evidence
+gates. Source implementation passed local verification. Hosted qualification remains open. Live repair effectiveness
+remains unproven. This narrower slice does not
 complete general deterministic-verifier recovery or cross-host candidate transfer.
 
 - **Outcome:** Let Flow choose a safe repair class after deterministic rejection. Remove the need
@@ -127,10 +128,14 @@ complete general deterministic-verifier recovery or cross-host candidate transfe
   recover an accepted change. The third series proves that deterministic holdout and review
   feedback can drive repeated controller-contract corrections through a final merge. An operator
   still selected and authored every correction. Neither series proves autonomous selection.
-- **Missing research:** Flow lacks a closed failure taxonomy and deterministic selection
-  controller. It also lacks a progress measure, cross-cycle settlement contract, and adversarial
-  holdouts. Comparison with operator-authored repair remains open. Flow needs separate tests for
-  oscillation, ineffective repair, and attempts to reinterpret a frozen contract.
+- **Missing research:** A general failure taxonomy, semantic progress measure, and comparative
+  adversarial task corpus remain open. The blocked-review implementation adds exact-tree
+  no-progress detection, bounded deterministic selection, and cross-cycle settlement. Those
+  mechanisms do not prove that a changed tree improves correctness. Compare live outcomes with
+  operator-authored repair on fresh tasks, retaining oscillation and ineffective-repair evidence.
+- **Recovery deferral:** A reservation without a child ledger remains unresolved. Research an
+  authenticated never-started-dispatch abandonment protocol that proves non-execution without
+  fabricating zero usage or permitting duplicate work. Keep this separate from ordinary cancellation.
 - **Authority change:** Medium. The controller selects execution that can mutate a workspace, even
   when every candidate workflow is predeclared.
 - **Related correction:** UC-08 covers stopping repeated ineffective command requests without selecting a

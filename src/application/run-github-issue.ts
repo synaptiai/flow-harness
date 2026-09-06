@@ -11,6 +11,7 @@ import {
   calculateIssuePrivateManifestDigest,
   parseIssuePrivateManifest,
 } from "../domain/issue-lifecycle/private-manifest.js";
+import { issueReviewRepairRunContractForManifest } from "../domain/issue-lifecycle/review-repair-state.js";
 import {
   continueClaimedIssue,
   createClaimedIssueController,
@@ -44,6 +45,7 @@ export async function runGitHubIssue(
     throw new Error("frozen issue evidence digest is invalid");
   }
   const frozenContractDigest = calculateIssuePrivateManifestDigest(manifest);
+  const reviewRepair = issueReviewRepairRunContractForManifest(manifest);
   const snapshot = parseIssueLifecycleEvent({
     version: 1,
     runId: manifest.runId,
@@ -67,6 +69,7 @@ export async function runGitHubIssue(
       implementationTemplateWorkflowDigest: manifest.implementationWorkflow.templateWorkflowDigest,
       reviewTemplateWorkflowDigest: manifest.reviewWorkflow.templateWorkflowDigest,
       budgetDigest: manifest.budgetDigest,
+      ...(reviewRepair === undefined ? {} : { reviewRepair }),
       evidenceDigest: frozen.evidenceDigest,
     },
   });
@@ -146,6 +149,7 @@ async function executeDurableRun(
     const code = issueControllerFailureCode(error);
     if (
       controller.state.pendingEffect === undefined &&
+      controller.state.reviewRepair?.accounting.pending == null &&
       !["merged", "failed", "cancelled"].includes(controller.state.phase)
     ) {
       await controller.append({

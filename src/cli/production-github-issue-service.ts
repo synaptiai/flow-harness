@@ -42,9 +42,11 @@ import { LocalIssueVerification } from "../infrastructure/git/local-issue-verifi
 import { GitHubCliGitCredentialBroker } from "../infrastructure/github/github-cli-git-credential-broker.js";
 import { GitHubCliIssueLifecycleAdapter } from "../infrastructure/github/github-cli-issue-lifecycle-adapter.js";
 import { IssueLifecycleHost } from "../infrastructure/github/issue-lifecycle-host.js";
+import { ProductionIssueReviewRepairHost } from "../infrastructure/issue-lifecycle/production-issue-review-repair-host.js";
 import {
   ProductionIssueRunFreezer,
   ProductionIssueWorkflowRunner,
+  validateIssueReviewRepairContract,
 } from "../infrastructure/issue-lifecycle/production-issue-runner.js";
 import { inspectPreparedPrimeRuntime } from "../infrastructure/oci/prime-environment-doctor.js";
 import { inspectPiProviderConfiguration } from "../infrastructure/pi/pi-environment-doctor.js";
@@ -289,12 +291,39 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
       resultNodeId: plan.review.resultNode,
     });
     completeIssueWorkflowBudget(review.workflow.budget, "review");
+    let repairSourceDigest: string | undefined;
+    if (plan.reviewRepair !== undefined) {
+      const repairFile = await this.#readSource(plan.reviewRepair.workflow);
+      const repair = admitIssueWorkflow({
+        role: "repair",
+        source: decodeText(repairFile),
+        sourceName: plan.reviewRepair.workflow,
+        ...(this.#capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshot: this.#capabilitySnapshot }),
+        model,
+        policyModelBinding,
+        context: {
+          kind: "repair",
+          content: validationReviewContext(
+            plan.repository.expected,
+            implementation.criteria.map((criterion) => criterion.id),
+          ),
+        },
+        allowedWritePrefixes: plan.candidate.allowedPathPrefixes,
+        verificationCommands: plan.verification.map((entry) => entry.command),
+        resultNodeId: plan.reviewRepair.resultNode,
+      });
+      validateIssueReviewRepairContract(implementation, review, repair, plan.reviewRepair);
+      repairSourceDigest = repairFile.sha256;
+    }
     return Object.freeze({
       status: "valid",
       repositoryIdentity: plan.repository.expected,
       planDigest: planFile.sha256,
       implementationSourceDigest: implementationFile.sha256,
       reviewSourceDigest: reviewFile.sha256,
+      ...(repairSourceDigest === undefined ? {} : { repairSourceDigest }),
       acceptanceCriterionCount: implementation.criteria.length,
       verificationCommandCount: plan.verification.length,
       hostedCheckCount: plan.hostedChecks.required.length,
@@ -456,6 +485,11 @@ class ProductionGitHubIssueCliService implements GitHubIssueCliService {
     const runtimeDependencies: IssueControllerRuntimeDependencies = Object.freeze({
       repository: this.#store,
       workflows,
+      repair: new ProductionIssueReviewRepairHost({
+        lifecycleStore: this.#store,
+        workspaces: host,
+        git: localGit,
+      }),
       verification,
       github: host,
       effects: host,

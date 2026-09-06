@@ -19,6 +19,7 @@ import {
   type IssuePrivateBlobInput,
   parseIssuePrivateManifest,
 } from "../../../src/domain/issue-lifecycle/private-manifest.js";
+import { issueReviewRepairRunContractForManifest } from "../../../src/domain/issue-lifecycle/review-repair-state.js";
 import {
   IssueLifecycleStoreError,
   type IssueLifecycleStorePublicationPoint,
@@ -37,6 +38,62 @@ afterEach(async () => {
 });
 
 describe("JsonlIssueLifecycleStore aggregate repository", () => {
+  it("publishes the exact optional review repair contract from its frozen manifest", async () => {
+    const store = new JsonlIssueLifecycleStore(await createTemporaryDirectory());
+    const initialization = repairInitialization();
+    await store.initialize(initialization);
+    await expect(store.read(RUN_ID)).resolves.toEqual([initialization.snapshot]);
+    await expect(store.readManifest(RUN_ID)).resolves.toEqual(initialization.manifest);
+  });
+
+  it.each(["missing", "extra", "cycles", "pool", "template", "envelope"] as const)(
+    "rejects %s snapshot repair authority before publishing any run state",
+    async (mutation) => {
+      const store = new JsonlIssueLifecycleStore(await createTemporaryDirectory());
+      const optedIn = repairInitialization();
+      const original = mutation === "extra" ? aggregateInitialization() : optedIn;
+      if (
+        original.snapshot.type !== "phase_transitioned" ||
+        original.snapshot.receipt.kind !== "issue_snapshot"
+      )
+        throw new Error("Expected snapshot");
+      const contract = issueReviewRepairRunContractForManifest(optedIn.manifest);
+      if (contract === undefined) throw new Error("Expected repair contract");
+      const { reviewRepair: _original, ...receipt } = original.snapshot.receipt;
+      const changed =
+        mutation === "cycles"
+          ? {
+              ...contract,
+              policy: { ...contract.policy, maxCycles: contract.policy.maxCycles + 1 },
+            }
+          : mutation === "pool"
+            ? {
+                ...contract,
+                policy: {
+                  ...contract.policy,
+                  aggregateBudget: {
+                    ...contract.policy.aggregateBudget,
+                    implementation: completeBudget(20),
+                  },
+                },
+              }
+            : mutation === "template"
+              ? { ...contract, repairTemplateWorkflowDigest: "e".repeat(64) }
+              : mutation === "envelope"
+                ? { ...contract, repairEnvelope: completeBudget(3) }
+                : contract;
+      const initialization = {
+        ...original,
+        snapshot: {
+          ...original.snapshot,
+          receipt: { ...receipt, ...(mutation === "missing" ? {} : { reviewRepair: changed }) },
+        },
+      };
+      await expect(store.initialize(initialization)).rejects.toMatchObject({ code: "corrupt" });
+      await expect(store.exists(RUN_ID)).resolves.toBe(false);
+    },
+  );
+
   it("publishes the manifest, initial blobs, snapshot, command, and owner atomically", async () => {
     const root = await createTemporaryDirectory();
     const store = new JsonlIssueLifecycleStore(root);
@@ -521,6 +578,67 @@ async function createTemporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "flow-issue-run-repository-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function repairInitialization(): IssueLifecycleRunInitialization {
+  const original = aggregateInitialization();
+  if (
+    original.snapshot.type !== "phase_transitioned" ||
+    original.snapshot.receipt.kind !== "issue_snapshot"
+  )
+    throw new Error("Expected snapshot");
+  const repairBlob = privateBlob("application/vnd.flow.workflow+yaml", "repair");
+  const policy = {
+    version: 1,
+    mode: "preauthorized",
+    maxCycles: 2,
+    eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+    aggregateBudget: { implementation: completeBudget(10), review: completeBudget(10) },
+    stopping: {
+      disputed: "stop",
+      unchangedTree: "stop",
+      repeatedTree: "stop",
+      uncertainUsage: "stop",
+      uncertainEffects: "stop",
+    },
+  };
+  const budgets = {
+    ...original.manifest.budgets,
+    reviewRepair: { aggregateBudget: policy.aggregateBudget, repair: completeBudget(2) },
+  };
+  const manifest = parseIssuePrivateManifest({
+    ...original.manifest,
+    budgets,
+    budgetDigest: calculateIssueBudgetDigest(budgets),
+    artifacts: {
+      ...original.manifest.artifacts,
+      repairWorkflow: createIssuePrivateBlobReference(repairBlob),
+    },
+    reviewRepair: {
+      ...policy,
+      workflow: {
+        ...original.manifest.implementationWorkflow,
+        templateWorkflowDigest: "d".repeat(64),
+        resultNodeId: "repair-result",
+      },
+    },
+  });
+  const reviewRepair = issueReviewRepairRunContractForManifest(manifest);
+  if (reviewRepair === undefined) throw new Error("Expected repair contract");
+  return {
+    ...original,
+    manifest,
+    initialBlobs: [...original.initialBlobs, repairBlob],
+    snapshot: {
+      ...original.snapshot,
+      receipt: {
+        ...original.snapshot.receipt,
+        frozenContractDigest: calculateIssuePrivateManifestDigest(manifest),
+        budgetDigest: manifest.budgetDigest,
+        reviewRepair,
+      },
+    },
+  };
 }
 
 function aggregateInitialization(): IssueLifecycleRunInitialization {

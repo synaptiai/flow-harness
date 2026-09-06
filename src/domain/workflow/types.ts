@@ -199,7 +199,7 @@ export type CompiledVerifierConfig =
           }
         | {
             readonly kind: "issue-workflow";
-            readonly role: "review";
+            readonly role: "review" | "repair";
             readonly maxBytes: typeof MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES;
           };
       readonly evidence: readonly CompiledVerifierEvidenceSource[];

@@ -7,6 +7,91 @@ import {
 } from "../../../src/domain/issue-lifecycle/plan.js";
 
 describe("GitHub issue plan", () => {
+  it("admits an explicit bounded repair policy without changing omitted legacy plans", () => {
+    const legacy = parseGitHubIssuePlanText(JSON.stringify(validPlanValue()));
+    expect(Object.hasOwn(legacy, "reviewRepair")).toBe(false);
+    const policy = validRepairPolicy();
+    const plan = parseGitHubIssuePlanText(
+      JSON.stringify({ ...validPlanValue(), reviewRepair: policy }),
+    );
+
+    expect(plan).toHaveProperty("reviewRepair", policy);
+    expect(Object.isFrozen(Reflect.get(plan, "reviewRepair"))).toBe(true);
+  });
+
+  it.each([
+    "maxCycles",
+    "eligibleClasses",
+    "aggregateBudget",
+    "stopping",
+    "resultNode",
+    "workflow",
+  ])("requires an explicit repair %s rather than supplying a default", (field) => {
+    const policy: Record<string, unknown> = validRepairPolicy();
+    delete policy[field];
+    expect(() =>
+      parseGitHubIssuePlanText(JSON.stringify({ ...validPlanValue(), reviewRepair: policy })),
+    ).toThrow(/reviewRepair/);
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER, "2"])(
+    "rejects invalid repair cycle bound %s",
+    (maxCycles) => {
+      expect(() =>
+        parseGitHubIssuePlanText(
+          JSON.stringify({
+            ...validPlanValue(),
+            reviewRepair: { ...validRepairPolicy(), maxCycles },
+          }),
+        ),
+      ).toThrow(/reviewRepair/);
+    },
+  );
+
+  it.each([
+    "workflows/implement.workflow.yaml",
+    "workflows/review.workflow.yaml",
+    ".flow/runs/private.yaml",
+    "../repair.yaml",
+  ])("rejects an aliased or unsafe repair workflow %s", (workflow) => {
+    expect(() =>
+      parseGitHubIssuePlanText(
+        JSON.stringify({
+          ...validPlanValue(),
+          reviewRepair: { ...validRepairPolicy(), workflow },
+        }),
+      ),
+    ).toThrow(/repair|reviewRepair/);
+  });
+
+  it("rejects incomplete role allowances and broadened stopping authority", () => {
+    const incomplete = validRepairPolicy();
+    Reflect.deleteProperty(incomplete.aggregateBudget.review, "maxCostUsdMicros");
+    expect(() =>
+      parseGitHubIssuePlanText(JSON.stringify({ ...validPlanValue(), reviewRepair: incomplete })),
+    ).toThrow(/reviewRepair/);
+    const expanded = validRepairPolicy();
+    expanded.stopping.disputed = "continue";
+    expect(() =>
+      parseGitHubIssuePlanText(JSON.stringify({ ...validPlanValue(), reviewRepair: expanded })),
+    ).toThrow(/reviewRepair/);
+  });
+
+  it.each(
+    [["provider-failure"], ["review-findings", "review-findings"], []].map((eligibleClasses) => ({
+      eligibleClasses,
+    })),
+  )("rejects unapproved or duplicate repair classes %j", ({ eligibleClasses }) => {
+    expect(() =>
+      parseGitHubIssuePlanText(
+        JSON.stringify({
+          ...validPlanValue(),
+          reviewRepair: { ...validRepairPolicy(), eligibleClasses },
+        }),
+      ),
+    ).toThrow(/reviewRepair/);
+  });
+
   it("parses and freezes the complete versioned operator contract", () => {
     const plan = parseGitHubIssuePlanText(validPlan(), "issue-plan.yaml");
 
@@ -212,6 +297,32 @@ describe("GitHub issue plan", () => {
     );
   });
 });
+
+function validRepairPolicy() {
+  const envelope = {
+    maxNodeStarts: 12,
+    maxModelTokens: 100_000,
+    maxCostUsdMicros: 1_000_000,
+    maxExecutionMs: 600_000,
+    maxArtifactBytes: 1_048_576,
+  };
+  return {
+    version: 1,
+    mode: "preauthorized",
+    maxCycles: 2,
+    eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+    workflow: ".flow/workflows/repair.workflow.yaml",
+    resultNode: "repair-result",
+    aggregateBudget: { implementation: { ...envelope }, review: { ...envelope } },
+    stopping: {
+      disputed: "stop",
+      unchangedTree: "stop",
+      repeatedTree: "stop",
+      uncertainUsage: "stop",
+      uncertainEffects: "stop",
+    },
+  };
+}
 
 function validPlan(): string {
   return `apiVersion: flow.synapti.ai/v1alpha1

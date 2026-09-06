@@ -2,6 +2,7 @@ import { parseDocument } from "yaml";
 import { z } from "zod";
 
 import { canonicalGitHubRepositoryIdentity } from "./identity.js";
+import { issueReviewRepairPolicySchema } from "./review-repair-policy.js";
 
 export const MAX_GITHUB_ISSUE_PLAN_BYTES = 65_536;
 export const MAX_ISSUE_VERIFICATION_COMMANDS = 32;
@@ -142,6 +143,10 @@ const githubIssuePlanSchema = z
         blockingSeverities: z.tuple([z.literal("P1"), z.literal("P2"), z.literal("P3")]),
       })
       .strict(),
+    reviewRepair: issueReviewRepairPolicySchema
+      .extend({ workflow: workflowPathSchema, resultNode: identifierSchema })
+      .strict()
+      .optional(),
     merge: z
       .object({
         method: z.enum(["squash", "merge", "rebase"]),
@@ -153,6 +158,13 @@ const githubIssuePlanSchema = z
   .refine(
     (plan) => plan.implementation.workflow !== plan.review.workflow,
     "implementation and review workflows must be distinct",
+  )
+  .refine(
+    (plan) =>
+      plan.reviewRepair === undefined ||
+      (plan.reviewRepair.workflow !== plan.implementation.workflow &&
+        plan.reviewRepair.workflow !== plan.review.workflow),
+    "repair workflow must differ from implementation and review workflows",
   );
 
 export type GitHubIssuePlan = Readonly<z.output<typeof githubIssuePlanSchema>>;

@@ -21,6 +21,7 @@ import type {
   FetchIssueGitRemoteBranchRequest,
   InspectIssueGitCandidateRequest,
   InspectIssueGitCommitRequest,
+  InspectIssueGitFindingSourceRequest,
   InspectIssueGitPatchSeriesRequest,
   InspectIssueGitRemoteBranchRequest,
   InspectIssueGitVerificationCandidateRequest,
@@ -28,6 +29,7 @@ import type {
   IssueGitCandidateObservation,
   IssueGitCommitObservation,
   IssueGitCommitResult,
+  IssueGitFindingSourceObservation,
   IssueGitPatchSeriesObservation,
   IssueGitPullRequestHeadObservation,
   IssueGitPushResult,
@@ -45,7 +47,11 @@ import { isValidExactGitBranchName } from "../../domain/issue-lifecycle/plan.js"
 import type { GitHubGitCredentialBroker } from "../github/github-cli-git-credential-broker.js";
 import { parseExactLocalGitOriginConfiguration } from "./exact-local-git-origin-configuration.js";
 import type { PinnedGitHubIssueHostExecutable } from "./fixed-host-executables.js";
-import { StrictHostProcess, type StrictHostProcessResult } from "./strict-host-process.js";
+import {
+  MAX_STRICT_HOST_PROCESS_OUTPUT_BYTES,
+  StrictHostProcess,
+  type StrictHostProcessResult,
+} from "./strict-host-process.js";
 
 export const MAX_ISSUE_CANDIDATE_PATHS = 4_096;
 export const MAX_ISSUE_CANDIDATE_BYTES = 67_108_864;
@@ -86,6 +92,11 @@ export type LocalGitIssueErrorCode =
   | "candidate_path_limit_exceeded"
   | "candidate_byte_limit_exceeded"
   | "candidate_tree_drift"
+  | "finding_source_missing"
+  | "finding_source_not_regular"
+  | "finding_source_not_text"
+  | "finding_source_byte_limit_exceeded"
+  | "finding_source_location_invalid"
   | "remote_drift"
   | "remote_update_rejected";
 
@@ -583,14 +594,53 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
 
   async inspectCommit(request: InspectIssueGitCommitRequest): Promise<IssueGitCommitObservation> {
     assertCommit(request.commit);
+    if (
+      request.expectedCandidateHead !== undefined &&
+      request.expectedCandidateHead !== request.commit
+    ) {
+      throw new LocalGitIssueError("invalid_request");
+    }
     const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
-    const source = (
-      await this.#gitBuffer({
+    if (request.expectedCandidateHead !== undefined) {
+      await this.#assertFindingCandidateHead(
+        workspace,
+        request.expectedCandidateHead,
+        request.signal,
+      );
+      const ancestry = await this.#git({
         cwd: workspace.root,
-        arguments: ["cat-file", "commit", request.commit],
+        arguments: [
+          "--no-replace-objects",
+          "merge-base",
+          "--is-ancestor",
+          workspace.baseCommit,
+          request.commit,
+        ],
+        acceptedExitCodes: [0, 1],
         ...(request.signal === undefined ? {} : { signal: request.signal }),
-      })
-    ).toString("utf8");
+      });
+      if (ancestry.exitCode !== 0) throw new LocalGitIssueError("base_drift");
+    }
+    const sourceBytes = await this.#gitBuffer({
+      cwd: workspace.root,
+      arguments: [
+        ...(request.expectedCandidateHead === undefined ? [] : ["--no-replace-objects"]),
+        "cat-file",
+        "commit",
+        request.commit,
+      ],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    if (
+      request.expectedCandidateHead !== undefined &&
+      createHash("sha1")
+        .update(`commit ${sourceBytes.byteLength}\0`)
+        .update(sourceBytes)
+        .digest("hex") !== request.commit
+    ) {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    const source = sourceBytes.toString("utf8");
     const lines = source.split("\n");
     const treeLine = lines[0];
     if (treeLine === undefined || !treeLine.startsWith("tree ")) {
@@ -602,7 +652,150 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
       if (line.startsWith("parent ")) parents.push(parseCommit(line.slice(7)));
       else if (line === "") break;
     }
+    if (request.expectedCandidateHead !== undefined) {
+      await this.#assertOwnedActiveWorkspace(workspace, request.signal);
+      await this.#assertFindingCandidateHead(
+        workspace,
+        request.expectedCandidateHead,
+        request.signal,
+      );
+    }
     return Object.freeze({ commit: request.commit, tree, parents: Object.freeze(parents) });
+  }
+
+  async inspectFindingSource(
+    request: InspectIssueGitFindingSourceRequest,
+  ): Promise<IssueGitFindingSourceObservation> {
+    assertCommit(request.candidateHead);
+    assertProjectPath(request.file, "candidate_path_disallowed");
+    if (
+      request.file.split("/").some((segment) => [".git", ".flow"].includes(segment.toLowerCase()))
+    ) {
+      throw new LocalGitIssueError("candidate_path_disallowed");
+    }
+    const prefixes = validateAllowedPrefixes(request.allowedWritePrefixes);
+    if (!prefixes.some((prefix) => isAtOrWithinProjectPath(request.file, prefix))) {
+      throw new LocalGitIssueError("candidate_path_disallowed");
+    }
+    const endLine = request.endLine ?? request.startLine;
+    if (
+      !Number.isSafeInteger(request.startLine) ||
+      request.startLine < 1 ||
+      !Number.isSafeInteger(endLine) ||
+      endLine < request.startLine
+    ) {
+      throw new LocalGitIssueError("finding_source_location_invalid");
+    }
+    assertNotAborted(request.signal);
+    const workspace = await this.#assertOwnedActiveWorkspace(request.workspace, request.signal);
+    await this.#assertFindingCandidateHead(workspace, request.candidateHead, request.signal);
+    const ancestry = await this.#git({
+      cwd: workspace.root,
+      arguments: [
+        "--no-replace-objects",
+        "merge-base",
+        "--is-ancestor",
+        workspace.baseCommit,
+        request.candidateHead,
+      ],
+      acceptedExitCodes: [0, 1],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    if (ancestry.exitCode !== 0) throw new LocalGitIssueError("base_drift");
+
+    const entryBytes = await this.#gitBuffer({
+      cwd: workspace.root,
+      arguments: [
+        "--no-replace-objects",
+        "--literal-pathspecs",
+        "ls-tree",
+        "--full-tree",
+        "-z",
+        request.candidateHead,
+        "--",
+        request.file,
+      ],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    if (entryBytes.byteLength === 0) throw new LocalGitIssueError("finding_source_missing");
+    let entry: string;
+    try {
+      entry = new TextDecoder("utf-8", { fatal: true }).decode(entryBytes);
+    } catch {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    const match = /^(\d{6}) (blob|tree|commit) ([a-f0-9]{40})\t([^\0]+)\0$/.exec(entry);
+    if (match === null || match[4] !== request.file) {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    const mode = match[1];
+    const blob = match[3];
+    if ((mode !== "100644" && mode !== "100755") || match[2] !== "blob") {
+      throw new LocalGitIssueError("finding_source_not_regular");
+    }
+    if (blob === undefined) throw new LocalGitIssueError("git_response_invalid");
+    const sizeText = await this.#gitText({
+      cwd: workspace.root,
+      arguments: ["--no-replace-objects", "cat-file", "-s", blob],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    const byteLength = Number(sizeText);
+    if (!/^(0|[1-9][0-9]*)$/.test(sizeText) || !Number.isSafeInteger(byteLength)) {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    // Use the existing bounded host-process allowance; never truncate source evidence.
+    if (byteLength > MAX_STRICT_HOST_PROCESS_OUTPUT_BYTES) {
+      throw new LocalGitIssueError("finding_source_byte_limit_exceeded");
+    }
+    const contents = await this.#gitBuffer({
+      cwd: workspace.root,
+      arguments: ["--no-replace-objects", "cat-file", "blob", blob],
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    if (
+      contents.byteLength !== byteLength ||
+      createHash("sha1").update(`blob ${byteLength}\0`).update(contents).digest("hex") !== blob
+    ) {
+      throw new LocalGitIssueError("git_response_invalid");
+    }
+    if (contents.includes(0)) throw new LocalGitIssueError("finding_source_not_text");
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(contents);
+    } catch {
+      throw new LocalGitIssueError("finding_source_not_text");
+    }
+    let lineCount = 0;
+    for (const byte of contents) if (byte === 10) lineCount += 1;
+    if (contents.byteLength > 0 && contents[contents.byteLength - 1] !== 10) lineCount += 1;
+    if (endLine > lineCount) throw new LocalGitIssueError("finding_source_location_invalid");
+
+    await this.#assertOwnedActiveWorkspace(workspace, request.signal);
+    await this.#assertFindingCandidateHead(workspace, request.candidateHead, request.signal);
+    return Object.freeze({
+      candidateHead: request.candidateHead,
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+      file: request.file,
+      blob,
+      mode,
+      byteLength,
+      lineCount,
+      startLine: request.startLine,
+      endLine,
+    });
+  }
+
+  async #assertFindingCandidateHead(
+    workspace: IssueGitWorkspace,
+    candidateHead: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const head = await this.#readRequiredRef(workspace.root, "HEAD", signal);
+    if (
+      head !== candidateHead ||
+      (await this.#readBranchHead(workspace, signal)) !== candidateHead
+    ) {
+      throw new LocalGitIssueError("branch_drift");
+    }
   }
 
   async isAncestor(request: IssueGitReachabilityRequest): Promise<boolean> {
@@ -1387,20 +1580,36 @@ export class LocalGitIssueEffects implements IssueLocalGitPort {
     baseCommit: string,
     signal?: AbortSignal,
   ): Promise<string[]> {
-    const [tracked, untracked] = await Promise.all([
-      this.#gitBuffer({
+    const indexRoot = await this.#privateTemporaryDirectory("inspection-index-");
+    const environment = { GIT_INDEX_FILE: join(indexRoot, "candidate.index") };
+    try {
+      // Controller-owned commits deliberately leave the ordinary index unchanged.
+      // Classify both tracked and untracked paths against the comparison parent.
+      await this.#gitText({
         cwd: workspace.root,
-        arguments: ["diff", "--no-renames", "--name-only", "-z", baseCommit, "--"],
+        arguments: ["read-tree", baseCommit],
+        environment,
         ...(signal === undefined ? {} : { signal }),
-      }),
-      this.#gitBuffer({
-        cwd: workspace.root,
-        arguments: ["ls-files", "--others", "--exclude-standard", "-z", "--"],
-        ...(signal === undefined ? {} : { signal }),
-      }),
-    ]);
-    const paths = [...parseNulList(tracked), ...parseNulList(untracked)];
-    return [...new Set(paths)].sort(compareStrings);
+      });
+      const [tracked, untracked] = await Promise.all([
+        this.#gitBuffer({
+          cwd: workspace.root,
+          arguments: ["diff", "--no-renames", "--name-only", "-z", baseCommit, "--"],
+          environment,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+        this.#gitBuffer({
+          cwd: workspace.root,
+          arguments: ["ls-files", "--others", "--exclude-standard", "-z", "--"],
+          environment,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+      ]);
+      const paths = [...parseNulList(tracked), ...parseNulList(untracked)];
+      return [...new Set(paths)].sort(compareStrings);
+    } finally {
+      await rm(indexRoot, { recursive: true, force: true });
+    }
   }
 
   async #assertNoFilters(

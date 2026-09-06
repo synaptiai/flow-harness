@@ -2692,6 +2692,13 @@ const issueWorkflowVerifierInputPolicySchema = z.discriminatedUnion("role", [
       maxBytes: z.literal(MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("issue-workflow"),
+      role: z.literal("repair"),
+      maxBytes: z.literal(MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES),
+    })
+    .strict(),
 ]);
 
 const controlFreshRecoverySchema = z
@@ -2747,7 +2754,7 @@ const controlModelVerifierSchema = z
   .strict()
   .superRefine((verifier, context) => {
     const maxPromptCharacters =
-      verifier.inputPolicy?.role === "review"
+      verifier.inputPolicy?.role === "review" || verifier.inputPolicy?.role === "repair"
         ? MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES
         : verifier.inputPolicy?.role === "implementation"
           ? MAX_MODEL_VERIFIER_INPUT_BYTES
@@ -3122,7 +3129,8 @@ const controlGraphSchema = z
       (node) =>
         node.type === "verifier" &&
         node.verifier.kind === "model" &&
-        node.verifier.inputPolicy?.role === "review",
+        (node.verifier.inputPolicy?.role === "review" ||
+          node.verifier.inputPolicy?.role === "repair"),
     )
       ? MAX_ISSUE_REVIEW_CONTROL_GRAPH_SERIALIZED_BYTES
       : MAX_CONTROL_GRAPH_SERIALIZED_BYTES;

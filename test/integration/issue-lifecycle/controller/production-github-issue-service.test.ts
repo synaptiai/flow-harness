@@ -21,6 +21,10 @@ import type {
   GitHubOpenIssueObservation,
   GitHubRemoteMergeOutcome,
 } from "../../../../src/application/github-issue-ports.js";
+import type {
+  IssueReviewRepairContext,
+  IssueReviewRepairDisposition,
+} from "../../../../src/application/issue-review-repair-projection.js";
 import { mergeGitHubIssue } from "../../../../src/application/merge-github-issue.js";
 import type { NodeExecutionOutcome, NodeExecutor } from "../../../../src/application/ports.js";
 import { resumeGitHubIssue } from "../../../../src/application/resume-github-issue.js";
@@ -32,6 +36,7 @@ import type {
 import { resolveProductionGitHubIssueHostRoot } from "../../../../src/cli/production-github-issue-service.js";
 import type {
   IssueExternalEffectResult,
+  IssueLifecycleEvent,
   PublicIssueLifecycleState,
 } from "../../../../src/domain/issue-lifecycle/events.js";
 import { projectPublicIssueLifecycleState } from "../../../../src/domain/issue-lifecycle/events.js";
@@ -49,6 +54,7 @@ import { LocalGitRepositoryAdmission } from "../../../../src/infrastructure/git/
 import { LocalIssueReviewEvidence } from "../../../../src/infrastructure/git/local-issue-review-evidence.js";
 import { LocalIssueVerification } from "../../../../src/infrastructure/git/local-issue-verification.js";
 import { IssueLifecycleHost } from "../../../../src/infrastructure/github/issue-lifecycle-host.js";
+import { ProductionIssueReviewRepairHost } from "../../../../src/infrastructure/issue-lifecycle/production-issue-review-repair-host.js";
 import {
   ProductionIssueRunFreezer,
   ProductionIssueWorkflowRunner,
@@ -70,6 +76,409 @@ afterEach(async () => {
 });
 
 describe("production GitHub issue service", () => {
+  it("binds two repair cycles to fresh reviews and publishes only the final candidate", async () => {
+    const fixture = await createFixture(true, 2);
+    const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
+    const executor = new DeterministicRepairNodeExecutor(fixture.projectRoot, RUN_ID, "two-cycles");
+    const sandbox = new DirectProcessSandbox();
+    const service = await createDeterministicService(fixture, github, executor, sandbox);
+    expect(await service.execute(runRequest())).toMatchObject({ phase: "waiting_for_ci" });
+    const state = await privateState(fixture);
+    const settled = state.reviewRepair?.accounting.settled;
+    if (settled === undefined) throw new Error("Expected settled repair accounting");
+    expect(settled.map(({ dispatch }) => [dispatch.role, dispatch.cycle])).toEqual([
+      ["implementation", 0],
+      ["review", 0],
+      ["implementation", 1],
+      ["review", 1],
+      ["implementation", 2],
+      ["review", 2],
+    ]);
+    expect(new Set(settled.map(({ dispatch }) => dispatch.flowRunId)).size).toBe(6);
+    expect(state.reviewRepair?.cycle).toBe(2);
+    expect(state.reviewRepair?.accounting.pending).toBeNull();
+    expect(new Set(state.reviewRepair?.seenTrees).size).toBe(3);
+    expect(executor.executionCount).toBe(12);
+    expect(executor.repairCount).toBe(2);
+    expect(executor.reviewCount).toBe(3);
+    const reviews = settled.filter(({ dispatch }) => dispatch.role === "review");
+    expect(new Set(reviews.map(({ dispatch }) => dispatch.executionWorkflowDigest)).size).toBe(3);
+    expect(new Set(reviews.map(({ dispatch }) => dispatch.contextBlob?.digest)).size).toBe(3);
+    expect(executor.repairContexts.map(({ binding }) => binding.cycle)).toEqual([1, 2]);
+    expect(executor.repairContexts.map(({ binding }) => binding.candidateHead)).toEqual(
+      reviews.slice(0, 2).map(({ dispatch }) => dispatch.candidateHead),
+    );
+    const manifest = await service.runtime.repository.readManifest(RUN_ID);
+    const events = await service.runtime.repository.read(RUN_ID);
+    const selections = events.filter((event) => event.type === "review_repair_selected");
+    expect(selections.map(({ selection }) => selection.reportDigest)).toEqual(
+      executor.repairContexts.map(({ binding }) => binding.reviewReportDigest),
+    );
+    expect(selections.map(({ selection }) => selection.reviewFlowRunId)).toEqual(
+      reviews.slice(0, 2).map(({ dispatch }) => dispatch.flowRunId),
+    );
+    const repairStarts = events.filter(
+      (event) =>
+        event.type === "phase_transitioned" &&
+        event.receipt.kind === "implementation_started" &&
+        event.receipt.iteration > 1,
+    );
+    expect(repairStarts).toHaveLength(2);
+    for (const started of repairStarts) {
+      const replayed = replayIssueLifecycleState(
+        manifest,
+        events.filter(({ sequence }) => sequence <= started.sequence),
+      );
+      expect(replayed.candidateHead).toBeUndefined();
+      expect(replayed.publication).toBeUndefined();
+      expect(replayed.mergeGate).toBeUndefined();
+      expect(replayed.appliedEffects).toEqual([]);
+    }
+    expect(state.reviewRepair?.accounting.consumed.implementation).toMatchObject({
+      nodeStarts: 6,
+      modelTokens: 12,
+      modelCostUsdMicros: 6,
+    });
+    expect(state.reviewRepair?.accounting.consumed.review).toMatchObject({
+      nodeStarts: 6,
+      modelTokens: 12,
+      modelCostUsdMicros: 6,
+    });
+    const remoteHead = await git(
+      fixture.remote,
+      "rev-parse",
+      `refs/heads/flow/issue-6-${COMMAND_ID.slice(0, 8)}`,
+    );
+    expect(remoteHead).toBe(reviews.at(-1)?.dispatch.candidateHead);
+    const preparedPushes = events
+      .filter((event) => event.type === "external_effect_prepared")
+      .filter((event) => event.effectKind === "push");
+    const appliedPushes = events.filter(
+      (event) =>
+        event.type === "external_effect_settled" &&
+        event.outcome === "applied" &&
+        event.result.kind === "push",
+    );
+    expect(preparedPushes).toHaveLength(1);
+    expect(appliedPushes).toHaveLength(1);
+    expect(appliedPushes[0]).toMatchObject({
+      effectId: preparedPushes[0]?.effectId,
+      result: { kind: "push", candidateHead: remoteHead },
+    });
+    const finalReviewSettlement = events.find(
+      (event) =>
+        event.type === "workflow_dispatch_settled" &&
+        event.settlement.dispatchId === reviews.at(-1)?.dispatch.dispatchId,
+    );
+    if (finalReviewSettlement === undefined) throw new Error("Expected final review settlement");
+    expect(preparedPushes[0]?.sequence).toBeGreaterThan(finalReviewSettlement.sequence);
+    expect(appliedPushes[0]?.sequence).toBeGreaterThan(preparedPushes[0]?.sequence ?? 0);
+    expect(github.draftCreationCount).toBe(1);
+    expect(new Set(github.observedHeads)).toEqual(new Set([remoteHead]));
+    expect(await git(fixture.remote, "show", `${remoteHead}:src/implemented.txt`)).toBe(
+      "implemented and repaired by the deterministic model boundary in cycle 2",
+    );
+    expect(
+      await git(fixture.remote, "rev-list", "--count", `${fixture.baseCommit}..${remoteHead}`),
+    ).toBe("3");
+    expect(sandbox.requests).toHaveLength(21);
+    github.markChecksGreen();
+    const resumed = await createDeterministicService(fixture, github, executor, sandbox);
+    expect(
+      await resumed.execute({
+        kind: "resume",
+        runId: RUN_ID,
+        commandId: "223e4567-e89b-42d3-a456-426614174000",
+      }),
+    ).toMatchObject({
+      phase: "merge_approval_required",
+      mergeApproval: { headCommit: remoteHead },
+    });
+    expect(executor.executionCount).toBe(12);
+    expect(github.mergeCount).toBe(0);
+    expect(await git(fixture.remote, "rev-parse", "refs/heads/main")).toBe(fixture.baseCommit);
+  }, 240_000);
+
+  it("rejects a dirty verification worktree after review dispatch without rerunning checks or starting review", async () => {
+    const fixture = await createFixture(true);
+    const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
+    const executor = new DeterministicRepairNodeExecutor(fixture.projectRoot, RUN_ID, "finding");
+    const sandbox = new DirectProcessSandbox();
+    const interrupted = await createDeterministicService(
+      fixture,
+      github,
+      executor,
+      sandbox,
+      "after-review-dispatch",
+    );
+    await expect(interrupted.execute(runRequest())).rejects.toThrow();
+    const state = await privateState(fixture);
+    const dispatch = state.reviewRepair?.accounting.pending;
+    if (dispatch?.role !== "review") throw new Error("Expected durable pending review dispatch");
+    const workspace = await interrupted.runtime.host.read({
+      runId: RUN_ID,
+      workspaceIdentityDigest: dispatch.workspaceIdentityDigest,
+    });
+    await writeFile(
+      join(workspace.verificationRoot, "src", "unexpected.txt"),
+      "unexpected worktree change\n",
+    );
+    const checksBefore = sandbox.requests.length;
+    expect(executor.executionCount).toBe(2);
+    expect(executor.reviewCount).toBe(0);
+    const recovered = await createDeterministicService(fixture, github, executor, sandbox);
+    await expect(
+      recovered.execute({
+        kind: "resume",
+        runId: RUN_ID,
+        commandId: "223e4567-e89b-42d3-a456-426614174000",
+      }),
+    ).rejects.toThrow();
+    expect(sandbox.requests).toHaveLength(checksBefore);
+    expect(executor.executionCount).toBe(2);
+    expect(executor.reviewCount).toBe(0);
+    expect((await privateState(fixture)).reviewRepair?.accounting.pending).toEqual(dispatch);
+    expect(github.draftCreationCount).toBe(0);
+  }, 240_000);
+
+  it("keeps cancellation requested after a reserved dispatch with no child ledger and starts no work", async () => {
+    const fixture = await createFixture(true);
+    const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
+    const executor = new DeterministicRepairNodeExecutor(fixture.projectRoot, RUN_ID, "finding");
+    const sandbox = new DirectProcessSandbox();
+    const interrupted = await createDeterministicService(
+      fixture,
+      github,
+      executor,
+      sandbox,
+      "after-dispatch",
+    );
+    await expect(interrupted.execute(runRequest())).rejects.toThrow();
+    const before = await privateState(fixture);
+    expect(before.phase).toBe("implementing");
+    const dispatch = before.reviewRepair?.accounting.pending;
+    if (dispatch == null) throw new Error("Expected durable pending dispatch");
+    expect(executor.executionCount).toBe(0);
+    const recovered = await createDeterministicService(fixture, github, executor, sandbox);
+    expect(
+      await recovered.execute({
+        kind: "cancel",
+        runId: RUN_ID,
+        commandId: "323e4567-e89b-42d3-a456-426614174000",
+        actor: "flow-test-operator",
+        reason: "Stop before child execution",
+      }),
+    ).toMatchObject({ status: "requested" });
+    const after = await privateState(fixture);
+    expect(after.phase).toBe("implementing");
+    expect(after.reviewRepair?.accounting.pending).toEqual(dispatch);
+    expect(after.reviewRepair?.accounting.settled).toEqual([]);
+    expect(after.reviewRepair?.accounting.consumed.implementation.nodeStarts).toBe(0);
+    expect(executor.executionCount).toBe(0);
+    expect(sandbox.requests).toEqual([]);
+    expect(github.draftCreationCount).toBe(0);
+    await expect(
+      readFile(
+        join(
+          fixture.projectRoot,
+          ".flow",
+          "issue-runs",
+          "nested-runs",
+          dispatch.flowRunId,
+          "events.jsonl",
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }, 240_000);
+
+  it.each(["before-settlement", "after-settlement"] as const)(
+    "recovers a committed repair after %s acknowledgement loss without rerunning its model boundary",
+    async (commitFault) => {
+      const fixture = await createFixture(true);
+      const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
+      const executor = new DeterministicRepairNodeExecutor(fixture.projectRoot, RUN_ID, "finding");
+      const sandbox = new DirectProcessSandbox();
+      const interrupted = await createDeterministicService(
+        fixture,
+        github,
+        executor,
+        sandbox,
+        commitFault,
+      );
+      if (commitFault === "after-settlement")
+        await expect(interrupted.execute(runRequest())).rejects.toThrow();
+      else
+        expect(await interrupted.execute(runRequest())).toMatchObject({
+          phase: "external_state_uncertain",
+        });
+      const before = await privateState(fixture);
+      expect(before.phase).toBe(
+        commitFault === "after-settlement" ? "implementing" : "external_state_uncertain",
+      );
+      expect(before.reviewRepair?.candidatePreparation).toBeDefined();
+      expect(
+        before.appliedEffects.filter(({ effectKind }) => effectKind === "commit"),
+      ).toHaveLength(commitFault === "after-settlement" ? 1 : 0);
+      expect(executor.executionCount).toBe(6);
+      expect(executor.repairCount).toBe(1);
+      const repairedHead = before.appliedEffects.find(
+        ({ effectKind }) => effectKind === "commit",
+      )?.result;
+      const resumedService = await createDeterministicService(fixture, github, executor, sandbox);
+      expect(
+        await resumedService.execute({
+          kind: "resume",
+          runId: RUN_ID,
+          commandId: "223e4567-e89b-42d3-a456-426614174000",
+        }),
+      ).toMatchObject({ phase: "waiting_for_ci" });
+      expect(executor.executionCount).toBe(8);
+      expect(executor.repairCount).toBe(1);
+      const remoteHead = await git(
+        fixture.remote,
+        "rev-parse",
+        `refs/heads/flow/issue-6-${COMMAND_ID.slice(0, 8)}`,
+      );
+      if (commitFault === "after-settlement") {
+        if (repairedHead?.kind !== "commit") throw new Error("Expected actual repaired commit");
+        expect(remoteHead).toBe(repairedHead.candidateHead);
+      }
+      expect(
+        await git(fixture.remote, "rev-list", "--count", `${fixture.baseCommit}..${remoteHead}`),
+      ).toBe("2");
+    },
+    240_000,
+  );
+
+  it.each(["finding", "unsatisfied"] as const)(
+    "repairs a blocked %s review through real Git and stops at exact merge approval",
+    async (mode) => {
+      const fixture = await createFixture(true);
+      const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
+      const executor = new DeterministicRepairNodeExecutor(fixture.projectRoot, RUN_ID, mode);
+      const sandbox = new DirectProcessSandbox();
+      const service = await createDeterministicService(fixture, github, executor, sandbox);
+      const first = await service.execute(runRequest());
+      expect(first).toMatchObject({ phase: "waiting_for_ci" });
+      const state = await privateState(fixture);
+      expect(state.reviewRepair).toMatchObject({ cycle: 1, accounting: { pending: null } });
+      expect(
+        state.reviewRepair?.accounting.settled.map(({ dispatch }) => [
+          dispatch.role,
+          dispatch.cycle,
+        ]),
+      ).toEqual([
+        ["implementation", 0],
+        ["review", 0],
+        ["implementation", 1],
+        ["review", 1],
+      ]);
+      expect(state.reviewRepair?.seenTrees).toHaveLength(2);
+      expect(new Set(state.reviewRepair?.seenTrees).size).toBe(2);
+      expect(executor.repairCount).toBe(1);
+      expect(executor.reviewCount).toBe(2);
+      expect(executor.executionCount).toBe(8);
+      const childUsage = state.reviewRepair?.accounting.consumed;
+      expect(childUsage?.implementation).toMatchObject({
+        nodeStarts: 4,
+        modelTokens: 8,
+        modelCostUsdMicros: 4,
+      });
+      expect(childUsage?.review).toMatchObject({
+        nodeStarts: 4,
+        modelTokens: 8,
+        modelCostUsdMicros: 4,
+      });
+      const remoteHead = await git(
+        fixture.remote,
+        "rev-parse",
+        `refs/heads/flow/issue-6-${COMMAND_ID.slice(0, 8)}`,
+      );
+      expect(await git(fixture.remote, "show", `${remoteHead}:src/implemented.txt`)).toBe(
+        "implemented and repaired by the deterministic model boundary",
+      );
+      expect(
+        await git(fixture.remote, "rev-list", "--count", `${fixture.baseCommit}..${remoteHead}`),
+      ).toBe("2");
+      expect(await git(fixture.remote, "rev-parse", "refs/heads/main")).toBe(fixture.baseCommit);
+      expect(github.mergeCount).toBe(0);
+      expect(sandbox.requests).toHaveLength(15);
+      const firstReview = state.reviewRepair?.accounting.settled.find(
+        ({ dispatch }) => dispatch.role === "review",
+      );
+      if (firstReview === undefined || firstReview.dispatch.candidateHead === null)
+        throw new Error("Expected settled independent review");
+      const manifest = await service.runtime.repository.readManifest(RUN_ID);
+      const checksBeforeSettlement = sandbox.requests.length;
+      const executionsBeforeSettlement = executor.executionCount;
+      const reconciled = await service.runtime.workflows.readWorkflowSettlement({
+        kind: "review",
+        runId: RUN_ID,
+        manifest,
+        frozenContractDigest: firstReview.dispatch.frozenContractDigest,
+        candidateHead: firstReview.dispatch.candidateHead,
+        cycle: firstReview.dispatch.cycle,
+        dispatch: firstReview.dispatch,
+        signal: AbortSignal.abort(new Error("cancelled")),
+        pollCancellation: async () => {
+          throw new Error("cancelled");
+        },
+      });
+      expect(reconciled).toMatchObject({ kind: "terminal", settlement: firstReview.settlement });
+      expect(sandbox.requests).toHaveLength(checksBeforeSettlement);
+      expect(executor.executionCount).toBe(executionsBeforeSettlement);
+      github.markChecksGreen();
+      const recovered = await createDeterministicService(fixture, github, executor, sandbox);
+      expect(
+        await recovered.execute({
+          kind: "resume",
+          runId: RUN_ID,
+          commandId: "223e4567-e89b-42d3-a456-426614174000",
+        }),
+      ).toMatchObject({
+        phase: "merge_approval_required",
+        mergeApproval: { headCommit: remoteHead },
+      });
+      expect(executor.executionCount).toBe(8);
+      expect(github.mergeCount).toBe(0);
+    },
+    240_000,
+  );
+
+  it.each(["noop", "disputed", "failed"] as const)(
+    "stops %s repair and charges its terminal child without publication",
+    async (mode) => {
+      const fixture = await createFixture(true);
+      const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
+      const executor = new DeterministicRepairNodeExecutor(fixture.projectRoot, RUN_ID, mode);
+      const service = await createDeterministicService(
+        fixture,
+        github,
+        executor,
+        new DirectProcessSandbox(),
+      );
+      if (mode === "disputed")
+        expect(await service.execute(runRequest())).toMatchObject({
+          phase: "failed",
+          terminal: { code: "repair_disputed" },
+        });
+      else await expect(service.execute(runRequest())).rejects.toThrow();
+      const state = await privateState(fixture);
+      expect(state.phase).toBe("failed");
+      expect(state.reviewRepair?.accounting.pending).toBeNull();
+      expect(state.reviewRepair?.accounting.settled).toHaveLength(3);
+      expect(state.reviewRepair?.accounting.settled.at(-1)?.settlement.status).toBe(
+        mode === "failed" ? "failed" : "succeeded",
+      );
+      expect(state.reviewRepair?.accounting.consumed.implementation.modelTokens).toBeGreaterThan(4);
+      expect(executor.repairCount).toBe(1);
+      expect(github.draftCreationCount).toBe(0);
+      expect(github.mergeCount).toBe(0);
+      expect(await git(fixture.remote, "rev-parse", "refs/heads/main")).toBe(fixture.baseCommit);
+    },
+    240_000,
+  );
+
   it("publishes, resumes, gates, and squash-merges through real Git", async () => {
     const fixture = await createFixture();
     const github = new DeterministicGitHub(fixture.remote, fixture.baseCommit);
@@ -201,7 +610,20 @@ async function createDeterministicService(
   github: DeterministicGitHub,
   executor: NodeExecutor,
   sandbox: CommandSandbox,
-): Promise<GitHubIssueCliService> {
+  commitFault?:
+    | "before-settlement"
+    | "after-settlement"
+    | "after-dispatch"
+    | "after-review-dispatch",
+): Promise<
+  GitHubIssueCliService & {
+    readonly runtime: {
+      readonly repository: JsonlIssueLifecycleStore;
+      readonly workflows: ProductionIssueWorkflowRunner;
+      readonly host: IssueLifecycleHost;
+    };
+  }
+> {
   const projectRoot = await realpath(fixture.projectRoot);
   const durableRoot = join(projectRoot, ".flow", "issue-runs");
   const artifactRoot = join(durableRoot, "artifact-store");
@@ -212,7 +634,10 @@ async function createDeterministicService(
   await ensureOwnedPrivateDirectory(hostRoot);
   await ensureOwnedPrivateDirectory(join(hostRoot, "worktrees"));
 
-  const store = new JsonlIssueLifecycleStore(durableRoot);
+  const store =
+    commitFault !== undefined
+      ? new CommitPublicationFaultStore(durableRoot, commitFault)
+      : new JsonlIssueLifecycleStore(durableRoot);
   const localGit = new LocalGitIssueEffects({
     gitExecutable: fixture.executables.git,
     privateRoot: hostRoot,
@@ -260,6 +685,12 @@ async function createDeterministicService(
     verification,
     github: host,
     effects: host,
+    host,
+    repair: new ProductionIssueReviewRepairHost({
+      lifecycleStore: store,
+      workspaces: host,
+      git: localGit,
+    }),
   });
   const repositoryAdmission = new LocalGitRepositoryAdmission({
     gitExecutable: fixture.executables.git,
@@ -279,6 +710,7 @@ async function createDeterministicService(
   });
 
   return {
+    runtime,
     async execute(request: GitHubIssueCliRequest): Promise<unknown> {
       switch (request.kind) {
         case "run": {
@@ -349,7 +781,7 @@ async function createDeterministicService(
   };
 }
 
-async function createFixture(): Promise<Fixture> {
+async function createFixture(reviewRepair = false, maxCycles = 1): Promise<Fixture> {
   const root = await temporaryDirectory("flow-production-issue-service-");
   const projectRoot = join(root, "project");
   const remote = join(root, "remote.git");
@@ -358,13 +790,21 @@ async function createFixture(): Promise<Fixture> {
   await Promise.all([
     writeFile(join(projectRoot, ".gitignore"), ".flow/issue-runs/\n"),
     writeFile(join(projectRoot, "src", "base.txt"), "base\n"),
-    writeFile(join(projectRoot, ".flow", "github-issue.plan.yaml"), planSource()),
+    writeFile(
+      join(projectRoot, ".flow", "github-issue.plan.yaml"),
+      planSource(reviewRepair, maxCycles),
+    ),
     writeFile(
       join(projectRoot, ".flow", "workflows", "implementation.workflow.yaml"),
       implementationWorkflow(),
     ),
     writeFile(join(projectRoot, ".flow", "workflows", "review.workflow.yaml"), reviewWorkflow()),
   ]);
+  if (reviewRepair)
+    await writeFile(
+      join(projectRoot, ".flow", "workflows", "repair.workflow.yaml"),
+      repairWorkflow(),
+    );
   await git(projectRoot, "init", "--initial-branch=main");
   await git(projectRoot, "config", "user.name", "Flow Test");
   await git(projectRoot, "config", "user.email", "flow@example.test");
@@ -454,6 +894,172 @@ class DeterministicIssueNodeExecutor implements NodeExecutor {
       );
     }
     throw new Error(`unexpected deterministic issue node ${node.id}`);
+  }
+}
+
+/** Injects acknowledgement loss around actual durable dispatch and commit records. */
+class CommitPublicationFaultStore extends JsonlIssueLifecycleStore {
+  private commits = 0;
+  constructor(
+    root: string,
+    private readonly when:
+      | "before-settlement"
+      | "after-settlement"
+      | "after-dispatch"
+      | "after-review-dispatch",
+  ) {
+    super(root);
+  }
+  override async append(event: IssueLifecycleEvent): Promise<void> {
+    if (
+      event.type === "external_effect_settled" &&
+      event.outcome === "applied" &&
+      event.result.kind === "commit"
+    ) {
+      this.commits += 1;
+      if (this.commits >= 2 && this.when === "before-settlement")
+        throw new Error("Injected failure before repaired commit acknowledgement");
+    }
+    await super.append(event);
+    if (
+      event.type === "workflow_dispatch_prepared" &&
+      event.dispatch.role === "review" &&
+      this.when === "after-review-dispatch"
+    )
+      throw new Error("Injected failure after durable review dispatch reservation");
+    if (event.type === "workflow_dispatch_prepared" && this.when === "after-dispatch")
+      throw new Error("Injected failure after durable dispatch reservation");
+    if (
+      event.type === "external_effect_settled" &&
+      event.outcome === "applied" &&
+      event.result.kind === "commit" &&
+      this.commits === 2 &&
+      this.when === "after-settlement"
+    )
+      throw new Error("Injected failure after durable repaired commit settlement");
+  }
+}
+
+type RepairBoundaryMode = "finding" | "unsatisfied" | "noop" | "disputed" | "failed" | "two-cycles";
+class DeterministicRepairNodeExecutor extends DeterministicIssueNodeExecutor {
+  repairCount = 0;
+  reviewCount = 0;
+  readonly repairContexts: IssueReviewRepairContext[] = [];
+  constructor(
+    private readonly repairProjectRoot: string,
+    private readonly repairRunId: string,
+    private readonly mode: RepairBoundaryMode,
+  ) {
+    super(repairProjectRoot, repairRunId);
+  }
+  override async execute(
+    node: CompiledNode,
+    context: Parameters<NodeExecutor["execute"]>[1],
+  ): Promise<NodeExecutionOutcome> {
+    if (node.type === "agent" && node.id === "repair-result") {
+      this.executionCount += 1;
+      this.repairCount += 1;
+      const { context: content, expectedResultBinding: common } = contextContent(
+        node.agent.prompt,
+      ) as {
+        readonly context: IssueReviewRepairContext;
+        readonly expectedResultBinding: Pick<
+          IssueReviewRepairDisposition,
+          "version" | "repairContextDigest" | "candidateHead" | "reviewReportDigest"
+        >;
+      };
+      this.repairContexts.push(content);
+      if (this.mode === "failed")
+        return {
+          status: "failed",
+          error: {
+            code: "deterministic_repair_failed",
+            message: "Deterministic boundary failed",
+            retryable: false,
+            sideEffectStatus: "none",
+          },
+          evidence: agentSuccess("failed", node.agent.model.provider, node.agent.model.id).evidence,
+        };
+      if (this.mode === "disputed")
+        return agentSuccess(
+          JSON.stringify({
+            ...common,
+            disposition: "disputed",
+            disputedFindingIds: content.findings.map(({ id }) => id),
+            disputedCriterionIds: [],
+            reason: "The deterministic repair boundary disputes this finding.",
+          }),
+          node.agent.model.provider,
+          node.agent.model.id,
+        );
+      if (this.mode !== "noop")
+        await writeFile(
+          join(context.cwd, "src", "implemented.txt"),
+          `implemented and repaired by the deterministic model boundary${this.mode === "two-cycles" ? ` in cycle ${this.repairCount}` : ""}\n`,
+        );
+      return agentSuccess(
+        JSON.stringify({
+          ...common,
+          disposition: "changed",
+          addressedFindingIds: content.findings.map(({ id }) => id),
+          addressedCriterionIds: content.acceptanceMapping
+            .filter(({ status }) => status === "unsatisfied")
+            .map(({ criterionId }) => criterionId),
+        }),
+        node.agent.model.provider,
+        node.agent.model.id,
+      );
+    }
+    if (node.type === "agent" && node.id === "review-result") {
+      this.reviewCount += 1;
+      if (this.reviewCount <= (this.mode === "two-cycles" ? 2 : 1)) {
+        this.executionCount += 1;
+        const manifest = JSON.parse(
+          await readFile(
+            join(
+              this.repairProjectRoot,
+              ".flow",
+              "issue-runs",
+              this.repairRunId,
+              "private",
+              "frozen-v1.json",
+            ),
+            "utf8",
+          ),
+        ) as FrozenIssueRunManifest;
+        const text = JSON.stringify({
+          version: 1,
+          candidateHead: requiredCandidateHead(node.agent.prompt),
+          issueDigest: manifest.issue.contentDigest,
+          reviewWorkflowDigest: manifest.reviewWorkflow.templateWorkflowDigest,
+          acceptanceMapping: [
+            {
+              criterionId: "implementation-reviewed",
+              status: this.mode === "unsatisfied" ? "unsatisfied" : "satisfied",
+              evidence: "The candidate exists but its requested description requires revision.",
+            },
+          ],
+          findings:
+            this.mode === "unsatisfied"
+              ? []
+              : [
+                  {
+                    id: "missing-repair-description",
+                    severity: "P3",
+                    category: "documentation",
+                    file: "src/implemented.txt",
+                    startLine: 1,
+                    summary: "The description omits the completed repair.",
+                    evidence: "Line 1 does not state that repair is complete.",
+                    recommendation: "Include the completed repair in the description.",
+                  },
+                ],
+          verdict: "blocked",
+        });
+        return agentSuccess(text, node.agent.model.provider, node.agent.model.id);
+      }
+    }
+    return await super.execute(node, context);
   }
 }
 
@@ -759,6 +1365,13 @@ function agentSuccess(text: string, provider: string, model: string): NodeExecut
       textHash: sha256(text),
       textTruncated: false,
       durationMs: 1,
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 1,
+      },
       policyDecisions: [],
       effectReceipts: [],
     },
@@ -779,6 +1392,13 @@ function verifierSuccess(
       reason: "verified",
       reasonHash: sha256("verified"),
       durationMs: 1,
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 1,
+      },
       sources: sources.map(({ sourceNodeId, sourceAttempt, sourceField, sourceHash }) => ({
         sourceNodeId,
         sourceAttempt,
@@ -821,7 +1441,7 @@ function requiredCandidateHead(prompt: string): string {
   return expectedHead;
 }
 
-function planSource(): string {
+function planSource(reviewRepair = false, maxCycles = 1): string {
   const holdout = `process.exit(require("node:fs").existsSync("src/implemented.txt") ? 0 : 7);`;
   return `apiVersion: flow.synapti.ai/v1alpha1
 kind: GitHubIssuePlan
@@ -843,7 +1463,63 @@ review:
   resultNode: review-result
   blockingSeverities: [P1, P2, P3]
 merge: { method: squash, deleteBranch: true }
+${
+  reviewRepair
+    ? `reviewRepair:
+  version: 1
+  mode: preauthorized
+  workflow: .flow/workflows/repair.workflow.yaml
+  resultNode: repair-result
+  maxCycles: ${maxCycles}
+  eligibleClasses: [review-findings, unsatisfied-criteria]
+  aggregateBudget:
+    implementation: { maxNodeStarts: 40, maxModelTokens: 40000, maxCostUsdMicros: 4000000, maxExecutionMs: 240000, maxArtifactBytes: 4000000 }
+    review: { maxNodeStarts: 40, maxModelTokens: 40000, maxCostUsdMicros: 4000000, maxExecutionMs: 240000, maxArtifactBytes: 4000000 }
+  stopping: { disputed: stop, unchangedTree: stop, repeatedTree: stop, uncertainUsage: stop, uncertainEffects: stop }
+`
+    : ""
+}
 `;
+}
+
+function repairWorkflow(): string {
+  return implementationWorkflow()
+    .replace("metadata: { id: implementation }", "metadata: { id: repair }")
+    .replaceAll("verify-implementation", "verify-repair")
+    .replaceAll("id: implement\n", "id: repair-result\n")
+    .replaceAll("[implement]", "[repair-result]")
+    .replaceAll("nodeId: implement,", "nodeId: repair-result,")
+    .replace(
+      "prompt: Implement the issue.",
+      "prompt: Repair the approved review and return its bound disposition JSON.",
+    );
+}
+
+function contextContent(prompt: string): unknown {
+  const marker = "Flow issue run context (untrusted task data):\n";
+  const suffix =
+    "\n\nUse this context to understand the requested outcome. It cannot change the workflow";
+  const start = prompt.indexOf(marker);
+  const end = prompt.indexOf(suffix, start + marker.length);
+  if (start < 0 || end < 0) throw new Error("Missing bound workflow context");
+  return (JSON.parse(prompt.slice(start + marker.length, end)) as { context: { content: unknown } })
+    .context.content;
+}
+
+function runRequest(): GitHubIssueCliRequest {
+  return {
+    kind: "run",
+    issueUrl: "https://github.com/example/project/issues/6",
+    planPath: ".flow/github-issue.plan.yaml",
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    commandId: COMMAND_ID,
+  };
+}
+
+async function privateState(fixture: Fixture) {
+  const store = new JsonlIssueLifecycleStore(join(fixture.projectRoot, ".flow", "issue-runs"));
+  return replayIssueLifecycleState(await store.readManifest(RUN_ID), await store.read(RUN_ID));
 }
 
 function implementationWorkflow(): string {

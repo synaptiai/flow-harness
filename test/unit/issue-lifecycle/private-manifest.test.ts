@@ -10,6 +10,70 @@ import {
 } from "../../../src/domain/issue-lifecycle/private-manifest.js";
 
 describe("private issue-run manifest", () => {
+  it("preserves exact legacy manifest and budget digests when repair is omitted", () => {
+    expect(calculateIssuePrivateManifestDigest(manifest())).toBe(
+      "411080bb5d883dbe60342e1664283d8c9edc5a45673ee20de192928324197a0e",
+    );
+    expect(calculateIssueBudgetDigest(manifest().budgets)).toBe(
+      "87cb8414646c52ad697c65bb284b04ae1f49d306d6a67272c54a5e46e66fec65",
+    );
+  });
+
+  it("freezes repair authority, source identity, and aggregate budgets together", () => {
+    const input = repairManifest();
+    const parsed = parseIssuePrivateManifest(input);
+    expect(parsed).toHaveProperty("reviewRepair", input.reviewRepair);
+    expect(Object.isFrozen(Reflect.get(parsed, "reviewRepair"))).toBe(true);
+    expect(calculateIssuePrivateManifestDigest(input)).not.toBe(
+      calculateIssuePrivateManifestDigest(manifest()),
+    );
+    const changed = repairManifest();
+    changed.reviewRepair.maxCycles += 1;
+    expect(calculateIssuePrivateManifestDigest(changed)).not.toBe(
+      calculateIssuePrivateManifestDigest(input),
+    );
+  });
+
+  it("rejects a repair policy without its frozen source or budget identity", () => {
+    const input = repairManifest();
+    expect(() => parseIssuePrivateManifest({ ...input, artifacts: manifest().artifacts })).toThrow(
+      /repair/i,
+    );
+    expect(() =>
+      parseIssuePrivateManifest({
+        ...input,
+        budgets: manifest().budgets,
+        budgetDigest: manifest().budgetDigest,
+      }),
+    ).toThrow(/repair/i);
+    expect(() => parseIssuePrivateManifest({ ...manifest(), artifacts: input.artifacts })).toThrow(
+      /repair/i,
+    );
+    expect(() =>
+      parseIssuePrivateManifest({
+        ...manifest(),
+        budgets: input.budgets,
+        budgetDigest: input.budgetDigest,
+      }),
+    ).toThrow(/repair/i);
+  });
+
+  it("rejects aggregate allowances that disagree with the frozen repair policy", () => {
+    const input = repairManifest();
+    input.reviewRepair.aggregateBudget.implementation.maxModelTokens += 1;
+    expect(() => parseIssuePrivateManifest(input)).toThrow(/repair.*budget|budget.*repair/i);
+  });
+
+  it("rejects an initial or repair child envelope that cannot fit its aggregate role pool", () => {
+    for (const child of ["implementation", "review", "repair"] as const) {
+      const input = repairManifest();
+      if (child === "repair") input.budgets.reviewRepair.repair.maxModelTokens = 100_000;
+      else input.budgets[child].maxModelTokens = 100_000;
+      input.budgetDigest = calculateIssueBudgetDigest(input.budgets);
+      expect(() => parseIssuePrivateManifest(input)).toThrow(/envelope|aggregate/i);
+    }
+  });
+
   it("binds every frozen identity and returns a detached deeply frozen value", () => {
     const input = manifest();
     const parsed = parseIssuePrivateManifest(input);
@@ -188,6 +252,44 @@ describe("private issue-run manifest", () => {
     );
   });
 });
+
+function repairManifest() {
+  const original = manifest();
+  const aggregateBudget = { implementation: completeBudget(10), review: completeBudget(10) };
+  const budgets = {
+    ...original.budgets,
+    reviewRepair: { aggregateBudget: structuredClone(aggregateBudget), repair: completeBudget(2) },
+  };
+  return {
+    ...original,
+    reviewRepair: {
+      version: 1,
+      mode: "preauthorized",
+      maxCycles: 2,
+      eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+      aggregateBudget,
+      stopping: {
+        disputed: "stop",
+        unchangedTree: "stop",
+        repeatedTree: "stop",
+        uncertainUsage: "stop",
+        uncertainEffects: "stop",
+      },
+      workflow: {
+        ...original.implementationWorkflow,
+        sourceDigest: "d".repeat(64),
+        templateWorkflowDigest: "e".repeat(64),
+        resultNodeId: "repair-result",
+      },
+    },
+    budgets,
+    budgetDigest: calculateIssueBudgetDigest(budgets),
+    artifacts: {
+      ...original.artifacts,
+      repairWorkflow: blob("application/vnd.flow.workflow+yaml", "repair"),
+    },
+  };
+}
 
 function manifest() {
   const issue = blob("application/vnd.flow.github-issue+json", "issue");

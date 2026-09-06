@@ -39,6 +39,48 @@ const at = "2026-08-28T12:00:00.000Z";
 const issueRunId = "issue-11111111-1111-4111-8111-111111111111";
 
 describe("foreground GitHub issue controller", () => {
+  it("rejects an incomplete repair adapter before dispatching any paid workflow", async () => {
+    const original = frozenManifest();
+    const pools = { implementation: workflowBudget(), review: workflowBudget() };
+    const budgets = {
+      ...original.budgets,
+      reviewRepair: { aggregateBudget: pools, repair: workflowBudget() },
+    };
+    const manifest = parseIssuePrivateManifest({
+      ...original,
+      budgets,
+      budgetDigest: calculateIssueBudgetDigest(budgets),
+      reviewRepair: {
+        version: 1,
+        mode: "preauthorized",
+        maxCycles: 1,
+        eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+        aggregateBudget: pools,
+        stopping: {
+          disputed: "stop",
+          unchangedTree: "stop",
+          repeatedTree: "stop",
+          uncertainUsage: "stop",
+          uncertainEffects: "stop",
+        },
+        workflow: {
+          ...original.implementationWorkflow,
+          templateWorkflowDigest: sha("8"),
+          resultNodeId: "repair",
+        },
+      },
+      artifacts: {
+        ...original.artifacts,
+        repairWorkflow: original.artifacts.implementationWorkflow,
+      },
+    });
+    const harness = scriptedHarness(manifest);
+    await expect(runGitHubIssue(runCommand(), harness.dependencies)).rejects.toThrow(
+      /repair.*adapter/i,
+    );
+    expect(harness.workflowRequests).toEqual([]);
+    expect(harness.executedEffects).toEqual([]);
+  });
   it("runs implementation, verification, review, and publication but stops before merge", async () => {
     const harness = scriptedHarness();
     const command = runCommand();
@@ -496,8 +538,7 @@ describe("foreground GitHub issue controller", () => {
   });
 });
 
-function scriptedHarness() {
-  const manifest = frozenManifest();
+function scriptedHarness(manifest = frozenManifest()) {
   const repository = new MemoryIssueControllerRepository();
   const applied = new Map<string, IssueExternalEffectResult>();
   const executedEffects: string[] = [];

@@ -886,11 +886,13 @@ and the lifecycle stopped before publication. All three attempts remain in the d
 
 All aggregate budgets remain unchanged. UC-01 and Slice 13.3 remain open.
 
-The [usable-checkpoint plan](usable-checkpoint-plan.md#design-bounded-review-repair)
-promotes UC-05's repair design for a decision before another attempt. Correct review-report
-classification without waiving findings. A repair loop needs explicit frozen authority,
-lifecycle-wide accounting, progress checks, and fresh exact-candidate verification. It is not
-enabled by this result. Onboarding and guided planning remain the next user-facing priorities.
+The [usable-checkpoint plan](usable-checkpoint-plan.md#implement-bounded-review-repair)
+tracks the approved UC-05 repair implementation and its remaining qualification gates. Source
+now contains frozen repair authority, aggregate child accounting, exact-tree progress checks,
+and fresh exact-candidate verification. Local gates passed. Hosted and installed-package
+qualification remain open. Neither
+this implementation nor the earlier pilot result authorizes another live attempt. Onboarding
+and guided planning remain the next user-facing priorities.
 
 ### Slice 13.4: Qualify and publish the usable checkpoint
 

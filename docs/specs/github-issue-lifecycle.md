@@ -206,6 +206,83 @@ or symbolic-link target escapes its admitted namespace.
 `candidate.allowedPathPrefixes` cannot grant the model write access to `.flow` or `.git`. A
 workflow path identifies immutable input. It doesn't create a candidate write permission.
 
+## Opt-in bounded review repair
+
+This section describes the unreleased source implementation. Its
+[qualification work](../usable-checkpoint-plan.md#implement-bounded-review-repair) remains open.
+Do not assume that an existing published package accepts this policy.
+
+Omitting `reviewRepair` preserves the legacy plan, manifest, and budget digests. A valid blocked
+review then stops the run. An opted-in plan must supply every field in this table:
+
+| Field below `reviewRepair` | Required contract |
+| --- | --- |
+| `version` and `mode` | `1` and `preauthorized`. |
+| `workflow` and `resultNode` | A separate frozen workflow path and the exact agent node that returns the structured repair disposition. The path must differ from implementation and review paths. |
+| `maxCycles` | A positive safe integer less than `Number.MAX_SAFE_INTEGER`. No default. Initial implementation is not a repair cycle. |
+| `eligibleClasses` | A nonempty, unique subset of `review-findings` and `unsatisfied-criteria`. |
+| `aggregateBudget.implementation` | The complete allowance shared by initial implementation and every repair. |
+| `aggregateBudget.review` | The complete allowance shared by all independent reviews. Capacity cannot move between roles. |
+| `stopping` | All five fields must equal `stop`: `disputed`, `unchangedTree`, `repeatedTree`, `uncertainUsage`, and `uncertainEffects`. |
+
+Each aggregate allowance uses positive safe integers for `maxNodeStarts`, `maxModelTokens`,
+`maxCostUsdMicros`, `maxExecutionMs`, and `maxArtifactBytes`. Cost is in millionths of a US dollar.
+Execution time is in milliseconds. These plan fields differ from authored workflow
+`budget.maxCostUsd`, which the compiler converts to integer microdollars.
+
+The implementation, repair, and review workflows each retain a fixed complete child allowance.
+Every child allowance must fit its role's aggregate allowance. Before a child starts, its full
+allowance must fit the remaining capacity in every dimension. Flow never increases a budget,
+clips a child allowance, transfers review capacity, or resets usage at a repair boundary.
+Known overshoot is retained without clipping. Unknown usage prevents further work.
+
+These pools account for nested implementation, repair, and review executions. Host verification
+commands retain their frozen timeouts. Private review-context blobs remain subject to the separate
+issue-store quotas. The pools are not a total host wall-clock or disk-usage ceiling.
+
+### Preserve candidate and review authority
+
+The repair workflow must keep the implementation workflow's ordered criterion IDs and descriptions.
+It uses the original model, write prefixes, protected paths, and approved verification commands.
+Review prose cannot change these fields, the private holdout, or delivery permissions.
+
+Only a complete valid blocked report for the current candidate can select repair. Explicit finding
+locations must identify regular, bounded UTF-8 text blobs in the committed candidate, within the
+original write scope. Symbolic links, Git submodules, missing files, invalid line ranges, and stale
+candidate identities are rejected. Unsatisfied criteria without findings do not require invented
+source locations.
+
+The host validates structure, identity, scope, and source observations. It does
+not prove a finding's semantic truth. It cannot detect every expansion request in natural language.
+
+A repair must return a report-bound `changed` or `disputed` disposition. Disputes stop without
+committing the repair or clearing the finding. A changed result is not acceptance evidence. The
+host checks both the change from the reviewed parent and the complete change from the frozen base.
+Both observations must identify the same candidate tree. Unchanged and previously seen trees stop
+before commit, even if a new commit identity could be created for that content.
+
+### Reconcile execution before progress
+
+The parent records `workflow_dispatch_prepared` before starting a child. It binds the child run,
+role, cycle, frozen contract, compiled workflow, workspace, reviewed candidate and report, and
+fixed allowance. The trusted settlement reader derives `workflow_dispatch_settled` from one
+committed child-ledger snapshot. Failed and cancelled children count toward aggregate usage.
+The parent cannot commit, change phase, or finish while a dispatch remains unsettled.
+
+A review dispatch also binds an immutable private context blob. Preparation captures that context
+before dispatch. Settlement and restart read the saved context without rerunning verification commands.
+
+After a successful implementation or repair, `implementation_candidate_prepared` retains its
+exact tree and child evidence before the commit effect. Restart recovery uses that result without
+rerunning repair against a branch that already moved. `review_repair_selected` retains the reviewed
+parent separately from invalidated candidate approval. Each new candidate must pass the complete
+verification, private holdout, and fresh independent review again. Repair does not authorize merge.
+
+A missing or incomplete child ledger is not a successful zero-cost run. Incomplete children retain
+their reservation and do not restart automatically. Cancellation before a child ledger exists
+remains requested. An explicit never-started-dispatch abandonment protocol is not implemented.
+Preserve the run's private state for investigation. Do not delete a reservation or edit its usage.
+
 ## Admission and frozen identity
 
 `validate` parses the plan without GitHub access or repository mutation. `doctor` performs
@@ -323,6 +400,10 @@ The event payload depends on `type`:
 | `external_effect_prepared` | `effectId`, `effectKind`, and `operationDigest` |
 | `external_effect_settled` | `effectId`, `outcome` as `applied` or `not_applied`, and `observationDigest`. An `applied` settlement also requires its typed `result` |
 | `external_state_uncertain` | `effectId`, bounded `code`, and `evidenceDigest` |
+| `workflow_dispatch_prepared` | `dispatch` with child, parent, workflow, workspace, candidate, report, role, cycle, ordinal, and fixed-envelope bindings. Review dispatches also bind a private context blob reference, never its content. See the [dispatch schema](../../src/domain/issue-lifecycle/workflow-accounting.ts). |
+| `workflow_dispatch_settled` | `settlement` with dispatch and child identities, terminal sequence, ledger digest, status, resources, and per-dimension availability. See the [settlement schema](../../src/domain/issue-lifecycle/workflow-accounting.ts). |
+| `review_repair_selected` | `selection` with cycle, candidate head and tree, exact review identity, repair template, eligible classes, eligibility digest, and context digest. See the [selection schema](../../src/domain/issue-lifecycle/review-repair-state.ts). |
+| `implementation_candidate_prepared` | `candidate` with raw tree, tree and commit-message digests, child run, execution workflow digest, terminal sequence, and evidence digest. See the [candidate schema](../../src/domain/issue-lifecycle/review-repair-state.ts). |
 | `run_failed` | Bounded `code` and `evidenceDigest` |
 | `run_cancelled` | `actorDigest` and optional `reasonDigest` |
 
@@ -684,6 +765,13 @@ repository-level automatic deletion policy independently of Flow.
 - `receiptCount` and optional `latestReceipt` from the transition-receipt contract.
 - optional `terminal` with one bounded `code`.
 - optional `mergeApproval` with `pullRequestNumber`, `headCommit`, and `gateDigest`.
+- optional `reviewRepair` with `cycle`, `maxCycles`, `settledChildren`, and per-role
+  `consumed` and `availability` summaries. Its optional `pendingDispatch` contains only
+  `dispatchId`, `flowRunId`, `role`, and `cycle`.
+
+`reviewRepair` is absent for legacy runs without the optional frozen repair policy. Its counters
+and availability come from durable dispatch settlements, not model-reported progress. An unsettled
+dispatch remains visible. It must not be reported as zero-cost completed work.
 
 `mergeApproval` must be present only in `merge_approval_required`. It must come from the durable
 gate receipt. It must be absent after invalidation and in every other phase.
@@ -772,7 +860,8 @@ The lifecycle doesn't provide:
 
 - generic connectors, workflow-level network nodes, arbitrary host commands, or a public SDK.
 - model-held network, credential, Git, pull request, CI, review, or merge authority.
-- autonomous repair selection, approval, merge, auto-merge, or administrator bypass.
+- repair selection outside an explicitly approved frozen policy, autonomous approval or merge,
+  auto-merge, or administrator bypass.
 - fork pull requests, merge queues, GitHub Enterprise, multiple remotes, non-GitHub forges, or
   cross-host recovery.
 - remote multi-user operation or a hardened hostile multi-tenant boundary.

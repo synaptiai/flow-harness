@@ -120,7 +120,7 @@ order does not authorize an unreviewed design or broaden model authority.
 | UC-02 | Release blocker; release maintainer | After UC-01, complete Slice 13.4 and obtain exact publication authorization. | Qualified package on both named hosts, no P1–P3 findings, successful required CI, and verified public installation. | UC-01 passes or package identity changes. |
 | UC-03 | Next delivery-design priority; Approach A maintainer | Design repository onboarding and reusable configuration after qualification. | A new user configures a separate clean repository from the guide without maintainer-authored hidden files; measure steps, time, and interventions. Missing checks or credentials fail safely. | UC-01 settles; reassess before selecting another infrastructure feature. |
 | UC-04 | Next delivery-design priority; Approach A maintainer | Design guided issue-to-plan preparation with UC-03. | Proposed criteria, commands, paths, budgets, and approval rules are explicit and reviewable. A human freezes the contract before execution; generated plans pass production admission. | UC-03 design review and every plan-authoring failure. |
-| UC-05 | Immediate design decision, not autonomous authority; Approach A maintainer | Complete NV-03 design using the third attempt's blocked review, the full field denominator, and a frozen NV-01 comparison. Resolve review-report validity separately from candidate acceptance. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation, disputed findings, and false-acceptance tests. | Before another pilot; third-attempt settlement promoted this item. |
+| UC-05 | Bounded blocked-review repair locally verified, qualification open; Approach A maintainer | Qualify the approved same-host repair contract using a separately authorized experiment and frozen NV-01 comparison. Keep broader NV-03 recovery research separate. Resolve report validity separately from candidate acceptance. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation, disputed findings, and false-acceptance tests. | Before another pilot; third-attempt settlement promoted this item. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
 | UC-07 | Parity research in progress; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md). Add runnable demonstrations for supported practices, and compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory alone does not close this row. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
 | UC-08 | Implemented and locally verified, with bounded live discovery evidence; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent source review found no remaining P1–P3 defects in this correction. The replacement recorded one command refusal among six requests and then used the exact allowed command. It did not reach the three-refusal stopping threshold or complete UC-01. | Reassess refusal rates, false stops, and broader behavior in a separately approved attempt. |
@@ -145,13 +145,29 @@ Closing UC-08 or UC-08a does not close UC-01 or UC-02. Stopping ineffective requ
 complete UC-05. Selecting a repair workflow from verification evidence adds a separate execution
 decision and requires its own research and approval.
 
-## Design bounded review repair
+## Implement bounded review repair
 
-Approach B is approved for detailed design. The
-[bounded review repair design](bounded-review-repair-design.md) owns the proposed contracts,
-remaining approval decisions, and BR-01 through BR-06 implementation and verification phases.
-Runtime repair, numeric experimental limits, another pilot, and merge are not authorized by this
-design selection. UC-05 remains open. The report-classification correction is separate from repair.
+Refined Approach B is approved for implementation. The
+[bounded review repair design](bounded-review-repair-design.md) owns the approved contracts
+and BR-01 through BR-06 implementation and verification phases.
+Numeric experimental limits, another pilot, and merge remain separately approval-bound.
+UC-05 remains open. The report-classification correction is separate from repair.
+
+Current source contains strict optional policy admission, frozen resource pools, durable
+dispatch and settlement records, candidate-tree tracking, and the repair controller path.
+Focused compiler, reducer, persisted-ledger, and real-Git tests have passed. Usage and operations
+documentation are updated. Independent source and test audits identified defects that were
+corrected before final qualification.
+
+Local verification passed 6,683 coverage tests, 44 runtime
+tests, and two browser tests, plus build, type checking, formatting, lint, and documentation gates.
+The runtime suite skipped 42 platform-specific tests. Hosted Linux x64 and installed-package live
+qualification remain open. The internal decision log retains failed attempts and their corrections.
+These results do not qualify a published package or complete UC-01.
+
+Retain one recovery limitation in future planning: cancellation after a reservation but before a
+child ledger exists stays requested. Flow retains the reservation instead of inventing zero usage.
+An authenticated never-started-dispatch abandonment protocol requires a separate contract.
 
 The third attempt exposed a concrete UC-05 gap. A verified candidate had a small, real review
 finding, and the controller had no approved repair path. This promotes design
@@ -176,15 +192,18 @@ The selected B design covers same-host execution. A remains a possible human-con
 part of the first implementation. Keep C as a separate portability decision. An encrypted forensic archive is not a supported candidate
 handoff or live host restoration mechanism.
 
-Before implementation, approve the eligible failure classes, automatic versus per-cycle authority,
-lifecycle-wide resource ceiling, initial cycle limit, and disputed-finding stop. Limits must have
-explicit pilot or evaluation rationale, not an invented industry-standard claim. Existing per-run
-workflow budgets cannot silently reset when a new repair child starts.
+The approved implementation contract defines eligible review classes, preauthorized same-host
+selection, aggregate role pools, an explicit cycle limit, and a disputed-finding stop. Exact
+experimental values still require approval and explicit pilot or evaluation rationale, not an
+invented industry-standard claim. Per-run workflow budgets cannot silently reset when a new
+repair child starts.
 
 The design must bind each repair to its candidate, review report, selected workflow, ancestry, and
 cumulative usage. A changed candidate invalidates previous verification, review, and merge approval.
-Unsupported failures, uncertain effects, unchanged candidates, repeated failure patterns, and
+Unsupported failures, uncertain effects, unchanged candidate trees, repeated candidate trees, and
 exhausted allowances stop execution. Fewer findings alone does not prove progress or correctness.
+
+Semantic detection of repeated failure patterns remains deferred.
 Final merge remains separately approval-bound. Omitted repair policy preserves today's safe stop.
 
 UC-03 and UC-04 remain the next onboarding priorities after qualification. Promoting this concrete

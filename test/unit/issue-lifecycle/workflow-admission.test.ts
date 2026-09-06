@@ -25,6 +25,41 @@ import { delegationEvaluationCandidateFixture } from "../../fixtures/delegation-
 import { phaseRoutingEffectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
 
 describe("issue workflow admission", () => {
+  it("admits repair as a distinct mutating role with exact result identity and bounded evidence", () => {
+    const context = {
+      kind: "repair" as const,
+      content: JSON.stringify({ evidence: "x".repeat(100_000) }),
+    };
+    const input = {
+      role: "repair" as const,
+      source: implementationWorkflow("[read, edit]"),
+      sourceName: "repair.workflow.yaml",
+      model: { provider: "openrouter", id: "bound-model" },
+      context,
+      allowedWritePrefixes: ["src"],
+      resultNodeId: "implement",
+    };
+    const admitted = admitIssueWorkflow(input);
+    expect(admitted.role).toBe("repair");
+    expect(admitted.resultNodeId).toBe("implement");
+    expect(admitted.allowedWritePrefixes).toEqual(["src"]);
+    expect(admitted.protectedPaths).toEqual([".git"]);
+    const verifier = admitted.workflow.nodes.find((node) => node.id === "verify-implementation");
+    expect(verifier).toMatchObject({
+      verifier: { inputPolicy: { role: "repair", maxBytes: 786_432 } },
+    });
+    expect(admitted.executionWorkflowDigest).not.toBe(admitted.templateWorkflowDigest);
+    expect(() => admitIssueWorkflow({ ...input, resultNodeId: "verify-implementation" })).toThrow(
+      /result node/,
+    );
+    expect(() => admitIssueWorkflow({ ...input, allowedWritePrefixes: [".git"] })).toThrow(
+      /prefix/,
+    );
+    expect(() =>
+      admitIssueWorkflow({ ...input, source: implementationWorkflow("[read, exec]") }),
+    ).toThrow(/exec|command/i);
+  });
+
   it("deterministically binds the selected model and frozen issue context into identity", () => {
     const source = implementationWorkflow("[read, ls, edit, create]");
     const input = {

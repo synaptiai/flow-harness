@@ -4,6 +4,11 @@ import { z } from "zod";
 
 import { canonicalGitHubRepositoryIdentity, isValidGitHubNodeId } from "./identity.js";
 import { isValidExactGitBranchName } from "./plan.js";
+import { issueReviewRepairPolicySchema } from "./review-repair-policy.js";
+import {
+  issueWorkflowEnvelopeSchema,
+  issueWorkflowRolePoolsSchema,
+} from "./workflow-accounting.js";
 
 export const MAX_ISSUE_PRIVATE_BLOB_BYTES = 33_554_432;
 export const MAX_ISSUE_PRIVATE_BLOBS = 4_096;
@@ -85,15 +90,7 @@ const modelBindingSchema = z
       .refine((value) => value === value.trim() && !/[\p{Cc}\p{Cf}]/u.test(value)),
   })
   .strict();
-const workflowBudgetSchema = z
-  .object({
-    maxNodeStarts: positiveSafeIntegerSchema,
-    maxModelTokens: positiveSafeIntegerSchema,
-    maxCostUsdMicros: positiveSafeIntegerSchema,
-    maxExecutionMs: positiveSafeIntegerSchema,
-    maxArtifactBytes: positiveSafeIntegerSchema,
-  })
-  .strict();
+const workflowBudgetSchema = issueWorkflowEnvelopeSchema;
 const timeoutSchema = z.number().int().positive().max(MAX_ISSUE_COMMAND_TIMEOUT_MS);
 const namedTimeoutSchema = z
   .object({ id: planIdentifierSchema, timeoutMs: timeoutSchema })
@@ -102,6 +99,10 @@ const issueBudgetInputSchema = z
   .object({
     implementation: workflowBudgetSchema,
     review: workflowBudgetSchema,
+    reviewRepair: z
+      .object({ aggregateBudget: issueWorkflowRolePoolsSchema, repair: workflowBudgetSchema })
+      .strict()
+      .optional(),
     holdout: z.object({ timeoutMs: timeoutSchema }).strict(),
     verification: z
       .array(namedTimeoutSchema)
@@ -188,6 +189,12 @@ const frozenIssueRunManifestSchema = z
     planDigest: sha256Schema,
     implementationWorkflow: workflowIdentitySchema,
     reviewWorkflow: workflowIdentitySchema.extend({ resultNodeId: planIdentifierSchema }).strict(),
+    reviewRepair: issueReviewRepairPolicySchema
+      .extend({
+        workflow: workflowIdentitySchema.extend({ resultNodeId: planIdentifierSchema }).strict(),
+      })
+      .strict()
+      .optional(),
     acceptanceCriteria: z
       .array(acceptanceCriterionSchema)
       .min(1)
@@ -226,12 +233,60 @@ const frozenIssueRunManifestSchema = z
         plan: privateBlobReferenceSchema,
         implementationWorkflow: privateBlobReferenceSchema,
         reviewWorkflow: privateBlobReferenceSchema,
+        repairWorkflow: privateBlobReferenceSchema.optional(),
         holdoutStdin: privateBlobReferenceSchema.optional(),
       })
       .strict(),
   })
   .strict()
   .superRefine((manifest, context) => {
+    const repair = manifest.reviewRepair;
+    const repairBudget = manifest.budgets.reviewRepair;
+    if (
+      (repair === undefined) !== (repairBudget === undefined) ||
+      (repair === undefined) !== (manifest.artifacts.repairWorkflow === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["reviewRepair"],
+        message: "repair policy, budget, and source artifact must be present together",
+      });
+    }
+    if (repair !== undefined && repairBudget !== undefined) {
+      if (canonicalize(repair.aggregateBudget) !== canonicalize(repairBudget.aggregateBudget)) {
+        context.addIssue({
+          code: "custom",
+          path: ["reviewRepair", "aggregateBudget"],
+          message: "repair policy aggregate budget must match the complete frozen budget identity",
+        });
+      }
+      if (
+        repair.workflow.templateWorkflowDigest ===
+          manifest.implementationWorkflow.templateWorkflowDigest ||
+        repair.workflow.templateWorkflowDigest === manifest.reviewWorkflow.templateWorkflowDigest
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["reviewRepair", "workflow"],
+          message: "repair workflow must have a distinct frozen template identity",
+        });
+      }
+      for (const [label, envelope, pool] of [
+        ["implementation", manifest.budgets.implementation, repair.aggregateBudget.implementation],
+        ["review", manifest.budgets.review, repair.aggregateBudget.review],
+        ["repair", repairBudget.repair, repair.aggregateBudget.implementation],
+      ] as const) {
+        for (const dimension of Object.keys(envelope) as (keyof typeof envelope)[]) {
+          if (envelope[dimension] > pool[dimension]) {
+            context.addIssue({
+              code: "custom",
+              path: ["budgets", label, dimension],
+              message: "child envelope must fit its aggregate role pool",
+            });
+          }
+        }
+      }
+    }
     const expectedRepositoryUrl = `https://github.com/${manifest.repository.identity}`;
     const expectedIssueUrl = `${expectedRepositoryUrl}/issues/${manifest.issue.number}`;
     if (manifest.repository.canonicalUrl !== expectedRepositoryUrl) {

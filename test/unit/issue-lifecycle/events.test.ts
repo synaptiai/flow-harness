@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-
 import {
   createInitialIssueLifecycleState,
   deriveIssueExternalEffectId,
@@ -15,6 +14,10 @@ import {
   projectPublicIssueLifecycleState,
   reduceIssueLifecycleEvent,
 } from "../../../src/domain/issue-lifecycle/events.js";
+import {
+  calculateIssueCandidateTreeDigest,
+  calculateIssueCommitMessageDigest,
+} from "../../../src/domain/issue-lifecycle/issue-delivery-contract.js";
 
 const RUN_ID = "issue-run-01";
 const STARTED_AT = "2026-08-28T10:00:00.000Z";
@@ -37,6 +40,446 @@ const IMPLEMENTATION_TEMPLATE_WORKFLOW_DIGEST = "3".repeat(64);
 const REVIEW_TEMPLATE_WORKFLOW_DIGEST = "4".repeat(64);
 const BUDGET_DIGEST = "5".repeat(64);
 const EXECUTION_WORKFLOW_DIGEST = "6".repeat(64);
+
+const CHILD_ENVELOPE = {
+  maxNodeStarts: 10,
+  maxModelTokens: 100,
+  maxCostUsdMicros: 100,
+  maxExecutionMs: 100,
+  maxArtifactBytes: 100,
+};
+const REPAIR_CONTRACT = {
+  policy: {
+    version: 1,
+    mode: "preauthorized",
+    maxCycles: 2,
+    eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+    aggregateBudget: {
+      implementation: {
+        maxNodeStarts: 100,
+        maxModelTokens: 1000,
+        maxCostUsdMicros: 1000,
+        maxExecutionMs: 1000,
+        maxArtifactBytes: 1000,
+      },
+      review: {
+        maxNodeStarts: 100,
+        maxModelTokens: 1000,
+        maxCostUsdMicros: 1000,
+        maxExecutionMs: 1000,
+        maxArtifactBytes: 1000,
+      },
+    },
+    stopping: {
+      disputed: "stop",
+      unchangedTree: "stop",
+      repeatedTree: "stop",
+      uncertainUsage: "stop",
+      uncertainEffects: "stop",
+    },
+  },
+  repairTemplateWorkflowDigest: "7".repeat(64),
+  implementationEnvelope: CHILD_ENVELOPE,
+  reviewEnvelope: CHILD_ENVELOPE,
+  repairEnvelope: CHILD_ENVELOPE,
+};
+
+describe("durable review repair authority", () => {
+  it("persists the exact host candidate result before committing for restart recovery", () => {
+    const state = repairSettle(repairDispatch(repairImplementing()));
+    const prepared = prepareRepairCandidate(state, "8".repeat(40), "flow-initial");
+    expect(prepared.reviewRepair?.candidatePreparation).toMatchObject({
+      candidateTree: "8".repeat(40),
+      flowRunId: "flow-initial",
+      terminalSequence: 9,
+    });
+    expect(() => prepareRepairCandidate(prepared, "9".repeat(40), "flow-initial")).toThrow(
+      /already/i,
+    );
+  });
+  it("rejects a candidate proof from a different terminal ledger", () => {
+    const state = repairSettle(repairDispatch(repairImplementing()));
+    expect(() =>
+      prepareRepairCandidate(state, "8".repeat(40), "flow-initial", OTHER_DIGEST),
+    ).toThrow(/settled.*child|ledger/i);
+  });
+  it("freezes optional repair authority without adding it to legacy state", () => {
+    expect(advanceTo("issue_frozen")).not.toHaveProperty("reviewRepair");
+    const state = repairInitial();
+    expect(state).toMatchObject({
+      reviewRepair: {
+        contract: REPAIR_CONTRACT,
+        cycle: 0,
+        accounting: { pending: null, settled: [] },
+        seenTrees: [],
+      },
+    });
+  });
+
+  it("reserves the exact child envelope before execution and prevents premature effects", () => {
+    const state = repairImplementing();
+    const dispatched = repairDispatch(state);
+    expect(projectPublicIssueLifecycleState(dispatched)).toMatchObject({
+      reviewRepair: {
+        cycle: 0,
+        maxCycles: 2,
+        settledChildren: 0,
+        pendingDispatch: {
+          dispatchId: "dispatch-initial",
+          flowRunId: "flow-initial",
+          role: "implementation",
+          cycle: 0,
+        },
+        consumed: { implementation: { modelTokens: 0 } },
+      },
+    });
+    expect(dispatched).toMatchObject({
+      reviewRepair: {
+        accounting: {
+          pending: {
+            role: "implementation",
+            cycle: 0,
+            envelope: CHILD_ENVELOPE,
+          },
+        },
+      },
+    });
+    expect(() =>
+      reduceIssueLifecycleEvent(dispatched, prepareEffect(dispatched, "commit")),
+    ).toThrow(/pending.*workflow/i);
+    expect(() =>
+      reduceIssueLifecycleEvent(dispatched, {
+        ...baseEvent(dispatched),
+        type: "run_failed",
+        code: "test_failure",
+        evidenceDigest: DIGEST,
+      }),
+    ).toThrow(/pending.*workflow/i);
+    expect(() => repairDispatch(dispatched)).toThrow(/pending.*workflow/i);
+  });
+
+  it.each([
+    { cycle: 1 },
+    { candidateHead: CANDIDATE_HEAD },
+    { reportDigest: DIGEST },
+    { templateWorkflowDigest: REVIEW_TEMPLATE_WORKFLOW_DIGEST },
+    { workspaceIdentityDigest: OTHER_DIGEST },
+    { envelope: { ...CHILD_ENVELOPE, maxNodeStarts: 9 } },
+  ])("rejects dispatch outside frozen role, cycle, workspace and envelope: %j", (override) => {
+    expect(() => repairDispatch(repairImplementing(), override)).toThrow();
+  });
+
+  it("charges a failed child before allowing a terminal parent event", () => {
+    const settled = repairSettle(repairDispatch(repairImplementing()), { status: "failed" });
+    expect(settled).toMatchObject({
+      reviewRepair: {
+        accounting: {
+          pending: null,
+          consumed: { implementation: { nodeStarts: 1, modelTokens: 5 } },
+        },
+      },
+    });
+    expect(() => reduceIssueLifecycleEvent(settled, prepareEffect(settled, "commit"))).toThrow(
+      /successful.*implementation/i,
+    );
+    expect(
+      reduceIssueLifecycleEvent(settled, {
+        ...baseEvent(settled),
+        type: "run_failed",
+        code: "implementation_failed",
+        evidenceDigest: DIGEST,
+      }).phase,
+    ).toBe("failed");
+  });
+
+  it("selects a settled blocked review and preserves its parent while invalidating approval", () => {
+    const reviewed = repairReviewed();
+    const selected = repairSelect(reviewed);
+    expect(selected).toMatchObject({
+      reviewRepair: {
+        cycle: 1,
+        selection: {
+          candidateHead: CANDIDATE_HEAD,
+          candidateTree: "8".repeat(40),
+        },
+      },
+    });
+    const implementing = reduceIssueLifecycleEvent(selected, transition(selected, "implementing"));
+    expect(implementing.candidateHead).toBeUndefined();
+    expect(implementing.reviewRepair?.selection?.candidateHead).toBe(CANDIDATE_HEAD);
+    expect(implementing.approvedMerge).toBeUndefined();
+    expect(
+      repairDispatch(implementing, {
+        dispatchId: "dispatch-repair",
+        flowRunId: "flow-repair",
+        ordinal: 3,
+        cycle: 1,
+        candidateHead: CANDIDATE_HEAD,
+        reportDigest: DIGEST,
+        templateWorkflowDigest: REPAIR_CONTRACT.repairTemplateWorkflowDigest,
+      }).reviewRepair?.accounting.pending?.role,
+    ).toBe("implementation");
+    expect(() => repairSelect(selected)).toThrow();
+  });
+
+  it.each([
+    { cycle: 0 },
+    { cycle: 2 },
+    { candidateHead: OTHER_HEAD },
+    { candidateTree: "9".repeat(40) },
+    { reviewFlowRunId: "other-review" },
+    { reviewExecutionWorkflowDigest: OTHER_DIGEST },
+    { reviewTerminalSequence: 8 },
+    { repairTemplateWorkflowDigest: DIGEST },
+    { eligibleClasses: [] },
+    { eligibleClasses: ["review-findings", "review-findings"] },
+  ])("rejects stale or malformed repair selection: %j", (override) => {
+    const reviewed = repairReviewed();
+    expect(() => repairSelect(reviewed, override)).toThrow();
+  });
+
+  it("requires selected repair authority and never silently loops opted-in verification", () => {
+    const reviewed = repairReviewed();
+    expect(() => reduceIssueLifecycleEvent(reviewed, transition(reviewed, "implementing"))).toThrow(
+      /selected.*review repair/i,
+    );
+  });
+
+  it("stops incomplete usage even if the child claims success", () => {
+    const pending = repairDispatch(repairImplementing());
+    const settled = repairSettle(pending, {
+      availability: {
+        nodeStarts: "complete",
+        modelTokens: "unavailable",
+        modelCostUsdMicros: "complete",
+        executionMs: "complete",
+        artifactBytes: "complete",
+      },
+    });
+    expect(() => reduceIssueLifecycleEvent(settled, prepareEffect(settled, "commit"))).toThrow(
+      /unavailable/i,
+    );
+  });
+
+  it("rejects missing or repeated candidate trees even when the commit identity changes", () => {
+    const selected = repairSelect(repairReviewed());
+    let state = reduceIssueLifecycleEvent(selected, transition(selected, "implementing"));
+    state = repairDispatch(state, {
+      dispatchId: "dispatch-repair",
+      flowRunId: "flow-repair",
+      ordinal: 3,
+      cycle: 1,
+      candidateHead: CANDIDATE_HEAD,
+      reportDigest: DIGEST,
+      templateWorkflowDigest: REPAIR_CONTRACT.repairTemplateWorkflowDigest,
+    });
+    state = repairSettle(state, { dispatchId: "dispatch-repair", flowRunId: "flow-repair" });
+    expect(() => prepareRepairCandidate(state, "8".repeat(40), "flow-repair")).toThrow(/tree/i);
+    state = prepareRepairCandidate(state, "9".repeat(40), "flow-repair");
+    state = settleEffect(state, "commit", "applied", { kind: "commit", candidateHead: OTHER_HEAD });
+    const receipt = {
+      kind: "implementation",
+      candidateHead: OTHER_HEAD,
+      flowRunId: "flow-repair",
+      executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+      terminalSequence: 9,
+      evidenceDigest: DIGEST,
+    } as const;
+    for (const candidateTree of [undefined, "8".repeat(40)]) {
+      expect(() =>
+        reduceIssueLifecycleEvent(
+          state,
+          parseIssueLifecycleEvent({
+            ...baseEvent(state),
+            type: "phase_transitioned",
+            from: "implementing",
+            to: "verifying",
+            receipt: { ...receipt, ...(candidateTree === undefined ? {} : { candidateTree }) },
+          }),
+        ),
+      ).toThrow(/tree/i);
+    }
+    const next = reduceIssueLifecycleEvent(
+      state,
+      parseIssueLifecycleEvent({
+        ...baseEvent(state),
+        type: "phase_transitioned",
+        from: "implementing",
+        to: "verifying",
+        receipt: { ...receipt, candidateTree: "9".repeat(40) },
+      }),
+    );
+    expect(next.reviewRepair?.seenTrees).toEqual(["8".repeat(40), "9".repeat(40)]);
+  });
+});
+
+function repairReviewed() {
+  let state = repairSettle(repairDispatch(repairImplementing()));
+  state = prepareRepairCandidate(state, "8".repeat(40), "flow-initial");
+  state = settleEffect(state, "commit");
+  state = reduceIssueLifecycleEvent(
+    state,
+    parseIssueLifecycleEvent({
+      ...baseEvent(state),
+      type: "phase_transitioned",
+      from: "implementing",
+      to: "verifying",
+      receipt: {
+        kind: "implementation",
+        candidateHead: CANDIDATE_HEAD,
+        candidateTree: "8".repeat(40),
+        flowRunId: "flow-initial",
+        executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+        terminalSequence: 9,
+        evidenceDigest: DIGEST,
+      },
+    }),
+  );
+  state = reduceIssueLifecycleEvent(state, transition(state, "reviewing"));
+  state = repairDispatch(state, {
+    role: "review",
+    flowRunId: "flow-review",
+    dispatchId: "dispatch-review",
+    ordinal: 2,
+    candidateHead: CANDIDATE_HEAD,
+    templateWorkflowDigest: REVIEW_TEMPLATE_WORKFLOW_DIGEST,
+    contextBlob: {
+      version: 1,
+      mediaType: "application/vnd.flow.issue-review-context+json",
+      byteLength: 1,
+      digest: DIGEST,
+    },
+  });
+  return repairSettle(state, { flowRunId: "flow-review", dispatchId: "dispatch-review" });
+}
+
+function prepareRepairCandidate(
+  state: IssueLifecycleState,
+  tree: string,
+  flowRunId: string,
+  evidenceDigest = DIGEST,
+) {
+  return reduceIssueLifecycleEvent(
+    state,
+    parseIssueLifecycleEvent({
+      ...baseEvent(state),
+      type: "implementation_candidate_prepared",
+      candidate: {
+        candidateTree: tree,
+        candidateTreeDigest: calculateIssueCandidateTreeDigest(tree),
+        commitMessageDigest: calculateIssueCommitMessageDigest(1),
+        flowRunId,
+        executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+        terminalSequence: 9,
+        evidenceDigest,
+      },
+    }),
+  );
+}
+
+function repairSelect(state: IssueLifecycleState, override: Record<string, unknown> = {}) {
+  return reduceIssueLifecycleEvent(
+    state,
+    parseIssueLifecycleEvent({
+      ...baseEvent(state),
+      type: "review_repair_selected",
+      selection: {
+        cycle: 1,
+        candidateHead: CANDIDATE_HEAD,
+        candidateTree: "8".repeat(40),
+        reviewFlowRunId: "flow-review",
+        reviewExecutionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+        reviewTerminalSequence: 9,
+        reportDigest: DIGEST,
+        repairTemplateWorkflowDigest: REPAIR_CONTRACT.repairTemplateWorkflowDigest,
+        eligibleClasses: ["review-findings"],
+        eligibilityDigest: DIGEST,
+        contextDigest: OTHER_DIGEST,
+        ...override,
+      },
+    }),
+  );
+}
+
+function repairInitial(): IssueLifecycleState {
+  const state = initialState();
+  const event = transition(state, "issue_frozen");
+  if (event.type !== "phase_transitioned") throw new Error("expected transition");
+  return reduceIssueLifecycleEvent(
+    state,
+    parseIssueLifecycleEvent({
+      ...event,
+      receipt: { ...event.receipt, reviewRepair: REPAIR_CONTRACT },
+    }),
+  );
+}
+
+function repairImplementing(): IssueLifecycleState {
+  let state = settleEffect(repairInitial(), "workspace");
+  state = reduceIssueLifecycleEvent(state, transition(state, "workspace_prepared"));
+  return reduceIssueLifecycleEvent(state, transition(state, "implementing"));
+}
+
+function repairDispatch(state: IssueLifecycleState, override: Record<string, unknown> = {}) {
+  return reduceIssueLifecycleEvent(
+    state,
+    parseIssueLifecycleEvent({
+      ...baseEvent(state),
+      type: "workflow_dispatch_prepared",
+      dispatch: {
+        version: 1,
+        dispatchId: "dispatch-initial",
+        parentIssueRunId: RUN_ID,
+        ordinal: 1,
+        role: "implementation",
+        cycle: 0,
+        flowRunId: "flow-initial",
+        frozenContractDigest: FROZEN_CONTRACT_DIGEST,
+        templateWorkflowDigest: IMPLEMENTATION_TEMPLATE_WORKFLOW_DIGEST,
+        executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+        workspaceIdentityDigest: DIGEST,
+        candidateHead: null,
+        reportDigest: null,
+        envelope: CHILD_ENVELOPE,
+        ...override,
+      },
+    }),
+  );
+}
+
+function repairSettle(state: IssueLifecycleState, override: Record<string, unknown> = {}) {
+  return reduceIssueLifecycleEvent(
+    state,
+    parseIssueLifecycleEvent({
+      ...baseEvent(state),
+      type: "workflow_dispatch_settled",
+      settlement: {
+        version: 1,
+        dispatchId: "dispatch-initial",
+        flowRunId: "flow-initial",
+        executionWorkflowDigest: EXECUTION_WORKFLOW_DIGEST,
+        terminalSequence: 9,
+        ledgerDigest: DIGEST,
+        status: "succeeded",
+        resources: {
+          nodeStarts: 1,
+          modelTokens: 5,
+          modelCostUsdMicros: 1,
+          executionMs: 1,
+          artifactBytes: 1,
+        },
+        availability: {
+          nodeStarts: "complete",
+          modelTokens: "complete",
+          modelCostUsdMicros: "complete",
+          executionMs: "complete",
+          artifactBytes: "complete",
+        },
+        ...override,
+      },
+    }),
+  );
+}
 
 describe("issue lifecycle events", () => {
   it("rejects phase progress without restart-safe typed evidence", () => {

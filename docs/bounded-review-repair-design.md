@@ -1,13 +1,15 @@
 # Bounded review repair design
 
-This proposal describes Approach B for UC-05 and NV-03: repair a blocked independent review on
+This design describes Approach B for UC-05 and NV-03: repair a blocked independent review on
 the same host under a policy approved before execution. It is for maintainers reviewing the next
-implementation contract. Approach B is approved for detailed design. This document does not add
-an executable plan field or authorize a model run, a larger budget, publication, or merge.
+implementation contract. Refined Approach B is implemented and locally verified.
+Hosted and installed-package qualification remain open. The changes are unreleased.
+Approval does not authorize a live model run,
+larger experimental budget, new pilot publication, or merge.
 
 The [usable-checkpoint plan](usable-checkpoint-plan.md) owns delivery status. The
 [issue lifecycle specification](specs/github-issue-lifecycle.md) describes current behavior.
-All new fields and events in this document are proposed, not supported configuration.
+Do not use this document as evidence that a published package supports the new policy.
 
 ## Separate the two problems
 
@@ -18,19 +20,20 @@ validator then rejected a structurally valid blocked report. These are different
 1. Correct report classification without relaxing candidate acceptance. The
    [workflow authoring guide](guides/github-issue-workflows.md) now distinguishes these decisions.
 2. Add an explicitly authorized path from a valid blocked report to another candidate. The
-   current controller stops. Correcting the prompt alone does not implement repair.
+   pre-change controller stopped. Correcting the prompt alone did not implement repair.
 
 This observation does not prove that automatic repair is necessary for the installed-package
 qualification gate. A future independently accepted one-pass attempt could pass that gate.
 Repair addresses operator burden and the plugin's repeated address-and-review behavior.
 
-## Follow the proposed user flow
+## Follow the approved user flow
 
 You approve the issue, permitted work, exact workflows, model, repair classes, and aggregate
 limits once before execution. Flow retains each candidate and all negative evidence. If repair
 succeeds, you still approve the final exact candidate before merge.
 
-The diagram describes proposed behavior, not the current runtime:
+The diagram describes the locally verified source behavior. Hosted and installed-package
+qualification remain separate gates:
 
 ```mermaid
 flowchart TD
@@ -59,9 +62,10 @@ review receipts, and approvals from the preceding candidate.
 
 ## Preserve the current boundaries
 
-Source inspection identifies these integration points and hazards:
+Inspection of the pre-change source identified these integration points and hazards. The table
+records the baseline for the approved change, not its current implementation status:
 
-| Component | Current behavior | Required change |
+| Component | Pre-change behavior | Required change |
 | --- | --- | --- |
 | [Issue controller](../src/application/continue-github-issue.ts) | Commits the candidate before checks; stops on blocked review. | Select repair only after a valid report and complete child settlement. |
 | [Issue reducer](../src/domain/issue-lifecycle/events.ts) | Allows the phase transition to implementation, but clears `candidateHead` at implementation start. Terminal events prohibit further progress. | Preserve an explicit repair-parent head separately from candidate acceptance state. Do not reopen terminal runs. |
@@ -70,8 +74,8 @@ Source inspection identifies these integration points and hazards:
 | [Review parser](../src/domain/issue-lifecycle/review.ts) | Checks identity, structure, mappings, and verdict consistency. | Keep this authority; add separate host-observed repair eligibility, not a parser waiver. |
 | [Independent-review projection](../src/application/issue-independent-review-projection.ts) | Selects bounded fields and rejects oversized context. | Reuse this design pattern for repair, not the complete review payload. |
 
-Restarting implementation alone is unsafe: the current commit parent falls back to the original
-base after `candidateHead` is cleared. Bind the prior candidate to the durable repair decision and
+Before this change, restarting implementation alone was unsafe: the commit parent fell back to the
+original base after `candidateHead` was cleared. Bind the prior candidate to the durable repair decision and
 the commit request. Verify both the incremental repair and the complete base-to-candidate change
 against the original permitted paths. No new write authority comes from a review recommendation.
 
@@ -231,10 +235,10 @@ budget clipping. General infrastructure recovery and controller-selected repair 
 deterministic checks are also excluded. Record these under NV-03 or the relevant portability research instead of implying complete
 plugin parity. Onboarding UC-03 and plan preparation UC-04 remain the next usability priorities.
 
-## Resolve the remaining design choices
+## Apply the approved design choices
 
-Approach B selects the architecture. The following refinements still need approval before runtime
-implementation. The recommended combination appears in the Recommendation column.
+The user approved the Recommendation column for runtime implementation. Exact experimental
+resource values, live dispatch, and final merge remain separately approval-bound.
 
 | Decision | Recommendation | Second alternative | Third alternative |
 | --- | --- | --- | --- |
@@ -250,10 +254,10 @@ The Approach A maintainer owns these phases. Do not mark a phase complete withou
 | Phase | Deliverable | Acceptance evidence | Status |
 | --- | --- | --- | --- |
 | BR-01 | Correct report-validator prompt and authoring guidance without weakening review. | Red/green contract tests, production workflow admission, parser/controller regressions, independent review. Prompt tests are not live model proof. | Locally verified and independently reviewed. Preparation merge remains pending. |
-| BR-02 | Approve refined policy and experimental resource contract. | Explicit class, stopping, cycle, and all resource-dimension decisions. | Proposed; no runtime implementation authorized by this document. |
-| BR-03 | Versioned policy, durable selection, ancestry, reservation, and settlement. | Reducer invariants, legacy digest compatibility, trusted failed-child accounting, and real ledger replay. | Not started. |
-| BR-04 | Repair projection, runner integration, full re-verification, and stop diagnostics. | Real Git ancestry, whole and incremental scope checks, exact report binding, untrusted-input rejection. | Not started. |
-| BR-05 | Adversarial and crash-boundary verification. | Independent security/code review, real-process tests, sandbox tests, and all existing quality gates. | Not started. |
+| BR-02 | Approve refined policy and experimental resource contract. | Explicit class, stopping, cycle, and all resource-dimension decisions. | Runtime contract approved. Experimental values remain pending. |
+| BR-03 | Versioned policy, durable selection, ancestry, reservation, and settlement. | Reducer invariants, legacy digest compatibility, trusted failed-child accounting, and real ledger replay. | Implemented and locally verified; hosted qualification remains open. |
+| BR-04 | Repair projection, runner integration, full re-verification, and stop diagnostics. | Real Git ancestry, whole and incremental scope checks, exact report binding, untrusted-input rejection. | Implemented and locally verified; installed-package qualification remains open. |
+| BR-05 | Adversarial and crash-boundary verification. | Independent security/code review, real-process tests, sandbox tests, and all existing quality gates. | Independent review and available local gates passed. Hosted Linux x64 qualification remains open. |
 | BR-06 | Separately authorized installed-package hosted experiment. | Exact archive, blocked review to repair to fresh clear review, aggregate usage, hosted checks, exact merge approval, and final merge evidence. | Not authorized. |
 
 BR-01 evidence on September 6, 2026: the target passes 27 workflow-control tests, 124 Python tests,
@@ -281,8 +285,8 @@ The adversarial matrix must cover these cases:
 
 Each case must prove both its result and absence of unauthorized work.
 
-Before implementation, resolve exact field schemas, byte bounds, event ordering, receipt verification,
-and inspection output in BR-02. Before BR-06, freeze the candidate task and complete experimental
+BR-02's approved contract is implemented with exact field schemas, byte bounds, event ordering,
+receipt verification, and inspection output. Before BR-06, freeze the candidate task and complete experimental
 manifest. Retain every unsuccessful attempt, manual intervention, refused command, dispute, usage
 uncertainty, and false stop. Compare with the one-pass and operator-directed baselines on fresh
 tasks. One repaired issue does not establish general readiness or causal superiority.

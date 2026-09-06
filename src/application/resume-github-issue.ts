@@ -51,6 +51,7 @@ export async function resumeGitHubIssue(
     const code = issueControllerFailureCode(error);
     if (
       controller.state.pendingEffect === undefined &&
+      controller.state.reviewRepair?.accounting.pending == null &&
       !["merged", "failed", "cancelled"].includes(controller.state.phase)
     ) {
       await controller.append({

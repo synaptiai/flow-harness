@@ -2,6 +2,25 @@ import { z } from "zod";
 
 import { canonicalGitHubRepositoryIdentity, isValidGitHubNodeId } from "./identity.js";
 import { isValidExactGitBranchName } from "./plan.js";
+import {
+  createIssueReviewRepairState,
+  type IssueReviewRepairState,
+  issueImplementationCandidateSchema,
+  issueReviewRepairRunContractSchema,
+  issueReviewRepairSelectionSchema,
+  prepareIssueImplementationCandidate,
+  prepareIssueRepairDispatch,
+  requireIssueRepairState,
+  requireSuccessfulIssueChild,
+  selectIssueReviewRepair,
+} from "./review-repair-state.js";
+import {
+  type IssueWorkflowAccountingState,
+  type IssueWorkflowDispatch,
+  issueWorkflowDispatchSchema,
+  issueWorkflowSettlementSchema,
+  settleIssueWorkflowDispatch,
+} from "./workflow-accounting.js";
 
 const identifierSchema = z
   .string()
@@ -90,6 +109,7 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
       implementationTemplateWorkflowDigest: sha256Schema,
       reviewTemplateWorkflowDigest: sha256Schema,
       budgetDigest: sha256Schema,
+      reviewRepair: issueReviewRepairRunContractSchema.optional(),
       evidenceDigest: sha256Schema,
     })
     .strict(),
@@ -103,7 +123,7 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("implementation_started"),
-      iteration: z.number().int().positive().max(64),
+      iteration: positiveSafeIntegerSchema,
       evidenceDigest: sha256Schema,
     })
     .strict(),
@@ -111,6 +131,7 @@ const phaseReceiptBaseSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("implementation"),
       candidateHead: commitSchema,
+      candidateTree: commitSchema.optional(),
       flowRunId: identifierSchema,
       executionWorkflowDigest: sha256Schema,
       terminalSequence: positiveSafeIntegerSchema,
@@ -264,6 +285,34 @@ const issueLifecycleEventSchema = z.union([
   z
     .object({
       ...eventBase,
+      type: z.literal("implementation_candidate_prepared"),
+      candidate: issueImplementationCandidateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
+      type: z.literal("workflow_dispatch_prepared"),
+      dispatch: issueWorkflowDispatchSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
+      type: z.literal("workflow_dispatch_settled"),
+      settlement: issueWorkflowSettlementSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
+      type: z.literal("review_repair_selected"),
+      selection: issueReviewRepairSelectionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBase,
       type: z.literal("phase_transitioned"),
       from: activePhaseSchema,
       to: ordinaryPhaseSchema,
@@ -363,6 +412,7 @@ export interface IssueLifecycleState {
   readonly terminalCode?: string;
   readonly appliedEffects: readonly AppliedIssueExternalEffect[];
   readonly implementationIteration: number;
+  readonly reviewRepair?: IssueReviewRepairState;
   readonly frozenRepositoryIdentity?: string;
   readonly frozenIssueNumber?: number;
   readonly frozenIssueNodeId?: string;
@@ -423,6 +473,17 @@ type IssueLifecycleIdentityState = Pick<IssueLifecycleState, "implementationIter
   >;
 
 export interface PublicIssueLifecycleState {
+  readonly reviewRepair?: {
+    readonly cycle: number;
+    readonly maxCycles: number;
+    readonly settledChildren: number;
+    readonly consumed: IssueWorkflowAccountingState["consumed"];
+    readonly availability: IssueWorkflowAccountingState["availability"];
+    readonly pendingDispatch?: Pick<
+      IssueWorkflowDispatch,
+      "dispatchId" | "flowRunId" | "role" | "cycle"
+    >;
+  };
   readonly version: 1;
   readonly runId: string;
   readonly phase: IssueLifecyclePhase;
@@ -524,8 +585,39 @@ export function reduceIssueLifecycleEvent(
     throw new Error(`terminal lifecycle phase ${current.phase} cannot accept more events`);
   }
   const common = { ...current, sequence: event.sequence, lastEventAt: event.at };
+  if (
+    current.reviewRepair?.accounting.pending != null &&
+    event.type !== "workflow_dispatch_settled"
+  ) {
+    throw new Error("pending workflow dispatch must settle before further lifecycle progress");
+  }
 
   switch (event.type) {
+    case "implementation_candidate_prepared":
+      return deepFreeze({
+        ...common,
+        reviewRepair: prepareIssueImplementationCandidate(current, event.candidate),
+      });
+    case "workflow_dispatch_prepared":
+      return deepFreeze({
+        ...common,
+        reviewRepair: prepareIssueRepairDispatch(current, event.dispatch),
+      });
+    case "workflow_dispatch_settled": {
+      const repair = requireIssueRepairState(current);
+      return deepFreeze({
+        ...common,
+        reviewRepair: {
+          ...repair,
+          accounting: settleIssueWorkflowDispatch(repair.accounting, event.settlement),
+        },
+      });
+    }
+    case "review_repair_selected":
+      return deepFreeze({
+        ...common,
+        reviewRepair: selectIssueReviewRepair(current, event.selection),
+      });
     case "phase_transitioned": {
       if (current.phase === "external_state_uncertain") {
         throw new Error("uncertain external state must be reconciled before a phase transition");
@@ -539,6 +631,7 @@ export function reduceIssueLifecycleEvent(
       requireReceiptForTransition(event.from, event.to, event.receipt);
       requireAppliedEffectsForTransition(current, event.from, event.to);
       const identity = advanceLifecycleIdentity(current, event.receipt);
+      const reviewRepair = advanceReviewRepairState(current, event.receipt);
       requireAppliedEffectResults(current, event.receipt);
       const {
         implementationIteration: _implementationIteration,
@@ -564,6 +657,7 @@ export function reduceIssueLifecycleEvent(
       return deepFreeze({
         ...commonWithoutIdentity,
         ...identity,
+        ...(reviewRepair === undefined ? {} : { reviewRepair }),
         phase: event.to,
         receiptCount: current.receiptCount + 1,
         latestReceipt: event.receipt,
@@ -571,6 +665,12 @@ export function reduceIssueLifecycleEvent(
       });
     }
     case "external_effect_prepared": {
+      if (current.reviewRepair !== undefined && event.effectKind === "commit") {
+        requireSuccessfulIssueChild(current, "implementation");
+        if (current.reviewRepair.candidatePreparation === undefined) {
+          throw new Error("commit requires a durably prepared implementation candidate");
+        }
+      }
       if (current.phase === "external_state_uncertain") {
         throw new Error("uncertain external state must be reconciled before preparing an effect");
       }
@@ -712,6 +812,8 @@ export function reduceIssueLifecycleEvent(
 export function projectPublicIssueLifecycleState(
   state: IssueLifecycleState,
 ): PublicIssueLifecycleState {
+  const repair = state.reviewRepair;
+  const pending = repair?.accounting.pending;
   const mergeApproval =
     state.phase === "merge_approval_required" && state.mergeGate !== undefined
       ? {
@@ -723,6 +825,27 @@ export function projectPublicIssueLifecycleState(
   return deepFreeze({
     version: 1,
     runId: state.runId,
+    ...(repair === undefined
+      ? {}
+      : {
+          reviewRepair: {
+            cycle: repair.cycle,
+            maxCycles: repair.contract.policy.maxCycles,
+            settledChildren: repair.accounting.settled.length,
+            consumed: repair.accounting.consumed,
+            availability: repair.accounting.availability,
+            ...(pending == null
+              ? {}
+              : {
+                  pendingDispatch: {
+                    dispatchId: pending.dispatchId,
+                    flowRunId: pending.flowRunId,
+                    role: pending.role,
+                    cycle: pending.cycle,
+                  },
+                }),
+          },
+        }),
     phase: state.phase,
     sequence: state.sequence,
     lastEventAt: state.lastEventAt,
@@ -733,6 +856,97 @@ export function projectPublicIssueLifecycleState(
     ...(mergeApproval === undefined ? {} : { mergeApproval }),
     ...(state.terminalCode === undefined ? {} : { terminal: { code: state.terminalCode } }),
   });
+}
+
+function advanceReviewRepairState(
+  state: IssueLifecycleState,
+  receipt: IssueLifecyclePhaseReceipt,
+): IssueReviewRepairState | undefined {
+  if (receipt.kind === "issue_snapshot") {
+    if (receipt.reviewRepair === undefined) return undefined;
+    if (
+      [receipt.implementationTemplateWorkflowDigest, receipt.reviewTemplateWorkflowDigest].includes(
+        receipt.reviewRepair.repairTemplateWorkflowDigest,
+      )
+    ) {
+      throw new Error("repair source must be distinct from implementation and review");
+    }
+    return createIssueReviewRepairState(
+      receipt.reviewRepair,
+      state.runId,
+      receipt.frozenContractDigest,
+    );
+  }
+  const repair = state.reviewRepair;
+  if (repair === undefined) {
+    if (receipt.kind === "implementation" && receipt.candidateTree !== undefined) {
+      throw new Error("candidate tree receipt requires frozen review repair authority");
+    }
+    return undefined;
+  }
+  switch (receipt.kind) {
+    case "workspace":
+      return { ...repair, workspaceIdentityDigest: receipt.workspaceIdentityDigest };
+    case "implementation_started":
+      if (
+        receipt.iteration !== repair.cycle + 1 ||
+        (repair.cycle === 0
+          ? state.phase !== "workspace_prepared"
+          : state.phase !== "reviewing" ||
+            repair.selection?.cycle !== repair.cycle ||
+            repair.selection.candidateHead !== state.candidateHead)
+      ) {
+        throw new Error(
+          "implementation requires initial authority or a selected current review repair",
+        );
+      }
+      {
+        const { candidatePreparation: _candidate, ...withoutCandidatePreparation } = repair;
+        return withoutCandidatePreparation;
+      }
+    case "implementation": {
+      requireSuccessfulIssueChild(state, "implementation");
+      const previous = repair.accounting.settled.at(-1);
+      if (
+        receipt.flowRunId !== previous?.dispatch.flowRunId ||
+        receipt.executionWorkflowDigest !== previous.dispatch.executionWorkflowDigest ||
+        receipt.terminalSequence !== previous.settlement.terminalSequence ||
+        receipt.evidenceDigest !== previous.settlement.ledgerDigest
+      ) {
+        throw new Error("implementation receipt does not match the settled child");
+      }
+      if (receipt.candidateTree === undefined || repair.seenTrees.includes(receipt.candidateTree)) {
+        throw new Error("candidate tree is missing, unchanged or repeated");
+      }
+      if (receipt.candidateTree !== repair.candidatePreparation?.candidateTree) {
+        throw new Error("candidate tree does not match the durably prepared implementation result");
+      }
+      if (receipt.candidateHead === repair.selection?.candidateHead) {
+        throw new Error("repair candidate must descend from, not equal, its reviewed parent");
+      }
+      return {
+        ...repair,
+        candidateTree: receipt.candidateTree,
+        seenTrees: [...repair.seenTrees, receipt.candidateTree],
+      };
+    }
+    case "review": {
+      requireSuccessfulIssueChild(state, "review");
+      const previous = repair.accounting.settled.at(-1);
+      if (
+        receipt.flowRunId !== previous?.dispatch.flowRunId ||
+        receipt.executionWorkflowDigest !== previous.dispatch.executionWorkflowDigest ||
+        receipt.terminalSequence !== previous.settlement.terminalSequence ||
+        receipt.evidenceDigest !== previous.settlement.ledgerDigest ||
+        receipt.candidateHead !== previous.dispatch.candidateHead
+      ) {
+        throw new Error("review receipt does not match the settled child and candidate");
+      }
+      return repair;
+    }
+    default:
+      return repair;
+  }
 }
 
 function requireAppliedEffectsForTransition(
@@ -845,6 +1059,9 @@ function advanceLifecycleIdentity(
       const expectedIteration = state.implementationIteration + 1;
       if (receipt.iteration !== expectedIteration) {
         throw new Error(`implementation iteration must advance to ${expectedIteration}`);
+      }
+      if (state.reviewRepair === undefined && receipt.iteration > 64) {
+        throw new Error("legacy implementation iteration exceeds 64");
       }
       return {
         implementationIteration: receipt.iteration,

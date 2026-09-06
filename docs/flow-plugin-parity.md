@@ -46,7 +46,8 @@ installed Linux x64 attempt, issue 106, failed before candidate acceptance and r
 ## Compare all 23 commands
 
 The table accounts for every command file, including the universal dispatcher and conflict
-resolution. Similar names do not imply equivalent interfaces or authority.
+resolution. It retains the assessed baseline except for the explicit current-source update to
+`/flow:address`. Similar names do not imply equivalent interfaces or authority.
 
 | Plugin command | Harness classification and coverage | Evidence or remaining gap |
 | --- | --- | --- |
@@ -55,7 +56,7 @@ resolution. Similar names do not imply equivalent interfaces or authority.
 | `/flow:commit` | Enforced commit step within the issue lifecycle; no general standalone equivalent. | [Local Git effects](https://github.com/synaptiai/flow-harness/blob/cf802bde9d6b7a464884c5b76aaa8a387b5765b0/src/infrastructure/git/local-git-issue-effects.ts) operate on the admitted candidate. |
 | `/flow:pr` | Enforced publication step within the issue lifecycle; no general standalone equivalent. | [Controller](https://github.com/synaptiai/flow-harness/blob/cf802bde9d6b7a464884c5b76aaa8a387b5765b0/src/application/continue-github-issue.ts) gates publication on verification and independent review. |
 | `/flow:review` | Enforced independent candidate-bound review. Multi-reviewer challenge teams are not a default harness procedure. | [Review validation](https://github.com/synaptiai/flow-harness/blob/cf802bde9d6b7a464884c5b76aaa8a387b5765b0/src/domain/issue-lifecycle/review.ts) requires exact identities, complete criteria, and blocking P1–P3 findings. |
-| `/flow:address` | Workflow-authored repairs; automatic repair selection is missing. | [Controller tests](https://github.com/synaptiai/flow-harness/blob/cf802bde9d6b7a464884c5b76aaa8a387b5765b0/test/unit/application/github-issue-controller.test.ts) cover stopping on blocked review without starting another implementation. |
+| `/flow:address` | Baseline: workflow-authored repairs only. Current unreleased source: preauthorized, bounded same-host selection from eligible blocked reviews. Broader repair remains missing. | [Baseline controller tests](https://github.com/synaptiai/flow-harness/blob/cf802bde9d6b7a464884c5b76aaa8a387b5765b0/test/unit/application/github-issue-controller.test.ts) cover stopping on blocked review. The [repair guide](guides/github-issue-review-repair.md) defines the locally verified extension and remaining qualification gates. |
 | `/flow:merge` | Enforced exact approval-bound merge within an existing issue run. Arbitrary PR merge is missing. | [Merge controller](https://github.com/synaptiai/flow-harness/blob/cf802bde9d6b7a464884c5b76aaa8a387b5765b0/src/application/merge-github-issue.ts) checks the current gate before continuation. |
 | `/flow:release` | Missing general target-project release workflow. Flow's own release procedure is separate. | [Preview release operations](operations/release-preview.md) do not implement releases for arbitrary consumer repositories. |
 | `/flow:status` | Enforced run and goal inspection; repository-wide conversational overview is missing. | [Run controls](guides/run-and-control.md) and [goal workspaces](guides/goal-workspaces.md) expose durable state. |
@@ -73,6 +74,18 @@ resolution. Similar names do not imply equivalent interfaces or authority.
 | `/flow:resume` | Enforced proof-gated recovery; not just a proposed next action. | [Recovery contract](recovery.md) preserves effect uncertainty and exact identity. |
 | `/flow:watch` | Missing general workflow-watch equivalent. Package update watching is narrower. | [Capability package guide](guides/capability-packages.md) does not establish general issue monitoring. |
 | `/flow:resolve` | Missing general merge-conflict resolution. Stale or conflicting lifecycle conditions stop safely. | [Issue lifecycle non-goals](roadmap.md#gate-13-failure-behavior-and-non-goals) exclude broad delivery behavior beyond the frozen run. |
+
+## Account for bounded review repair
+
+The September 6, 2026 source update adds optional controller-selected repair after a valid blocked
+review. It preserves frozen criteria, scope, separate aggregate role budgets, candidate ancestry,
+fresh verification, and independent review. Local tests cover two consecutive repairs, final-only
+publication, crash recovery, and stopping unsafe continuations.
+
+This is not general verifier-directed recovery, semantic progress detection, or cross-host handoff.
+It does not prove that repair reduces operator work in a live task. The
+[usable-checkpoint plan](usable-checkpoint-plan.md#implement-bounded-review-repair) owns the fresh
+test results and open hosted, installed-package, and comparative evidence gates.
 
 ## Compare practices separately from command names
 
@@ -102,8 +115,8 @@ two-host package gate for its exact bytes, but failed before accepted implementa
 UC-02 remain blockers until their evidence is complete. Package identity changes reopen UC-08a.
 
 Then prioritize repository onboarding and guided plan preparation, measured under UC-03 and UC-04.
-Use UC-06's equivalent-condition benchmark to identify costly gaps. Keep UC-05's automatic repair
-selection in its separate research boundary. UC-07 remains open until supported practices have
+Use UC-06's equivalent-condition benchmark to identify costly gaps. Qualify UC-05's bounded
+blocked-review repair separately from broader NV-03 recovery research. UC-07 remains open until supported practices have
 runnable demonstrations as well as this inventory.
 
 Do not convert command counts or completed roadmap gates into a completion percentage. They differ

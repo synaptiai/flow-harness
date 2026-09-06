@@ -14,10 +14,18 @@ import type {
   FrozenIssueRunManifest,
   IssuePrivateBlobInput,
 } from "../domain/issue-lifecycle/private-manifest.js";
+import type {
+  IssueWorkflowDispatch,
+  IssueWorkflowSettlement,
+} from "../domain/issue-lifecycle/workflow-accounting.js";
+import type { RunState } from "../domain/run/events.js";
+import type { IssueReviewRepairHostPort } from "./issue-review-repair-host-port.js";
+import type { IssueReviewRepairProjection } from "./issue-review-repair-projection.js";
 import type { IssueVerificationResult } from "./issue-verification.js";
 import type {
   ImplementationWorkflowResult,
   RawReviewWorkflowResult,
+  RepairWorkflowResult,
 } from "./issue-workflow-runner.js";
 
 export interface IssueControllerCommandSettlement {
@@ -95,6 +103,7 @@ export interface IssueImplementationWorkflowRequest extends IssueControllerOpera
   readonly frozenContractDigest: string;
   readonly iteration: number;
   readonly workspaceIdentityDigest: string;
+  readonly dispatch?: IssueWorkflowDispatch;
 }
 
 export interface IssueReviewWorkflowRequest extends IssueControllerOperation {
@@ -103,9 +112,47 @@ export interface IssueReviewWorkflowRequest extends IssueControllerOperation {
   readonly manifest: FrozenIssueRunManifest;
   readonly frozenContractDigest: string;
   readonly candidateHead: string;
+  readonly cycle?: number;
+  readonly dispatch?: IssueWorkflowDispatch;
 }
 
+export interface IssueRepairWorkflowRequest extends IssueControllerOperation {
+  readonly kind: "repair";
+  readonly runId: string;
+  readonly manifest: FrozenIssueRunManifest;
+  readonly frozenContractDigest: string;
+  readonly cycle: number;
+  readonly candidateHead: string;
+  readonly workspaceIdentityDigest: string;
+  readonly projection: IssueReviewRepairProjection;
+  readonly dispatch?: IssueWorkflowDispatch;
+}
+
+export type IssueWorkflowPreparation = Omit<IssueWorkflowDispatch, "dispatchId" | "ordinal">;
+export type IssueWorkflowSettlementReadRequest = (
+  | IssueImplementationWorkflowRequest
+  | IssueReviewWorkflowRequest
+  | IssueRepairWorkflowRequest
+) & { readonly dispatch: IssueWorkflowDispatch };
+export type IssueWorkflowSettlementRead =
+  | { readonly kind: "absent" }
+  | { readonly kind: "incomplete"; readonly state: RunState; readonly ledgerDigest: string }
+  | {
+      readonly kind: "terminal";
+      readonly settlement: IssueWorkflowSettlement;
+      readonly state: RunState;
+    };
+
 export interface IssueWorkflowRunnerPort {
+  prepareImplementation?(
+    request: IssueImplementationWorkflowRequest,
+  ): Promise<IssueWorkflowPreparation>;
+  prepareReview?(request: IssueReviewWorkflowRequest): Promise<IssueWorkflowPreparation>;
+  prepareRepair?(request: IssueRepairWorkflowRequest): Promise<IssueWorkflowPreparation>;
+  runRepair?(request: IssueRepairWorkflowRequest): Promise<RepairWorkflowResult>;
+  readWorkflowSettlement?(
+    request: IssueWorkflowSettlementReadRequest,
+  ): Promise<IssueWorkflowSettlementRead>;
   /**
    * Trusted adapter boundary. Implementations must not render the manifest, Git identities,
    * credentials, or delivery authority into the model prompt.
@@ -223,6 +270,7 @@ export interface IssueExternalEffectsPort {
 }
 
 export interface IssueControllerRuntimeDependencies {
+  readonly repair?: IssueReviewRepairHostPort;
   readonly repository: IssueControllerRepository;
   readonly workflows: IssueWorkflowRunnerPort;
   readonly verification: IssueVerificationPort;

@@ -46,6 +46,7 @@ import {
   parseIssuePrivateManifest,
   verifyIssuePrivateBlob,
 } from "../../domain/issue-lifecycle/private-manifest.js";
+import { issueReviewRepairRunContractForManifest } from "../../domain/issue-lifecycle/review-repair-state.js";
 
 export const MAX_ISSUE_LIFECYCLE_EVENT_BYTES = 64 * 1024;
 export const MAX_ISSUE_LIFECYCLE_LEDGER_BYTES = 16 * 1024 * 1024;
@@ -1557,6 +1558,12 @@ function prepareInitialization(
     if (receipt[key as keyof typeof receipt] !== expected) {
       throw new IssueLifecycleStoreError("corrupt");
     }
+  }
+  if (
+    JSON.stringify(receipt.reviewRepair ?? null) !==
+    JSON.stringify(issueReviewRepairRunContractForManifest(manifest) ?? null)
+  ) {
+    throw new IssueLifecycleStoreError("corrupt");
   }
   const state = validateCandidate(undefined, snapshot);
   const eventLine = serializeEvent(snapshot);

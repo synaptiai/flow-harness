@@ -22,12 +22,18 @@ import {
   calculateIssuePrivateManifestDigest,
   type FrozenIssueRunManifest,
 } from "../domain/issue-lifecycle/private-manifest.js";
+import { issueReviewRepairRunContractForManifest } from "../domain/issue-lifecycle/review-repair-state.js";
 import type {
   IssueControllerCommandRecord,
   IssueControllerOperation,
   IssueControllerRuntimeDependencies,
   IssueExternalEffectPreparation,
 } from "./github-issue-controller-ports.js";
+import {
+  createIssueRepairWorkflowRequest,
+  reconcilePendingIssueWorkflow,
+  runAccountedIssueWorkflow,
+} from "./issue-review-repair-controller.js";
 import {
   assessGitHubObservation,
   type BuiltIssueMergeGate,
@@ -36,8 +42,10 @@ import {
   validateIssueVerificationResult,
 } from "./issue-verification.js";
 import {
+  type ImplementationWorkflowResult,
   type ValidatedReviewWorkflowResult,
   validateImplementationWorkflowResult,
+  validateRepairWorkflowResult,
   validateReviewWorkflowResult,
 } from "./issue-workflow-runner.js";
 
@@ -181,11 +189,44 @@ export async function continueClaimedIssue(
 async function continueClaimedIssueLoop(
   controller: ClaimedIssueController,
 ): Promise<PublicIssueLifecycleState> {
+  if (controller.manifest.reviewRepair !== undefined) {
+    const workflows = controller.dependencies.workflows;
+    if (
+      workflows.prepareImplementation === undefined ||
+      workflows.prepareReview === undefined ||
+      workflows.prepareRepair === undefined ||
+      workflows.runRepair === undefined ||
+      workflows.readWorkflowSettlement === undefined ||
+      controller.dependencies.repair === undefined
+    ) {
+      throw new IssueControllerError(
+        "repair_adapter_missing",
+        "complete review repair adapters are required before execution",
+      );
+    }
+  }
+  let observedCycle = controller.state.reviewRepair?.cycle ?? 0;
   for (let step = 0; step < MAX_CONTROLLER_STEPS; step += 1) {
+    const cycle = controller.state.reviewRepair?.cycle ?? 0;
+    if (cycle > observedCycle) {
+      // This is a no-progress watchdog, not a second hidden limit on approved repair cycles.
+      observedCycle = cycle;
+      step = 0;
+    }
     if (["merged", "failed", "cancelled"].includes(controller.state.phase)) {
       return projectPublicIssueLifecycleState(controller.state);
     }
     if (controller.state.phase !== "external_state_uncertain") {
+      if (
+        controller.dependencies.signal?.aborted &&
+        controller.state.reviewRepair?.accounting.pending != null &&
+        !(await reconcilePendingIssueWorkflow(controller))
+      ) {
+        throw new IssueControllerError(
+          "workflow_accounting_pending",
+          "pending child must reconcile before continuation",
+        );
+      }
       await controller.operation().pollCancellation();
     }
     switch (controller.state.phase) {
@@ -277,7 +318,10 @@ async function cancelClaimedIssue(
       "pending cancellation does not match the claimed issue run",
     );
   }
-  if (controller.state.pendingEffect !== undefined) {
+  if (
+    controller.state.pendingEffect !== undefined ||
+    !(await reconcilePendingIssueWorkflow(controller))
+  ) {
     throw new IssueControllerError(
       "cancellation_deferred",
       "pending external effect must reconcile before cancellation can settle",
@@ -434,6 +478,10 @@ async function startImplementation(
 }
 
 async function implement(controller: ClaimedIssueController): Promise<void> {
+  if (controller.state.reviewRepair !== undefined) {
+    await implementReviewRepair(controller);
+    return;
+  }
   const workspace = requiredLatestAppliedResult(controller.events, "workspace");
   const raw = await controller.dependencies.workflows.runImplementation({
     kind: "implementation",
@@ -476,6 +524,138 @@ async function implement(controller: ClaimedIssueController): Promise<void> {
   });
 }
 
+async function implementReviewRepair(controller: ClaimedIssueController): Promise<void> {
+  const repair = controller.state.reviewRepair;
+  if (repair === undefined || repair.workspaceIdentityDigest === undefined) {
+    throw new IssueControllerError(
+      "repair_workspace_missing",
+      "repair requires its frozen workspace",
+    );
+  }
+  let candidate = repair.candidatePreparation;
+  if (candidate === undefined) {
+    let result: ImplementationWorkflowResult;
+    if (repair.cycle === 0) {
+      const request = {
+        kind: "implementation" as const,
+        runId: controller.manifest.runId,
+        manifest: controller.manifest,
+        frozenContractDigest: controller.frozenContractDigest,
+        iteration: controller.state.implementationIteration,
+        workspaceIdentityDigest: repair.workspaceIdentityDigest,
+        ...controller.operation(),
+      };
+      result = validateImplementationWorkflowResult(
+        controller.manifest,
+        request.iteration,
+        repair.workspaceIdentityDigest,
+        await runAccountedIssueWorkflow(controller, request),
+      );
+    } else {
+      const request = await createIssueRepairWorkflowRequest(controller);
+      const repaired = validateRepairWorkflowResult(
+        controller.manifest,
+        request.projection,
+        repair.workspaceIdentityDigest,
+        await runAccountedIssueWorkflow(controller, request),
+      );
+      if (repaired.disposition === "disputed") {
+        await controller.append({
+          type: "run_failed",
+          code: "repair_disputed",
+          evidenceDigest: repaired.evidenceDigest,
+        });
+        return;
+      }
+      result = repaired;
+    }
+    if (result.candidateTree === undefined)
+      throw new IssueControllerError(
+        "candidate_tree_missing",
+        "candidate tree identity is required",
+      );
+    candidate = {
+      candidateTree: result.candidateTree,
+      candidateTreeDigest: result.candidateTreeDigest,
+      commitMessageDigest: result.commitMessageDigest,
+      flowRunId: result.flowRunId,
+      executionWorkflowDigest: result.executionWorkflowDigest,
+      terminalSequence: result.terminalSequence,
+      evidenceDigest: result.evidenceDigest,
+    };
+    await controller.append({ type: "implementation_candidate_prepared", candidate });
+  }
+  const parentCommit =
+    repair.cycle === 0 ? controller.manifest.base.commit : repair.selection?.candidateHead;
+  if (parentCommit === undefined)
+    throw new IssueControllerError("repair_parent_missing", "reviewed repair parent is missing");
+  const preparation: Extract<IssueExternalEffectPreparation, { kind: "commit" }> = {
+    kind: "commit",
+    commandId: controller.commandId,
+    workspaceIdentityDigest: repair.workspaceIdentityDigest,
+    parentCommit,
+    candidateTreeDigest: candidate.candidateTreeDigest,
+    messageDigest: candidate.commitMessageDigest,
+  };
+  if (controller.state.pendingEffect !== undefined) {
+    if (
+      controller.state.pendingEffect.effectKind !== "commit" ||
+      !(await recoverPendingEffect(controller))
+    ) {
+      throw new IssueControllerError(
+        "commit_recovery_uncertain",
+        "prepared commit requires exact reconciliation",
+      );
+    }
+  }
+  const priorCommit = controller.state.appliedEffects.find(
+    (effect) => effect.effectKind === "commit",
+  );
+  let applied: AppliedExternalEffect | undefined;
+  if (priorCommit === undefined) {
+    applied = await runExternalEffect(controller, preparation);
+  } else {
+    const descriptor = parseIssueExternalEffectDescriptor(
+      await controller.dependencies.effects.describe(preparation, controller.manifest),
+    );
+    validateEffectDescriptor(controller, preparation, descriptor);
+    if (calculateIssueExternalEffectOperationDigest(descriptor) !== priorCommit.operationDigest) {
+      throw new IssueControllerError(
+        "commit_recovery_mismatch",
+        "applied commit does not match the saved candidate",
+      );
+    }
+    const observation = await safelyReconcile(controller, descriptor);
+    if (
+      observation.status !== "applied" ||
+      observation.result.kind !== "commit" ||
+      observation.result.candidateHead !== priorCommit.result.candidateHead
+    ) {
+      throw new IssueControllerError(
+        "commit_recovery_uncertain",
+        "applied commit cannot be revalidated against its saved result",
+      );
+    }
+    applied = { result: observation.result, observationDigest: observation.observationDigest };
+  }
+  if (applied === undefined) return;
+  if (applied.result.kind !== "commit") impossibleEffect(applied.result, "commit");
+  await controller.append({
+    type: "phase_transitioned",
+    from: "implementing",
+    to: "verifying",
+    receipt: {
+      kind: "implementation",
+      candidateHead: applied.result.candidateHead,
+      candidateTree: candidate.candidateTree,
+      flowRunId: candidate.flowRunId,
+      executionWorkflowDigest: candidate.executionWorkflowDigest,
+      terminalSequence: candidate.terminalSequence,
+      evidenceDigest: candidate.evidenceDigest,
+    },
+  });
+}
+
 async function verifyCandidate(controller: ClaimedIssueController): Promise<void> {
   const candidateHead = requiredCandidateHead(controller.state);
   const verification = validateIssueVerificationResult(
@@ -502,20 +682,33 @@ async function verifyCandidate(controller: ClaimedIssueController): Promise<void
 }
 
 async function reviewCandidate(controller: ClaimedIssueController): Promise<void> {
+  const repair = controller.state.reviewRepair;
+  if (repair?.selection?.cycle === controller.state.implementationIteration) {
+    await startImplementation(controller, repair.selection.eligibilityDigest);
+    return;
+  }
   const candidateHead = requiredCandidateHead(controller.state);
+  const request = {
+    kind: "review" as const,
+    runId: controller.manifest.runId,
+    manifest: controller.manifest,
+    frozenContractDigest: controller.frozenContractDigest,
+    candidateHead,
+    ...(repair === undefined ? {} : { cycle: repair.cycle }),
+    ...controller.operation(),
+  };
   const review = validateReviewWorkflowResult(
     controller.manifest,
     candidateHead,
-    await controller.dependencies.workflows.runReview({
-      kind: "review",
-      runId: controller.manifest.runId,
-      manifest: controller.manifest,
-      frozenContractDigest: controller.frozenContractDigest,
-      candidateHead,
-      ...controller.operation(),
-    }),
+    repair === undefined
+      ? await controller.dependencies.workflows.runReview(request)
+      : await runAccountedIssueWorkflow(controller, request),
   );
   if (review.report.verdict === "blocked") {
+    if (repair !== undefined) {
+      await selectReviewRepair(controller, review);
+      return;
+    }
     await controller.append({
       type: "run_failed",
       code: "review_blocked",
@@ -537,6 +730,72 @@ async function reviewCandidate(controller: ClaimedIssueController): Promise<void
       evidenceDigest: review.evidenceDigest,
     },
   });
+}
+
+async function selectReviewRepair(
+  controller: ClaimedIssueController,
+  review: ValidatedReviewWorkflowResult,
+): Promise<void> {
+  const repair = controller.state.reviewRepair;
+  const host = controller.dependencies.repair;
+  if (review.evidenceDigest !== repair?.accounting.settled.at(-1)?.settlement.ledgerDigest) {
+    throw new IssueControllerError(
+      "repair_review_mismatch",
+      "blocked review does not match the settled child ledger",
+    );
+  }
+  if (
+    repair === undefined ||
+    host === undefined ||
+    repair.candidateTree === undefined ||
+    repair.workspaceIdentityDigest === undefined
+  ) {
+    throw new IssueControllerError(
+      "repair_adapter_missing",
+      "complete review repair evidence is required",
+    );
+  }
+  if (repair.cycle >= repair.contract.policy.maxCycles) {
+    await controller.append({
+      type: "run_failed",
+      code: "repair_cycle_limit",
+      evidenceDigest: review.reportDigest,
+    });
+    return;
+  }
+  const assessment = await host.assess({
+    manifest: controller.manifest,
+    review,
+    cycle: repair.cycle + 1,
+    candidateTree: repair.candidateTree,
+    workspaceIdentityDigest: repair.workspaceIdentityDigest,
+    ...(controller.dependencies.signal === undefined
+      ? {}
+      : { signal: controller.dependencies.signal }),
+  });
+  const eligibleClasses = [
+    ...(review.report.findings.length > 0 ? ["review-findings"] : []),
+    ...(review.report.acceptanceMapping.some((entry) => entry.status === "unsatisfied")
+      ? ["unsatisfied-criteria"]
+      : []),
+  ];
+  await controller.append({
+    type: "review_repair_selected",
+    selection: {
+      cycle: repair.cycle + 1,
+      candidateHead: review.candidateHead,
+      candidateTree: repair.candidateTree,
+      reviewFlowRunId: review.flowRunId,
+      reviewExecutionWorkflowDigest: review.executionWorkflowDigest,
+      reviewTerminalSequence: review.terminalSequence,
+      reportDigest: review.reportDigest,
+      repairTemplateWorkflowDigest: repair.contract.repairTemplateWorkflowDigest,
+      eligibleClasses,
+      eligibilityDigest: assessment.eligibilityDigest,
+      contextDigest: assessment.projection.digest,
+    },
+  });
+  await startImplementation(controller, assessment.eligibilityDigest);
 }
 
 async function publishCandidate(controller: ClaimedIssueController): Promise<void> {
@@ -942,7 +1201,15 @@ function assertStateMatchesManifest(
     state.frozenBranch !== manifest.branch.name ||
     state.frozenContractDigest !== frozenContractDigest ||
     state.frozenPlanDigest !== manifest.planDigest ||
-    state.frozenBudgetDigest !== manifest.budgetDigest
+    state.frozenBudgetDigest !== manifest.budgetDigest ||
+    state.frozenImplementationTemplateWorkflowDigest !==
+      manifest.implementationWorkflow.templateWorkflowDigest ||
+    state.frozenReviewTemplateWorkflowDigest !== manifest.reviewWorkflow.templateWorkflowDigest ||
+    evidenceDigest("repair-run-contract", state.reviewRepair?.contract ?? null) !==
+      evidenceDigest(
+        "repair-run-contract",
+        issueReviewRepairRunContractForManifest(manifest) ?? null,
+      )
   ) {
     throw new IssueControllerError(
       "frozen_state_mismatch",

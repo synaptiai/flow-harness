@@ -27,6 +27,9 @@ establish compatibility with every project or replace your repository's branch p
 the [issue 6 lifecycle field report](../field-reports/digital-twin-issue-6-alpha4.md) for the complete
 denominator and the distinction between source qualification and a published package.
 
+Optional [bounded review repair](github-issue-review-repair.md) is newer unreleased source undergoing
+qualification. The earlier lifecycle evidence does not qualify this extension.
+
 ## Before you begin
 
 Prepare these requirements:
@@ -206,6 +209,17 @@ A repository name can start with a dot. For example, `example/.github` is a vali
 repository identity. The owner component cannot start with a dot, and all repository identities
 remain subject to the exact canonical syntax and length limits.
 
+### Optionally authorize bounded review repair
+
+The default lifecycle does not authorize another implementation attempt after a blocked review.
+To permit bounded repair, author a distinct third workflow and add the complete `reviewRepair`
+policy before the run starts. Set explicit eligible classes, cycle limits, and aggregate role pools.
+Follow [Configure bounded independent-review repair](github-issue-review-repair.md) for the exact
+fields, result contract, budget units, and stopping conditions.
+
+Adding this policy creates a new frozen contract. It cannot restart a failed historical run.
+It does not authorize live provider spending by itself or change the final merge approval.
+
 ## Validate the plan
 
 Validate the plan before Flow reads GitHub or changes the repository:
@@ -264,9 +278,12 @@ After independent review clears, Flow pushes the Flow-owned branch and creates o
 request. A separate transition makes that exact pull request ready for review. Only the ready pull
 request can enter a merge gate.
 
-If review or CI sends a published candidate back for repair, Flow keeps that pull request identity.
-It commits and pushes the replacement candidate, then observes the same pull request as ready at the
-new head. It doesn't create another pull request for the same run.
+An eligible blocked independent review can enter repair only when the frozen policy authorizes it.
+Every changed repair candidate requires fresh deterministic verification and independent review.
+This policy is not a general retry mechanism for failed CI or provider calls.
+
+When an admitted lifecycle transition replaces an already published candidate, Flow keeps the pull
+request identity. It observes that same pull request at the replacement head instead of creating another.
 
 The command stops at a failure, a recoverable interruption, or `merge_approval_required`. It never
 merges as part of `run`. Preserve the returned run ID and command ID. Repeating the same command ID
@@ -291,6 +308,10 @@ identity, current phase, sequence, event time, receipt count, and settled-effect
 contains the latest bounded phase receipt, pending effect, or terminal code when present. Public
 events contain bounded identities and digests. Both outputs exclude credentials and raw task
 content. They also exclude command output, private error causes, and absolute paths.
+
+An opted-in run also includes `reviewRepair`: cycle, maximum cycles, settled-child count, per-role
+consumed resources, and usage availability. Its optional `pendingDispatch` identifies the reserved
+child run, role, and cycle. Legacy runs omit this summary.
 
 Only `merge_approval_required` includes `mergeApproval`. That object contains
 `pullRequestNumber`, `headCommit`, and `gateDigest` from the durable gate receipt. It disappears if
@@ -390,6 +411,11 @@ Cancellation preserves evidence. If publication already occurred, Flow leaves th
 branch and pull request intact so cancellation cannot conceal external state. Follow the cleanup
 procedure in the [operations runbook](../operations/github-issue-lifecycle.md#clean-up-a-settled-run).
 
+For repair-enabled runs, preserve the same host, private stores, and owned worktrees. Cancellation
+can remain requested if a child dispatch is reserved but its ledger is absent. Do not infer zero
+usage or start another child. Follow
+[Recover bounded review repair](../operations/github-issue-lifecycle.md#recover-bounded-review-repair).
+
 ## Resolve common failures
 
 Use the phase and stable code from `inspect` to select an action from this table.
@@ -400,7 +426,7 @@ Use the phase and stable code from `inspect` to select an action from this table
 | `negative_control_mismatch` | The base holdout passed, so the negative control cannot prove that the candidate caused the behavior | Strengthen the holdout, create a new plan identity, and start a new run |
 | `candidate_holdout_failed` | The base holdout failed as required, but the candidate didn't satisfy the issue-specific behavior | Inspect private evidence, repair the reviewed workflow or plan, and start a new run with the replacement frozen identity |
 | `verification_failed` | A deterministic project command failed | Preserve the workspace and inspect the command's private evidence |
-| Review reports P1, P2, or P3 | The exact candidate has a blocking finding | Don't publish or merge. Fix the candidate and require a fresh review |
+| Review reports P1, P2, or P3 | The exact candidate has a blocking finding | Don't publish or merge. An approved eligible repair can proceed within its frozen limits. Otherwise preserve the stopped run and review a new plan |
 | Hosted check is missing, pending, skipped, or failed | The configured exact-head CI gate isn't complete | Correct CI or wait, then resume from the durable observation cursor |
 | Gate is stale | A bound GitHub or repository fact changed after evidence was created | Reverify, rereview, and approve the replacement gate |
 | External state is uncertain | A Git or GitHub acknowledgement was lost | Don't repeat the external action manually. Inspect and resume so Flow can reconcile it |

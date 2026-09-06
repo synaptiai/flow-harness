@@ -37,6 +37,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) | You need to author, review, activate, recover, or roll back evidence-backed relationships between exact memory entries. |
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
 | [Author GitHub issue workflows](guides/github-issue-workflows.md) | You need complete implementation and independent-review workflow templates, budgets, provider-data boundaries, or review-result guidance. |
+| [Configure bounded GitHub issue review repair](guides/github-issue-review-repair.md) | You need the unreleased opt-in repair contract, fixed resource allowances, same-host recovery rules, or structured repair results. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 integration](acp.md) | You need to observe Flow from a compatible editor or run one selected prompt-only local ACP agent. |
 | [Qualify two local ACP agents](guides/qualify-acp-agents.md) | You need to verify two exact production ACP agents against one prompt-only workflow and private result contract. |

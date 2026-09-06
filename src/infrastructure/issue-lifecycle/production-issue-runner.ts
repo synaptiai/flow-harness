@@ -1,22 +1,23 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
+import { z } from "zod";
 import type { ArtifactStore } from "../../application/artifact-store.js";
 import {
   calculateFrozenIssueVerificationCommandDigest,
   FROZEN_ISSUE_HOLDOUT_STDIN_MEDIA_TYPE,
   MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES,
 } from "../../application/frozen-issue-command.js";
-import {
-  buildIssueIndependentReviewProjection,
-  serializeBoundedIssueReviewContext,
-} from "../../application/issue-independent-review-projection.js";
 import type {
   FrozenIssueRunInput,
   IssueControllerOperation,
   IssueImplementationWorkflowRequest,
+  IssueRepairWorkflowRequest,
   IssueReviewWorkflowRequest,
   IssueRunFreezerPort,
+  IssueWorkflowPreparation,
   IssueWorkflowRunnerPort,
+  IssueWorkflowSettlementRead,
+  IssueWorkflowSettlementReadRequest,
 } from "../../application/github-issue-controller-ports.js";
 import type {
   GitHubIssueAdmissionPort,
@@ -24,6 +25,10 @@ import type {
   GitRepositoryAdmissionPort,
   LocalGitRepositoryObservation,
 } from "../../application/github-issue-ports.js";
+import {
+  buildIssueIndependentReviewProjection,
+  serializeBoundedIssueReviewContext,
+} from "../../application/issue-independent-review-projection.js";
 import type { IssueLifecycleStore } from "../../application/issue-lifecycle-store.js";
 import type {
   IssueGitCandidateObservation,
@@ -36,17 +41,25 @@ import {
   type IssueReviewEvidence,
   type IssueReviewEvidencePort,
 } from "../../application/issue-review-evidence-port.js";
+import {
+  buildIssueReviewRepairProjection,
+  parseIssueReviewRepairDisposition,
+  serializeIssueReviewRepairProviderContext,
+} from "../../application/issue-review-repair-projection.js";
 import { validateIssueVerificationResult } from "../../application/issue-verification.js";
 import {
   type AdmittedImplementationWorkflow,
+  type AdmittedRepairWorkflow,
   type AdmittedReviewWorkflow,
   admitIssueWorkflow,
   completeIssueWorkflowBudget,
+  IssueWorkflowAdmissionError,
 } from "../../application/issue-workflow-admission.js";
 import {
   type ImplementationWorkflowResult,
   IssueWorkflowExecutionError,
   type RawReviewWorkflowResult,
+  type RepairWorkflowResult,
 } from "../../application/issue-workflow-runner.js";
 import type {
   ModelSessionStore,
@@ -87,13 +100,25 @@ import {
   parseIssuePrivateManifest,
   verifyIssuePrivateBlob,
 } from "../../domain/issue-lifecycle/private-manifest.js";
-import { type RunState, reduceRunEvents } from "../../domain/run/events.js";
+import { parseIssueReviewReport } from "../../domain/issue-lifecycle/review.js";
+import type { IssueReviewRepairPolicy } from "../../domain/issue-lifecycle/review-repair-policy.js";
+import {
+  ISSUE_REVIEW_CONTEXT_MEDIA_TYPE,
+  issueReviewContextBlobSchema,
+  issueWorkflowDispatchSchema,
+} from "../../domain/issue-lifecycle/workflow-accounting.js";
+import {
+  calculateWorkspaceAuthorityDigest,
+  type RunState,
+  reduceRunEvents,
+} from "../../domain/run/events.js";
 import {
   type FrozenProjectFile,
   type FrozenProjectFileRequest,
   readFrozenProjectFile,
 } from "../fs/frozen-project-file.js";
 import { JsonlRunStore } from "../fs/jsonl-run-store.js";
+import { readIssueWorkflowSettlement } from "./issue-workflow-settlement.js";
 
 const PLAN_MEDIA_TYPE = "application/vnd.flow.github-issue-plan+yaml";
 const WORKFLOW_MEDIA_TYPE = "application/vnd.flow.workflow+yaml";
@@ -181,6 +206,8 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
 
     const implementationFile = await this.#read(plan.implementation.workflow);
     const reviewFile = await this.#read(plan.review.workflow);
+    const repairFile =
+      plan.reviewRepair === undefined ? undefined : await this.#read(plan.reviewRepair.workflow);
     const holdoutStdinFile =
       plan.holdout.stdin === undefined
         ? undefined
@@ -218,6 +245,32 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
       },
       resultNodeId: plan.review.resultNode,
     });
+    const repair =
+      plan.reviewRepair === undefined || repairFile === undefined
+        ? undefined
+        : admitIssueWorkflow({
+            role: "repair",
+            source: decodeUtf8(repairFile),
+            sourceName: plan.reviewRepair.workflow,
+            ...(this.#capabilitySnapshot === undefined
+              ? {}
+              : { capabilitySnapshot: this.#capabilitySnapshot }),
+            model: { provider: command.provider, id: command.model },
+            context: {
+              kind: "repair",
+              content: reviewValidationContext(
+                modelIssueContext(issueSnapshot),
+                implementation.criteria.map(({ id, description }) => ({ id, description })),
+              ),
+            },
+            allowedWritePrefixes: plan.candidate.allowedPathPrefixes,
+            verificationCommands: plan.verification.map((entry) => entry.command),
+            resultNodeId: plan.reviewRepair.resultNode,
+          });
+    const repairBudget =
+      repair === undefined || plan.reviewRepair === undefined
+        ? undefined
+        : validateIssueReviewRepairContract(implementation, review, repair, plan.reviewRepair);
     await operation.pollCancellation();
     const secondLocal = await this.#repositoryAdmission.inspect(
       this.#projectRoot,
@@ -236,6 +289,8 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
     const planBlob = sourceBlob(PLAN_MEDIA_TYPE, planFile);
     const implementationBlob = sourceBlob(WORKFLOW_MEDIA_TYPE, implementationFile);
     const reviewBlob = sourceBlob(WORKFLOW_MEDIA_TYPE, reviewFile);
+    const repairBlob =
+      repairFile === undefined ? undefined : sourceBlob(WORKFLOW_MEDIA_TYPE, repairFile);
     const holdoutStdinBlob =
       holdoutStdinFile === undefined
         ? undefined
@@ -245,15 +300,41 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
       planBlob,
       implementationBlob,
       reviewBlob,
+      ...(repairBlob === undefined ? [] : [repairBlob]),
       ...(holdoutStdinBlob === undefined ? [] : [holdoutStdinBlob]),
     ] as const);
-    const budgets = issueBudgets(
-      implementation,
-      review,
-      plan.holdout.command.timeoutMs,
-      plan.verification.map((entry) => ({ id: entry.id, timeoutMs: entry.command.timeoutMs })),
-      this.#controllerTimeouts,
-    );
+    const budgets: IssueBudgetInput = {
+      ...issueBudgets(
+        implementation,
+        review,
+        plan.holdout.command.timeoutMs,
+        plan.verification.map((entry) => ({ id: entry.id, timeoutMs: entry.command.timeoutMs })),
+        this.#controllerTimeouts,
+      ),
+      ...(repairBudget === undefined || plan.reviewRepair === undefined
+        ? {}
+        : {
+            reviewRepair: {
+              aggregateBudget: plan.reviewRepair.aggregateBudget,
+              repair: repairBudget,
+            },
+          }),
+    };
+    const reviewRepair =
+      plan.reviewRepair === undefined || repair === undefined || repairFile === undefined
+        ? undefined
+        : {
+            version: plan.reviewRepair.version,
+            mode: plan.reviewRepair.mode,
+            maxCycles: plan.reviewRepair.maxCycles,
+            eligibleClasses: plan.reviewRepair.eligibleClasses,
+            aggregateBudget: plan.reviewRepair.aggregateBudget,
+            stopping: plan.reviewRepair.stopping,
+            workflow: {
+              ...workflowIdentity(repair, repairFile.sha256),
+              resultNodeId: repair.resultNodeId,
+            },
+          };
     const manifest = parseIssuePrivateManifest({
       version: 1,
       runId: deriveIssueRunId(command.commandId),
@@ -288,6 +369,7 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
         ...workflowIdentity(review, reviewFile.sha256),
         resultNodeId: review.resultNodeId,
       },
+      ...(reviewRepair === undefined ? {} : { reviewRepair }),
       acceptanceCriteria: implementation.criteria.map(({ id, description }) => ({
         id,
         description,
@@ -312,6 +394,9 @@ export class ProductionIssueRunFreezer implements IssueRunFreezerPort {
         plan: createIssuePrivateBlobReference(planBlob),
         implementationWorkflow: createIssuePrivateBlobReference(implementationBlob),
         reviewWorkflow: createIssuePrivateBlobReference(reviewBlob),
+        ...(repairBlob === undefined
+          ? {}
+          : { repairWorkflow: createIssuePrivateBlobReference(repairBlob) }),
         ...(holdoutStdinBlob === undefined
           ? {}
           : { holdoutStdin: createIssuePrivateBlobReference(holdoutStdinBlob) }),
@@ -343,9 +428,11 @@ export interface IssueWorkflowWorkspacePort {
 
 export interface ProductionIssueWorkflowRunnerOptions {
   readonly nestedRunRoot: string;
-  readonly lifecycleStore: Pick<IssueLifecycleStore, "readManifest" | "readBlob">;
+  readonly lifecycleStore: Pick<IssueLifecycleStore, "readManifest" | "readBlob"> &
+    Partial<Pick<IssueLifecycleStore, "putBlob">>;
   readonly workspaces: IssueWorkflowWorkspacePort;
-  readonly git: Pick<IssueLocalGitPort, "inspectCandidate">;
+  readonly git: Pick<IssueLocalGitPort, "inspectCandidate"> &
+    Partial<Pick<IssueLocalGitPort, "inspectVerificationWorktree">>;
   readonly reviewEvidence: IssueReviewEvidencePort;
   readonly executor: NodeExecutor;
   readonly capabilitySnapshot?: CapabilitySnapshot;
@@ -356,14 +443,59 @@ export interface ProductionIssueWorkflowRunnerOptions {
   readonly now?: () => Date;
 }
 
+interface PreparedIssueWorkflow {
+  readonly admitted:
+    | AdmittedImplementationWorkflow
+    | AdmittedReviewWorkflow
+    | AdmittedRepairWorkflow;
+  readonly workspace: IssueGitWorkspace;
+  readonly executionRoot: string;
+  readonly preparation: IssueWorkflowPreparation;
+  readonly reviewCandidateTree?: string;
+}
+
+const frozenReviewContextSchema = z
+  .object({
+    version: z.literal(1),
+    parentIssueRunId: z.string(),
+    frozenContractDigest: z.string(),
+    templateWorkflowDigest: z.string(),
+    candidateHead: z.string(),
+    workspaceIdentityDigest: z.string(),
+    context: z.string().min(1),
+  })
+  .strict();
+const frozenReviewProjectionIdentitySchema = z
+  .object({
+    version: z.literal(1),
+    frozenContractDigest: z.string(),
+    issue: z.unknown(),
+    acceptanceCriteria: z.unknown(),
+    candidate: z
+      .object({
+        candidateHead: z.string(),
+        baseCommit: z.string(),
+        candidateTree: z.string().regex(/^[a-f0-9]{40}$/),
+      })
+      .passthrough(),
+    expectedResult: z
+      .object({
+        candidateHead: z.string(),
+        issueDigest: z.string(),
+        reviewWorkflowDigest: z.string(),
+      })
+      .strict(),
+  })
+  .passthrough();
+
 /** Executes admitted nested issue workflows without granting delivery authority to model nodes. */
 export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
   readonly #artifactStore: ArtifactStore | undefined;
   readonly #capabilitySnapshot: CapabilitySnapshot | undefined;
   readonly #effectReconciler: NodeEffectReconciler | undefined;
   readonly #executor: NodeExecutor;
-  readonly #git: Pick<IssueLocalGitPort, "inspectCandidate">;
-  readonly #lifecycleStore: Pick<IssueLifecycleStore, "readManifest" | "readBlob">;
+  readonly #git: ProductionIssueWorkflowRunnerOptions["git"];
+  readonly #lifecycleStore: ProductionIssueWorkflowRunnerOptions["lifecycleStore"];
   readonly #modelSessionStore: ModelSessionStore | undefined;
   readonly #nestedRunRoot: string;
   readonly #now: (() => Date) | undefined;
@@ -395,7 +527,52 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
   async runImplementation(
     request: IssueImplementationWorkflowRequest,
   ): Promise<ImplementationWorkflowResult> {
-    assertFrozenContractDigest(request.manifest, request.frozenContractDigest);
+    const prepared = await this.#prepareImplementation(request);
+    assertPreparedDispatch(request, prepared.preparation);
+    const { admitted, workspace, preparation } = prepared;
+    const flowRunId = preparation.flowRunId;
+    const state = await this.#execute(admitted, flowRunId, workspace, request.signal);
+    assertSucceeded(state, flowRunId, "implementation");
+    await request.pollCancellation();
+    const candidate = await this.#git.inspectCandidate({
+      workspace,
+      baseCommit: request.manifest.base.commit,
+      allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
+    assertCandidate(candidate, workspace, request.manifest);
+    return Object.freeze({
+      parentIssueRunId: request.runId,
+      iteration: request.iteration,
+      flowRunId,
+      templateWorkflowDigest: admitted.templateWorkflowDigest,
+      executionWorkflowDigest: state.workflowDigest,
+      terminalSequence: state.lastSequence,
+      evidenceDigest: await this.#evidenceDigest(flowRunId),
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+      ...(request.manifest.reviewRepair === undefined ? {} : { candidateTree: candidate.tree }),
+      candidateTreeDigest: calculateIssueCandidateTreeDigest(candidate.tree),
+      commitMessageDigest: calculateIssueCommitMessageDigest(request.manifest.issue.number),
+    });
+  }
+
+  async prepareImplementation(
+    request: IssueImplementationWorkflowRequest,
+  ): Promise<IssueWorkflowPreparation> {
+    return (await this.#prepareImplementation(request)).preparation;
+  }
+
+  async #prepareImplementation(
+    request: IssueImplementationWorkflowRequest,
+  ): Promise<PreparedIssueWorkflow> {
+    await this.#assertRequest(request);
+    if (
+      !Number.isSafeInteger(request.iteration) ||
+      request.iteration < 1 ||
+      request.iteration > (request.manifest.reviewRepair === undefined ? 64 : 1)
+    ) {
+      throw new Error("implementation iteration does not match its frozen initial dispatch");
+    }
     await request.pollCancellation();
     const workspace = await this.#readWorkspace(request);
     const issueSnapshot = await this.#readIssueSnapshot(
@@ -430,32 +607,85 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       "implementation",
       String(request.iteration),
     );
-    const state = await this.#execute(admitted, flowRunId, workspace, request.signal);
-    assertSucceeded(state, flowRunId, "implementation");
-    await request.pollCancellation();
-    const candidate = await this.#git.inspectCandidate({
+    return {
+      admitted,
       workspace,
-      baseCommit: request.manifest.base.commit,
-      allowedWritePrefixes: request.manifest.allowedWritePrefixes,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
-    });
-    assertCandidate(candidate, workspace, request.manifest);
-    return Object.freeze({
-      parentIssueRunId: request.runId,
-      iteration: request.iteration,
-      flowRunId,
-      templateWorkflowDigest: admitted.templateWorkflowDigest,
-      executionWorkflowDigest: state.workflowDigest,
-      terminalSequence: state.lastSequence,
-      evidenceDigest: await this.#evidenceDigest(flowRunId),
-      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
-      candidateTreeDigest: calculateIssueCandidateTreeDigest(candidate.tree),
-      commitMessageDigest: calculateIssueCommitMessageDigest(request.manifest.issue.number),
-    });
+      executionRoot: workspace.root,
+      preparation: workflowPreparation(
+        request,
+        admitted,
+        workspace,
+        flowRunId,
+        request.iteration - 1,
+        null,
+        null,
+      ),
+    };
   }
 
   async runReview(request: IssueReviewWorkflowRequest): Promise<RawReviewWorkflowResult> {
-    assertFrozenContractDigest(request.manifest, request.frozenContractDigest);
+    if (request.manifest.reviewRepair !== undefined && request.dispatch === undefined) {
+      throw new Error("opted-in workflow requires a persisted dispatch");
+    }
+    const prepared = await this.#prepareReview(request);
+    assertPreparedDispatch(request, prepared.preparation);
+    const { admitted, workspace, preparation, executionRoot } = prepared;
+    if (admitted.role !== "review") throw new Error("review preparation role mismatch");
+    const flowRunId = preparation.flowRunId;
+    if (
+      request.manifest.reviewRepair !== undefined &&
+      !(await new JsonlRunStore(this.#nestedRunRoot).exists(flowRunId))
+    ) {
+      if (this.#git.inspectVerificationWorktree === undefined) {
+        throw new Error("opted-in review requires a pristine verification workspace observation");
+      }
+      const observation = await this.#git.inspectVerificationWorktree({
+        workspace,
+        commit: request.candidateHead,
+        cleanliness: "pristine",
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      if (
+        observation.head !== request.candidateHead ||
+        observation.tree !== prepared.reviewCandidateTree ||
+        observation.status !== "clean" ||
+        observation.workspaceIdentityDigest !== workspace.workspaceIdentityDigest
+      ) {
+        throw new Error(
+          "pristine verification workspace does not match the frozen review candidate",
+        );
+      }
+    }
+    const state = await this.#execute(
+      admitted,
+      flowRunId,
+      workspace,
+      request.signal,
+      executionRoot,
+    );
+    assertSucceeded(state, flowRunId, "review");
+    await request.pollCancellation();
+    return await this.#reviewResult(request.manifest, request.candidateHead, flowRunId, state, {
+      templateWorkflowDigest: admitted.templateWorkflowDigest,
+      executionWorkflowDigest: state.workflowDigest,
+      resultNodeId: admitted.resultNodeId,
+    });
+  }
+
+  async prepareReview(request: IssueReviewWorkflowRequest): Promise<IssueWorkflowPreparation> {
+    return (await this.#prepareReview(request)).preparation;
+  }
+
+  async #prepareReview(request: IssueReviewWorkflowRequest): Promise<PreparedIssueWorkflow> {
+    await this.#assertRequest(request);
+    const cycle = request.cycle ?? 0;
+    if (
+      !Number.isSafeInteger(cycle) ||
+      cycle < 0 ||
+      cycle > (request.manifest.reviewRepair?.maxCycles ?? 0)
+    ) {
+      throw new Error("review cycle exceeds the frozen policy");
+    }
     await request.pollCancellation();
     const workspace = await this.#readWorkspace(request);
     const issueSnapshot = await this.#readIssueSnapshot(
@@ -467,7 +697,100 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
       request.manifest.artifacts.reviewWorkflow,
       WORKFLOW_MEDIA_TYPE,
     );
-    const reviewEvidence = validateReviewEvidence(
+    const { content, contextBlob } = await this.#reviewContext(request, workspace, issueSnapshot);
+    const admitted = admitIssueWorkflow({
+      role: "review",
+      source,
+      sourceName: "frozen-review.workflow.yaml",
+      ...(this.#capabilitySnapshot === undefined
+        ? {}
+        : { capabilitySnapshot: this.#capabilitySnapshot }),
+      model: request.manifest.reviewWorkflow.model,
+      context: {
+        kind: "review",
+        content,
+      },
+      resultNodeId: request.manifest.reviewWorkflow.resultNodeId,
+    });
+    assertWorkflowIdentity(request.manifest, "review", admitted);
+    const flowRunId = deriveNestedIssueWorkflowRunId(
+      request.runId,
+      "review",
+      request.candidateHead,
+    );
+    return {
+      admitted,
+      workspace,
+      executionRoot: requireVerificationRoot(workspace),
+      reviewCandidateTree: frozenReviewProjectionIdentitySchema.parse(JSON.parse(content)).candidate
+        .candidateTree,
+      preparation: {
+        ...workflowPreparation(
+          request,
+          admitted,
+          workspace,
+          flowRunId,
+          cycle,
+          request.candidateHead,
+          null,
+        ),
+        ...(contextBlob === undefined ? {} : { contextBlob }),
+      },
+    };
+  }
+
+  async #reviewContext(
+    request: IssueReviewWorkflowRequest,
+    workspace: IssueGitWorkspace,
+    issue: FrozenGitHubIssueSnapshot,
+  ): Promise<{
+    content: string;
+    contextBlob?: NonNullable<IssueWorkflowPreparation["contextBlob"]>;
+  }> {
+    const identity = {
+      version: 1 as const,
+      parentIssueRunId: request.runId,
+      frozenContractDigest: request.frozenContractDigest,
+      templateWorkflowDigest: request.manifest.reviewWorkflow.templateWorkflowDigest,
+      candidateHead: request.candidateHead,
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+    };
+    if (request.manifest.reviewRepair !== undefined && request.dispatch !== undefined) {
+      const contextBlob = issueReviewContextBlobSchema.parse(request.dispatch.contextBlob);
+      const text = await this.#readTextBlob(
+        request.runId,
+        contextBlob,
+        ISSUE_REVIEW_CONTEXT_MEDIA_TYPE,
+      );
+      const envelope = frozenReviewContextSchema.parse(JSON.parse(text));
+      const { context, ...storedIdentity } = envelope;
+      if (
+        JSON.stringify(envelope) !== text ||
+        JSON.stringify(storedIdentity) !== JSON.stringify(identity)
+      ) {
+        throw new Error("frozen review context does not match its exact dispatch identity");
+      }
+      const projected = frozenReviewProjectionIdentitySchema.parse(JSON.parse(context));
+      if (
+        JSON.stringify(JSON.parse(context)) !== context ||
+        projected.frozenContractDigest !== request.frozenContractDigest ||
+        projected.expectedResult.candidateHead !== request.candidateHead ||
+        projected.expectedResult.issueDigest !== request.manifest.issue.contentDigest ||
+        projected.expectedResult.reviewWorkflowDigest !== identity.templateWorkflowDigest ||
+        projected.candidate.candidateHead !== request.candidateHead ||
+        projected.candidate.baseCommit !== request.manifest.base.commit ||
+        JSON.stringify(projected.issue) !== modelIssueContext(issue) ||
+        JSON.stringify(projected.acceptanceCriteria) !==
+          JSON.stringify(request.manifest.acceptanceCriteria)
+      ) {
+        throw new Error("frozen review projection does not match its original issue and candidate");
+      }
+      return { content: context, contextBlob };
+    }
+    if (request.manifest.reviewRepair !== undefined && this.#lifecycleStore.putBlob === undefined) {
+      throw new Error("opted-in review preparation requires a private context store");
+    }
+    const evidence = validateReviewEvidence(
       request.manifest,
       request.candidateHead,
       workspace,
@@ -481,50 +804,234 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
     );
     const diff = await this.#readTextBlob(
       request.runId,
-      reviewEvidence.diffBlob,
+      evidence.diffBlob,
       ISSUE_REVIEW_DIFF_MEDIA_TYPE,
     );
+    const content = buildIssueIndependentReviewProjection({
+      manifest: request.manifest,
+      frozenContractDigest: request.frozenContractDigest,
+      candidateHead: request.candidateHead,
+      issueSource: modelIssueContext(issue),
+      evidence,
+      diff,
+    });
+    if (request.manifest.reviewRepair === undefined) return { content };
+    const blob = {
+      mediaType: ISSUE_REVIEW_CONTEXT_MEDIA_TYPE,
+      bytes: Buffer.from(JSON.stringify({ ...identity, context: content }), "utf8"),
+    };
+    const contextBlob = issueReviewContextBlobSchema.parse(
+      await this.#lifecycleStore.putBlob?.(request.runId, blob),
+    );
+    verifyIssuePrivateBlob(blob, contextBlob);
+    return { content, contextBlob };
+  }
+
+  async prepareRepair(request: IssueRepairWorkflowRequest): Promise<IssueWorkflowPreparation> {
+    return (await this.#prepareRepair(request)).preparation;
+  }
+
+  async #prepareRepair(request: IssueRepairWorkflowRequest): Promise<PreparedIssueWorkflow> {
+    await this.#assertRequest(request);
+    const repair = request.manifest.reviewRepair;
+    const reference = request.manifest.artifacts.repairWorkflow;
+    if (
+      repair === undefined ||
+      reference === undefined ||
+      !Number.isSafeInteger(request.cycle) ||
+      request.cycle < 1 ||
+      request.cycle > repair.maxCycles
+    ) {
+      throw new Error("repair request has no matching frozen policy or cycle");
+    }
+    await request.pollCancellation();
+    const workspace = await this.#readWorkspace(request);
+    const issue = await this.#readIssueSnapshot(request.runId, request.manifest.artifacts.issue);
+    const binding = request.projection.context.binding;
+    if (
+      binding.cycle !== request.cycle ||
+      binding.candidateHead !== request.candidateHead ||
+      binding.issueDigest !== request.manifest.issue.contentDigest ||
+      binding.reviewWorkflowDigest !== request.manifest.reviewWorkflow.templateWorkflowDigest ||
+      binding.repairWorkflowDigest !== repair.workflow.templateWorkflowDigest
+    ) {
+      throw new Error("repair projection does not match its frozen request");
+    }
+    const report = parseIssueReviewReport(
+      {
+        version: 1,
+        candidateHead: binding.candidateHead,
+        issueDigest: binding.issueDigest,
+        reviewWorkflowDigest: binding.reviewWorkflowDigest,
+        acceptanceMapping: request.projection.context.acceptanceMapping,
+        findings: request.projection.context.findings,
+        verdict: "blocked",
+      },
+      request.manifest.acceptanceCriteria.map(({ id }) => id),
+      binding,
+    );
+    const projection = buildIssueReviewRepairProjection({
+      issue,
+      acceptanceCriteria: request.manifest.acceptanceCriteria,
+      allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+      report,
+      binding,
+    });
+    if (
+      projection.digest !== request.projection.digest ||
+      projection.serialized !== request.projection.serialized ||
+      projection.serialized !== JSON.stringify(request.projection.context)
+    ) {
+      throw new Error("repair projection differs from the frozen host-derived scope");
+    }
+    const source = await this.#readTextBlob(request.runId, reference, WORKFLOW_MEDIA_TYPE);
+    const plan = parseGitHubIssuePlanText(
+      await this.#readTextBlob(request.runId, request.manifest.artifacts.plan, PLAN_MEDIA_TYPE),
+      "frozen GitHub issue plan",
+    );
+    assertFrozenVerificationCommands(request.manifest, plan);
     const admitted = admitIssueWorkflow({
-      role: "review",
+      role: "repair",
       source,
-      sourceName: "frozen-review.workflow.yaml",
+      sourceName: "frozen-repair.workflow.yaml",
       ...(this.#capabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: this.#capabilitySnapshot }),
-      model: request.manifest.reviewWorkflow.model,
-      context: {
-        kind: "review",
-        content: buildIssueIndependentReviewProjection({
-          manifest: request.manifest,
-          frozenContractDigest: request.frozenContractDigest,
-          candidateHead: request.candidateHead,
-          issueSource: modelIssueContext(issueSnapshot),
-          evidence: reviewEvidence,
-          diff,
-        }),
-      },
-      resultNodeId: request.manifest.reviewWorkflow.resultNodeId,
+      model: repair.workflow.model,
+      context: { kind: "repair", content: serializeIssueReviewRepairProviderContext(projection) },
+      allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+      verificationCommands: plan.verification.map((entry) => entry.command),
+      resultNodeId: repair.workflow.resultNodeId,
     });
-    assertWorkflowIdentity(request.manifest, "review", admitted);
+    assertWorkflowIdentity(request.manifest, "repair", admitted);
     const flowRunId = deriveNestedIssueWorkflowRunId(
       request.runId,
-      "review",
-      request.candidateHead,
+      "repair",
+      String(request.cycle),
     );
-    const state = await this.#execute(
+    return {
       admitted,
-      flowRunId,
       workspace,
-      request.signal,
-      requireVerificationRoot(workspace),
-    );
-    assertSucceeded(state, flowRunId, "review");
+      executionRoot: workspace.root,
+      preparation: workflowPreparation(
+        request,
+        admitted,
+        workspace,
+        flowRunId,
+        request.cycle,
+        request.candidateHead,
+        binding.reviewReportDigest,
+      ),
+    };
+  }
+
+  async runRepair(request: IssueRepairWorkflowRequest): Promise<RepairWorkflowResult> {
+    const prepared = await this.#prepareRepair(request);
+    assertPreparedDispatch(request, prepared.preparation);
+    const { admitted, workspace, preparation } = prepared;
+    if (admitted.role !== "repair") throw new Error("repair preparation role mismatch");
+    const inspect = (baseCommit: string) =>
+      this.#git.inspectCandidate({
+        workspace,
+        baseCommit,
+        allowedWritePrefixes: request.manifest.allowedWritePrefixes,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+    const before = await inspect(request.candidateHead);
+    assertRepairCandidate(before, workspace, request.candidateHead);
+    const flowRunId = preparation.flowRunId;
+    const state = await this.#execute(admitted, flowRunId, workspace, request.signal);
+    assertSucceeded(state, flowRunId, "repair");
     await request.pollCancellation();
-    return await this.#reviewResult(request.manifest, request.candidateHead, flowRunId, state, {
+    const resultNode = state.nodes[admitted.resultNodeId];
+    if (resultNode?.status !== "succeeded" || resultNode.evidence?.kind !== "agent") {
+      throw new Error("repair result node did not produce successful agent evidence");
+    }
+    const disposition = parseIssueReviewRepairDisposition(
+      resultNode.evidence.text,
+      request.projection,
+      resultNode.evidence.textTruncated,
+    );
+    const common = {
+      parentIssueRunId: request.runId,
+      cycle: request.cycle,
+      iteration: request.cycle + 1,
+      candidateHead: request.candidateHead,
+      repairContextDigest: request.projection.digest,
+      reviewReportDigest: request.projection.context.binding.reviewReportDigest,
+      flowRunId,
       templateWorkflowDigest: admitted.templateWorkflowDigest,
       executionWorkflowDigest: state.workflowDigest,
+      terminalSequence: state.lastSequence,
+      evidenceDigest: await this.#evidenceDigest(flowRunId),
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
       resultNodeId: admitted.resultNodeId,
+      resultText: resultNode.evidence.text,
+      resultTextTruncated: resultNode.evidence.textTruncated,
+    };
+    if (disposition.disposition === "disputed")
+      return Object.freeze({ ...common, disposition: "disputed" });
+    const incremental = await inspect(request.candidateHead);
+    assertRepairCandidate(incremental, workspace, request.candidateHead);
+    const candidate = await inspect(request.manifest.base.commit);
+    assertCandidate(candidate, workspace, request.manifest);
+    if (candidate.head !== request.candidateHead || candidate.tree !== incremental.tree) {
+      throw new Error("repair candidate changed between incremental and complete scope inspection");
+    }
+    return Object.freeze({
+      ...common,
+      disposition: "changed",
+      candidateTree: candidate.tree,
+      candidateTreeDigest: calculateIssueCandidateTreeDigest(candidate.tree),
+      commitMessageDigest: calculateIssueCommitMessageDigest(request.manifest.issue.number),
     });
+  }
+
+  async readWorkflowSettlement(
+    request: IssueWorkflowSettlementReadRequest,
+  ): Promise<IssueWorkflowSettlementRead> {
+    // Cancellation stops effects, never the read-only reconciliation of already-started work.
+    const { signal: _signal, ...withoutSignal } = request;
+    const reconciliation = { ...withoutSignal, pollCancellation: async () => {} };
+    const prepared =
+      reconciliation.kind === "implementation"
+        ? await this.#prepareImplementation(reconciliation)
+        : reconciliation.kind === "review"
+          ? await this.#prepareReview(reconciliation)
+          : await this.#prepareRepair(reconciliation);
+    assertPreparedDispatch(request, prepared.preparation);
+    const { admitted, executionRoot, preparation } = prepared;
+    return readIssueWorkflowSettlement({
+      nestedRunRoot: this.#nestedRunRoot,
+      dispatch: request.dispatch,
+      workflow: admitted.workflow,
+      expected: {
+        parentIssueRunId: preparation.parentIssueRunId,
+        flowRunId: preparation.flowRunId,
+        frozenContractDigest: preparation.frozenContractDigest,
+        templateWorkflowDigest: preparation.templateWorkflowDigest,
+        workspaceIdentityDigest: preparation.workspaceIdentityDigest,
+        executionCwd: executionRoot,
+        workspaceAuthorityDigest: calculateWorkspaceAuthorityDigest(workflowAuthority(admitted)),
+      },
+    });
+  }
+
+  async #assertRequest(request: {
+    readonly runId: string;
+    readonly manifest: FrozenIssueRunManifest;
+    readonly frozenContractDigest: string;
+  }): Promise<void> {
+    assertFrozenContractDigest(request.manifest, request.frozenContractDigest);
+    if (request.runId !== request.manifest.runId)
+      throw new Error("workflow request parent identity mismatch");
+    const frozen = await this.#lifecycleStore.readManifest(request.runId);
+    if (
+      (frozen.reviewRepair !== undefined || request.manifest.reviewRepair !== undefined) &&
+      calculateIssuePrivateManifestDigest(frozen) !== request.frozenContractDigest
+    ) {
+      throw new Error("workflow request does not match the owner-held frozen manifest");
+    }
   }
 
   async readReviewResult(input: {
@@ -553,7 +1060,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
   }
 
   async #execute(
-    admitted: AdmittedImplementationWorkflow | AdmittedReviewWorkflow,
+    admitted: AdmittedImplementationWorkflow | AdmittedReviewWorkflow | AdmittedRepairWorkflow,
     flowRunId: string,
     workspace: IssueGitWorkspace,
     signal?: AbortSignal,
@@ -563,11 +1070,7 @@ export class ProductionIssueWorkflowRunner implements IssueWorkflowRunnerPort {
     const common = {
       cwd: executionRoot,
       projectRoot: executionRoot,
-      protectedPaths: admitted.protectedPaths,
-      allowedWritePrefixes: admitted.allowedWritePrefixes,
-      ...(admitted.role === "implementation" && admitted.agentCommandAuthority !== undefined
-        ? { agentCommandAuthority: admitted.agentCommandAuthority }
-        : {}),
+      ...workflowAuthority(admitted),
       ...(admitted.capabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: admitted.capabilitySnapshot }),
@@ -713,12 +1216,91 @@ function assertFrozenVerificationCommands(
   }
 }
 
+function workflowAuthority(admitted: PreparedIssueWorkflow["admitted"]) {
+  return {
+    protectedPaths: admitted.protectedPaths,
+    allowedWritePrefixes: admitted.allowedWritePrefixes,
+    ...(admitted.role !== "review" && admitted.agentCommandAuthority !== undefined
+      ? { agentCommandAuthority: admitted.agentCommandAuthority }
+      : {}),
+  };
+}
+
+function workflowPreparation(
+  request: { readonly runId: string; readonly frozenContractDigest: string },
+  admitted: PreparedIssueWorkflow["admitted"],
+  workspace: IssueGitWorkspace,
+  flowRunId: string,
+  cycle: number,
+  candidateHead: string | null,
+  reportDigest: string | null,
+): IssueWorkflowPreparation {
+  return Object.freeze({
+    version: 1,
+    parentIssueRunId: request.runId,
+    role: admitted.role === "repair" ? "implementation" : admitted.role,
+    cycle,
+    flowRunId,
+    frozenContractDigest: request.frozenContractDigest,
+    templateWorkflowDigest: admitted.templateWorkflowDigest,
+    executionWorkflowDigest: admitted.executionWorkflowDigest,
+    workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+    candidateHead,
+    reportDigest,
+    envelope: completeIssueWorkflowBudget(admitted.workflow.budget, admitted.role),
+  });
+}
+
+function assertPreparedDispatch(
+  request: {
+    readonly manifest: FrozenIssueRunManifest;
+    readonly dispatch?: import("../../domain/issue-lifecycle/workflow-accounting.js").IssueWorkflowDispatch;
+  },
+  expected: IssueWorkflowPreparation,
+): void {
+  if (request.manifest.reviewRepair === undefined) {
+    if (request.dispatch !== undefined)
+      throw new Error("legacy workflow cannot adopt a repair dispatch");
+    return;
+  }
+  if (request.dispatch === undefined)
+    throw new Error("opted-in workflow requires a persisted dispatch");
+  const {
+    dispatchId: _dispatchId,
+    ordinal: _ordinal,
+    ...actual
+  } = issueWorkflowDispatchSchema.parse(request.dispatch);
+  if (
+    calculateIssueLifecycleDomainDigest("flow.issue.workflow-preparation.v1", actual) !==
+    calculateIssueLifecycleDomainDigest("flow.issue.workflow-preparation.v1", expected)
+  ) {
+    throw new Error("workflow dispatch does not match exact host-derived preparation");
+  }
+}
+
+function assertRepairCandidate(
+  candidate: IssueGitCandidateObservation,
+  workspace: IssueGitWorkspace,
+  parent: string,
+): void {
+  if (
+    candidate.workspaceIdentityDigest !== workspace.workspaceIdentityDigest ||
+    candidate.branch !== workspace.branch ||
+    candidate.baseCommit !== parent ||
+    candidate.head !== parent ||
+    !GIT_COMMIT_PATTERN.test(candidate.tree)
+  ) {
+    throw new Error("repair candidate does not descend from its exact reviewed parent");
+  }
+}
+
 export function deriveNestedIssueWorkflowRunId(
   parentRunId: string,
-  role: "implementation" | "review",
+  role: "implementation" | "review" | "repair",
   binding: string,
 ): string {
   if (role === "implementation") return `${parentRunId}-implementation-${binding}`;
+  if (role === "repair") return `${parentRunId}-repair-${binding}`;
   const digest = createHash("sha256")
     .update("flow.issue.review-run.v1\0")
     .update(parentRunId)
@@ -730,7 +1312,7 @@ export function deriveNestedIssueWorkflowRunId(
 }
 
 function workflowIdentity(
-  workflow: AdmittedImplementationWorkflow | AdmittedReviewWorkflow,
+  workflow: AdmittedImplementationWorkflow | AdmittedReviewWorkflow | AdmittedRepairWorkflow,
   sourceDigest: string,
 ) {
   return {
@@ -746,12 +1328,66 @@ function workflowIdentity(
   };
 }
 
-function firstWorkflowModel(workflow: AdmittedImplementationWorkflow | AdmittedReviewWorkflow) {
+function firstWorkflowModel(
+  workflow: AdmittedImplementationWorkflow | AdmittedReviewWorkflow | AdmittedRepairWorkflow,
+) {
   for (const node of workflow.workflow.nodes) {
     if (node.type === "agent") return node.agent.model;
     if (node.type === "verifier" && node.verifier.kind === "model") return node.verifier.model;
   }
   throw new Error("admitted issue workflow has no model binding");
+}
+
+/** Shared by credential-free validation and exact source freezing; never selects a repair. */
+export function validateIssueReviewRepairContract(
+  implementation: AdmittedImplementationWorkflow,
+  review: AdmittedReviewWorkflow,
+  repair: AdmittedRepairWorkflow,
+  policy: IssueReviewRepairPolicy,
+): ReturnType<typeof completeIssueWorkflowBudget> {
+  const expected = new Map(implementation.criteria.map(({ id, description }) => [id, description]));
+  if (
+    repair.criteria.length !== expected.size ||
+    repair.criteria.some(({ id, description }) => expected.get(id) !== description)
+  ) {
+    throw new IssueWorkflowAdmissionError(
+      "unsafe_workflow",
+      "repair workflow must preserve every original acceptance criterion identifier and description",
+    );
+  }
+  if (
+    repair.templateWorkflowDigest === implementation.templateWorkflowDigest ||
+    repair.templateWorkflowDigest === review.templateWorkflowDigest
+  ) {
+    throw new IssueWorkflowAdmissionError(
+      "unsafe_workflow",
+      "repair workflow must have a distinct frozen template identity",
+    );
+  }
+  const repairBudget = completeIssueWorkflowBudget(repair.workflow.budget, "repair");
+  for (const [label, envelope, pool] of [
+    [
+      "implementation",
+      completeIssueWorkflowBudget(implementation.workflow.budget, "implementation"),
+      policy.aggregateBudget.implementation,
+    ],
+    [
+      "review",
+      completeIssueWorkflowBudget(review.workflow.budget, "review"),
+      policy.aggregateBudget.review,
+    ],
+    ["repair", repairBudget, policy.aggregateBudget.implementation],
+  ] as const) {
+    for (const dimension of Object.keys(envelope) as (keyof typeof envelope)[]) {
+      if (envelope[dimension] > pool[dimension]) {
+        throw new IssueWorkflowAdmissionError(
+          "unsafe_workflow",
+          `${label} child envelope exceeds its aggregate role pool for ${dimension}`,
+        );
+      }
+    }
+  }
+  return repairBudget;
 }
 
 function issueBudgets(
@@ -948,11 +1584,16 @@ function sameAdmission(left: unknown, right: unknown): boolean {
 
 function assertWorkflowIdentity(
   manifest: FrozenIssueRunManifest,
-  role: "implementation" | "review",
-  admitted: AdmittedImplementationWorkflow | AdmittedReviewWorkflow,
+  role: "implementation" | "review" | "repair",
+  admitted: AdmittedImplementationWorkflow | AdmittedReviewWorkflow | AdmittedRepairWorkflow,
 ): void {
   const expected =
-    role === "implementation" ? manifest.implementationWorkflow : manifest.reviewWorkflow;
+    role === "implementation"
+      ? manifest.implementationWorkflow
+      : role === "review"
+        ? manifest.reviewWorkflow
+        : manifest.reviewRepair?.workflow;
+  if (expected === undefined) throw new Error("repair workflow has no frozen identity");
   if (
     admitted.role !== role ||
     admitted.sourceDigest !== expected.sourceDigest ||
@@ -961,13 +1602,20 @@ function assertWorkflowIdentity(
     firstWorkflowModel(admitted).provider !== expected.model.provider ||
     firstWorkflowModel(admitted).id !== expected.model.id ||
     (role === "review" &&
-      (admitted as AdmittedReviewWorkflow).resultNodeId !== manifest.reviewWorkflow.resultNodeId)
+      (admitted as AdmittedReviewWorkflow).resultNodeId !== manifest.reviewWorkflow.resultNodeId) ||
+    (role === "repair" &&
+      (admitted as AdmittedRepairWorkflow).resultNodeId !==
+        manifest.reviewRepair?.workflow.resultNodeId)
   ) {
     throw new Error(`${role} workflow does not match its frozen manifest identity`);
   }
   const budget = completeIssueWorkflowBudget(admitted.workflow.budget, role);
   const frozenBudget =
-    role === "implementation" ? manifest.budgets.implementation : manifest.budgets.review;
+    role === "implementation"
+      ? manifest.budgets.implementation
+      : role === "review"
+        ? manifest.budgets.review
+        : manifest.budgets.reviewRepair?.repair;
   if (JSON.stringify(budget) !== JSON.stringify(frozenBudget)) {
     throw new Error(`${role} workflow budget does not match its frozen manifest identity`);
   }
@@ -999,7 +1647,7 @@ function assertCandidate(
 function assertSucceeded(
   state: RunState,
   flowRunId: string,
-  role: "implementation" | "review",
+  role: "implementation" | "review" | "repair",
 ): void {
   if (state.runId !== flowRunId) {
     throw new IssueWorkflowExecutionError(

@@ -37,13 +37,13 @@ declaration is independently callable.
 
 | Observation | Result | Why it matters |
 | --- | --- | --- |
-| Production TypeScript files | 370 | A broad root export would expose most of the product, not a small SDK. |
-| Exported top-level declarations | 3,377 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
-| Domain declarations | 1,598 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
-| Application declarations | 551 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
-| Infrastructure declarations | 1,081 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
+| Production TypeScript files | 378 | A broad root export would expose most of the product, not a small SDK. |
+| Exported top-level declarations | 3,445 | Export syntax currently marks internal seams, test seams, schemas, records, and adapters. |
+| Domain declarations | 1,633 | Even the provider-neutral layer contains large workflow, event, evaluation, package, and adaptation contracts. |
+| Application declarations | 577 | Use cases expose ports for stores, executors, approvals, artifacts, workspaces, and sessions. |
+| Infrastructure declarations | 1,088 | These declarations can reach files, processes, networks, sandboxes, containers, credentials, and UI hosts. |
 | Supervisor declarations | 122 | These declarations own queues, worker processes, control requests, and shutdown. |
-| CLI declarations | 25 | The CLI composes 338 of 370 production modules and is the intentional product boundary. |
+| CLI declarations | 25 | The CLI composes 346 of 378 production modules and is the intentional product boundary. |
 | Documented CLI forms | 93 | A future client can't safely wrap every form until their machine outputs and error categories are inventoried. |
 | Direct JSON-to-standard-output sites | 97 | Machine-readable output exists, but many commands own distinct result shapes rather than one versioned automation protocol. |
 
@@ -56,7 +56,7 @@ Reachability shows that a candidate's apparent simplicity can hide a much larger
 | Workflow runner | 77 | Application and domain | High authority through injected stores, executors, artifacts, workspaces, sessions, and approvals. |
 | Local run store | 74 | Infrastructure, application, and domain | Owns filesystem identity, append durability, run ownership, and replay. |
 | Supervisor service | 86 | All non-CLI layers | Owns worker lifecycle, queues, admission, process control, and durable records. |
-| CLI composition root | 338 | All five layers | Correct executable boundary; unsuitable as an in-process API. |
+| CLI composition root | 346 | All five layers | Correct executable boundary; unsuitable as an in-process API. |
 
 The exact counts are a point-in-time audit. The conclusion doesn't depend on one count: the current
 module tree crosses multiple authority and lifecycle boundaries and has no curated export surface.

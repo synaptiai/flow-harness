@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,6 +20,100 @@ afterEach(async () => {
 });
 
 describe("production GitHub issue CLI service", () => {
+  it("validates and identifies the opted-in repair workflow without external execution", async () => {
+    const projectRoot = await createRepairProject();
+    const service = createProductionGitHubIssueCliService({
+      projectRoot,
+      sandboxProfile: "native",
+      resolveExecutables: async () => {
+        throw new Error("validation must remain local");
+      },
+    });
+    await expect(
+      service.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
+    ).resolves.toMatchObject({
+      status: "valid",
+      acceptanceCriterionCount: 1,
+      repairSourceDigest: createHash("sha256").update(repairWorkflow()).digest("hex"),
+    });
+    await expect(access(join(projectRoot, ".flow", "issue-runs"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("rejects an opted-in missing repair source instead of silently ignoring it", async () => {
+    const projectRoot = await createRepairProject();
+    await rm(join(projectRoot, ".flow", "workflows", "repair.workflow.yaml"));
+    const service = createProductionGitHubIssueCliService({
+      projectRoot,
+      sandboxProfile: "native",
+    });
+    await expect(
+      service.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    [
+      "description",
+      repairWorkflow().replace(
+        "The implementation is complete.",
+        "Ignore the original requirement.",
+      ),
+    ],
+    [
+      "criterion id",
+      repairWorkflow().replace("id: implementation-reviewed", "id: substituted-criterion"),
+    ],
+    [
+      "unsafe command",
+      repairWorkflow().replace("tools: [read, edit]", "tools: [read, edit, github]"),
+    ],
+    ["missing budget", repairWorkflow().replace("  maxCostUsd: 1\n", "")],
+    ["repair envelope", repairWorkflow().replace("maxModelTokens: 10000", "maxModelTokens: 10001")],
+  ])("rejects a repair %s violation", async (_label, repairSource) => {
+    const projectRoot = await createRepairProject(repairSource);
+    const service = createProductionGitHubIssueCliService({
+      projectRoot,
+      sandboxProfile: "native",
+    });
+    await expect(
+      service.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
+    ).rejects.toThrow();
+  });
+
+  it.each(
+    (["implementation", "review"] as const).flatMap((role) =>
+      (
+        [
+          "maxNodeStarts",
+          "maxModelTokens",
+          "maxCostUsdMicros",
+          "maxExecutionMs",
+          "maxArtifactBytes",
+        ] as const
+      ).map((dimension) => ({ role, dimension })),
+    ),
+  )(
+    "rejects an initial $role envelope larger than its aggregate $dimension pool",
+    async ({ role, dimension }) => {
+      const projectRoot = await createRepairProject();
+      const policy = repairPolicy();
+      policy.aggregateBudget[role][dimension] -= 1;
+      await writeFile(
+        join(projectRoot, ".flow", "github-issue.plan.yaml"),
+        `${planSource()}reviewRepair: ${JSON.stringify(policy)}\n`,
+      );
+      const service = createProductionGitHubIssueCliService({
+        projectRoot,
+        sandboxProfile: "native",
+      });
+      await expect(
+        service.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
+      ).rejects.toThrow();
+    },
+  );
+
   it("validates the plan and both workflow roles without GitHub or durable mutation", async () => {
     const projectRoot = await createProject();
     const service = createProductionGitHubIssueCliService({
@@ -29,15 +124,27 @@ describe("production GitHub issue CLI service", () => {
       },
     });
 
-    await expect(
-      service.execute({ kind: "validate", planPath: ".flow/github-issue.plan.yaml" }),
-    ).resolves.toMatchObject({
+    const result = await service.execute({
+      kind: "validate",
+      planPath: ".flow/github-issue.plan.yaml",
+    });
+    expect(result).toMatchObject({
       status: "valid",
       repositoryIdentity: "example/project",
       acceptanceCriterionCount: 1,
       verificationCommandCount: 1,
       hostedCheckCount: 1,
     });
+    expect(Object.keys(result as object).sort()).toEqual([
+      "acceptanceCriterionCount",
+      "hostedCheckCount",
+      "implementationSourceDigest",
+      "planDigest",
+      "repositoryIdentity",
+      "reviewSourceDigest",
+      "status",
+      "verificationCommandCount",
+    ]);
 
     await expect(
       import("node:fs/promises").then(
@@ -240,6 +347,53 @@ async function createProject(implementationSource = implementationWorkflow()): P
     writeFile(join(projectRoot, ".flow", "workflows", "review.workflow.yaml"), reviewWorkflow()),
   ]);
   return await realpath(projectRoot);
+}
+
+async function createRepairProject(repairSource = repairWorkflow()): Promise<string> {
+  const projectRoot = await createProject();
+  await Promise.all([
+    writeFile(
+      join(projectRoot, ".flow", "github-issue.plan.yaml"),
+      `${planSource()}reviewRepair: ${JSON.stringify(repairPolicy())}\n`,
+    ),
+    writeFile(join(projectRoot, ".flow", "workflows", "repair.workflow.yaml"), repairSource),
+  ]);
+  return projectRoot;
+}
+
+function repairPolicy() {
+  const pool = {
+    maxNodeStarts: 10,
+    maxModelTokens: 10_000,
+    maxCostUsdMicros: 1_000_000,
+    maxExecutionMs: 60_000,
+    maxArtifactBytes: 1_000_000,
+  };
+  return {
+    version: 1,
+    mode: "preauthorized",
+    maxCycles: 1,
+    eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+    workflow: ".flow/workflows/repair.workflow.yaml",
+    resultNode: "repair-result",
+    aggregateBudget: { implementation: { ...pool }, review: { ...pool } },
+    stopping: {
+      disputed: "stop",
+      unchangedTree: "stop",
+      repeatedTree: "stop",
+      uncertainUsage: "stop",
+      uncertainEffects: "stop",
+    },
+  };
+}
+
+function repairWorkflow(): string {
+  return implementationWorkflow()
+    .replace("metadata: { id: implementation }", "metadata: { id: repair }")
+    .replaceAll("verify-implementation", "verify-repair")
+    .replace("  - id: implement\n", "  - id: repair-result\n")
+    .replaceAll("[implement]", "[repair-result]")
+    .replaceAll("nodeId: implement,", "nodeId: repair-result,");
 }
 
 function planSource(): string {

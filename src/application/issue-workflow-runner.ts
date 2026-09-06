@@ -1,11 +1,19 @@
 import { z } from "zod";
-
+import {
+  calculateIssueCandidateTreeDigest,
+  calculateIssueCommitMessageDigest,
+} from "../domain/issue-lifecycle/issue-delivery-contract.js";
 import type { FrozenIssueRunManifest } from "../domain/issue-lifecycle/private-manifest.js";
 import {
   calculateIssueReviewReportDigest,
   type IssueReviewReport,
   parseIssueReviewReport,
 } from "../domain/issue-lifecycle/review.js";
+import {
+  type IssueReviewRepairDisposition,
+  type IssueReviewRepairProjection,
+  parseIssueReviewRepairDisposition,
+} from "./issue-review-repair-projection.js";
 
 export const MAX_ISSUE_REVIEW_RESULT_BYTES = 65_536;
 
@@ -21,7 +29,7 @@ const positiveSafeIntegerSchema = z.number().int().positive().max(Number.MAX_SAF
 const implementationWorkflowResultSchema = z
   .object({
     parentIssueRunId: runIdSchema,
-    iteration: positiveSafeIntegerSchema.max(64),
+    iteration: positiveSafeIntegerSchema,
     flowRunId: runIdSchema,
     templateWorkflowDigest: sha256Schema,
     executionWorkflowDigest: sha256Schema,
@@ -29,6 +37,7 @@ const implementationWorkflowResultSchema = z
     evidenceDigest: sha256Schema,
     workspaceIdentityDigest: sha256Schema,
     candidateTreeDigest: sha256Schema,
+    candidateTree: gitCommitSchema.optional(),
     commitMessageDigest: sha256Schema,
   })
   .strict();
@@ -63,6 +72,40 @@ export type ImplementationWorkflowResult = Readonly<
 >;
 export type RawReviewWorkflowResult = Readonly<z.infer<typeof reviewWorkflowResultSchema>>;
 
+const repairResultCommon = {
+  parentIssueRunId: runIdSchema,
+  cycle: positiveSafeIntegerSchema.max(Number.MAX_SAFE_INTEGER - 1),
+  iteration: positiveSafeIntegerSchema,
+  candidateHead: gitCommitSchema,
+  repairContextDigest: sha256Schema,
+  reviewReportDigest: sha256Schema,
+  flowRunId: runIdSchema,
+  templateWorkflowDigest: sha256Schema,
+  executionWorkflowDigest: sha256Schema,
+  terminalSequence: positiveSafeIntegerSchema,
+  evidenceDigest: sha256Schema,
+  workspaceIdentityDigest: sha256Schema,
+  resultNodeId: reviewWorkflowResultSchema.shape.resultNodeId,
+  resultText: reviewWorkflowResultSchema.shape.resultText,
+  resultTextTruncated: z.boolean(),
+};
+const repairWorkflowResultSchema = z.discriminatedUnion("disposition", [
+  z
+    .object({
+      ...repairResultCommon,
+      disposition: z.literal("changed"),
+      candidateTree: gitCommitSchema,
+      candidateTreeDigest: sha256Schema,
+      commitMessageDigest: sha256Schema,
+    })
+    .strict(),
+  z.object({ ...repairResultCommon, disposition: z.literal("disputed") }).strict(),
+]);
+export type RepairWorkflowResult = Readonly<z.infer<typeof repairWorkflowResultSchema>>;
+export type ValidatedRepairWorkflowResult = RepairWorkflowResult & {
+  readonly report: IssueReviewRepairDisposition;
+};
+
 export interface ValidatedReviewWorkflowResult extends Omit<RawReviewWorkflowResult, "resultText"> {
   readonly resultText: string;
   readonly report: IssueReviewReport;
@@ -90,7 +133,11 @@ export type IssueWorkflowExecutionErrorCode =
   | "review_workflow_failed"
   | "review_workflow_cancelled"
   | "review_resource_exhausted"
-  | "review_workflow_incomplete";
+  | "review_workflow_incomplete"
+  | "repair_workflow_failed"
+  | "repair_workflow_cancelled"
+  | "repair_resource_exhausted"
+  | "repair_workflow_incomplete";
 
 /** A content-free classification of a failed nested issue workflow. */
 export class IssueWorkflowExecutionError extends Error {
@@ -98,7 +145,7 @@ export class IssueWorkflowExecutionError extends Error {
 
   constructor(
     readonly code: IssueWorkflowExecutionErrorCode,
-    readonly role: "implementation" | "review",
+    readonly role: "implementation" | "review" | "repair",
     readonly nestedStatus: string,
     readonly failedNodeId: string | null,
     readonly nestedFailureCode: string | null,
@@ -117,6 +164,25 @@ export function validateImplementationWorkflowResult(
   input: unknown,
 ): ImplementationWorkflowResult {
   const result = parseShape(implementationWorkflowResultSchema, input, "implementation result");
+  if (
+    result.iteration >
+    (manifest.reviewRepair === undefined ? 64 : manifest.reviewRepair.maxCycles + 1)
+  ) {
+    throw new IssueWorkflowResultError(
+      "identity_mismatch",
+      "implementation iteration exceeds the frozen limit",
+    );
+  }
+  if (
+    manifest.reviewRepair !== undefined &&
+    (result.candidateTree === undefined ||
+      calculateIssueCandidateTreeDigest(result.candidateTree) !== result.candidateTreeDigest)
+  ) {
+    throw new IssueWorkflowResultError(
+      "identity_mismatch",
+      "implementation result must bind its exact candidate tree",
+    );
+  }
   if (
     result.parentIssueRunId !== manifest.runId ||
     result.iteration !== expectedIteration ||
@@ -188,6 +254,51 @@ export function validateReviewWorkflowResult(
       expectedIdentity,
     ),
   });
+}
+
+export function validateRepairWorkflowResult(
+  manifest: FrozenIssueRunManifest,
+  projection: IssueReviewRepairProjection,
+  workspaceIdentityDigest: string,
+  input: unknown,
+): ValidatedRepairWorkflowResult {
+  const result = parseShape(repairWorkflowResultSchema, input, "repair result");
+  const repair = manifest.reviewRepair;
+  if (
+    repair === undefined ||
+    result.parentIssueRunId !== manifest.runId ||
+    result.cycle !== projection.context.binding.cycle ||
+    result.cycle > repair.maxCycles ||
+    result.iteration !== result.cycle + 1 ||
+    result.templateWorkflowDigest !== repair.workflow.templateWorkflowDigest ||
+    result.workspaceIdentityDigest !== workspaceIdentityDigest ||
+    result.resultNodeId !== repair.workflow.resultNodeId ||
+    result.candidateHead !== projection.context.binding.candidateHead ||
+    result.repairContextDigest !== projection.digest ||
+    result.reviewReportDigest !== projection.context.binding.reviewReportDigest
+  ) {
+    throw new IssueWorkflowResultError(
+      "identity_mismatch",
+      "repair result does not bind the frozen repair dispatch",
+    );
+  }
+  const report = parseIssueReviewRepairDisposition(
+    result.resultText,
+    projection,
+    result.resultTextTruncated,
+  );
+  if (
+    report.disposition !== result.disposition ||
+    (result.disposition === "changed" &&
+      (calculateIssueCandidateTreeDigest(result.candidateTree) !== result.candidateTreeDigest ||
+        calculateIssueCommitMessageDigest(manifest.issue.number) !== result.commitMessageDigest))
+  ) {
+    throw new IssueWorkflowResultError(
+      "identity_mismatch",
+      "repair result contradicts its disposition or candidate tree",
+    );
+  }
+  return deepFreeze({ ...result, report });
 }
 
 function parseShape<T>(schema: z.ZodType<T>, input: unknown, label: string): T {

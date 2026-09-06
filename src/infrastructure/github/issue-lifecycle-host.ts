@@ -180,6 +180,28 @@ export class IssueLifecycleHost implements IssueExternalEffectsPort, IssueGitHub
         break;
       case "commit": {
         const workspace = await this.#requireWorkspace(manifest);
+        if (manifest.reviewRepair !== undefined) {
+          const repair = state.reviewRepair;
+          const candidate = repair?.candidatePreparation;
+          const parentCommit =
+            repair?.cycle === 0 ? manifest.base.commit : repair?.selection?.candidateHead;
+          if (
+            candidate === undefined ||
+            parentCommit === undefined ||
+            repair?.workspaceIdentityDigest !== workspace.workspaceIdentityDigest
+          ) {
+            throw new IssueLifecycleHostError("descriptor_mismatch");
+          }
+          preparation = {
+            kind: "commit",
+            commandId,
+            workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+            parentCommit,
+            candidateTreeDigest: candidate.candidateTreeDigest,
+            messageDigest: candidate.commitMessageDigest,
+          };
+          break;
+        }
         const candidate = await this.#localGit.inspectCandidate({
           workspace,
           baseCommit: state.candidateHead ?? manifest.base.commit,

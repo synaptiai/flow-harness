@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,8 +11,11 @@ import {
   calculateIssueReviewEvidenceDigest,
   type IssueReviewEvidence,
 } from "../../../../src/application/issue-review-evidence-port.js";
+import { buildIssueReviewRepairProjection } from "../../../../src/application/issue-review-repair-projection.js";
 import {
   IssueWorkflowExecutionError,
+  validateImplementationWorkflowResult,
+  validateRepairWorkflowResult,
   validateReviewWorkflowResult,
 } from "../../../../src/application/issue-workflow-runner.js";
 import type {
@@ -40,6 +43,10 @@ import {
   type IssuePrivateBlobInput,
 } from "../../../../src/domain/issue-lifecycle/private-manifest.js";
 import {
+  calculateIssueReviewReportDigest,
+  parseIssueReviewReport,
+} from "../../../../src/domain/issue-lifecycle/review.js";
+import {
   ProductionIssueRunFreezer,
   ProductionIssueWorkflowRunner,
 } from "../../../../src/infrastructure/issue-lifecycle/production-issue-runner.js";
@@ -57,6 +64,66 @@ afterEach(async () => {
 });
 
 describe("ProductionIssueRunFreezer", () => {
+  it("freezes exact repair source bytes, identity, result node, and role budgets together", async () => {
+    const fixture = await repairFreezerFixture();
+    const frozen = await fixture.freezer.freeze(runCommand(fixture.planDigest), operation());
+    expect(frozen.manifest.reviewRepair).toMatchObject({
+      version: 1,
+      mode: "preauthorized",
+      maxCycles: 1,
+      workflow: {
+        sourceDigest: sha256(repairWorkflow()),
+        resultNodeId: "repair-result",
+        model: { provider: "openai", id: "gpt-5.6-sol" },
+      },
+    });
+    expect(frozen.manifest.budgets.reviewRepair).toEqual({
+      aggregateBudget: repairPolicy().aggregateBudget,
+      repair: completeBudget(),
+    });
+    const blob = frozen.initialBlobs.find(
+      (candidate) =>
+        createIssuePrivateBlobReference(candidate).digest ===
+        frozen.manifest.artifacts.repairWorkflow?.digest,
+    );
+    expect(blob?.mediaType).toBe("application/vnd.flow.workflow+yaml");
+    expect(Buffer.from(blob?.bytes ?? []).toString("utf8")).toBe(repairWorkflow());
+    await writeFile(
+      join(fixture.projectRoot, ".flow/workflows/repair.workflow.yaml"),
+      "changed after freeze",
+    );
+    expect(Buffer.from(blob?.bytes ?? []).toString("utf8")).toBe(repairWorkflow());
+    expect(frozen.manifest.acceptanceCriteria).toEqual([
+      { id: "implementation-reviewed", description: "The implementation is complete." },
+    ]);
+  });
+
+  it.each([
+    [
+      "criterion description",
+      repairWorkflow().replace("The implementation is complete.", "Different acceptance."),
+    ],
+    [
+      "criterion id",
+      repairWorkflow().replace("id: implementation-reviewed", "id: changed-criterion"),
+    ],
+    ["unsafe tool", repairWorkflow().replace("tools: [read, edit]", "tools: [read, edit, github]")],
+    ["repair budget", repairWorkflow().replace("maxModelTokens: 10000", "maxModelTokens: 10001")],
+  ])("rejects a repair %s change before returning frozen authority", async (_label, source) => {
+    const fixture = await repairFreezerFixture(source);
+    await expect(
+      fixture.freezer.freeze(runCommand(fixture.planDigest), operation()),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a missing opted-in repair file during actual filesystem freezing", async () => {
+    const fixture = await repairFreezerFixture();
+    await rm(join(fixture.projectRoot, ".flow/workflows/repair.workflow.yaml"));
+    await expect(
+      fixture.freezer.freeze(runCommand(fixture.planDigest), operation()),
+    ).rejects.toThrow();
+  });
+
   it("freezes the exact plan, issue, workflows, model, budgets, base, and derived branch", async () => {
     const fixture = freezerFixture();
 
@@ -161,6 +228,417 @@ describe("ProductionIssueRunFreezer", () => {
 });
 
 describe("ProductionIssueWorkflowRunner", () => {
+  it.each([
+    ["parentIssueRunId", "another-parent"],
+    ["role", "review"],
+    ["cycle", 1],
+    ["flowRunId", "another-child"],
+    ["frozenContractDigest", "1".repeat(64)],
+    ["templateWorkflowDigest", "1".repeat(64)],
+    ["executionWorkflowDigest", "1".repeat(64)],
+    ["workspaceIdentityDigest", "1".repeat(64)],
+    ["candidateHead", candidateHead],
+    ["reportDigest", "1".repeat(64)],
+    ["envelope", { ...completeBudget(), maxNodeStarts: 19 }],
+  ])("refuses changed dispatch %s before any execution or settlement", async (field, value) => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = implementationRequest(fixture);
+    const preparation = await fixture.runner.prepareImplementation(request);
+    const dispatch = {
+      ...preparation,
+      dispatchId: "dispatch-one",
+      ordinal: 1,
+      [field as string]: value,
+    };
+    await expect(fixture.runner.runImplementation({ ...request, dispatch })).rejects.toThrow(
+      /dispatch/i,
+    );
+    await expect(fixture.runner.readWorkflowSettlement({ ...request, dispatch })).rejects.toThrow(
+      /dispatch/i,
+    );
+    expect(fixture.executions).toBe(0);
+  });
+
+  it("rejects an internally consistent replacement of the stored opted-in contract", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = implementationRequest(fixture);
+    const manifest = { ...fixture.manifest, allowedWritePrefixes: ["outside"] };
+    await expect(
+      fixture.runner.prepareImplementation({
+        ...request,
+        manifest,
+        frozenContractDigest: calculateIssuePrivateManifestDigest(manifest),
+      }),
+    ).rejects.toThrow(/owner-held/i);
+    expect(fixture.executions).toBe(0);
+  });
+
+  it("prepares and settles a read-only review on its verification workspace", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = {
+      kind: "review" as const,
+      runId,
+      manifest: fixture.manifest,
+      frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+      candidateHead,
+      cycle: 0,
+      ...operation(),
+    };
+    const preparation = await fixture.runner.prepareReview(request);
+    expect(preparation).toMatchObject({
+      role: "review",
+      cycle: 0,
+      candidateHead,
+      reportDigest: null,
+    });
+    expect(fixture.executions).toBe(0);
+    expect(fixture.reviewEvidenceReads).toBe(1);
+    expect(preparation.contextBlob).toMatchObject({
+      mediaType: "application/vnd.flow.issue-review-context+json",
+    });
+    await expect(fixture.runner.runReview(request)).rejects.toThrow(/dispatch/i);
+    expect(fixture.reviewEvidenceReads).toBe(1);
+    const dispatch = { ...preparation, dispatchId: "dispatch-review", ordinal: 2 };
+    expect(await fixture.runner.readWorkflowSettlement({ ...request, dispatch })).toEqual({
+      kind: "absent",
+    });
+    const result = await fixture.runner.runReview({ ...request, dispatch });
+    expect(
+      validateReviewWorkflowResult(fixture.manifest, candidateHead, result).report.verdict,
+    ).toBe("clear");
+    expect(fixture.reviewExecutionRoot).toBe(fixture.workspace.verificationRoot);
+    expect(fixture.reviewAllowedWritePrefixes).toEqual([]);
+    const executions = fixture.executions;
+    const settlement = await fixture.runner.readWorkflowSettlement({ ...request, dispatch });
+    expect(settlement.kind).toBe("terminal");
+    if (settlement.kind === "terminal")
+      expect(settlement.settlement.ledgerDigest).toBe(result.evidenceDigest);
+    await fixture.runner.runReview({ ...request, dispatch });
+    expect(fixture.executions).toBe(executions);
+    expect(fixture.reviewInspections).toBe(1);
+    expect(fixture.reviewEvidenceReads).toBe(1);
+    expect(await fixture.runner.prepareReview({ ...request, dispatch })).toEqual(preparation);
+    expect(fixture.reviewEvidenceReads).toBe(1);
+  });
+
+  it.each(["changed", "disputed"] as const)(
+    "returns a bound %s repair result without delivery authority",
+    async (disposition) => {
+      const fixture = await runnerFixture({ repair: true });
+      const request = fixture.repairRequest();
+      fixture.setRepairResult(disposition);
+      const preparation = await fixture.runner.prepareRepair(request);
+      expect(preparation).toMatchObject({
+        role: "implementation",
+        cycle: 1,
+        flowRunId: `${runId}-repair-1`,
+        candidateHead,
+        reportDigest: request.projection.context.binding.reviewReportDigest,
+        envelope: completeBudget(),
+      });
+      expect(fixture.executions).toBe(0);
+      expect(fixture.inspectedBases).toEqual([]);
+      await expect(fixture.runner.runRepair(request)).rejects.toThrow(/dispatch/i);
+      const dispatch = { ...preparation, dispatchId: "dispatch-repair", ordinal: 3 };
+      const result = await fixture.runner.runRepair({ ...request, dispatch });
+      expect(reviewContextFromPrompt(fixture.implementationPrompt)).toEqual({
+        context: request.projection.context,
+        expectedResultBinding: {
+          version: 1,
+          repairContextDigest: request.projection.digest,
+          candidateHead,
+          reviewReportDigest: request.projection.context.binding.reviewReportDigest,
+        },
+      });
+      expect(
+        validateRepairWorkflowResult(
+          fixture.manifest,
+          request.projection,
+          fixture.workspace.workspaceIdentityDigest,
+          result,
+        ).report.disposition,
+      ).toBe(disposition);
+      if (disposition === "changed") {
+        expect(result).toMatchObject({
+          iteration: 2,
+          candidateTree: fixture.candidate.tree,
+          candidateTreeDigest: calculateIssueCandidateTreeDigest(fixture.candidate.tree),
+        });
+        expect(fixture.inspectedBases).toEqual([candidateHead, candidateHead, baseCommit]);
+      } else {
+        expect(result).not.toHaveProperty("candidateTree");
+        expect(result).not.toHaveProperty("candidateTreeDigest");
+        expect(result).not.toHaveProperty("commitMessageDigest");
+        expect(fixture.inspectedBases).toEqual([candidateHead]);
+      }
+      const settlement = await fixture.runner.readWorkflowSettlement({ ...request, dispatch });
+      expect(settlement.kind).toBe("terminal");
+      if (settlement.kind === "terminal")
+        expect(settlement.settlement.ledgerDigest).toBe(result.evidenceDigest);
+      const executions = fixture.executions;
+      await fixture.runner.runRepair({ ...request, dispatch });
+      expect(fixture.executions).toBe(executions);
+    },
+  );
+
+  it("rejects missing or altered frozen review context without recapturing evidence", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = {
+      kind: "review" as const,
+      runId,
+      manifest: fixture.manifest,
+      frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+      candidateHead,
+      cycle: 0,
+      ...operation(),
+    };
+    const preparation = await fixture.runner.prepareReview(request);
+    const reference = preparation.contextBlob;
+    if (reference === undefined) throw new Error("missing context fixture");
+    const original = JSON.parse(
+      Buffer.from(fixture.readPrivateBlob(reference.digest).bytes).toString("utf8"),
+    ) as Record<string, unknown>;
+    const dispatch = { ...preparation, dispatchId: "dispatch-review", ordinal: 2 };
+    const { contextBlob: _blob, ...withoutContext } = dispatch;
+    await expect(
+      fixture.runner.readWorkflowSettlement({ ...request, dispatch: withoutContext }),
+    ).rejects.toThrow();
+    for (const change of [
+      { parentIssueRunId: "another-parent" },
+      { frozenContractDigest: "0".repeat(64) },
+      { templateWorkflowDigest: "0".repeat(64) },
+      { candidateHead: baseCommit },
+      { workspaceIdentityDigest: "0".repeat(64) },
+      { extraAuthority: true },
+    ]) {
+      const input = {
+        mediaType: "application/vnd.flow.issue-review-context+json" as const,
+        bytes: Buffer.from(JSON.stringify({ ...original, ...change })),
+      };
+      fixture.addBlobs([input]);
+      const alteredReference = {
+        ...createIssuePrivateBlobReference(input),
+        mediaType: input.mediaType,
+      };
+      await expect(
+        fixture.runner.readWorkflowSettlement({
+          ...request,
+          dispatch: { ...dispatch, contextBlob: alteredReference },
+        }),
+      ).rejects.toThrow();
+    }
+    fixture.replacePrivateBlob(reference.digest, {
+      mediaType: reference.mediaType,
+      bytes: Buffer.from("changed"),
+    });
+    await expect(fixture.runner.readWorkflowSettlement({ ...request, dispatch })).rejects.toThrow();
+    expect(fixture.reviewEvidenceReads).toBe(1);
+    expect(fixture.executions).toBe(0);
+  });
+
+  it.each(["head", "tree", "workspace", "dirty", "missing"] as const)(
+    "rejects %s verification workspace proof before the first opted-in review model call",
+    async (fault) => {
+      const fixture = await runnerFixture({ repair: true, reviewInspectionFault: fault });
+      const request = {
+        kind: "review" as const,
+        runId,
+        manifest: fixture.manifest,
+        frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+        candidateHead,
+        cycle: 0,
+        ...operation(),
+      };
+      const preparation = await fixture.runner.prepareReview(request);
+      const dispatch = { ...preparation, dispatchId: "dispatch-review", ordinal: 2 };
+      await expect(fixture.runner.runReview({ ...request, dispatch })).rejects.toThrow(
+        /pristine|verification/,
+      );
+      expect(fixture.executions).toBe(0);
+      expect(await fixture.runner.readWorkflowSettlement({ ...request, dispatch })).toEqual({
+        kind: "absent",
+      });
+      expect(fixture.reviewEvidenceReads).toBe(1);
+    },
+  );
+
+  it("rejects a repair whose full and incremental trees differ", async () => {
+    const fixture = await runnerFixture({ repair: true, mismatchedRepairTree: true });
+    const request = fixture.repairRequest();
+    fixture.setRepairResult("changed");
+    const preparation = await fixture.runner.prepareRepair(request);
+    const dispatch = { ...preparation, dispatchId: "dispatch-repair", ordinal: 3 };
+    await expect(fixture.runner.runRepair({ ...request, dispatch })).rejects.toThrow(
+      /between incremental/,
+    );
+    expect((await fixture.runner.readWorkflowSettlement({ ...request, dispatch })).kind).toBe(
+      "terminal",
+    );
+  });
+
+  it("refuses repair on a substituted parent before model execution", async () => {
+    const fixture = await runnerFixture({ repair: true, observedRepairHead: baseCommit });
+    const request = fixture.repairRequest();
+    fixture.setRepairResult("changed");
+    const preparation = await fixture.runner.prepareRepair(request);
+    const dispatch = { ...preparation, dispatchId: "dispatch-repair", ordinal: 3 };
+    await expect(fixture.runner.runRepair({ ...request, dispatch })).rejects.toThrow(
+      /exact reviewed parent/,
+    );
+    expect(fixture.executions).toBe(0);
+    expect(await fixture.runner.readWorkflowSettlement({ ...request, dispatch })).toEqual({
+      kind: "absent",
+    });
+  });
+
+  it("settles exhausted implementation usage even though execution throws", async () => {
+    const fixture = await runnerFixture({ repair: true, implementationTokens: 10_000 });
+    const request = implementationRequest(fixture);
+    const preparation = await fixture.runner.prepareImplementation(request);
+    const dispatch = { ...preparation, dispatchId: "dispatch-one", ordinal: 1 };
+    await expect(fixture.runner.runImplementation({ ...request, dispatch })).rejects.toMatchObject({
+      code: "implementation_resource_exhausted",
+    });
+    const settlement = await fixture.runner.readWorkflowSettlement({
+      ...request,
+      dispatch,
+      signal: AbortSignal.abort(),
+      pollCancellation: async () => {
+        throw new Error("cancelled");
+      },
+    });
+    expect(settlement.kind).toBe("terminal");
+    if (settlement.kind === "terminal") {
+      expect(settlement.state.status).toBe("resource_exhausted");
+      expect(settlement.settlement.resources.modelTokens).toBe(10_000);
+    }
+  });
+
+  it("rejects a changed repair result with altered or truncated bound output", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = fixture.repairRequest();
+    fixture.setRepairResult("changed");
+    const preparation = await fixture.runner.prepareRepair(request);
+    const dispatch = { ...preparation, dispatchId: "dispatch-repair", ordinal: 3 };
+    const result = await fixture.runner.runRepair({ ...request, dispatch });
+    for (const change of [
+      { cycle: 2 },
+      { iteration: 3 },
+      { candidateHead: baseCommit },
+      { repairContextDigest: "0".repeat(64) },
+      { reviewReportDigest: "0".repeat(64) },
+      { resultNodeId: "other" },
+      { resultTextTruncated: true },
+      { candidateTree: "0".repeat(40) },
+      { commitMessageDigest: "0".repeat(64) },
+      { disposition: "disputed" },
+    ]) {
+      expect(() =>
+        validateRepairWorkflowResult(
+          fixture.manifest,
+          request.projection,
+          fixture.workspace.workspaceIdentityDigest,
+          { ...result, ...change },
+        ),
+      ).toThrow();
+    }
+  });
+
+  it("rejects a repaired projection that broadens the frozen write scope", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = fixture.repairRequest();
+    const projection = buildIssueReviewRepairProjection({
+      issue: fixture.frozenIssue,
+      acceptanceCriteria: fixture.manifest.acceptanceCriteria,
+      report: fixture.blockedReport,
+      binding: request.projection.context.binding,
+      allowedWritePrefixes: ["outside"],
+    });
+    await expect(fixture.runner.prepareRepair({ ...request, projection })).rejects.toThrow(
+      /frozen host-derived scope/,
+    );
+    expect(fixture.executions).toBe(0);
+  });
+
+  it("refuses opted-in implementation before execution without a persisted dispatch", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    await expect(
+      fixture.runner.runImplementation({
+        kind: "implementation",
+        runId,
+        manifest: fixture.manifest,
+        frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+        iteration: 1,
+        workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
+        ...operation(),
+      }),
+    ).rejects.toThrow(/dispatch/i);
+    expect(fixture.executions).toBe(0);
+  });
+
+  it("prepares exact child identity without creating or executing a nested run", async () => {
+    const fixture = await runnerFixture({ repair: true });
+    const request = {
+      kind: "implementation" as const,
+      runId,
+      manifest: fixture.manifest,
+      frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+      iteration: 1,
+      workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
+      ...operation(),
+    };
+    const preparation = await fixture.runner.prepareImplementation(request);
+    expect(preparation).toMatchObject({
+      version: 1,
+      parentIssueRunId: runId,
+      role: "implementation",
+      cycle: 0,
+      flowRunId: `${runId}-implementation-1`,
+      candidateHead: null,
+      reportDigest: null,
+      envelope: completeBudget(),
+      workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
+    });
+    expect(fixture.executions).toBe(0);
+    const dispatch = { ...preparation, dispatchId: "dispatch-one", ordinal: 1 };
+    const result = await fixture.runner.runImplementation({ ...request, dispatch });
+    expect(result.candidateTree).toBe(fixture.candidate.tree);
+    expect(
+      validateImplementationWorkflowResult(
+        fixture.manifest,
+        1,
+        fixture.workspace.workspaceIdentityDigest,
+        result,
+      ),
+    ).toEqual(result);
+    const { candidateTree: _tree, ...withoutTree } = result;
+    for (const invalid of [
+      withoutTree,
+      { ...result, candidateTree: "0".repeat(40) },
+      { ...result, iteration: 3 },
+    ]) {
+      expect(() =>
+        validateImplementationWorkflowResult(
+          fixture.manifest,
+          invalid.iteration,
+          fixture.workspace.workspaceIdentityDigest,
+          invalid,
+        ),
+      ).toThrow();
+    }
+    const settlement = await fixture.runner.readWorkflowSettlement({
+      ...request,
+      dispatch,
+      pollCancellation: async () => {
+        throw new Error("cancelled");
+      },
+      signal: AbortSignal.abort(),
+    });
+    expect(settlement.kind).toBe("terminal");
+    if (settlement.kind === "terminal")
+      expect(settlement.settlement.ledgerDigest).toBe(result.evidenceDigest);
+  });
+
   it("runs implementation with bounded authority and returns host-derived Git metadata", async () => {
     const fixture = await runnerFixture();
 
@@ -628,6 +1106,75 @@ function freezerFixture(
   return { freezer, planDigest, localAdmissionCalls, githubAdmissionCalls };
 }
 
+async function repairFreezerFixture(source = repairWorkflow()) {
+  const projectRoot = await realpath(await mkdtemp(join(tmpdir(), "flow-repair-freeze-")));
+  temporaryDirectories.push(projectRoot);
+  await mkdir(join(projectRoot, ".flow/workflows"), { recursive: true });
+  await mkdir(join(projectRoot, ".flow/verification"), { recursive: true });
+  const plan = `${planSource()}reviewRepair: ${JSON.stringify(repairPolicy())}\n`;
+  await Promise.all([
+    writeFile(join(projectRoot, ".flow/github-issue.plan.yaml"), plan),
+    writeFile(
+      join(projectRoot, ".flow/workflows/implementation.workflow.yaml"),
+      implementationWorkflow(),
+    ),
+    writeFile(join(projectRoot, ".flow/workflows/review.workflow.yaml"), reviewWorkflow()),
+    writeFile(join(projectRoot, ".flow/workflows/repair.workflow.yaml"), source),
+    writeFile(join(projectRoot, ".flow/verification/holdout.mjs"), "process.exit(7);\n"),
+  ]);
+  const freezer = new ProductionIssueRunFreezer({
+    projectRoot,
+    planPath: ".flow/github-issue.plan.yaml",
+    controllerTimeouts: [{ id: "github-read", timeoutMs: 3_000 }],
+    repositoryAdmission: {
+      inspect: async () => ({
+        root: projectRoot,
+        clean: true,
+        flowRuntimeIgnored: true,
+        branch: "main",
+        head: baseCommit,
+        origin: {
+          host: "github.com",
+          owner: "example",
+          name: "project",
+          canonicalUrl: "https://github.com/example/project",
+        },
+      }),
+    },
+    githubAdmission: { inspectOpenIssue: async () => issueObservation() },
+    now: () => new Date("2026-08-28T12:00:00.000Z"),
+  });
+  return { freezer, projectRoot, planDigest: sha256(plan) };
+}
+
+function repairPolicy() {
+  return {
+    version: 1,
+    mode: "preauthorized",
+    maxCycles: 1,
+    eligibleClasses: ["review-findings", "unsatisfied-criteria"],
+    workflow: ".flow/workflows/repair.workflow.yaml",
+    resultNode: "repair-result",
+    aggregateBudget: { implementation: completeBudget(), review: completeBudget() },
+    stopping: {
+      disputed: "stop",
+      unchangedTree: "stop",
+      repeatedTree: "stop",
+      uncertainUsage: "stop",
+      uncertainEffects: "stop",
+    },
+  };
+}
+
+function repairWorkflow(): string {
+  return implementationWorkflow()
+    .replace("metadata: { id: implementation }", "metadata: { id: repair }")
+    .replaceAll("verify-implementation", "verify-repair")
+    .replace("  - id: implement\n", "  - id: repair-result\n")
+    .replaceAll("[implement]", "[repair-result]")
+    .replaceAll("nodeId: implement,", "nodeId: repair-result,");
+}
+
 async function runnerFixture(
   options: {
     readonly issueBody?: string;
@@ -635,14 +1182,20 @@ async function runnerFixture(
     readonly changedPaths?: readonly string[];
     readonly implementationTokens?: number;
     readonly implementationExec?: boolean;
+    readonly repair?: boolean;
+    readonly mismatchedRepairTree?: boolean;
+    readonly observedRepairHead?: string;
+    readonly reviewInspectionFault?: "head" | "tree" | "workspace" | "dirty" | "missing";
   } = {},
 ) {
-  const frozen = freezerFixture({
-    ...(options.issueBody === undefined ? {} : { issueBody: options.issueBody }),
-    ...(options.implementationExec === undefined
-      ? {}
-      : { implementationExec: options.implementationExec }),
-  });
+  const frozen = options.repair
+    ? await repairFreezerFixture()
+    : freezerFixture({
+        ...(options.issueBody === undefined ? {} : { issueBody: options.issueBody }),
+        ...(options.implementationExec === undefined
+          ? {}
+          : { implementationExec: options.implementationExec }),
+      });
   const freezeResult = await frozen.freezer.freeze(runCommand(frozen.planDigest), operation());
   const blobs = new Map<string, IssuePrivateBlobInput>();
   for (const blob of freezeResult.initialBlobs) {
@@ -666,6 +1219,70 @@ async function runnerFixture(
     logicalBytes: 42,
     workspaceIdentityDigest: workspace.workspaceIdentityDigest,
   } as const;
+  const frozenIssue = decodeFrozenGitHubIssueSnapshot(
+    required(blobs, freezeResult.manifest.artifacts.issue.digest).bytes,
+  );
+  const blockedReport = parseIssueReviewReport(
+    {
+      version: 1,
+      candidateHead,
+      issueDigest: freezeResult.manifest.issue.contentDigest,
+      reviewWorkflowDigest: freezeResult.manifest.reviewWorkflow.templateWorkflowDigest,
+      acceptanceMapping: [
+        {
+          criterionId: "implementation-reviewed",
+          status: "unsatisfied",
+          evidence: "The implementation requires correction.",
+        },
+      ],
+      findings: [],
+      verdict: "blocked",
+    },
+    ["implementation-reviewed"],
+    {
+      candidateHead,
+      issueDigest: freezeResult.manifest.issue.contentDigest,
+      reviewWorkflowDigest: freezeResult.manifest.reviewWorkflow.templateWorkflowDigest,
+    },
+  );
+  const repairRequest = () => {
+    const identity = {
+      candidateHead,
+      issueDigest: freezeResult.manifest.issue.contentDigest,
+      reviewWorkflowDigest: freezeResult.manifest.reviewWorkflow.templateWorkflowDigest,
+    };
+    const projection = buildIssueReviewRepairProjection({
+      issue: frozenIssue,
+      acceptanceCriteria: freezeResult.manifest.acceptanceCriteria,
+      allowedWritePrefixes: freezeResult.manifest.allowedWritePrefixes,
+      report: blockedReport,
+      binding: {
+        ...identity,
+        cycle: 1,
+        candidateTree: candidate.tree,
+        repairWorkflowDigest:
+          freezeResult.manifest.reviewRepair?.workflow.templateWorkflowDigest ?? "0".repeat(64),
+        reviewReportDigest: calculateIssueReviewReportDigest(
+          blockedReport,
+          ["implementation-reviewed"],
+          identity,
+        ),
+      },
+    });
+    return {
+      kind: "repair" as const,
+      runId,
+      manifest: freezeResult.manifest,
+      frozenContractDigest: calculateIssuePrivateManifestDigest(freezeResult.manifest),
+      cycle: 1,
+      candidateHead,
+      workspaceIdentityDigest: workspace.workspaceIdentityDigest,
+      projection,
+      ...operation(),
+    };
+  };
+  let repairDisposition: "changed" | "disputed" = "changed";
+  const inspectedBases: string[] = [];
   const reviewText = JSON.stringify({
     version: 1,
     candidateHead,
@@ -735,6 +1352,8 @@ async function runnerFixture(
     };
   };
   let executions = 0;
+  let reviewEvidenceReads = 0;
+  let reviewInspections = 0;
   const executionContexts: unknown[] = [];
   const executedTools: string[] = [];
   let implementationPrompt = "";
@@ -747,15 +1366,54 @@ async function runnerFixture(
     nestedRunRoot,
     lifecycleStore: {
       readManifest: async () => freezeResult.manifest,
+      putBlob: async (_run, blob) => {
+        const reference = createIssuePrivateBlobReference(blob);
+        blobs.set(reference.digest, blob);
+        return reference;
+      },
       readBlob: async (_run, reference) => {
         if (liveReadsBlocked) throw new Error("durable review reread must not read source blobs");
         return required(blobs, reference.digest);
       },
-    } as Pick<IssueLifecycleStore, "readManifest" | "readBlob">,
+    } as Pick<IssueLifecycleStore, "readManifest" | "readBlob" | "putBlob">,
     workspaces: { read: async () => workspace },
-    git: { inspectCandidate: async () => candidate },
+    git: {
+      ...(options.reviewInspectionFault === "missing"
+        ? {}
+        : {
+            inspectVerificationWorktree: async () => {
+              reviewInspections += 1;
+              if (options.reviewInspectionFault === "dirty")
+                throw new Error("verification tree is not pristine");
+              return {
+                head: options.reviewInspectionFault === "head" ? baseCommit : candidateHead,
+                tree: options.reviewInspectionFault === "tree" ? "0".repeat(40) : candidate.tree,
+                workspaceIdentityDigest:
+                  options.reviewInspectionFault === "workspace"
+                    ? "0".repeat(64)
+                    : workspace.workspaceIdentityDigest,
+                status: "clean" as const,
+              };
+            },
+          }),
+      inspectCandidate: async (request) => {
+        inspectedBases.push(request.baseCommit);
+        return options.repair
+          ? {
+              ...candidate,
+              head: options.observedRepairHead ?? candidateHead,
+              baseCommit: request.baseCommit,
+              tree:
+                options.mismatchedRepairTree && request.baseCommit === baseCommit
+                  ? "e".repeat(40)
+                  : candidate.tree,
+            }
+          : candidate;
+      },
+    },
     reviewEvidence: {
       read: async () => {
+        reviewEvidenceReads += 1;
         if (liveReadsBlocked) {
           throw new Error("durable review reread must not reconstruct review evidence");
         }
@@ -778,8 +1436,12 @@ async function runnerFixture(
             return agentSuccess(reviewText, node.agent.model.provider, node.agent.model.id);
           }
           implementationPrompt = node.agent.prompt;
+          const repairText =
+            node.id === "repair-result"
+              ? repairResultFromPrompt(node.agent.prompt, repairDisposition)
+              : "implemented";
           return agentSuccess(
-            "implemented",
+            repairText,
             node.agent.model.provider,
             node.agent.model.id,
             options.implementationTokens,
@@ -803,10 +1465,23 @@ async function runnerFixture(
     workspace,
     candidate,
     reviewText,
+    frozenIssue,
+    blockedReport,
+    repairRequest,
+    inspectedBases,
+    setRepairResult(disposition: "changed" | "disputed") {
+      repairDisposition = disposition;
+    },
     executionContexts,
     executedTools,
     get executions() {
       return executions;
+    },
+    get reviewEvidenceReads() {
+      return reviewEvidenceReads;
+    },
+    get reviewInspections() {
+      return reviewInspections;
     },
     get reviewPrompt() {
       return reviewPrompt;
@@ -825,6 +1500,12 @@ async function runnerFixture(
     },
     addBlobs(inputs: readonly IssuePrivateBlobInput[]) {
       for (const input of inputs) blobs.set(createIssuePrivateBlobReference(input).digest, input);
+    },
+    readPrivateBlob(digest: string) {
+      return required(blobs, digest);
+    },
+    replacePrivateBlob(digest: string, input: IssuePrivateBlobInput) {
+      blobs.set(digest, input);
     },
     rotateVerificationDigests() {
       const changedVerification = {
@@ -853,6 +1534,18 @@ async function runnerFixture(
     blockLiveReads() {
       liveReadsBlocked = true;
     },
+  };
+}
+
+function implementationRequest(fixture: Awaited<ReturnType<typeof runnerFixture>>) {
+  return {
+    kind: "implementation" as const,
+    runId,
+    manifest: fixture.manifest,
+    frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
+    iteration: 1,
+    workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
+    ...operation(),
   };
 }
 
@@ -1033,6 +1726,30 @@ async function readOptional(path: string): Promise<string | undefined> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+}
+
+function repairResultFromPrompt(prompt: string, disposition: "changed" | "disputed"): string {
+  const input = reviewContextFromPrompt(prompt) as {
+    expectedResultBinding?: {
+      version: number;
+      repairContextDigest: string;
+      candidateHead: string;
+      reviewReportDigest: string;
+    };
+  };
+  if (input.expectedResultBinding === undefined)
+    throw new Error("repair prompt omitted its host result binding");
+  return JSON.stringify({
+    ...input.expectedResultBinding,
+    disposition,
+    ...(disposition === "changed"
+      ? { addressedFindingIds: [], addressedCriterionIds: ["implementation-reviewed"] }
+      : {
+          disputedFindingIds: [],
+          disputedCriterionIds: ["implementation-reviewed"],
+          reason: "The criterion conflicts with current evidence.",
+        }),
+  });
 }
 
 function reviewContextFromPrompt(prompt: string): unknown {

@@ -89,6 +89,8 @@ export interface IssueGitPushResult {
 export interface InspectIssueGitCommitRequest {
   readonly workspace: IssueGitWorkspace;
   readonly commit: string;
+  /** Also require the exact current owned candidate and its frozen-base ancestry. */
+  readonly expectedCandidateHead?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -96,6 +98,29 @@ export interface IssueGitCommitObservation {
   readonly commit: string;
   readonly tree: string;
   readonly parents: readonly string[];
+}
+
+export interface InspectIssueGitFindingSourceRequest {
+  readonly workspace: IssueGitWorkspace;
+  readonly candidateHead: string;
+  readonly file: string;
+  readonly startLine: number;
+  readonly endLine?: number;
+  readonly allowedWritePrefixes: readonly string[];
+  readonly signal?: AbortSignal;
+}
+
+/** Content-free observation of a regular text blob in the exact owned candidate commit. */
+export interface IssueGitFindingSourceObservation {
+  readonly candidateHead: string;
+  readonly workspaceIdentityDigest: string;
+  readonly file: string;
+  readonly blob: string;
+  readonly mode: "100644" | "100755";
+  readonly byteLength: number;
+  readonly lineCount: number;
+  readonly startLine: number;
+  readonly endLine: number;
 }
 
 export interface IssueGitReachabilityRequest {
@@ -189,6 +214,9 @@ export interface IssueLocalGitPort {
   commitCandidate(request: CommitIssueGitCandidateRequest): Promise<IssueGitCommitResult>;
   pushCandidate(request: PushIssueGitCandidateRequest): Promise<IssueGitPushResult>;
   inspectCommit(request: InspectIssueGitCommitRequest): Promise<IssueGitCommitObservation>;
+  inspectFindingSource?(
+    request: InspectIssueGitFindingSourceRequest,
+  ): Promise<IssueGitFindingSourceObservation>;
   isAncestor(request: IssueGitReachabilityRequest): Promise<boolean>;
   inspectRemoteBranch(
     request: InspectIssueGitRemoteBranchRequest,

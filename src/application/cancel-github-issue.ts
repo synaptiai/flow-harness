@@ -16,6 +16,7 @@ import type {
   IssueControllerCommandRecord,
   IssueControllerRuntimeDependencies,
 } from "./github-issue-controller-ports.js";
+import { reconcilePendingIssueWorkflow } from "./issue-review-repair-controller.js";
 
 export type CancelGitHubIssueResult =
   | { readonly status: "requested"; readonly command: IssueControllerCommandRecord }
@@ -61,7 +62,10 @@ export async function cancelGitHubIssue(
         command: await dependencies.repository.readCommand(command.runId, command.commandId),
       };
     }
-    if (controller.state.pendingEffect !== undefined) {
+    if (
+      controller.state.pendingEffect !== undefined ||
+      !(await reconcilePendingIssueWorkflow(controller))
+    ) {
       return { status: "requested", command: record };
     }
     const actorDigest = evidenceDigest("cancellation-actor", { actor: command.actor });

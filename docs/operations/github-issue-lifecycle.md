@@ -182,7 +182,10 @@ Treat the plan as trusted executable policy. Review every field before `run`:
 - Confirm `repository.expected` and `baseBranch` against GitHub and `origin`.
 - Reserve `branch.prefix` for Flow-owned branches.
 - Confirm that the complete Flow-owned branch derived from the prefix differs from `baseBranch`.
-- Inspect both workflows, their model tools, budgets, and timeouts.
+- Inspect both required workflows and any optional repair workflow, including tools, budgets, and timeouts.
+- If `reviewRepair` is present, review its explicit classes, cycle limit, and both complete aggregate pools.
+  Use [Configure bounded independent-review repair](../guides/github-issue-review-repair.md) for the policy contract.
+  This unreleased extension requires separate qualification from the earlier lifecycle path.
 - Confirm that the implementation workflow declares `goal`, and review every stable
   `goal.criteria[].id`. Treat those IDs as the complete review mapping authority.
 - Keep `candidate.allowedPathPrefixes` no broader than the issue requires.
@@ -300,6 +303,35 @@ Resume checks prepared intent against exact local and remote identities. It can 
 that already occurred, retry an effect proved absent, or remain in `external_state_uncertain`. It
 must not adopt a similarly named branch, pull request, commit, or merge.
 
+### Recover bounded review repair
+
+This procedure applies only to a run frozen with `reviewRepair`. Repair remains unreleased source
+undergoing qualification. Omission keeps the earlier behavior and grants no repair authority.
+
+1. Inspect the parent with `flow issue inspect <run-id>` and `flow issue events <run-id>`.
+   Record `reviewRepair`, any pending dispatch, and the terminal or interruption code.
+2. Preserve the exact binary, operating-system account, canonical checkout, private run stores, and
+   both owned worktrees. Do not import a hosted failure archive as live state.
+3. Check the role's consumed resources and availability flags. Unknown usage blocks another child.
+   A pending dispatch reserves its complete child budget until an exact terminal receipt settles it.
+4. Resume an active run only through `flow issue resume <run-id> --command-id <uuid>` on the same host.
+   The controller reconciles the recorded child identity before admitting another child.
+5. If cancellation remains requested, preserve the reservation and investigate the missing evidence.
+   Do not edit events, fabricate zero usage, delete the worktree, or restart implementation manually.
+
+Independent-review context is persisted before dispatch. Recovery reads that exact context instead
+of rerunning candidate verification commands to reconstruct a review. Resource settlement records
+actual usage once, including failed-child usage. Resume, cancellation, and repair cycles do not
+reset the accumulated role totals.
+
+A reserved dispatch with no child ledger is a current recovery limitation. Missing evidence does
+not prove that execution never started. Cancellation can therefore remain requested instead of
+becoming `cancelled`. Repeating cancellation is not a remedy for that evidence gap.
+
+A terminal `failed` or `cancelled` run cannot resume. Preserve it for investigation and authorize
+a new frozen contract when you are ready to try again. Historical hosted archives are forensic
+evidence, not a transferable repair session.
+
 ### Recover specific effects
 
 | Interrupted boundary | Preserve | Required reconciliation |
@@ -349,6 +381,8 @@ flow issue cancel <run-id> \
 Cancellation doesn't delete evidence or hide external state. If a branch or pull request already
 exists, inspect it in GitHub and apply the repository's normal close or deletion policy.
 Don't force-delete a branch while external state is uncertain.
+For a repair-enabled run, also confirm that its child dispatch is settled. See
+[Recover bounded review repair](#recover-bounded-review-repair) when cancellation remains requested.
 
 ## Retain and protect evidence
 
@@ -375,8 +409,8 @@ not suitable for public artifacts without a separate disclosure review.
 
 ## Clean up a settled run
 
-Clean up only after the run is `merged`, `failed`, or `cancelled`, external effects are settled,
-required evidence is retained, and repository policy permits removal.
+Clean up only after the run is `merged`, `failed`, or `cancelled` and external effects are settled.
+Any child dispatch must also be settled. Retain required evidence and follow repository removal policy.
 
 1. Record the run ID, terminal status, pull request, exact head, gate digest when present, and
    retained evidence location.

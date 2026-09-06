@@ -5,6 +5,11 @@ issue, and one workflow independently reviews the exact verified candidate. Flow
 workflows to the provider and model selected on the command line. The model values in the authored
 files are required template fields, not fallback routes.
 
+An optional third workflow can repair an eligible blocked review. Follow
+[Configure bounded independent-review repair](github-issue-review-repair.md) to author and authorize it.
+That extension is unreleased source undergoing qualification. The published `0.1.0-alpha.4`
+package does not include the issue lifecycle or review repair.
+
 This guide covers workflow authoring and model-data boundaries. Use
 [Complete a GitHub issue with Flow](github-issue-lifecycle.md) for the complete operator procedure,
 and use the [GitHub issue lifecycle specification](../specs/github-issue-lifecycle.md) for the
@@ -51,8 +56,10 @@ and GitHub node IDs. This separation keeps restart replay stable. It doesn't wea
 audit trail or merge gate.
 
 The exact diff must not exceed 131,072 UTF-8 bytes. The final serialized projection must not exceed
-262,144 UTF-8 bytes. These limits apply only to independent review. The issue-workflow context
-remains limited to 65,536 UTF-8 bytes. Flow measures the complete JSON after escaping.
+262,144 UTF-8 bytes. These limits apply to independent review. The implementation context
+remains limited to 65,536 UTF-8 bytes. Optional repair has its own bounded context contract in the
+[repair guide](github-issue-review-repair.md#return-the-bound-disposition).
+Flow measures the complete JSON after escaping.
 
 Flow rejects an oversized diff or projection before provider input/output. It never truncates the
 issue, criteria, changed paths, diff, or verification summary. Reduce the issue or candidate scope
@@ -61,7 +68,7 @@ and start a new frozen run if either reviewer limit is exceeded.
 Flow requires the projection to be one canonical JSON object. It embeds that object directly in
 the review context envelope. A noncanonical review context fails admission.
 
-Flow applies a trusted review-only input policy after it compiles the authored workflow. This
+Flow applies a trusted review input policy after it compiles the authored workflow. This
 policy allows a bound review prompt and model-verifier input to contain the complete projection.
 Workflow YAML cannot enable or change the policy. Generic model verifiers keep their standard
 input limit.
@@ -304,7 +311,7 @@ policy, or the operator's exact merge decision.
 
 ## Set complete budgets
 
-Both workflows must set all five budget dimensions:
+Every issue workflow, including an optional repair workflow, must set all five budget dimensions:
 
 | Field | Bounds |
 | --- | --- |
@@ -330,7 +337,11 @@ When a response reaches the cap, a configured recovery attempt can continue only
 durable session boundary. A node timeout or lost active response can have unknown provider usage
 and doesn't become safe to retry merely because a cap was configured.
 
-The CLI-selected provider and model replace every model tuple in both workflows before execution.
+The optional repair policy also requires complete aggregate implementation and review pools.
+These pools account for nested children across cycles, not all host operations. See
+[Set workflow limits and aggregate pools separately](github-issue-review-repair.md#set-workflow-limits-and-aggregate-pools-separately).
+
+The CLI-selected provider and model replace every model tuple in all admitted workflows before execution.
 Flow rejects an incomplete budget or a workflow that introduces a second authority path. Use
 `flow issue doctor` with the intended provider and model to test that complete bound configuration.
 

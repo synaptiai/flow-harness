@@ -13,6 +13,22 @@ const sha = (character: string): string => character.repeat(64);
 const commit = (character: string): string => character.repeat(40);
 
 describe("issue workflow result boundaries", () => {
+  it("preserves the legacy maximum iteration without accepting the next one", () => {
+    const manifest = frozenManifest();
+    expect(
+      validateImplementationWorkflowResult(manifest, 64, sha("9"), {
+        ...implementationResult(),
+        iteration: 64,
+      }).iteration,
+    ).toBe(64);
+    expect(() =>
+      validateImplementationWorkflowResult(manifest, 65, sha("9"), {
+        ...implementationResult(),
+        iteration: 65,
+      }),
+    ).toThrow(/iteration/);
+  });
+
   it("binds implementation output to the parent run, iteration, workspace, and frozen template", () => {
     const manifest = frozenManifest();
     const output = implementationResult();

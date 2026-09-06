@@ -119,8 +119,9 @@ documentation defect. Its model validation step rejected the valid blocked repor
 stopped before publication. All three attempts failed to complete the installed lifecycle.
 
 Published alpha.4 does not include the lifecycle or command-discovery correction. Installed
-lifecycle and release qualification remain open. Automatic review repair remains a design gap,
-not a completed capability.
+lifecycle and release qualification remain open. Approved bounded review repair is implemented
+in current source and locally verified. Hosted and installed-package qualification remain open. It is not a completed or released
+capability. See the [repair delivery status](usable-checkpoint-plan.md#implement-bounded-review-repair).
 
 Read the [installed-package field report](field-reports/digital-twin-issue-106-installed.md) and the
 [usable-checkpoint plan](usable-checkpoint-plan.md). The
