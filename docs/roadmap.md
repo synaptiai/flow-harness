@@ -868,8 +868,19 @@ before candidate acceptance or review. The
 [issue 106 field report](field-reports/digital-twin-issue-106-installed.md) records its exact archive,
 complete denominator, command-discovery failure, and approved correction. UC-08 in the
 [usable-checkpoint plan](usable-checkpoint-plan.md) tracks exact command discovery, actionable
-refusals, and bounded ineffective-request stopping. UC-08a separately requires retention of the
-exact archive bytes for the replacement qualification. Neither correction closes Slice 13.3.
+refusals, and bounded ineffective-request stopping.
+
+The September 6 replacement retained one exact
+archive and passed installed verification on both named hosts, satisfying UC-08a for those bytes.
+It then failed implementation assessment after an existing path-sensitive test failed in the
+sandbox. The unchanged-base defect is independently reproduced. Command refusals fell from 48 of
+52 requests to one of six, but neither installed attempt reached accepted implementation or review.
+Slice 13.3 remains open.
+
+Approved preparation corrects the baseline test and adds stage-specific assessment with a host-owned
+pytest verifier. It also adds a model-free baseline gate before credential admission. Local native
+sandbox verification passes. Complete preparation review and merge before authorizing another
+frozen hosted attempt. All aggregate budgets remain unchanged.
 
 ### Slice 13.4: Qualify and publish the usable checkpoint
 

@@ -6,7 +6,7 @@ required to use Flow in another repository. The [roadmap](roadmap.md) owns capab
 
 ## Complete qualification first
 
-As of September 5, 2026, the source-built controller completed digital-twin issue 6 through verified
+As of September 6, 2026, the source-built controller completed digital-twin issue 6 through verified
 merge. This proves neither the installed package on hosted Linux x64 nor a generally unattended
 service. The [field report](field-reports/digital-twin-issue-6-alpha4.md) retains all 52 parent runs
 and operator interventions.
@@ -23,7 +23,25 @@ qualification: retain UC-01 as open until the installed lifecycle and independen
 That attempt failed at the implementation token gate before review or publication. The
 [issue 106 field report](field-reports/digital-twin-issue-106-installed.md) records the complete
 denominator, command-discovery gap, and correction alternatives. Evidence was authenticated and
-the dedicated Actions secrets were removed. No replacement attempt has started.
+the dedicated Actions secrets were removed.
+
+The single authorized [replacement attempt](https://github.com/danielbentes/digital-twin/actions/runs/34021026823)
+used preparation merge `7414509caa0c31180852c614c54f73670143a49b` and Flow source
+`e967c29082a6647a1554fdc96312a93c6f94dd6d`. Its retained archive passed installed verification on
+Ubuntu 24.04 x64 and macOS 15 Intel before the lifecycle started. UC-08a is satisfied for those
+exact bytes. The implementation assessment rejected a reported failing existing test, so UC-01
+remains open. No candidate PR or merge followed.
+
+Terminal evidence was authenticated and dedicated secrets were removed. Both failed attempts remain
+in the denominator.
+
+Independent unchanged-base reproduction confirms that the existing marker test rejects legitimate
+path metadata when a temporary-directory name contains `command`. Approved preparation corrects
+that assertion structurally, adds a frozen pytest verifier before handoff assessment, and adds a
+model-free baseline gate before credentials. Local native-sandbox baseline verification passes.
+Complete preparation review and merge before authorizing another frozen hosted attempt. The
+[replacement field report](field-reports/digital-twin-issue-106-installed.md#replacement-attempt)
+records the correction and its limits. No further attempt or budget increase is authorized by this result.
 
 Approach B is now approved: make complete frozen verification commands discoverable, return
 actionable rejection feedback, and stop repeated ineffective requests within an explicit bound.
@@ -95,8 +113,8 @@ order does not authorize an unreviewed design or broaden model authority.
 | UC-05 | Prioritized research, not autonomous authority; Approach A maintainer | Complete NV-03 design using the field denominator and a frozen NV-01 comparison. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation and false-acceptance tests. | UC-04 design review or another operator-authored repair series. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
 | UC-07 | Parity research in progress; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md). Add runnable demonstrations for supported practices, and compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory alone does not close this row. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
-| UC-08 | Implemented and locally verified; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | Deterministic tests verify complete invocations, denied mismatches, private-holdout exclusion, replay identity, and bounded failure. The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent review has no remaining P1–P3 findings. Live catalog-following behavior remains part of UC-01. | Reassess refusal rates and false stops in the next separately approved hosted attempt. |
-| UC-08a | Separate open qualification gate; release maintainer | Retain the exact packed archive for the replacement qualification attempt. Reuse its bytes for both named host checks. | The retained archive matches its recorded digest and is the artifact installed on both hosts. A recorded digest without the archive is insufficient. | Before another hosted model attempt or package identity change. |
+| UC-08 | Implemented and locally verified, with bounded live discovery evidence; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent source review found no remaining P1–P3 defects in this correction. The replacement recorded one command refusal among six requests and then used the exact allowed command. It did not reach the three-refusal stopping threshold or complete UC-01. | Reassess refusal rates, false stops, and broader behavior in a separately approved attempt. |
+| UC-08a | Satisfied for the replacement artifact; release maintainer | Retained archive SHA-256 `0a3090f8a0b495309672e67d66dd8303722226bb4e2f9a5a62d0338f794441b1`, source `e967c29`, and canonical evidence are retained locally. | Both named hosted checks passed on the same retained bytes; the pilot's authenticated archive digest matches. See the [field report](field-reports/digital-twin-issue-106-installed.md#replacement-attempt). | Reopen when package identity changes; this does not close UC-01 or UC-02. |
 
 UC-03 through UC-07 are not evidence that Flow has left alpha. Qualification of one task is a
 bounded usability checkpoint. A broader readiness decision needs a support contract and repeatable

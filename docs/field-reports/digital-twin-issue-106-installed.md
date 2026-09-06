@@ -2,18 +2,21 @@
 
 ## Result
 
-The first hosted attempt failed before candidate acceptance, independent review, publication, or
-merge. It does not close the installed-package lifecycle qualification gate.
+Both hosted attempts failed before candidate acceptance, independent review, publication, or
+merge. The replacement qualified and retained one package on both named hosts, but it did not
+close the installed-package lifecycle qualification gate. See
+[replacement attempt](#replacement-attempt) for the September 6 result.
 
-The installed command passed plan validation and host admission on Ubuntu 24.04 x64. It started
+In the first attempt, the installed command passed plan validation and host admission on Ubuntu
+24.04 x64. It started
 one implementation workflow and preserved its terminal failure. The implementation agent returned
 success, but the workflow then exhausted its aggregate token budget. An agent success report did
 not become lifecycle acceptance.
 
 The operator authenticated the final encrypted evidence and removed all three dedicated Actions
 secrets. The existing provider credential and the owner-only local decryption key remain intact.
-No replacement attempt was started. GitHub independently showed no open candidate PR and issue 106
-still open after the failure.
+No replacement attempt was started during the first attempt's cleanup. GitHub independently showed
+no open candidate PR and issue 106 still open after that failure.
 
 ## Exact identities and controls
 
@@ -43,9 +46,9 @@ review corrected four preparation defects: inaccessible preapproval evidence, la
 validation, invocation-record overwrites, and missing timeout metadata. Those checks qualified the
 preparation, not the target implementation.
 
-## Complete attempt denominator
+## First-attempt denominator
 
-There was one parent run, one nested implementation workflow, and one implementation-agent attempt.
+The first attempt had one parent run, one nested implementation workflow, and one implementation-agent attempt.
 The assessment node and independent-review workflow did not run. No candidate passed the frozen
 holdout or reached a merge gate.
 
@@ -132,10 +135,163 @@ installed on a second host. A digest alone does not recover missing artifact byt
 
 At the time of this failure analysis, Approach B was the recommended design direction, not an
 implemented correction. The user subsequently approved command discovery, actionable rejection
-feedback, and bounded ineffective-request stopping. That work is in progress. This failed attempt
+feedback, and bounded ineffective-request stopping. That correction was implemented and locally
+verified before the replacement attempt. This first failed attempt
 does not prove the correction. Test valid command discovery, exact timeout handling, rejection
 feedback, private-holdout exclusion, replay identity, and refusal to expand authority.
 
 Do not raise the token limit as the only correction. Preserve this failed attempt in the denominator
 and freeze any replacement contract before another model run. Track the remaining work in the
 [usable-checkpoint plan](../usable-checkpoint-plan.md).
+
+## Replacement attempt
+
+The user authorized one replacement with unchanged model, budget ceilings, issue criteria, allowed
+candidate paths, and private holdout. [Preparation PR 108](https://github.com/danielbentes/digital-twin/pull/108)
+added package retention and two-host verification before model use. It did not implement status.
+The operator dispatched once. No rerun or further attempt followed the failure.
+
+The exact identities are:
+
+| Item | Value |
+| --- | --- |
+| Target base | `7414509caa0c31180852c614c54f73670143a49b` |
+| Flow source | `e967c29082a6647a1554fdc96312a93c6f94dd6d` |
+| Actions run | [34021026823](https://github.com/danielbentes/digital-twin/actions/runs/34021026823) |
+| Parent run | `issue-f667012e-0eea-473d-8b89-773b7fe575e1` |
+| Archive SHA-256 | `0a3090f8a0b495309672e67d66dd8303722226bb4e2f9a5a62d0338f794441b1` |
+| Archive size | 2,790,421 bytes |
+| Parent failure | Sequence 6, `implementation_workflow_failed`, September 6, 2026, at 08:20:51 UTC |
+| Failed nested node | `assess`, with `verifier_rejected` |
+
+The operator retained the archive and canonical evidence locally. The canonical verifier confirmed
+the source revision, archive SHA-512, and file manifest. The same archive passed installed-package
+verification on [Ubuntu 24.04 x64](https://github.com/danielbentes/digital-twin/actions/runs/34021026823/job/101453633475)
+and [macOS 15 Intel](https://github.com/danielbentes/digital-twin/actions/runs/34021026823/job/101453633535).
+The pilot then checked its actual installation before credential admission. Its authenticated
+`package.sha256` matches the retained archive. These observations satisfy UC-08a for this artifact,
+not UC-01 or publication qualification for another package identity.
+
+### Outcome and command behavior
+
+There was one parent run, one implementation workflow, one implementation-agent attempt, and one
+assessment attempt. The implementation agent completed. The assessment rejected its handoff.
+No recovery attempt, compaction, controller-owned holdout, independent review, candidate PR, approval,
+or merge followed. Across both hosted attempts, neither parent reached accepted implementation.
+
+The replacement's records show:
+
+| Measure | Implementation | Assessment |
+| --- | --- | --- |
+| Model turns | 13 | 1 |
+| Tool calls | 16 | 0 |
+| Tool-error results | 2 | 0 |
+| Input tokens | 81,260 | 2,358 |
+| Output tokens | 5,828 | 204 |
+| Cache-read tokens | 154,240 | 0 |
+| Cache-write tokens | 0 | 0 |
+| Aggregate tokens | 241,328 | 2,562 |
+| Settled reported cost | $0.009866 | $0.000228 |
+
+Token totals independently agree between model-message records and node settlement. Total usage
+was 243,890 tokens, with settled reported cost of $0.010094. Summing individually rounded message
+costs gives $0.010100 instead. The six-microdollar difference is consistent with rounding each
+message upward versus rounding the session total. Retain both observations. Neither is a provider invoice.
+
+The agent requested six commands. Five matched the frozen catalog and executed: full pytest twice,
+Ruff, mypy, and compilation. One focused-pytest request was refused because its additional arguments
+were not authorized. The next pytest request used the exact allowed invocation. The other tool
+error was a read of the not-yet-created status test file. Approved pytest exits with code 1 were
+recorded as command failures, not authority refusals.
+
+Observed command refusals changed from 48 of 52 requests to 1 of 6. Implementation token usage
+changed from 1,473,550 to 241,328, an 83.62% reduction. These are two nonrandomized observations with
+different execution paths, not a general model-quality or causal performance estimate. This run
+exercised discovery and recovery after feedback. It did not reach the three-refusal stopping limit.
+
+### Failure and assessment boundary
+
+The first pytest invocation exposed failures in the new test helper. The agent repaired that helper
+within its allowed paths. The second invocation reported 129 passed, one skipped, and one failed.
+Ruff, mypy, and compilation passed. The remaining failure was the existing
+`test_exactly_one_detector_reference_and_command_free_marker` assertion in `tests/test_hook_installer.py`.
+The retained existing test is byte-identical to the base.
+
+That test searches the entire serialized marker for the substring `command`. The hosted traceback
+shows the substring in legitimate path-valued provenance under the sandbox's temporary directory.
+It does not show an added executable command field. An independent unchanged-base reproduction
+varied only pytest's temporary-directory component: `plain` passed, `command` failed at line 290,
+and `neutral` passed.
+
+The control used local Python 3.14.6 and pytest 9.1.1. The hosted failure used Python 3.11.16 and
+pytest 9.0.2. This confirms a pre-existing test correctness and portability defect, not complete
+candidate correctness. The agent could not edit the protected existing
+test or substitute a different verification command. Its report acknowledged the failure, and the
+assessment rejected the handoff. A known failed required check is a valid reason to stop.
+
+The assessment also cited absent holdout, independent-review, and CI evidence. Those stages occur
+after implementation assessment. Requiring their receipts at this point would create a circular
+prerequisite. The assessment receives frozen issue context and the implementation's text summary,
+but not its raw command receipts or candidate diff. This is a separate evidence-contract risk,
+not proof that absent downstream receipts alone caused the rejection.
+
+Before approving another frozen contract, compare these corrections:
+
+| Approach | Benefit | Limitation |
+| --- | --- | --- |
+| A: Correct the path-sensitive test and clarify the assessment's stage | Addresses the observed failure and states that downstream checks are intentionally pending. | The assessment still relies on the implementation summary for candidate-result evidence. |
+| B: Add an approved command-verifier node as well | Supplies host-produced pytest evidence to the handoff assessment without approximate command matching. | Adds a command execution and workflow node; requires explicit contract review. |
+| C: Add a bounded read-only inspection node | Supplies a separate criterion-mapped inspection of implementation, tests, and documentation. | Adds model work and partly duplicates the later independent exact-head review. |
+
+Path sensitivity is independently verified on unchanged code. Next, correct the assertion without weakening
+its command-free-metadata requirement, and qualify the untouched baseline under the actual sandbox.
+Prefer stage-specific assessment with host-produced command evidence for a separately reviewed
+future contract. Do not rename the sandbox's temporary directory merely to hide a fragile test.
+Do not ignore the failure, widen model write authority, or raise budgets as the correction.
+
+### Custody and operator interventions
+
+The operator authenticated both encrypted snapshots before inspecting their contents. Both contain
+the same terminal forensic archive, with plaintext SHA-256
+`cb2c60aa9cb735ab58eb0aa43a2ad78b273efa219b9545a6a47e96ea01f55cbc`.
+No archived host state was resumed. All three dedicated Actions secrets were removed after
+retention. The original credentials and local evidence key remain intact. GitHub independently
+confirmed issue 106 open, no open candidate PR, and Flow PR 201 still draft and unmerged.
+
+One preparation intervention preceded dispatch: merging PR 108 unexpectedly closed issue 106.
+Its description contained a negated closing-keyword reference. GitHub's
+[closing-keyword rules](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue)
+and the merge-time closure support that diagnosis. The operator reopened the issue without changing
+its body before the harness froze it. Record this as operator work, not harness behavior.
+
+## Approved follow-up preparation
+
+The user approved baseline-test correction and stage-specific assessment with host-produced test
+evidence. This approval does not authorize another pilot, candidate merge, or budget increase.
+
+The prospective [target preparation](https://github.com/danielbentes/digital-twin/pull/109) now contains:
+
+- Exact structural marker assertions instead of substring scans. Four directory-name cases pass,
+  including `command` and detector filenames. Five negative controls reject extra command metadata,
+  duplicate hooks, and commands substituted for provenance.
+- A `verify-tests` command verifier between implementation and assessment. It uses the unchanged
+  plan's exact pytest command and timeout. Assessment receives its host-produced verdict and reason.
+  A rejected command blocks assessment. Later lifecycle receipts are explicitly pending.
+- A model-free baseline workflow before credential admission in the hosted pilot. Its detailed
+  output enters encrypted evidence. Its public success message contains only status and zero model usage.
+
+Production plan and workflow validation pass. Production admission rejects changed verifier
+arguments and timeout. The implementation has three normal node starts within the unchanged
+four-start ceiling, leaving one spare across its recovery settings.
+
+The corrected target passes 124 local tests, Ruff, mypy, compilation, shell syntax, and 25 pilot
+control tests. A real Flow native-sandbox baseline run passes 123 tests with one environment-dependent
+skip and zero model usage. That run used macOS, Python 3.14.6, pytest 9.1.1, and SRT 0.0.70.
+It is not hosted Linux verification of the new baseline gate. No model has assessed the revised rubric.
+
+The implementation workflow source digest is now
+`8894491c8a9d0b7f7c8dd87799826484e60c210766de4db5433fade1a29cd53d`.
+The plan, private holdout, review workflow, model, budgets, and candidate write paths remain unchanged.
+The installer is unchanged, and the negative holdout still fails because status is absent.
+Historical attempt evidence has not been reinterpreted or resumed. Complete preparation review and
+merge before requesting a separately authorized, newly frozen hosted attempt.

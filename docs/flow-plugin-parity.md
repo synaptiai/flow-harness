@@ -96,9 +96,10 @@ relax command matching, expose private holdouts, or convert tool success into ac
 ## Use the comparison to prioritize work
 
 Keep delivery status in the [usable-checkpoint plan](usable-checkpoint-plan.md), not in a second
-task register. UC-08's correction is implemented and locally verified. Complete UC-08a's
-archive-retention gate before another hosted qualification attempt. UC-01 and UC-02 remain blockers
-until their evidence is complete.
+task register. UC-08's correction is implemented and locally verified, with bounded live evidence
+for command discovery and feedback. The replacement satisfied UC-08a's archive-retention and
+two-host package gate for its exact bytes, but failed before accepted implementation. UC-01 and
+UC-02 remain blockers until their evidence is complete. Package identity changes reopen UC-08a.
 
 Then prioritize repository onboarding and guided plan preparation, measured under UC-03 and UC-04.
 Use UC-06's equivalent-condition benchmark to identify costly gaps. Keep UC-05's automatic repair
