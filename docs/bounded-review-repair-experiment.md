@@ -105,6 +105,45 @@ Smaller whole-child time allowances can stop before an existing individual node 
 node starts do not guarantee that all recovery attempts fit. Validate any authored timeout change
 separately. Do not silently expand node deadlines or the host deadline to make an attempt finish.
 
+## Account for host verification time
+
+One [host verification pass](../src/infrastructure/git/local-issue-verification.ts) runs the base
+holdout, candidate holdout, and five original commands serially. Their configured timeout sum is
+`120 + 120 + 300 + 4 × 120 = 1,020` seconds, or 17 minutes. This is a sum of command ceilings,
+not a measured duration or a complete wall-clock bound.
+
+For one repair, the unchanged path contains these verification calls:
+
+| Stage | Verification passes | Configured command-timeout sum |
+| --- | ---: | ---: |
+| Initial candidate verification and first review-context preparation | 2 | 34 minutes |
+| Repaired candidate verification and fresh review-context preparation | 2 | 34 minutes |
+| First publication gate check | 1 | 17 minutes |
+| Fresh gate check after exact merge approval | 1 | 17 minutes |
+
+[Review-context preparation](../src/infrastructure/git/local-issue-review-evidence.ts) verifies
+the candidate once before freezing that context. Reusing the frozen context does not repeat
+those commands. However, each explicit CI-wait resume calls
+[`createCurrentIssueGate`](../src/application/continue-github-issue.ts), which verifies before
+observing GitHub. Each such retry adds another possible 17 minutes of configured command time.
+Periodic status inspection alone does not rerun verification. The shared deadline bounds the
+resume loop, but there is no separate authored count limit for those gate checks.
+
+The child active-time sum is 41 minutes. Adding four prepublication verification passes gives
+109 minutes. Adding the first gate check gives 126 minutes before approval. Adding the fresh
+merge gate check gives 143 minutes across both phases. These subtotals exclude setup, hosted
+check waiting, extra gate checks, human approval waiting, storage, and Git or GitHub operations.
+They are not duration forecasts or full wall-clock upper bounds.
+
+Option B keeps the existing 90-minute execution-and-check deadline, 30-minute approval-and-merge
+phase, and 180-minute job ceiling. These are explicit earlier-stop choices. The 90-minute window
+cannot accommodate every configured maximum simultaneously. Actual commands might finish much
+sooner. The 30-minute phase also includes the human's response and the fresh merge gate check.
+Do not claim guaranteed completion or silently extend a deadline after a stop.
+
+Reusing verification receipts would require a separate validity and drift-detection contract.
+This experiment does not remove verification or introduce caching to make its timing fit.
+
 ## Prepare the exact experiment before execution
 
 As of September 6, 2026, the reviewed Flow source is `a4e5aeec84ce26867c0300e097c9f43d59397288` on draft
@@ -123,11 +162,9 @@ Complete these preparation gates after the experimental limits are selected:
 3. Review the target preparation independently. Run its existing control tests, Python tests,
    compilation, lint, type checking, and shell syntax checks. Confirm that the status command and
    its new tests remain absent from the preparation base.
-4. Reconcile the existing 90-minute execution-and-check deadline, 30-minute approval phase, and
-   180-minute job ceiling with every bounded path. The proposed child active-time sum is 41
-   minutes, but it excludes controller work, hosted check waiting, setup, and approval. Active-time
-   accounting is not a wall-clock completion promise. Keep deadlines unchanged unless a separate
-   decision authorizes a change.
+4. Recheck the [host timing calculation](#account-for-host-verification-time) against the final
+   workflows and driver. Preserve the documented earlier-stop deadlines. Any deadline change
+   requires a separate decision.
 5. Select the qualified immutable Flow source and final target base. Build and pack once. Retain
    the archive SHA-256 digest. Verify those same bytes on Ubuntu 24.04 x64 and macOS 15 Intel.
    Old two-host evidence does not qualify new package bytes.

@@ -208,3 +208,14 @@ completion in these states or silently charge zero usage.
   is pushed to the branch. The documentation-only proposal can be committed locally, but defer
   its push until the current qualification run settles. Routine commit confirmation is not needed
   under the user's explicit instruction. Experimental values and live execution remain decisions.
+- A further independent timing audit found that the existing full verification pass has 17 minutes
+  of configured command ceilings. Each candidate runs that pass before review and again when its
+  immutable review context is first prepared. The one-repair path contains four prepublication passes:
+  68 minutes of host-command ceilings plus 41 minutes of proposed child active allowances, or
+  109 minutes. The first publication gate adds 17 (126 total), and the fresh exact-approval merge
+  gate adds 17 (143 across both phases). Every CI-wait resume can repeat verification before its
+  GitHub observation. Status inspection and stored-context replay do not repeat those commands.
+  These are configured-timeout subtotals, not measured runtime or complete wall-clock bounds.
+  The unchanged 90/30/180-minute deadlines remain explicit earlier-stop experimental choices.
+  No deadline increased and no verification was removed. The proposal now makes that tradeoff
+  concrete rather than leaving feasibility as an unspecified preparation check.
