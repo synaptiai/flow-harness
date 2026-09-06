@@ -195,10 +195,37 @@ completed issue-to-merge qualification. No repair cycle ran, so BR-06 remains un
 
 Next preparation work, without changing or rerunning the retained candidate:
 
-- [ ] Add an inaccessible-parent regression that independently confirms permission denial.
-- [ ] Remove the public permission test's reliance on candidate success to infer privileged access.
-- [ ] Extend review guidance for absence versus file-read and directory-traversal failures.
-- [ ] Verify and review newly frozen preparation before seeking authority for another live attempt.
+- [x] Add an inaccessible-parent regression that independently confirms permission denial.
+- [ ] Require a fresh candidate's public tests to establish denied access independently of candidate success.
+- [x] Extend review guidance for absence versus file-read and directory-traversal failures.
+- [x] Verify and review newly frozen preparation before seeking authority for another live attempt.
+- [ ] Get preparation-merge and new-run authorization, then execute one newly frozen attempt.
+
+The new preparation leaves candidate PR 111 unchanged. Its controller-only holdout distinguishes
+file-read denial from parent-directory traversal denial. An independent subprocess must establish
+denied access before the candidate runs. Unsupported hosts fail qualification rather than skip
+the check. Tests cover false success, missing diagnostics, stray output, permission changes,
+file replacement, content mutation, and extra files. Final-state snapshots cannot detect transient
+writes that are completely restored.
+
+The original holdout still passes retained candidate `ae9fd001`. The revised holdout rejects
+that exact candidate's inaccessible-parent false success. This is regression evidence, not a
+repaired implementation or proof of future model review quality. The new review instructions
+require independent permission evidence without expanding tools, budgets, or acceptance criteria.
+
+[Preparation PR 112](https://github.com/danielbentes/digital-twin/pull/112) contains the correction
+at `8cfab4a96da140368f6b83afbd188d7751a87d45`. Independent code and test review found no P1–P3
+defects. Local verification passed 53 pilot control tests and 124 Python tests, plus linting,
+type checking, compilation, shell checks, and production plan validation. Hosted
+[preparation CI](https://github.com/danielbentes/digital-twin/actions/runs/34067285916)
+passed 53 control tests and 123 Python tests. One existing maintainer-private corpus test was
+skipped. This is preparation verification, not installed lifecycle qualification.
+
+The revised holdout SHA-256 is
+`ac257f59dcd74de640c4e34df8efa0a35fcb5eeb6da51b1a604f2412f5121469`, and the revised review
+workflow SHA-256 is `97ce2548b1f68f2428939b7db9b6713ee7f86617f823ef6456b2bd007e727dbe`.
+The plan, implementation and repair workflows, candidate paths, provider, and option B limits
+remain unchanged. PR 112 is open and unmerged. No new pilot or credential provisioning has occurred.
 
 The new archive is 2,870,110 bytes with SHA-256
 `0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.
