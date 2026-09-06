@@ -169,9 +169,10 @@ After a 32,387-token review, another 500,000-token review does not fit a 500,000
 Choose smaller explicit child envelopes in a separately approved experiment manifest or stop.
 Do not silently enlarge the pools or recompile smaller workflows during execution.
 
-The [first experiment proposal](bounded-review-repair-experiment.md) compares three options and
+The [first experiment](bounded-review-repair-experiment.md) compares three options and
 records complete proposed limits, reservation arithmetic, evidence gaps, and preparation gates.
-Its numeric values remain unapproved. The proposal does not authorize another model run.
+The user approved option B's numeric values and one pilot. Preparation merge and exact candidate
+merge remain separate approval gates. Installed qualification remains open.
 
 ## Record decisions before effects
 
@@ -241,8 +242,9 @@ plugin parity. Onboarding UC-03 and plan preparation UC-04 remain the next usabi
 
 ## Apply the approved design choices
 
-The user approved the Recommendation column for runtime implementation. Exact experimental
-resource values, live dispatch, and final merge remain separately approval-bound.
+The user approved the Recommendation column for runtime implementation and subsequently approved
+option B's exact experimental resource values and one pilot. Preparation merge and final candidate
+merge remain separately approval-bound.
 
 | Decision | Recommendation | Second alternative | Third alternative |
 | --- | --- | --- | --- |
@@ -258,11 +260,11 @@ The Approach A maintainer owns these phases. Do not mark a phase complete withou
 | Phase | Deliverable | Acceptance evidence | Status |
 | --- | --- | --- | --- |
 | BR-01 | Correct report-validator prompt and authoring guidance without weakening review. | Red/green contract tests, production workflow admission, parser/controller regressions, independent review. Prompt tests are not live model proof. | Locally verified and independently reviewed. Preparation merge remains pending. |
-| BR-02 | Approve refined policy and experimental resource contract. | Explicit class, stopping, cycle, and all resource-dimension decisions. | Runtime contract approved. Experimental values remain pending. |
+| BR-02 | Approve refined policy and experimental resource contract. | Explicit class, stopping, cycle, and all resource-dimension decisions. | Runtime contract and option B experimental values approved. |
 | BR-03 | Versioned policy, durable selection, ancestry, reservation, and settlement. | Reducer invariants, legacy digest compatibility, trusted failed-child accounting, and real ledger replay. | Implemented and locally verified; hosted qualification remains open. |
 | BR-04 | Repair projection, runner integration, full re-verification, and stop diagnostics. | Real Git ancestry, whole and incremental scope checks, exact report binding, untrusted-input rejection. | Implemented and locally verified; installed-package qualification remains open. |
 | BR-05 | Adversarial and crash-boundary verification. | Independent security/code review, real-process tests, sandbox tests, and all existing quality gates. | Independent review and local gates passed. All three hosted CI jobs passed for source tree `a4e5aee`, including all four Lean proof runtime tests. Subsequent commits need their own checks. |
-| BR-06 | Separately authorized installed-package hosted experiment. | Exact archive, blocked review to repair to fresh clear review, aggregate usage, hosted checks, exact merge approval, and final merge evidence. | Not authorized. |
+| BR-06 | Separately authorized installed-package hosted experiment. | Exact archive, blocked review to repair to fresh clear review, aggregate usage, hosted checks, exact merge approval, and final merge evidence. | One option B pilot approved. Local preparation verified; preparation merge and live qualification remain open. |
 
 BR-01 evidence on September 6, 2026: the target passes 27 workflow-control tests, 124 Python tests,
 linting, and type checking. Its revised review workflow passes the production CLI validator.
