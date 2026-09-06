@@ -5,8 +5,11 @@
 Three hosted attempts failed before publication or merge. The first two stopped before accepted
 implementation. The third passed implementation assessment, deterministic verification, and the
 private holdout, then stopped at independent review. A real P3 documentation finding remained.
-The installed-package lifecycle qualification gate is still open. See the
-[third attempt](#third-attempt) for the latest September 6 result.
+
+The fourth, separately approved [option B attempt](#option-b-attempt) reached publication and
+the exact merge approval gate. Independent operator checks found a P2 defect missed by the model
+review and frozen tests. The operator withheld approval and cancelled the wait. None of the four
+attempts completed issue-to-merge qualification. No live repair cycle has been exercised.
 
 In the first attempt, the installed command passed plan validation and host admission on Ubuntu
 24.04 x64. It started
@@ -399,3 +402,116 @@ Keep the frozen criteria, holdout, allowed paths, and P1–P3 gate unchanged. Do
 candidate manually and call it a harness success. The
 [usable-checkpoint plan](../usable-checkpoint-plan.md#implement-bounded-review-repair)
 records the alternatives and remaining authority boundary.
+
+## Option B attempt
+
+The user approved one bounded repair pilot after reviewing the option B resource contract.
+Preparation [PR 110](https://github.com/danielbentes/digital-twin/pull/110) merged as
+`109fac8e78db17a178cc59e5d6ef91bb9b95d603`. Its tree matches reviewed head `331eb9f` and leaves
+the target status command absent. Original criteria, holdout bytes, candidate paths, public
+verification commands, and P1–P3 blocking rules remain unchanged.
+
+[Actions run 34065692695](https://github.com/danielbentes/digital-twin/actions/runs/34065692695)
+started at 23:01:43 UTC on September 6, 2026. It uses Flow source
+`544aebc13bfc50879de52396062a869ca975c367`, OpenRouter `z-ai/glm-5.3-flash`, and at most one
+repair cycle. The [experiment contract](../bounded-review-repair-experiment.md) owns every child
+and aggregate allowance. There is no approved automatic rerun or budget increase.
+
+Package preparation retained a 2,870,110-byte archive with SHA-256
+`0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.
+The same bytes passed installed-package checks on Ubuntu 24.04 x64 and macOS 15 Intel. The local
+retained archive also passes the production package verifier for the exact source revision.
+This is a new source-built archive with manifest version alpha.4, not the older published alpha.4.
+
+### Reached stages and blocking defect
+
+The installed plan validation, model-free baseline, and evidence-custody steps passed. Flow
+implemented the candidate, passed the frozen deterministic checks and private holdout, and
+received a clear independent model review covering all five criteria. It published
+[candidate PR 111](https://github.com/danielbentes/digital-twin/pull/111) at
+`ae9fd001a8ac312c6d8042d9fa585f3ebaaf26fd`. Candidate CI also passed. The parent run,
+`issue-480bf654-85a7-4dc7-a240-27b461869974`, reached `merge_approval_required` at sequence 23.
+It did not run a repair cycle.
+
+Two independent operator-side checks then reproduced a P2 defect in that exact candidate.
+An existing settings file behind a parent directory with mode `000` produces exit status zero
+and `{"version": 1, "installed": false, "managedHookCount": 0}` instead of an error.
+The fixtures independently confirmed that reading the file fails with a permission error.
+One fixture contained marker-owned settings, ruling out an absent installation as the explanation.
+Both checks restored directory permissions afterward.
+
+The existence check in
+[`cmd_status`, lines 177–179](https://github.com/danielbentes/digital-twin/blob/ae9fd001a8ac312c6d8042d9fa585f3ebaaf26fd/skills/digital-twin/scripts/install-hook.py#L177)
+returns false before `load_settings()` can report unreadability. Python explicitly documents
+that [`os.path.exists()` can return false for permission errors](https://docs.python.org/3/library/os.path.html#os.path.exists),
+even when a path exists. This violates the original `invalid-fails-closed` criterion. It is not
+a new acceptance requirement or a waived finding.
+
+The candidate tests and frozen holdout cover missing parents and unreadable files, but not
+inaccessible parents. The public unreadable-file test also accepts success as evidence that
+the host bypasses permissions, without independently checking access.
+
+The review prompt already
+requires unreadable settings to fail closed. Its clear report is therefore a false negative.
+The report validator checks report validity. It is not another independent candidate review.
+These observations identify coverage gaps, not the model's internal reason for missing the defect.
+
+The controller received a clear report, so it did not select the approved blocked-review repair
+path. A later operator finding cannot retroactively replace that report or authorize repair
+after publication.
+
+The operator withheld approval and cancelled the waiting Actions run. GitHub
+reports `cancelled`. The retained Flow ledger still ends at `merge_approval_required`, not a
+synthetic cancellation or success event. PR 111 remains open and unmerged. No candidate was
+manually repaired, no replacement run was dispatched, and no release was published.
+
+### Usage and evidence custody
+
+Both nested workflows settled successfully with complete resource accounting:
+
+| Measure | Implementation workflow | Review workflow |
+| --- | ---: | ---: |
+| Node starts | 3 | 2 |
+| Model tokens | 218,963 | 38,258 |
+| Settled reported cost | $0.007775 | $0.002494 |
+| Active milliseconds | 297,905 | 41,283 |
+| Accounted artifact bytes | 11,487 | 4,038 |
+
+The total is 257,221 tokens and $0.010269 settled reported cost. These are workflow settlement
+values, not provider invoices. No repair consumption was observed. Archive sizes are separate
+from workflow artifact accounting.
+
+Preapproval and final encrypted evidence both authenticated locally. Their plaintext archives
+have the following identities:
+
+| Snapshot | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Preapproval | 2,866,740 | `b10997690450fee346169514b7132069a127ef09e938afc462f6e86cbc6af24e` |
+| Final | 2,866,886 | `96a46896653ecb6863e0b20fc820540ee687c07dfc9277b3b68c9f2efbef1ead` |
+
+Both retain the same parent sequence-23 merge gate. Final evidence sealing and upload succeeded
+after cancellation. The operator retained owner-only plaintext copies, checked member paths
+before selective reading, and did not restore a runnable host from either archive. All three
+dedicated Actions secrets were removed and their absence verified. Local provider and evidence
+keys remain intact.
+
+### Qualification and follow-up
+
+None of the four installed attempts completed issue-to-merge qualification. This attempt adds
+evidence for package installation, implementation, publication, hosted candidate CI, and the
+exact-approval boundary. It does not qualify autonomous review quality, live repair, or end-to-end
+completion. UC-01, UC-05, and BR-06 remain open.
+
+Track the following preparation work before another live attempt:
+
+1. Add an inaccessible-parent regression with an independent permission-denial check. Require
+   nonzero exit, empty stdout, a diagnostic, unchanged settings bytes, and no new files. Keep
+   genuine absence as a contrasting success case and restore permissions in all outcomes.
+2. Strengthen the unreadable-file test so privileged execution is reported as unsupported
+   coverage, not inferred from the candidate's success output.
+3. Extend review guidance to distinguish missing paths, unreadable files, and inaccessible
+   parents, including errors suppressed by existence checks. Broader reviewer tools are not
+   required for this specific correction.
+4. Freeze any revised verification and workflow bytes as new preparation. Preserve this run's
+   evidence and original holdout identity. A new live attempt requires separate authorization.
+   This attempt's one-run allowance is consumed.

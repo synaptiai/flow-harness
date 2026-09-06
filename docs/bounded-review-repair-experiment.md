@@ -6,6 +6,16 @@ disclosure on the existing provider route. Preparation merged after approval. Ex
 and publication remain separate approval gates. The [execution plan](usable-checkpoint-plan.md) owns progress, and the
 [repair design](bounded-review-repair-design.md) owns the approved runtime contract.
 
+The approved attempt is now settled. It reached candidate PR 111 and the merge approval gate.
+Independent operator checks found a P2 defect that the model review and frozen tests missed.
+The operator withheld approval, cancelled the wait, authenticated both evidence snapshots, and
+removed the temporary Actions secrets. No repair cycle ran.
+
+The
+[option B field report](field-reports/digital-twin-issue-106-installed.md#option-b-attempt)
+records the result. This document preserves the approved limits from that attempt.
+It does not authorize another dispatch.
+
 ## Choose the experiment
 
 Selected option B: continue digital-twin issue 106 with one permitted repair cycle and smaller
@@ -154,7 +164,8 @@ four Lean proof runtime tests without skips. This is source verification, not in
 qualification. The target's [PR 110](https://github.com/danielbentes/digital-twin/pull/110)
 merged the reviewed repair configuration as `109fac8e78db17a178cc59e5d6ef91bb9b95d603` without
 implementing issue 106. The [approved attempt](https://github.com/danielbentes/digital-twin/actions/runs/34065692695)
-uses that base. Its installed and live qualification remains open until the result is verified.
+used that base. Exact-package checks passed, but issue-to-merge and repair qualification were
+not achieved.
 
 Complete these preparation gates before the approved dispatch:
 

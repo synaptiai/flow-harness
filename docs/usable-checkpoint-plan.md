@@ -166,10 +166,10 @@ Execution checklist for the approved attempt:
 - [x] Verify original scope, resource units, repair dispositions, and complete evidence collection.
 - [x] Complete independent preparation review and local target checks with no P1–P3 findings.
 - [x] Pass target hosted CI and merge the preparation after exact-head approval.
-- [ ] Build one retained package from qualified source `544aebc` and verify the same bytes on both hosts.
-- [ ] Validate the installed plan and baseline before credentials, then start the approved model lifecycle.
-- [ ] Retain authenticated evidence and request exact-head approval only for a passing candidate.
-- [ ] Reconcile the result against BR-06 and UC-01 without removing earlier failures from the denominator.
+- [x] Build one retained package from qualified source `544aebc` and verify the same bytes on both hosts.
+- [x] Validate the installed plan and baseline before credentials, then start the approved model lifecycle.
+- [x] Retain authenticated evidence and withhold exact-head approval for the candidate's confirmed P2 defect.
+- [x] Reconcile the result against BR-06 and UC-01 without removing earlier failures from the denominator.
 
 Preparation passed 35 control tests and 124 Python tests, plus linting, type checking, compilation,
 shell checks, and production CLI plan validation. An independent reviewer also passed 176 focused
@@ -183,8 +183,29 @@ maintainer-private corpus test was skipped on the hosted runner. Preparation PR 
 `109fac8e78db17a178cc59e5d6ef91bb9b95d603`. The merged tree matches the reviewed `331eb9f` tree.
 
 The single approved [option B attempt](https://github.com/danielbentes/digital-twin/actions/runs/34065692695)
-started from that base. Dispatch is not qualification. Retain the previous three failures in the
-denominator and settle this attempt from its actual evidence.
+started from that base. It reached candidate PR 111 and the exact merge approval gate.
+Two independent checks found a P2 permission-handling defect that the model review and frozen tests
+missed. The operator withheld approval and cancelled the wait. Both evidence snapshots
+authenticated, and all three temporary Actions secrets were removed.
+
+The
+[option B field report](field-reports/digital-twin-issue-106-installed.md#option-b-attempt)
+records candidate identity, reproduction, usage, and custody evidence. None of the four attempts
+completed issue-to-merge qualification. No repair cycle ran, so BR-06 remains unqualified.
+
+Next preparation work, without changing or rerunning the retained candidate:
+
+- [ ] Add an inaccessible-parent regression that independently confirms permission denial.
+- [ ] Remove the public permission test's reliance on candidate success to infer privileged access.
+- [ ] Extend review guidance for absence versus file-read and directory-traversal failures.
+- [ ] Verify and review newly frozen preparation before seeking authority for another live attempt.
+
+The new archive is 2,870,110 bytes with SHA-256
+`0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.
+Both hosted package checks passed against that digest, and the retained local archive passes
+Flow's package verifier for source `544aebc`. The installed plan, baseline, and evidence-custody
+steps passed before the lifecycle step started. This adds exact-artifact evidence to UC-08a,
+not issue-to-merge evidence for UC-01.
 
 Current source contains strict optional policy admission, frozen resource pools, durable
 dispatch and settlement records, candidate-tree tracking, and the repair controller path.
