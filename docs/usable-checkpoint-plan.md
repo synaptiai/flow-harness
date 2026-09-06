@@ -39,9 +39,19 @@ Independent unchanged-base reproduction confirms that the existing marker test r
 path metadata when a temporary-directory name contains `command`. Approved preparation corrects
 that assertion structurally, adds a frozen pytest verifier before handoff assessment, and adds a
 model-free baseline gate before credentials. Local native-sandbox baseline verification passes.
-Complete preparation review and merge before authorizing another frozen hosted attempt. The
+Preparation PR 109 merged after review and separate approval. The
 [replacement field report](field-reports/digital-twin-issue-106-installed.md#replacement-attempt)
-records the correction and its limits. No further attempt or budget increase is authorized by this result.
+records the correction and its limits.
+
+The user separately authorized one [third attempt](https://github.com/danielbentes/digital-twin/actions/runs/34036328861)
+from base `5ca4acc70ed780857227f6d93a36dc7be8e36fc0`, with unchanged model and budgets. It passed
+the installed baseline, implementation assessment, deterministic checks, and private holdout.
+Independent review found a real P3 documentation defect. The review-validation node then confused
+a valid blocked report with an invalid review, and the parent stopped as `review_workflow_failed`.
+Evidence is authenticated and retained. Temporary secrets are removed.
+
+All three attempts remain
+in the denominator. UC-01 and UC-02 remain open. No further attempt is authorized by this result.
 
 Approach B is now approved: make complete frozen verification commands discoverable, return
 actionable rejection feedback, and stop repeated ineffective requests within an explicit bound.
@@ -110,7 +120,7 @@ order does not authorize an unreviewed design or broaden model authority.
 | UC-02 | Release blocker; release maintainer | After UC-01, complete Slice 13.4 and obtain exact publication authorization. | Qualified package on both named hosts, no P1–P3 findings, successful required CI, and verified public installation. | UC-01 passes or package identity changes. |
 | UC-03 | Next delivery-design priority; Approach A maintainer | Design repository onboarding and reusable configuration after qualification. | A new user configures a separate clean repository from the guide without maintainer-authored hidden files; measure steps, time, and interventions. Missing checks or credentials fail safely. | UC-01 settles; reassess before selecting another infrastructure feature. |
 | UC-04 | Next delivery-design priority; Approach A maintainer | Design guided issue-to-plan preparation with UC-03. | Proposed criteria, commands, paths, budgets, and approval rules are explicit and reviewable. A human freezes the contract before execution; generated plans pass production admission. | UC-03 design review and every plan-authoring failure. |
-| UC-05 | Prioritized research, not autonomous authority; Approach A maintainer | Complete NV-03 design using the field denominator and a frozen NV-01 comparison. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation and false-acceptance tests. | UC-04 design review or another operator-authored repair series. |
+| UC-05 | Immediate design decision, not autonomous authority; Approach A maintainer | Complete NV-03 design using the third attempt's blocked review, the full field denominator, and a frozen NV-01 comparison. Resolve review-report validity separately from candidate acceptance. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation, disputed findings, and false-acceptance tests. | Before another pilot; third-attempt settlement promoted this item. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
 | UC-07 | Parity research in progress; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md). Add runnable demonstrations for supported practices, and compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory alone does not close this row. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
 | UC-08 | Implemented and locally verified, with bounded live discovery evidence; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent source review found no remaining P1–P3 defects in this correction. The replacement recorded one command refusal among six requests and then used the exact allowed command. It did not reach the three-refusal stopping threshold or complete UC-01. | Reassess refusal rates, false stops, and broader behavior in a separately approved attempt. |
@@ -119,6 +129,11 @@ order does not authorize an unreviewed design or broaden model authority.
 UC-03 through UC-07 are not evidence that Flow has left alpha. Qualification of one task is a
 bounded usability checkpoint. A broader readiness decision needs a support contract and repeatable
 results from users who did not build the harness.
+
+The third attempt reconfirmed UC-08a with byte-identical archive content and both hosted checks.
+It exercised UC-08 discovery with one refused command among four requests. It did not reach the
+stopping threshold. Its progress through implementation and deterministic verification does not
+close the installed merge gate.
 
 UC-03 also owns a unified public path for diagnosing issue-owned nested failures. Today,
 `flow issue inspect` exposes parent lifecycle state, not nested command-refusal counts. The
@@ -129,6 +144,45 @@ the failed nested boundary and its content-free counters without opening private
 Closing UC-08 or UC-08a does not close UC-01 or UC-02. Stopping ineffective requests also does not
 complete UC-05. Selecting a repair workflow from verification evidence adds a separate execution
 decision and requires its own research and approval.
+
+## Decide how to handle blocking review
+
+The third attempt exposed a concrete UC-05 gap. A verified candidate had a small, real review
+finding, and the controller had no approved repair path. This promotes design
+work, not permission to retry, waive P3 findings, or change historical terminal state.
+It does not prove that automatic repair is necessary to close UC-01. A future independently
+accepted attempt could meet the existing qualification gate without repair.
+
+First correct report classification in a separately reviewed preparation. A valid `blocked` review
+must reach the host parser and remain a blocked candidate. Review-workflow acceptance must not mean
+candidate acceptance. Preserve identity, complete criterion mapping, evidence checks, and the
+zero-findings publication gate.
+
+Then select a repair scope:
+
+| Approach | User experience | Main tradeoff |
+| --- | --- | --- |
+| A: Human-approved same-host repair checkpoint | Pause future opted-in runs with the candidate retained; require exact candidate/report-bound approval for each repair. | Explicit control, but recurring operator work remains. Requires a nonterminal checkpoint and aggregate repair accounting. |
+| B: Frozen controller-selected repair loop | Approve bounded repair eligibility and workflows before execution; select repairs from durable review evidence and rerun all gates on each new candidate. | Best match for the plugin's address-and-review loop. Requires a closed failure taxonomy, lifecycle-wide budgets, progress and oscillation checks, and disputed-finding handling. |
+| C: Linked candidate handoff | Admit an immutable candidate artifact into a separately authorized repair run, preserving provenance and the original failed run. | Supports ephemeral-host work but adds candidate export/import, secret screening, ancestry, replay, and cross-run accounting contracts. |
+
+Recommend designing B for same-host execution, with A as an optional human-confirmed mode. Keep C
+as a separate portability decision. An encrypted forensic archive is not a supported candidate
+handoff or live host restoration mechanism.
+
+Before implementation, approve the eligible failure classes, automatic versus per-cycle authority,
+lifecycle-wide resource ceiling, initial cycle limit, and disputed-finding stop. Limits must have
+explicit pilot or evaluation rationale, not an invented industry-standard claim. Existing per-run
+workflow budgets cannot silently reset when a new repair child starts.
+
+The design must bind each repair to its candidate, review report, selected workflow, ancestry, and
+cumulative usage. A changed candidate invalidates previous verification, review, and merge approval.
+Unsupported failures, uncertain effects, unchanged candidates, repeated failure patterns, and
+exhausted allowances stop execution. Fewer findings alone does not prove progress or correctness.
+Final merge remains separately approval-bound. Omitted repair policy preserves today's safe stop.
+
+UC-03 and UC-04 remain the next onboarding priorities after qualification. Promoting this concrete
+repair gap for design does not authorize unrelated infrastructure work or retire their evidence gates.
 
 ## Keep deferrals bounded
 

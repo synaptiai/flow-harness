@@ -111,9 +111,16 @@ publication, or merge. The model repeatedly requested commands that didn't match
 verification contract. The approved correction covers command discovery, actionable rejection
 feedback, and bounded ineffective-request stopping.
 
-This correction is implemented and locally verified in current source. Published alpha.4 does
-not include it. The installed lifecycle and
-release qualification gates remain open.
+This correction is implemented and locally verified in current source. A replacement qualified
+one retained archive on both named hosts but stopped on a baseline-test defect. After preparation
+corrected that test and added host-produced assessment evidence, a third attempt passed installed
+implementation, deterministic checks, and the private holdout. Independent review found a P3
+documentation defect. Its model validation step rejected the valid blocked report, and the run
+stopped before publication. All three attempts failed to complete the installed lifecycle.
+
+Published alpha.4 does not include the lifecycle or command-discovery correction. Installed
+lifecycle and release qualification remain open. Automatic review repair remains a design gap,
+not a completed capability.
 
 Read the [installed-package field report](field-reports/digital-twin-issue-106-installed.md) and the
 [usable-checkpoint plan](usable-checkpoint-plan.md). The

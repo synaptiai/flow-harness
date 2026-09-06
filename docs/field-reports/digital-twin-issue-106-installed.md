@@ -2,10 +2,11 @@
 
 ## Result
 
-Both hosted attempts failed before candidate acceptance, independent review, publication, or
-merge. The replacement qualified and retained one package on both named hosts, but it did not
-close the installed-package lifecycle qualification gate. See
-[replacement attempt](#replacement-attempt) for the September 6 result.
+Three hosted attempts failed before publication or merge. The first two stopped before accepted
+implementation. The third passed implementation assessment, deterministic verification, and the
+private holdout, then stopped at independent review. A real P3 documentation finding remained.
+The installed-package lifecycle qualification gate is still open. See the
+[third attempt](#third-attempt) for the latest September 6 result.
 
 In the first attempt, the installed command passed plan validation and host admission on Ubuntu
 24.04 x64. It started
@@ -149,7 +150,7 @@ and freeze any replacement contract before another model run. Track the remainin
 The user authorized one replacement with unchanged model, budget ceilings, issue criteria, allowed
 candidate paths, and private holdout. [Preparation PR 108](https://github.com/danielbentes/digital-twin/pull/108)
 added package retention and two-host verification before model use. It did not implement status.
-The operator dispatched once. No rerun or further attempt followed the failure.
+The operator dispatched once. No rerun or further attempt followed during that attempt's cleanup.
 
 The exact identities are:
 
@@ -177,7 +178,7 @@ not UC-01 or publication qualification for another package identity.
 There was one parent run, one implementation workflow, one implementation-agent attempt, and one
 assessment attempt. The implementation agent completed. The assessment rejected its handoff.
 No recovery attempt, compaction, controller-owned holdout, independent review, candidate PR, approval,
-or merge followed. Across both hosted attempts, neither parent reached accepted implementation.
+or merge followed. Across the first two hosted attempts, neither parent reached accepted implementation.
 
 The replacement's records show:
 
@@ -267,9 +268,10 @@ its body before the harness froze it. Record this as operator work, not harness 
 ## Approved follow-up preparation
 
 The user approved baseline-test correction and stage-specific assessment with host-produced test
-evidence. This approval does not authorize another pilot, candidate merge, or budget increase.
+evidence. That preparation approval did not authorize another pilot, candidate merge, or budget increase.
 
-The prospective [target preparation](https://github.com/danielbentes/digital-twin/pull/109) now contains:
+The [target preparation](https://github.com/danielbentes/digital-twin/pull/109) merged as
+`5ca4acc70ed780857227f6d93a36dc7be8e36fc0` after separate approval. It contains:
 
 - Exact structural marker assertions instead of substring scans. Four directory-name cases pass,
   including `command` and detector filenames. Five negative controls reject extra command metadata,
@@ -287,11 +289,113 @@ four-start ceiling, leaving one spare across its recovery settings.
 The corrected target passes 124 local tests, Ruff, mypy, compilation, shell syntax, and 25 pilot
 control tests. A real Flow native-sandbox baseline run passes 123 tests with one environment-dependent
 skip and zero model usage. That run used macOS, Python 3.14.6, pytest 9.1.1, and SRT 0.0.70.
-It is not hosted Linux verification of the new baseline gate. No model has assessed the revised rubric.
+That local result was not hosted Linux verification of the new baseline gate. The third attempt
+subsequently exercised the gate and revised rubric on hosted Linux.
 
 The implementation workflow source digest is now
 `8894491c8a9d0b7f7c8dd87799826484e60c210766de4db5433fade1a29cd53d`.
 The plan, private holdout, review workflow, model, budgets, and candidate write paths remain unchanged.
 The installer is unchanged, and the negative holdout still fails because status is absent.
-Historical attempt evidence has not been reinterpreted or resumed. Complete preparation review and
-merge before requesting a separately authorized, newly frozen hosted attempt.
+Historical attempt evidence has not been reinterpreted or resumed. After preparation merged, the
+user separately authorized the third attempt, with all aggregate budgets unchanged.
+
+## Third attempt
+
+The user authorized one new attempt with existing credentials, temporary Actions secrets, and
+separate approval before candidate merge. The operator dispatched once from the reviewed base.
+No rerun, manual candidate repair, publication, or merge followed its failure.
+
+| Item | Value |
+| --- | --- |
+| Actions run | [34036328861](https://github.com/danielbentes/digital-twin/actions/runs/34036328861), attempt 1 |
+| Target base | `5ca4acc70ed780857227f6d93a36dc7be8e36fc0` |
+| Flow source | `e967c29082a6647a1554fdc96312a93c6f94dd6d` |
+| Parent run | `issue-42eec355-7ec5-48fb-b510-45a6b93f78dd` |
+| Local candidate head | `a2039f034779157a8323d24a0dd82c9a90b1de73` |
+| Archive SHA-256 | `0a3090f8a0b495309672e67d66dd8303722226bb4e2f9a5a62d0338f794441b1` |
+| Archive size | 2,790,421 bytes |
+| Parent failure | Sequence 10, `review_workflow_failed`, September 6, 2026, at 13:42:04 UTC |
+| Failed nested node | `validate-review`, with `verifier_rejected` |
+
+The newly prepared archive is byte-identical to the replacement archive. The exact bytes passed
+installed checks on [Ubuntu 24.04 x64](https://github.com/danielbentes/digital-twin/actions/runs/34036328861/job/101495109272)
+and [macOS 15 Intel](https://github.com/danielbentes/digital-twin/actions/runs/34036328861/job/101495109279).
+The local canonical package verifier and authenticated hosted digest independently agree on its
+identity. This reconfirms UC-08a for those bytes, not lifecycle completion or a new public release.
+
+### Passed stages and remaining failure
+
+The installed model-free baseline passed 123 tests with one environment-dependent skip and zero
+model usage. The implementation workflow then completed all three nodes: `implement`,
+`verify-tests`, and `assess`. The host verifier passed 137 tests with one skip. The assessment
+accepted the implementation handoff without requiring later receipts.
+
+Flow committed the candidate and ran its unchanged deterministic checks. The private holdout
+failed on the untouched base and passed on the exact candidate. Pytest, compilation, Ruff, mypy,
+and shell syntax passed. The retained receipts include the repeated checks used to prepare
+independent review. All 39 retained private blobs pass the production content-address verifier.
+These are hosted sandbox checks, not a published candidate PR's CI checks.
+
+Independent review mapped all five criteria and returned `blocked` with one P3 finding:
+`status-docstring-dropped-subject`. The module docstring contains a separate paragraph beginning
+with `counts duplicate marker-owned entries` but no subject. Direct inspection of the retained
+candidate confirms the fragment at lines 15–17. The finding's reported starting line, 13, is nearby
+but imprecise. The broken paragraph is a real documentation defect. This report does not waive it
+or declare the complete candidate independently accepted.
+
+The `validate-review` model then rejected the report because a P3 finding remained. That confuses
+report validity with candidate acceptance. The report is valid precisely because it blocks a
+candidate with a finding. Flow's production parser accepts the exact report, including its
+identities and complete criterion mapping. Negative mutations to the head, criterion coverage,
+and verdict are rejected. The valid report digest is
+`13d67cce48d651bd440d512f1a833b17c7016c1ea081d4236fd69dcb12a8c78b`.
+
+The failed model-verifier node prevented the report from reaching the controller's existing
+`review_blocked` branch. The runner correctly refused to treat a failed nested workflow as
+successful. No publication or merge followed. Correcting the review-validation boundary would
+improve classification. It would not resolve the P3 finding or complete the task.
+
+### Usage and command behavior
+
+There was one parent run, one implementation workflow, and one review workflow. Each of their four
+model-backed nodes ran once. No recovery, compaction, candidate PR, hosted candidate CI, approval,
+merge, or post-merge proof occurred.
+
+| Measure | Implementation | Assessment | Review | Review validation |
+| --- | --- | --- | --- | --- |
+| Model turns | 12 | 1 | 2 | 1 |
+| Aggregate tokens | 172,331 | 2,499 | 23,584 | 8,803 |
+| Settled reported cost | $0.004882 | $0.000217 | $0.001582 | $0.000704 |
+
+The total is 207,217 tokens and $0.007385 settled reported cost. The implementation workflow used
+174,830 tokens and $0.005099. Review used 32,387 tokens and $0.002286. These totals include cache
+reads and remain below the frozen ceilings. Reported model costs are not provider invoices.
+
+The model-message token sum independently agrees at 207,217. Summing individually rounded message
+costs gives $0.007390, five microdollars more than node settlement. Preserve this rounding distinction.
+
+The implementer made 13 tool calls, including four command requests. One command request was
+refused. The other three executed the exact pytest, Ruff, and mypy invocations successfully.
+The other tool error was an unsuccessful edit. The one-refusal observation does not exercise the
+three-refusal stop or prove a general improvement rate.
+
+### Custody, disposition, and next decision
+
+Both encrypted snapshots authenticated successfully and contain the same 2,666,208-byte plaintext
+archive, with SHA-256 `7633a757803cd01d05e32e7a7ab3df434fee5923fe1c78a89923d1f8a72e6d99`.
+The operator validated archive members before extraction, retained owner-only copies, and did not
+restore the archive as a runnable host. All three temporary Actions secrets were removed and their
+absence verified. Local provider and evidence keys remain intact. GitHub confirms issue 106 open
+and no candidate PR.
+
+Across all three installed attempts, none completed the issue-to-merge lifecycle. The third is
+evidence for installed implementation, deterministic checks, and a blocking independent review.
+It is not evidence for autonomous repair or unattended completion.
+
+The existing controller deliberately stops on blocking review. A new repair iteration would create
+another nested workflow, so adding a retry without lifecycle-wide accounting could replenish
+budgets. Promote UC-05's bounded repair design for an explicit decision before another attempt.
+Keep the frozen criteria, holdout, allowed paths, and P1–P3 gate unchanged. Do not fix the archived
+candidate manually and call it a harness success. The
+[usable-checkpoint plan](../usable-checkpoint-plan.md#decide-how-to-handle-blocking-review)
+records the alternatives and remaining authority boundary.

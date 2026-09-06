@@ -874,13 +874,23 @@ The September 6 replacement retained one exact
 archive and passed installed verification on both named hosts, satisfying UC-08a for those bytes.
 It then failed implementation assessment after an existing path-sensitive test failed in the
 sandbox. The unchanged-base defect is independently reproduced. Command refusals fell from 48 of
-52 requests to one of six, but neither installed attempt reached accepted implementation or review.
+52 requests to one of six, but neither of those first two attempts reached accepted implementation or review.
 Slice 13.3 remains open.
 
 Approved preparation corrects the baseline test and adds stage-specific assessment with a host-owned
-pytest verifier. It also adds a model-free baseline gate before credential admission. Local native
-sandbox verification passes. Complete preparation review and merge before authorizing another
-frozen hosted attempt. All aggregate budgets remain unchanged.
+pytest verifier. It also adds a model-free baseline gate before credential admission. Preparation
+PR 109 merged, and a separately authorized third attempt passed the installed baseline,
+implementation assessment, deterministic checks, and private holdout. Independent review found a
+real P3 documentation defect. The review-validation model misclassified the valid blocked report,
+and the lifecycle stopped before publication. All three attempts remain in the denominator.
+
+All aggregate budgets remain unchanged. UC-01 and Slice 13.3 remain open.
+
+The [usable-checkpoint plan](usable-checkpoint-plan.md#decide-how-to-handle-blocking-review)
+promotes UC-05's repair design for a decision before another attempt. Correct review-report
+classification without waiving findings. A repair loop needs explicit frozen authority,
+lifecycle-wide accounting, progress checks, and fresh exact-candidate verification. It is not
+enabled by this result. Onboarding and guided planning remain the next user-facing priorities.
 
 ### Slice 13.4: Qualify and publish the usable checkpoint
 
