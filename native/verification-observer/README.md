@@ -79,11 +79,18 @@ Use the same Linux x64 Docker prerequisites and a new output directory:
 node native/verification-observer/build.mjs --build-observer /absolute/path/to/new-observer-output
 ```
 
-This explicit mode freezes `observer.patch`, `observer-application.h`, and `observer-result.h`
+This explicit mode freezes `observer.patch`, `observer-application.h`, `observer-result.h`, and
+`host-bridge-guardian.c`
 with the source manifest and build recipe. It applies the patch to a copy of the upstream source,
 then builds `flow-observer-apply-seccomp` and its relinkable object. It preserves the unchanged
 upstream artifacts and redistribution materials. The observer build adds the snapshot's `patch`
 package. The default `--build` mode does not install that package or apply the observer patch.
+
+The observer build also compiles `flow-host-bridge-guardian` and retains its relinkable object and
+source. This separate executable owns trusted host-bridge processes during development tests.
+It is not connected to the production SRT manager. Its first release-contract tests do not qualify
+active descendants, complete interruption handling, or runtime custody. See the
+[host-bridge test guide](../../docs/testing-and-evaluation.md#test-the-host-bridge-owner).
 
 The launcher compares two clean builds before copying the results to the new output directory.
 The `observer/` output directory retains the patch, both headers, original and patched source,

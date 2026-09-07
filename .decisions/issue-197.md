@@ -2540,3 +2540,34 @@ Pre-run review found and fixed cleanup coverage for listener startup, cancellati
 late acceptance checks, and stale mechanism-selection wording. Cleanup is independently bounded
 and preserves failures and diagnostic directories. Local Docker is Linux aarch64, not x64, so it
 does not replace the hosted acceptance profile. No emulation or new local Linux setup was started.
+
+### Verified direct-bridge RED and native-owner implementation
+
+Run https://github.com/synaptiai/flow-harness/actions/runs/34164823372 failed at exact
+9f0d777a5d030fa4af9f8469685150352f2b0826, job101873684216. The job ran 21:55:03Z-21:56:04Z
+on September7 UTC. The sole test failed in4.04s with zero skips. Authenticated logs serialized the
+exact assertion: owner release expected normal closure {code:0,signal:null}, but got undefined
+after4s. Forwarding, spawn, output-bound and stderr checks passed first. No emergency-cleanup
+failure was reported. The native build and306 transport checks were skipped, not failed or rerun.
+No descendant-leak assertion is inferred from this missing new protocol.
+
+After this RED was verified, the implementer started the standalone native owner. Root separately
+wrote and observed failing tests for source freezing and the real owner workflow step. The build
+now freezes the new C input and requires its source, binary and relinkable object in both outputs.
+The original upstream and application-result sources are unchanged. New disconnect and malformed
+control cases exercise real forwarding before denying normal acceptance. Native GREEN is pending.
+
+The source review confirms a two-way handshake before bridge execution, a checked single-threaded
+subreaper, and an unreaped leader retained through the final process-group signal. Only then does
+the owner reap to ECHILD. Exact stop plus EOF can produce SETTLED and exit 0; malformed control,
+disconnection, interruption, startup failure, and output failure cannot. These are source-level
+observations, not completed native qualification. Linux wait, subreaper, and signal documentation
+was independently cross-checked. Ancestry and executable custody remain admission obligations.
+
+Independent code, test, build, workflow, and documentation review found no P1-P3 findings. The
+45 build/workflow tests passed. Broader local checks passed 360 cases and encountered three
+sandbox-denied Unix-socket binds; all four cases in that compatibility file passed with the
+required local socket permission. Typecheck, lint, formatting, production build, and documentation
+gates passed. Lint retains one unrelated informational constructor notice. Linux runtime results
+are still pending; macOS is not substitute evidence. Commit this scoped development increment
+and push only the existing dedicated native-qualification branch for its approved Linux test.

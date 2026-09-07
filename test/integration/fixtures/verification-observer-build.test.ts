@@ -232,10 +232,17 @@ it("keeps the Docker recipe on the recorded base, snapshot, platform, and epoch"
   expect(recipe).toContain("--download-only");
 });
 
-const observerInputs = ["observer.patch", "observer-application.h", "observer-result.h"];
+const observerInputs = [
+  "observer.patch",
+  "observer-application.h",
+  "observer-result.h",
+  "host-bridge-guardian.c",
+];
 const observerArtifacts = [
   "flow-observer-apply-seccomp",
   "flow-observer-apply-seccomp.o",
+  "flow-host-bridge-guardian",
+  "flow-host-bridge-guardian.o",
   "observer/apply-seccomp.c",
   "observer/upstream-apply-seccomp.c",
   "observer/source-manifest.json",

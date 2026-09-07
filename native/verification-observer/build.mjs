@@ -78,11 +78,18 @@ const requiredArtifacts = [
   "licenses/GPL-2",
   "licenses/GPL-3",
 ];
-const observerInputNames = ["observer.patch", "observer-application.h", "observer-result.h"];
+const observerInputNames = [
+  "observer.patch",
+  "observer-application.h",
+  "observer-result.h",
+  "host-bridge-guardian.c",
+];
 const observerArtifacts = [
   ...requiredArtifacts,
   "flow-observer-apply-seccomp",
   "flow-observer-apply-seccomp.o",
+  "flow-host-bridge-guardian",
+  "flow-host-bridge-guardian.o",
   "observer/apply-seccomp.c",
   "observer/upstream-apply-seccomp.c",
   "observer/source-manifest.json",

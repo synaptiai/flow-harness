@@ -41,6 +41,18 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain('test "$(uname -s)" = Linux');
     expect(commands).toContain("npm ci --ignore-scripts");
     expect(commands).toContain("npm run build");
+    const bridgeStep = job.steps.find(
+      (step: { name: string }) => step.name === "Test the host bridge owner release contract",
+    );
+    expect(bridgeStep).toMatchObject({
+      env: {
+        FLOW_TEST_HOST_BRIDGE_GUARDIAN:
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal GitHub runner path.
+          "${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian",
+      },
+      run: "npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts",
+    });
+    expect(source).not.toContain("FLOW_TEST_HOST_BRIDGE_BASELINE");
     expect(commands).toContain(
       'node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"',
     );

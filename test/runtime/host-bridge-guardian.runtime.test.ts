@@ -13,49 +13,53 @@ const enabled =
   process.platform === "linux" && process.arch === "x64" && (baseline || guardian !== undefined);
 
 describe.skipIf(!enabled)("host bridge owner release contract", () => {
-  it("settles an actual forwarding bridge after an explicit owner release", async (context) => {
-    const executable = baseline ? "/usr/bin/socat" : requiredGuardian();
-    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
-    const root = await mkdtemp(join(await realpath(tmpdir()), "flow-bridge-owner-"));
-    const path = join(root, "bridge.sock");
-    // Retain this test's socket and directory as diagnostic evidence. Removal is
-    // deliberately not evidence of process settlement, especially in the RED run.
-    const sockets = new Set<Socket>();
-    const server = createServer((socket) => {
-      sockets.add(socket);
-      socket.on("error", () => undefined);
-      socket.once("close", () => sockets.delete(socket));
-      socket.pipe(socket);
-    });
-    const failures: unknown[] = [];
-    try {
+  it.for(["stop", "disconnect", "malformed"] as const)(
+    "handles %s after actual bridge forwarding without false acceptance",
+    async (release, context) => {
+      const executable = baseline ? "/usr/bin/socat" : requiredGuardian();
+      const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
+      const root = await mkdtemp(join(await realpath(tmpdir()), "flow-bridge-owner-"));
+      const path = join(root, "bridge.sock");
+      // Retain this test's socket and directory as diagnostic evidence. Removal is
+      // deliberately not evidence of process settlement, especially in the RED run.
+      const sockets = new Set<Socket>();
+      const server = createServer((socket) => {
+        sockets.add(socket);
+        socket.on("error", () => undefined);
+        socket.once("close", () => sockets.delete(socket));
+        socket.pipe(socket);
+      });
+      const failures: unknown[] = [];
+      try {
+        signal.throwIfAborted();
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening", { signal });
+        const address = server.address();
+        if (address === null || typeof address === "string") throw new Error("No proxy port");
+        const args = [
+          `UNIX-LISTEN:${path},fork,reuseaddr`,
+          `TCP:localhost:${address.port},keepalive,keepidle=10,keepintvl=5,keepcnt=3`,
+        ];
+        await exerciseBridge(executable, args, path, root, signal, release);
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        for (const socket of sockets) socket.destroy();
+        const serverClosed = new Promise<boolean>((resolve) =>
+          server.close((error) => {
+            if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING")
+              failures.push(error);
+            resolve(true);
+          }),
+        );
+        if (!(await bounded(serverClosed, 1_000)))
+          failures.push(new Error(`Proxy cleanup unconfirmed; retained ${root}`));
+      }
+      if (failures.length !== 0)
+        throw new AggregateError(failures, "Bridge release contract failed");
       signal.throwIfAborted();
-      server.listen(0, "127.0.0.1");
-      await once(server, "listening", { signal });
-      const address = server.address();
-      if (address === null || typeof address === "string") throw new Error("No proxy port");
-      const args = [
-        `UNIX-LISTEN:${path},fork,reuseaddr`,
-        `TCP:localhost:${address.port},keepalive,keepidle=10,keepintvl=5,keepcnt=3`,
-      ];
-      await exerciseBridge(executable, args, path, root, signal);
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      for (const socket of sockets) socket.destroy();
-      const serverClosed = new Promise<boolean>((resolve) =>
-        server.close((error) => {
-          if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING")
-            failures.push(error);
-          resolve(true);
-        }),
-      );
-      if (!(await bounded(serverClosed, 1_000)))
-        failures.push(new Error(`Proxy cleanup unconfirmed; retained ${root}`));
-    }
-    if (failures.length !== 0) throw new AggregateError(failures, "Bridge release contract failed");
-    signal.throwIfAborted();
-  });
+    },
+  );
 });
 
 async function exerciseBridge(
@@ -64,6 +68,7 @@ async function exerciseBridge(
   path: string,
   root: string,
   signal: AbortSignal,
+  release: "stop" | "disconnect" | "malformed",
 ): Promise<void> {
   // Baseline mode exercises the existing SRT direct-spawn contract. It is an
   // explicit RED experiment, never an execution fallback for the guardian.
@@ -108,17 +113,21 @@ async function exerciseBridge(
     await clientClosed;
     expect(Buffer.concat(chunks)).toEqual(payload);
     client = undefined;
-    child.stdin.end("stop\n");
+    child.stdin.end(
+      release === "stop" ? "stop\n" : release === "malformed" ? "stopped\n" : undefined,
+    );
     const completed = await bounded(close, 4_000);
     signal.throwIfAborted();
     expect(spawnError).toBeUndefined();
     expect(overflow).toBe(false);
     expect(errors).toBe("");
     expect(completed, "owner release must join the process, not merely request a signal").toEqual({
-      code: 0,
+      code: release === "stop" ? 0 : 1,
       signal: null,
     });
-    expect(output).toBe("FLOW_HOST_BRIDGE_V1 OWNED\nFLOW_HOST_BRIDGE_V1 SETTLED\n");
+    expect(output).toBe(
+      `FLOW_HOST_BRIDGE_V1 OWNED\n${release === "stop" ? "FLOW_HOST_BRIDGE_V1 SETTLED\n" : ""}`,
+    );
   } catch (error) {
     failures.push(error);
   } finally {

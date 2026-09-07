@@ -946,6 +946,38 @@ test does not qualify that separate cleanup boundary, fixture denial, or repair 
 If a probe cannot confirm cleanup, inspect its retained fixture
 path before removing evidence. Do not signal a process using a PID reported by candidate code.
 
+### Test the host-bridge owner
+
+This development gate uses a real `socat` bridge and a local echo server. It checks byte forwarding,
+explicit release, controller disconnection, and malformed release input. It requires Linux x64 and
+the separately built owner executable:
+
+```sh
+FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
+  npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
+```
+
+The explicit release case requires the private `OWNED` and `SETTLED` records and actual normal
+owner closure. `OWNED` acknowledges process-group ownership, not listener readiness or immutable
+executable identity. Disconnection and malformed input must not produce `SETTLED` or exit status 0.
+The tests retain their temporary directories. Emergency test cleanup is not owner qualification.
+
+The original direct-bridge control failed as expected in
+[run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
+Real forwarding passed, but the bridge did not finish after the proposed owner-release request.
+The four-second assertion failed. The test's emergency cleanup completed. This result proves a
+missing release contract, not a descendant leak or a failure of ordinary SRT networking.
+The unchanged native build and 306 transport tests were skipped after this intentional failure.
+
+For diagnostic reproduction only, set `FLOW_TEST_HOST_BRIDGE_BASELINE=1` instead of the owner path.
+That mode launches a direct bridge and is expected to fail these owner-contract assertions.
+It is not a fallback or a production configuration. The focused hosted workflow uses the real
+owner artifact after completing the two-build comparison.
+
+Active connection descendants, failed startup, ancestry preservation, owner interruption, and
+isolated-manager integration remain separate qualification gates. These development tests do not
+enable repairs or complete installed issue-lifecycle acceptance.
+
 ### Test the internal observer components
 
 The fixture-owner tests use real local files. They cover byte and identity drift, denied file and

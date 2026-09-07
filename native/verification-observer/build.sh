@@ -29,7 +29,7 @@ if readelf --dynamic /out/upstream-apply-seccomp | grep -q NEEDED; then exit 1; 
 if [ "$mode" = observer ]; then
   mkdir /build/observer /out/observer
   cp /source/upstream/apply-seccomp.c /build/observer/apply-seccomp.c
-  cp /source/observer/observer.patch /source/observer/observer-application.h /source/observer/observer-result.h /build/observer/
+  cp /source/observer/observer.patch /source/observer/observer-application.h /source/observer/observer-result.h /source/observer/host-bridge-guardian.c /build/observer/
   cd /build/observer
   patch --batch --forward --fuzz=0 -p1 < observer.patch
   gcc -O2 -Wall -Wextra -Werror -ffile-prefix-map=/source=. -ffile-prefix-map=/build=. \
@@ -40,7 +40,15 @@ if [ "$mode" = observer ]; then
   readelf --file-header /out/flow-observer-apply-seccomp | grep -q 'Advanced Micro Devices X86-64'
   if readelf --program-headers /out/flow-observer-apply-seccomp | grep -q INTERP; then exit 1; fi
   if readelf --dynamic /out/flow-observer-apply-seccomp | grep -q NEEDED; then exit 1; fi
-  cp apply-seccomp.c observer.patch observer-application.h observer-result.h /out/observer/
+  gcc -O2 -Wall -Wextra -Werror -ffile-prefix-map=/source=. -ffile-prefix-map=/build=. \
+    -fdebug-prefix-map=/out=. -frandom-seed=flow-host-bridge-guardian \
+    -c host-bridge-guardian.c -o /out/flow-host-bridge-guardian.o
+  gcc -static -Wl,--build-id=none -o /out/flow-host-bridge-guardian /out/flow-host-bridge-guardian.o
+  strip --strip-all /out/flow-host-bridge-guardian
+  readelf --file-header /out/flow-host-bridge-guardian | grep -q 'Advanced Micro Devices X86-64'
+  if readelf --program-headers /out/flow-host-bridge-guardian | grep -q INTERP; then exit 1; fi
+  if readelf --dynamic /out/flow-host-bridge-guardian | grep -q NEEDED; then exit 1; fi
+  cp apply-seccomp.c observer.patch observer-application.h observer-result.h host-bridge-guardian.c /out/observer/
   cp /source/upstream/apply-seccomp.c /out/observer/upstream-apply-seccomp.c
   cp /source/source-manifest.json /out/observer/source-manifest.json
   if [ "$controls" = false-normal-v1 ]; then
