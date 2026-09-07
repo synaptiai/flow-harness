@@ -402,6 +402,16 @@ cover a native bridge owner, isolated dependency changes, and integration qualif
 Exposing parent handles alone does not close the descendant-ownership gate. Preserve the existing
 proxy policy. The 306 passing controls do not authorize repair enablement.
 
+The first native-owner increment passed in
+[run 34166357915](https://github.com/synaptiai/flow-harness/actions/runs/34166357915) at `02807d7`.
+Three real bridge release cases and 306 existing application-result cases passed without skips.
+Both clean builds matched 32 artifacts. The
+[host-bridge test guide](testing-and-evaluation.md#test-the-host-bridge-owner) defines this limited
+scope. Active descendants, startup and owner-loss controls, custody, and isolated-manager integration
+remain open.
+
+This is progress within RL-A, not completion of the usable checkpoint.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

@@ -2616,3 +2616,36 @@ Independent code/test and documentation reviews found no P1-P3 findings in this 
 Typecheck, lint, formatting, and documentation gates passed. The three Linux cases are skipped
 on this Mac and still require hosted execution. The full non-live single-worker suite remains
 running separately; no full-suite pass is claimed before it finishes.
+
+### Qualified initial guardian release increment
+
+Authenticated run 34166357915 succeeded at exact 02807d799fa3f359db727ae8ca813b691971e941,
+job 101878052320, September 7 UTC 22:21:00-22:23:34 (154 seconds). Three real owner cases passed
+without skips (4.57 seconds of tests, 4.73-second suite), and all 306 existing application-result
+cases passed without skips (32.01 seconds of tests, 32.47-second suite). Both clean builds matched
+32 artifacts. Guardian binary/object hashes match the preceding recorded build. Genuine observer
+binary/object and deliberately false-normal binary hashes match the previously qualified identities.
+
+The actual hosted prerequisite output was /usr/bin/socat1. Together with the unchanged guardian
+binary and exact canonical-argument check, this confirms the installed alias required resolution.
+The correction did not relax native admission or alter baseline invocation. The earlier Docker
+failure remains unattributed because its output was not retained.
+
+Separately exercised the actual Docker CLI against a new test-owned unavailable Unix socket with
+an empty private DOCKER_CONFIG and no credential inputs. The real launcher exited 1 and emitted
+the structured Docker failure record (Docker code 1, 336 output bytes) plus its failure message.
+The empty temporary directory was removed after the check. This verifies the real diagnostic
+failure path, not native build reproducibility or every cleanup-failure combination.
+
+The roadmap now distinguishes completed direct-bridge RED, partial native-owner qualification,
+and unimplemented isolated-manager stages. The next real-descendant test must hold the connection
+open through receipt and independently sample pinned leader/child termination and identity absence
+before any test socket cleanup. Source/readiness observations are not immutable custody, complete
+ancestry enumeration, or an atomic receipt-time oracle. Keep repairs disabled and the goal active.
+No merge, release, model transmission, or credential change occurred.
+
+Independent review re-fetched the authenticated GitHub evidence and corroborated the exact source,
+job times, counts, hashes, and relay path. No P1-P3 findings in the four-document evidence update.
+All 30 focused documentation/workflow tests and the three documentation gates passed. Save this
+documentation-only record locally without another unchanged native run. The broad single-worker
+non-live test process is still running; its eventual result is separate and must be inspected.

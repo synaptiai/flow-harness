@@ -968,6 +968,13 @@ The tests retain their temporary directories. Emergency test cleanup is not owne
 On failure, the test records bounded owner state before emergency cleanup, preserving the original
 exit state and captured protocol output.
 
+The three owner cases passed without skips in
+[run 34166357915](https://github.com/synaptiai/flow-harness/actions/runs/34166357915) at `02807d7`.
+Both clean builds matched all 32 artifacts. The existing 306 application-result tests also passed
+without skips. The runner resolved `/usr/bin/socat` to `/usr/bin/socat1`, confirming why the test
+must resolve the installed alias before passing it to the owner. The guardian binary was unchanged
+from the preceding failed-input run.
+
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
 Real forwarding passed, but the bridge did not finish after the proposed owner-release request.

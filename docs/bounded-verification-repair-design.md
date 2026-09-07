@@ -768,6 +768,23 @@ Track implementation in these stages:
 
 Each stage requires review and its own evidence. None enables repairs, another pilot, merge, or release.
 
+Stage 1 is complete. Stage 2 remains in progress: the initial forwarding and stop, disconnection,
+and malformed-input cases passed in
+[run 34166357915](https://github.com/synaptiai/flow-harness/actions/runs/34166357915) at `02807d7`.
+Both clean builds matched 32 artifacts, and the existing 306 application-result tests also passed.
+These results do not qualify active descendants, every startup failure, owner loss, or custody.
+Stages 3 and 4 have not started implementation.
+
+For the next descendant test, keep a real connection open across release. Independently identify
+the relay leader and connection child from the test-owned guardian's ancestry and exact arguments.
+Open process descriptors and recheck identities while both processes are live.
+
+On the terminal
+receipt, check termination and absence of the original identities before closing test sockets.
+Also require normal owner closure. Do not infer an atomic receipt-time observation from an
+asynchronous check. Calibrate the checker against live and unreaped processes. Never signal a
+discovered PID or treat emergency test cleanup as settlement evidence.
+
 #### Connect the native application-result path
 
 Implement this path in an observer-only patch to the pinned supervisor. Preserve the unchanged
