@@ -1,6 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { type HostProbe, startHostProbe } from "./native-observer-host-probe.js";
+import { type CheckRecord, type HostProbe, startHostProbe } from "./native-observer-host-probe.js";
+
+export interface ZombieObservations {
+  readonly live: CheckRecord;
+  readonly zombie: CheckRecord;
+  readonly reaped: CheckRecord;
+}
 
 interface Options {
   readonly parentExecutable: string;
@@ -9,6 +15,8 @@ interface Options {
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly signal: AbortSignal;
+  /** Receives frozen real observations only after parent and probe cleanup joined. */
+  readonly onObserved?: (observations: ZombieObservations) => void;
 }
 
 interface Exit {
@@ -75,6 +83,7 @@ export async function calibrateZombie(options: Options): Promise<void> {
   let output = Buffer.alloc(0);
   let probe: HostProbe | undefined;
   let joined = false;
+  let observations: ZombieObservations | undefined;
   const failures: unknown[] = [];
 
   const killOwnedParent = (): void => {
@@ -192,6 +201,7 @@ export async function calibrateZombie(options: Options): Promise<void> {
     assertHealthy();
     if (!reaped.pidfdTerminated || !reaped.originalIdentityAbsent || reaped.procState !== null)
       throw new Error("Host probe did not establish complete reaping");
+    observations = Object.freeze({ live, zombie, reaped });
 
     closing = true;
     const inputFinished = new Promise<void>((resolve, reject) => {
@@ -233,4 +243,9 @@ export async function calibrateZombie(options: Options): Promise<void> {
   }
   if (failures.length !== 0)
     throw new AggregateError(failures, "Zombie calibration failed; retain owned fixtures");
+  if (options.onObserved !== undefined) {
+    options.signal.throwIfAborted();
+    if (observations === undefined) throw new Error("Missing joined zombie observations");
+    options.onObserved(observations);
+  }
 }

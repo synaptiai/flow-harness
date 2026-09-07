@@ -65,6 +65,18 @@ describe("native observer qualification workflow", () => {
       },
       run: "npm run test:runtime -- test/runtime/host-bridge-descendants.runtime.test.ts",
     });
+    expect(
+      job.steps.find(
+        (step: { name: string }) => step.name === "Calibrate bridge settlement predicate",
+      ),
+    ).toMatchObject({
+      env: {
+        FLOW_TEST_HOST_BRIDGE_GUARDIAN:
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal GitHub runner path.
+          "${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian",
+      },
+      run: "npm run test:runtime -- test/runtime/host-bridge-predicate.runtime.test.ts",
+    });
     expect(commands).toContain(
       'node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"',
     );

@@ -2741,3 +2741,21 @@ timings, and identities. Final review of the five-document evidence update found
 All three documentation gates and 21 focused documentation/workflow tests passed. Commit this
 evidence-only update locally without triggering another unchanged native build. The implementation
 is already on the dedicated qualification branch. Keep the goal active for the next negative controls.
+
+### Prepare exact rejection and real predicate controls
+
+Previous turn was progress: implemented and qualified the selected real held-connection path.
+Current source was clean at 29ea1e3 before this increment. Native C remains unchanged.
+Parameterize the active test with one-byte expected-argument mismatch and two independently
+forwarded held connections. Require named bridge-discovery rejection with exact Linux EPROTO71
+or EEXIST17, plus clean natural checker closure. The current wrapper rejects native errors
+generically, so both new cases must first fail on hosted Linux before typed rejection handling.
+The fresh settlement fixture remains the positive twin; socket closure is not a reaping witness.
+
+Move the unchanged settlement predicate into the shared test helper. A parallel test-only task
+exposes frozen actual live/zombie/reaped records after the existing calibration parent and probe
+have both joined. The new predicate runtime gate runs two independent real calibrations and checks
+both roles against those snapshots. It also demonstrates the known-bad termination-only predicate
+accepting real unreaped data. This is sensitivity calibration, not simultaneous bridge-tree evidence.
+The workflow test failed on the missing calibration step before that step was added. All remaining
+stage-2 and manager-integration gates remain open. No repairs, model, credentials, merge, or release.

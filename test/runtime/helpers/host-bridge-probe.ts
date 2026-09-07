@@ -46,6 +46,12 @@ const checkSchema = z
 export type BridgeReady = z.infer<typeof readySchema>;
 export type BridgeCheck = z.infer<typeof checkSchema>;
 
+export function bridgeSettled(record: BridgeCheck): boolean {
+  return [record.leader, record.connection].every(
+    (value) => value.pidfdTerminated && value.originalIdentityAbsent && value.procState === null,
+  );
+}
+
 export interface BridgeProbe {
   ready(): Promise<BridgeReady>;
   check(): Promise<BridgeCheck>;

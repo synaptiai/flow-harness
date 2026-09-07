@@ -205,6 +205,7 @@ flowchart TB
         observerTests["Model-free qualification tests"]
         observerSignalDriver["Test-only signal sender<br/>Signals only its own helper child"]
         observerProcessOracle["Independent host process checks<br/>Observe descendant termination without signaling it"]
+        bridgePredicate["Bridge cleanup decision tests<br/>Replay real live, unreaped, and reaped observations"]
         observerFixture["Private fixture owner<br/>Permissions · identities · safe disposal"]
         observerCommand["Linux command observation<br/>Original output · namespace and cleanup evidence"]
         observerResult["Private result decoder<br/>Exact framing · invocation binding<br/>Not proof of trusted execution"]
@@ -254,6 +255,7 @@ flowchart TB
     observerTests -->|"Requires independent settlement evidence"| observerProcessOracle
     observerProcessOracle -->|"Observes fixed test descendants"| observerNative
     observerProcessOracle -->|"Checks active relay process settlement"| bridgeRelay
+    observerProcessOracle -.->|"Supplies real observations for pending calibration"| bridgePredicate
     observerNative -->|"Explicit test-only mode builds a separate source copy"| observerMutant
     observerTests -->|"Must reject its known false-success result"| observerMutant
     observerNative -.->|"Private result transport under qualification"| observerResult
@@ -459,6 +461,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 
 | Diagram area | Code owner | Responsibility |
 | --- | --- | --- |
+| Bridge cleanup decision tests, qualification only | `test/runtime/host-bridge-predicate.runtime.test.ts`, `test/runtime/helpers/host-bridge-probe.ts`, and `test/runtime/helpers/native-observer-zombie-control.ts` | Replays actual live, unreaped, and reaped observations against the same decision used by the held-connection test. The callback supplies records only after the owned calibration processes close. Hosted calibration is pending. This is not simultaneous bridge-tree evidence or production repair selection. |
 | Preview release automation | `package.json`, `npm-shrinkwrap.json`, `scripts/resolve-preview-release-identity.mjs`, `scripts/verify-preview-npm-release.mjs`, `src/domain/release/`, `src/infrastructure/release/`, `scripts/build-package-release.mjs`, `scripts/verify-package.mjs`, `.github/workflows/preview-release.yml`, and `.github/workflows/preview-npm-stage.yml` | Validates one manifest-owned identity, builds and verifies one bounded archive on supported x64 hosts, publishes a complete immutable GitHub prerelease, then reverifies and stages those exact bytes through short-lived stage-only npm authority. |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |

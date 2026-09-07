@@ -1021,6 +1021,18 @@ rejection controls remain open. The two-process acceptance predicate also needs 
 with real unreaped observations. Do not infer an exhaustive ancestry proof, an atomic snapshot,
 immutable executable custody, or repair readiness from this single passing case.
 
+The next test increment adds one-byte expected-argument mismatch and two-held-connection controls.
+Each requires a specific discovery rejection and normal checker closure, not a generic exception.
+The existing settlement case supplies a fresh one-connection positive control. The rejection
+classification in the wrapper is not yet implemented and must first produce its hosted failing control.
+
+The separate `test/runtime/host-bridge-predicate.runtime.test.ts` gate compiles the existing real
+process fixtures and records two independent live, unreaped, and reaped lifecycles. It applies
+those observations to both roles in the shared bridge acceptance predicate. A deliberately weaker
+termination-only check must accept the unreaped observations while the actual predicate rejects
+them. These are replayed real observations, not a simultaneous bridge-topology measurement.
+The hosted workflow runs this calibration after the active-connection tests.
+
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
 Real forwarding passed, but the bridge did not finish after the proposed owner-release request.
