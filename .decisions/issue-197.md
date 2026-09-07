@@ -1217,3 +1217,92 @@ The agent removed all temporary lines with inverse apply_patch and verified both
 file hashes. Main independently confirmed no test-file diff and a clean worktree at
 cce5321ee15a44c14316943ec594dac03d353ec4 before this evidence update. No instrumentation is retained
 or proposed for publication, and no new security profile or model run was started.
+
+### Revised native-supervisor Approach A approved
+
+The user approved revised Approach A on September 7, 2026. This authorizes the observer-specific
+pinned SRT extension, post-setup namespace restrictions, protected application results, native
+artifact provenance/maintenance, integration, and qualification. Ordinary native command policy
+stays unchanged. No privileged host provisioning, live pilot, repair enablement, merge, or release
+is authorized by this approval. The usable-checkpoint objective remains active and incomplete.
+
+Adversarial design review identified a descendant-policy counterexample: a denied-input branch can
+catch a child namespace denial and return zero while accessible controls never take that branch.
+EPERM or KILL_PROCESS alone cannot establish absence of policy interference. Implement mandatory
+trusted policy observation with a sticky invocation-wide interference result, including descendants.
+Record it before response/termination. Missing observation must fail closed. Record clone3 ENOSYS
+fallback separately and keep it unsupported until an exact adapter/runtime fallback contract passes.
+
+The existing hosted run 34141891105 remains untouched. Its quality job completed with coverage
+6755 passed/1 skipped and browser 2/2 passed. Runtime reported 98 passed/1 failed/4 skipped; the
+only failure reproduces the same nested-fixture read on a second Linux runner. Proof preparation
+remains in progress at this entry. This does not establish a clean CI run or qualify the extension.
+
+Implementation is split between native source/build provenance, host result framing/integration,
+and independent native-boundary review. Heavy local verification remains serialized. Preserve the
+current proof run; do not push merely to publish documentation while its build remains active.
+
+### Private result decoder implemented; native policy history remains under investigation
+
+Added a disconnected internal decoder for the specified 64-byte little-endian result frame.
+The first behavior test failed because the existing boundary had no result-recognition capability
+(undefined versus the expected normal-exit record), not an import or syntax error. The implementation
+then passed that test. The expanded matrix passed 190 cases. A deliberate temporary removal of
+correlation checking caused all 32 per-byte mismatch cases to fail; the check was restored.
+
+The targeted decoder, library inventory, and documentation-structure run passed 196 tests across
+three files. Full type checking and production build passed. Lint completed without errors; an
+agent-owned build-script unused import was reported during concurrent work and sent to its owner.
+The pre-existing NativePiEvaluationAdapter constructor informational diagnostic remains unchanged.
+Independent parser review found no P1–P3 findings. It did not claim native writer, launch, stream,
+or settlement qualification. The source inventory now records 381 modules and 3457 declarations,
+including 1100 infrastructure declarations; CLI reachability remains 346 modules.
+
+Further falsification rejected notification-only policy-history proof. Linux v6.17 seccomp.c
+1066–1152 permits interruption and removal before a queued notification reaches userspace.
+WAIT_KILLABLE_RECV applies after receipt, not throughout that window. Therefore even mandatory
+listener ownership plus final HUP/ECHILD can miss an interrupted forbidden attempt caught by a
+candidate descendant. Main raised this counterexample; independent kernel-source review confirmed
+it and retracted the earlier implication of complete-history proof. No such policy code was enabled.
+
+Investigate trace stops within the same existing supervisor, including complete thread tracking,
+fatal descendant termination, nonleader exec, and exit_group(0). Tracing itself must not be assumed
+complete: kernel fatal-signal paths can skip events. Retain the observer's unsupported outcome until
+those cases have a sound contract and executable qualification. This is implementation research
+within approved A, not another request for routine approval or a claim that the full goal is complete.
+
+### Native source foundation and executable kernel counterexample
+
+Vendored the exact upstream C helper, filter generator, and Apache license at commit
+44ab607c46f20381aeaf3e22ca0e0151d4c6b29c. The foundation records immutable source hashes, the
+pinned Debian/BuildKit/certificate images, frozen Debian package snapshot, and the upstream commit
+epoch 1785885248. The build recipe emits an explicitly unmodified upstream baseline, not a Flow
+observer. It retains generated BPF/header bytes, toolchain identities, relinkable application
+object, libc source downloads, and applicable notices. Actual Linux compilation, independent
+clean-build equality, native artifact hashes, and redistribution approval remain unverified.
+
+Main review found a build-evidence race: hashing live recipe paths after execution could describe
+different bytes than the build consumed. The implementation now captures source and recipe bytes
+before either build, verifies the copied context, and derives evidence from that frozen snapshot.
+Fourteen real-filesystem tests passed. Agent mutation controls rejected a bypassed comparison
+and a corrupted frozen recipe digest, then restored the implementation. No Docker build was run;
+the existing local Docker daemon reports Linux ARM, not native Linux x64.
+
+Added a separate test-only C counterexample with two received-notification controls. In cancellation
+mode, the parent proves the second request is queued, signals the child without receiving it,
+and requires caught EINTR, normal exit, complete reap, and terminal listener HUP without POLLIN.
+No trapped namespace operation is continued. The runtime wrapper uses owned test lifetimes,
+abort-aware compiler discovery, bounded byte output, fixed process-group cleanup, and retention
+when settlement is uncertain. It is not arbitrary candidate containment or observer qualification.
+
+Independent review found no remaining P1–P3 findings in the probe after correcting a Vitest
+it.for timeout overload. Full type checking passed. Mac runtime collection produced exactly two
+skips; no native C compilation or execution occurred. Existing focused Linux CI now installs gcc
+and includes both cases, making 19 cases across four suites. The scaffold test first failed on
+the missing dependency and then passed after the workflow update. Independent CI/documentation
+review confirmed the exact file list, counts, and unchanged fail-closed gates.
+
+Final local validation passed 245 tests across five selected suites, complete formatting and lint
+(only the pre-existing constructor informational diagnostic), and all three documentation gates.
+The production build and public capability-reference check passed earlier in this same change.
+No model run, credential change, candidate modification, repair enablement, merge, or release occurred.

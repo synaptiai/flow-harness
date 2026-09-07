@@ -524,11 +524,21 @@ Linux x64 job or a matching native Linux x64 host.
 
 The `verifier-isolation` CI job runs
 `test/runtime/verification-observer-isolation.runtime.test.ts`,
-`test/runtime/verification-observer-fixture.runtime.test.ts`, and
-`test/runtime/linux-observer-command.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+`test/runtime/verification-observer-fixture.runtime.test.ts`,
+`test/runtime/linux-observer-command.runtime.test.ts`, and
+`test/runtime/observer-notification-history.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
 It checks the host and Node.js architecture before building the runtime. The job uses the
 production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
 Missing dependencies or sandbox admission failures fail the job.
+
+The notification-history suite is a separate unprivileged kernel counterexample test. It compiles
+a fixed C probe with the host compiler. A received notification provides a positive control before
+the probe interrupts a second queued notification without receiving it. The test requires the child
+to report `EINTR`, exit normally, and leave an empty listener. A separate receive-control case
+receives both requests. Neither case permits the namespace syscall to execute.
+
+These controls test notification-history loss, not the safety of a replacement observer. A skipped
+Mac run does not verify compilation or kernel behavior. The first hosted execution remains pending.
 
 The probes check ordinary and new-session descendant termination before command settlement,
 private-file and descriptor isolation, host-process access, and forged candidate output.
@@ -547,7 +557,8 @@ npm run build
 npm run test:runtime -- \
   test/runtime/verification-observer-isolation.runtime.test.ts \
   test/runtime/verification-observer-fixture.runtime.test.ts \
-  test/runtime/linux-observer-command.runtime.test.ts
+  test/runtime/linux-observer-command.runtime.test.ts \
+  test/runtime/observer-notification-history.runtime.test.ts
 ```
 
 Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS

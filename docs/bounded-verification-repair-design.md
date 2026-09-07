@@ -240,7 +240,8 @@ and a seccomp launcher. A completed command record cannot replace application la
 The internal command helper must label this shell encoding explicitly. It must not infer a signal
 cause from a numeric value or classify a behavior result. Qualify the actual application boundary
 before composing the observer, including setup failures and deliberate versus signal-encoded exits.
-No new status channel, numeric cutoff, or weaker behavioral acceptance rule is selected here.
+This existing helper does not provide a protected status channel. The approved extension below
+must preserve these limits until its separate application boundary is qualified.
 
 ### Resolve the application result boundary
 
@@ -254,10 +255,10 @@ The optional [filesystem observation channel](https://github.com/anthropic-exper
 is diagnostic, fail-open telemetry. It does not provide an authenticated application-result record.
 Its presence is not a reason to enable it for classification.
 
-The following alternatives require a user decision. No alternative is selected yet. The revised
-comparison addresses both application-result integrity and the measured fixture-access failure.
+The user approved revised Approach A on September 7, 2026. The comparison records the alternatives
+considered for application-result integrity and the measured fixture-access failure.
 
-| Dimension | A: Extend the pinned native supervisor, recommended | B: Add a separate isolated supervisor | C: Keep ambiguous results unsupported |
+| Dimension | A: Extend the pinned native supervisor, selected | B: Add a separate isolated supervisor | C: Keep ambiguous results unsupported |
 | --- | --- | --- | --- |
 | Mechanism | Launch exact application arguments and preserve protected setup, launch, and kernel wait records at the existing native boundary. | Give a separate trusted process ownership of application launch and wait status, isolated from candidate access. | Stop when the current result cannot establish the required preconditions. |
 | Simplicity | Reuses containment, but adds a native result protocol. | Adds a separate containment and lifecycle design. | Preserves the current implementation. |
@@ -268,7 +269,7 @@ comparison addresses both application-result integrity and the measured fixture-
 | Fixture boundary | Qualify a narrow profile that restricts further namespace creation or joining after trusted setup. | Qualify separately provisioned fixture ownership outside candidate identity mappings. | Retain the failed fixture qualification and stop without repair selection. |
 | Compatibility and operator cost | Requires a maintained native artifact and tests that ordinary subprocesses and threads still work. Namespace-dependent workloads might be unsupported by this observer profile. | Requires additional identity provisioning, deployment, cleanup, and recovery controls. A separate supervisor alone does not protect fixture access. | Requires no new host setup, but verification failures continue to require operator intervention. |
 
-The recommendation reuses the process boundary that already observes the kernel result. It does
+The selected approach reuses the process boundary that already observes the kernel result. It does
 not assume that a custom native helper is qualified or inexpensive to maintain. Before implementation,
 the selected design must specify descriptor ownership, exact application identity, failed-exec
 handling, bounded framing, cancellation, descendant settlement, and source-to-artifact verification.
@@ -319,11 +320,10 @@ The pinned SRT helper then needs another user namespace for its own trusted setu
 are dropped. The flag would block that setup under the current profile. `--assert-userns-disabled`
 only checks a restriction, and neither flag is exposed by the current integration.
 
-Two fixture-correction directions remain unselected: apply additional restrictions after trusted
-setup but before candidate execution, or provision fixture ownership outside candidate-accessible
-identity mappings. The first requires complete coverage of namespace creation and joining without
-breaking ordinary processes and threads. The second requires new provisioning and mapping proofs.
-Neither replaces the independent application-result gate.
+The selected correction applies additional restrictions after trusted setup but before candidate
+execution. It requires complete coverage of namespace creation and joining without breaking supported
+processes and threads. The unselected alternative provisions fixture ownership outside candidate-accessible
+identity mappings and requires new provisioning and mapping proofs. Neither replaces the application-result gate.
 
 For A, keep the stricter profile specific to the closed behavioral observer. Do not silently change
 all native commands or require new host privileges. Apply restrictions only after trusted namespace
@@ -336,7 +336,90 @@ protected application-result transport, exact argument and artifact identity, fa
 signals, cancellation, and descendant cleanup. Maintain source-to-binary provenance and license notices
 for the native artifact. The existing signed upstream package does not authenticate a modified binary.
 Qualification must also cover ordinary runtime compatibility and the transition to the next model stage.
-This recommendation is a proposed design direction, not authorization to implement a new profile.
+
+The approval authorizes implementation and qualification of this observer-specific extension.
+It does not enable repairs or authorize another live model pilot, merge, or release.
+
+### Implement the approved extension in phases
+
+Track the native boundary separately from its host integration and behavioral qualification:
+
+- [ ] Preserve the pinned upstream sources and license. Build a Linux x64 artifact with recorded
+  toolchain, source, patch, generated-filter, and binary identities. Compare independent clean builds.
+- [ ] Define and test bounded private result framing, exact invocation binding, and descriptor ownership.
+  - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
+  - [ ] Qualify native writer ownership, transport completion, and exact executable identity.
+- [ ] Extend trusted setup and the existing supervisor to launch the exact admitted application.
+  Preserve failed execution, normal exit, signal, and policy-interference distinctions.
+- [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
+  from the application and all descendants through a mandatory protected channel.
+- [ ] Integrate private descriptors through the existing managed command boundary. Preserve ordinary
+  command evidence and require stream completion, process settlement, and successful sandbox release.
+- [ ] Qualify namespace restrictions, application results, and fixture denial on native Linux x64.
+  Test ordinary processes and threads, cancellation, forged records, and descendant cleanup.
+- [ ] Compose the behavioral observer and complete the remaining verification-repair gates.
+
+Policy interference must remain unsupported even when the application catches a child failure and
+exits normally. A denied-input branch can depend on a namespace operation that accessible controls
+never exercise. Normal exit alone cannot exclude that case.
+
+Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
+responding to a forbidden operation or stopping the observed namespace. Missing observation, listener
+failure, and incomplete settlement must prevent behavioral classification. Optional diagnostic telemetry
+cannot satisfy this contract.
+
+Notification delivery alone does not prove complete policy history. Linux can cancel a syscall
+notification before the supervisor reads it. The kernel's
+[notification wait and removal paths](https://github.com/torvalds/linux/blob/v6.17/kernel/seccomp.c#L1066-L1152)
+permit interruption before delivery. `SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV` does not close that earlier window.
+A child can catch the interruption and return normally. Queue exhaustion and descendant reaping
+therefore cannot establish that no forbidden attempt occurred.
+
+Do not implement notification-only clean classification. Qualify a mechanism that preserves policy
+interference across cancellation, descendant termination, and thread-group exit. Tracing in the existing
+supervisor is under investigation. It is not yet a qualified replacement.
+
+Treat `clone3` fallback separately. A constant `ENOSYS` response prevents namespace creation through
+its pointer-based arguments, but does not prove application compatibility. Record fallback use and
+keep the observation unsupported until the frozen adapter and runtime have a qualified fallback contract.
+Do not inspect mutable pointed-to arguments and then authorize the syscall.
+
+#### Private result framing
+
+The internal decoder recognizes one 64-byte frame. It does not authenticate the writer or prove
+launch, executable identity, stream completion, or descendant settlement. Keep it disconnected from
+repair selection until the native transport and composed observer pass qualification.
+
+The frame uses these exact byte offsets. Encode integers explicitly in little-endian order, not
+by copying a native C structure:
+
+| Offset | Length | Field |
+| --- | --- | --- |
+| 0 | 8 | ASCII magic and version, `FLOWOBS1`. |
+| 8 | 32 | Invocation correlation bytes, matching the host's 64-character lowercase hexadecimal token. |
+| 40 | 4 | Terminal kind. |
+| 44 | 4 | Exit code, worker signal, or error number according to kind. |
+| 48 | 4 | Failure phase, or zero. |
+| 52 | 4 | Flags: bit zero records `clone3` fallback; all other bits must be zero. |
+| 56 | 8 | Reserved bytes, all zero. |
+
+Interpret terminal fields through this closed table:
+
+| Kind | Meaning | Detail | Permitted phase |
+| --- | --- | --- | --- |
+| 1 | Normal exit record | Exit code 0–255 | 0 |
+| 2 | Worker terminated by a signal; application launch might be unproven | Signal 1–64 | 0 |
+| 3 | Setup failure | Error number 1–4095 | 1–4 |
+| 4 | Failed application execution | Error number 1–4095 | 0 |
+| 5 | Policy interference | 0 | 0 |
+| 6 | Supervisor failure | Error number 1–4095 | 4–5 |
+
+Phases identify bootstrap (1), namespace setup (2), filter setup (3), private-descriptor handoff (4),
+and settlement (5). These phases do not carry candidate-provided messages or paths.
+
+Reject wrong versions, incomplete frames, duplicate frames, trailing bytes, mismatched correlations,
+unknown flags, and contradictory fields. Retain fallback use in every terminal variant. A matching
+correlation is a binding check, not a secret or proof of writer authenticity.
 
 Evaluate existing Flow code before introducing another supervisor. The
 [Prime process driver](../prime-container/internal/supervisor/driver_process_unix.go)

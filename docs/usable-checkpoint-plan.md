@@ -270,8 +270,9 @@ capture now have local tests and independent review. Their hosted qualification,
 behavioral observer, and proof of actual application launch and exit remain pending. An outer
 sandbox exit code alone cannot distinguish a deliberate exit from a signal.
 
-The focused Linux job contains 17 tests across three suites. Mac skips do not qualify those
-tests. VR-06 requires separate live-experiment authorization.
+The focused Linux job now contains 19 tests across four suites. Two new notification-history
+counterexample cases await their first hosted execution. Mac skips do not qualify these tests.
+VR-06 requires separate live-experiment authorization.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three
@@ -282,8 +283,9 @@ confirm the capability mechanism before selecting a correction. Repair remains d
 The diagnostic job at `565a89d` reproduced the failure with mapped fixture ownership and effective
 read-bypass capabilities. Reads succeeded before nested mutation attempts while permission bits remained
 `000`. The [revised design comparison](bounded-verification-repair-design.md#resolve-the-application-result-boundary)
-addresses fixture denial and protected application results together. The recommended native-supervisor
-extension remains a pending user decision. It is not covered by the earlier Linux-first host choice.
+addresses fixture denial and protected application results together. The user approved revised Approach A
+on September 7, 2026, separately from the earlier Linux-first host choice. Implement and qualify the
+observer-specific native-supervisor extension in the design's tracked phases. Repairs remain disabled.
 
 Local validation also found test-lifetime cleanup failures. Complete this verification work before
 claiming a clean checkpoint:

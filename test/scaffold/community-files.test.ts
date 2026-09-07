@@ -396,7 +396,7 @@ describe("public repository contracts", () => {
     );
     expect(steps[3]?.run).toBe(
       "sudo apt-get update\n" +
-        "sudo apt-get install --yes bubblewrap ripgrep socat util-linux\n" +
+        "sudo apt-get install --yes bubblewrap gcc ripgrep socat util-linux\n" +
         "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
         "bwrap --version\n" +
         "unshare --version\n" +
@@ -407,7 +407,8 @@ describe("public repository contracts", () => {
     expect(steps[6]?.run).toBe(
       "npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts " +
         "test/runtime/verification-observer-fixture.runtime.test.ts " +
-        "test/runtime/linux-observer-command.runtime.test.ts",
+        "test/runtime/linux-observer-command.runtime.test.ts " +
+        "test/runtime/observer-notification-history.runtime.test.ts",
     );
     for (const step of steps) {
       expect(step["continue-on-error"]).toBeUndefined();

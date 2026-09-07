@@ -241,7 +241,7 @@ jobs:
       - name: Install sandbox system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap ripgrep socat util-linux
+          sudo apt-get install --yes bubblewrap gcc ripgrep socat util-linux
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
           unshare --version
@@ -258,6 +258,7 @@ jobs:
           npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts
           test/runtime/verification-observer-fixture.runtime.test.ts
           test/runtime/linux-observer-command.runtime.test.ts
+          test/runtime/observer-notification-history.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest
