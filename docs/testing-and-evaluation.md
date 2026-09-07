@@ -975,6 +975,24 @@ without skips. The runner resolved `/usr/bin/socat` to `/usr/bin/socat1`, confir
 must resolve the installed alias before passing it to the owner. The guardian binary was unchanged
 from the preceding failed-input run.
 
+The active-connection gate is under development. It keeps a real connection open after an exact
+echo and waits independently for the ownership record. It then requires an independent checker
+to identify the relay leader and connection child. On the terminal receipt, it starts a check of
+both processes before closing test sockets. Acceptance also requires normal owner closure.
+This asynchronous check is not an atomic observation at the instant of receipt.
+
+Use the same Linux x64 prerequisites to run this separate gate:
+
+```sh
+FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
+  npm run test:runtime -- test/runtime/host-bridge-descendants.runtime.test.ts
+```
+
+The current test-only increment deliberately precedes implementation of the checker's `bridge`
+mode. A hosted failure must confirm that missing mode after real forwarding succeeds. A local
+skip on macOS is not qualification. The hosted workflow runs this gate before the existing
+application-result tests, which remain skipped if it fails.
+
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
 Real forwarding passed, but the bridge did not finish after the proposed owner-release request.

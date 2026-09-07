@@ -2649,3 +2649,29 @@ job times, counts, hashes, and relay path. No P1-P3 findings in the four-documen
 All 30 focused documentation/workflow tests and the three documentation gates passed. Save this
 documentation-only record locally without another unchanged native run. The broad single-worker
 non-live test process is still running; its eventual result is separate and must be inspected.
+
+### Prepare the active-connection failing control
+
+The broad single-worker local suite finished with 477 files passed, one file skipped, 7,118 tests
+passed, and four tests skipped (1,047.82 seconds). The four cases require Linux and were skipped
+on this Mac. This process began before the latest test/documentation edits, and excludes runtime,
+live, and browser suites; it does not qualify the new descendant test or an exact final source tree.
+
+Added a real held-connection test and strict test-only bridge-probe wrapper. Admission is rooted in
+the Node-owned guardian PID, exact relay arguments, and the host UID. The proposed probe records
+both leader and connection identities. Acceptance requires both pinned processes terminated and
+their original identities absent, observed from the terminal-receipt callback before test socket
+cleanup, plus normal guardian closure. It is not an atomic receipt-time observation or exhaustive
+ancestry proof. The native oracle remains unchanged until the hosted missing-mode RED is verified.
+
+Independent review found and resolved a P2 cross-stream ordering assumption and a P3 incomplete
+stdin-finish join. The test now awaits OWNED independently from the network echo. Probe cleanup
+joins input completion and child closure under one bound while retaining failures and emergency
+join uncertainty. Re-review found no remaining P1-P3 in the test-only increment.
+
+The workflow test first failed because the active-descendant step was absent, then passed after
+adding it. Typecheck, lint, formatting, and the build passed; lint retains one unrelated informational
+constructor suggestion. The new runtime case is skipped on macOS. The next hosted run must fail
+because the unchanged real C oracle rejects bridge mode after real forwarding; unrelated startup
+or test failures would not establish the intended RED. Later application-result cases will skip
+after this deliberate failure. No repair, model, credential, merge, or release action is authorized.

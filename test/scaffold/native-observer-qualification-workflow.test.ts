@@ -54,6 +54,17 @@ describe("native observer qualification workflow", () => {
       run: "npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts",
     });
     expect(source).not.toContain("FLOW_TEST_HOST_BRIDGE_BASELINE");
+    const descendantStep = job.steps.find(
+      (step: { name: string }) => step.name === "Test active bridge descendants",
+    );
+    expect(descendantStep).toMatchObject({
+      env: {
+        FLOW_TEST_HOST_BRIDGE_GUARDIAN:
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal GitHub runner path.
+          "${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian",
+      },
+      run: "npm run test:runtime -- test/runtime/host-bridge-descendants.runtime.test.ts",
+    });
     expect(commands).toContain(
       'node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"',
     );

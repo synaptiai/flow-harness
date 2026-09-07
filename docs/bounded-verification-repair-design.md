@@ -785,6 +785,12 @@ Also require normal owner closure. Do not infer an atomic receipt-time observati
 asynchronous check. Calibrate the checker against live and unreaped processes. Never signal a
 discovered PID or treat emergency test cleanup as settlement evidence.
 
+The test-only active-connection gate is now prepared for its hosted failing control. The native
+checker's new `bridge` mode remains unimplemented until that failure is authenticated. The test
+waits independently for forwarding and ownership and joins both checker input completion and
+process closure during cleanup. These checks avoid assuming event ordering across independent
+streams. They do not qualify active descendants before the hosted implementation passes.
+
 #### Connect the native application-result path
 
 Implement this path in an observer-only patch to the pinned supervisor. Preserve the unchanged
