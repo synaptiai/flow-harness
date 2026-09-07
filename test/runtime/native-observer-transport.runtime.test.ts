@@ -110,6 +110,20 @@ describe.skipIf(process.platform !== "linux")("Native observer application trans
         dev: appIdentity.dev,
         ino: appIdentity.ino,
       });
+      // This trusted fixed ELF has no external inputs or effects beyond its
+      // descriptor inventory and marker. Run it before manager initialization
+      // to distinguish ambient host inheritance from sandbox-created handles.
+      const hostControl = await capture(
+        { executable: application, args: [], env: environment },
+        workspace,
+        home,
+        context.signal,
+      );
+      expect(hostControl.stderr.toString("utf8"), "Direct-host diagnostics").toBe("");
+      expect(hostControl.code).toBe(7);
+      expect(hostControl.signal).toBeNull();
+      expect(hostControl.stdout.toString("utf8")).toBe(marker);
+      console.info("Native observer direct-host positive control: exact marker, exit 7");
       const selected = process.env.FLOW_TEST_NATIVE_OBSERVER_HELPER;
       const helperInput = selected ?? resolveAnthropicSandboxRuntimeSeccompPath();
       if (helperInput === undefined || !isAbsolute(helperInput))

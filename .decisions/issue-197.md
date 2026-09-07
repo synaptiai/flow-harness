@@ -1731,3 +1731,17 @@ Independent review found no P1–P3 in this delta. Full type checking, lint, for
 syntax-only checking passed; the unrelated constructor information remains. Linux diagnosis is
 pending. No production observer implementation, fixture-policy adoption, model run, or repair
 enablement is included.
+
+Run 34153166614 at e258a6fb7d33b8b7002bd5c3aa32b9ba7ac23e9d completed with the same baseline
+precondition failure. The added diagnostic established a live FIFO descriptor 142, flags 0,
+successful F_GETFD and fstat, distinct from inventory descriptor 3. This disproves a stale inventory
+entry for this observation; it does not locate the pipe's creator. Root was
+/tmp/flow-observer-transport-uyRhU1 on the ephemeral runner. No contents or link target were read.
+Linux proc_pid_fd(5) and fcntl(2) documentation independently confirm the inventory and EBADF
+interpretation: https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html and
+https://man7.org/linux/man-pages/man2/fcntl.2.html.
+
+Next control runs the same fixed static ELF directly before manager initialization, with the same
+clean environment and bounded capture. It has no candidate input, child command, network activity,
+or filesystem mutation. This separates ambient host descriptor inheritance from handles introduced
+by SRT. Every original assertion remains. The native patch still waits for valid baseline evidence.
