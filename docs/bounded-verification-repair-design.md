@@ -347,7 +347,7 @@ It does not enable repairs or authorize another live model pilot, merge, or rele
 Track the native boundary separately from its host integration and behavioral qualification:
 Completed implementation items describe source changes, not runtime qualification.
 
-- [ ] Preserve the pinned upstream sources and license. Build a Linux x64 artifact with recorded
+- [x] Preserve the pinned upstream sources and license. Build a Linux x64 artifact with recorded
   toolchain, source, patch, generated-filter, and binary identities. Compare independent clean builds.
 - [ ] Define and test bounded private result framing, exact invocation binding, and descriptor ownership.
   - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
@@ -358,6 +358,7 @@ Completed implementation items describe source changes, not runtime qualificatio
   - [x] Record an observer-only patch separately from unchanged vendored source and baseline output.
   - [x] Connect the three private channels to the actual outer-stub, inner-init, and worker processes.
   - [x] Replace flattened wait statuses and unchecked setup with the observer-specific contract below.
+  - [x] Pass the first real Linux x64 application-result control: exact output, private exit 7, and channel EOF.
   - [ ] Execute the admitted ELF descriptor and qualify every worker failure path on Linux x64.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.
@@ -373,6 +374,15 @@ Completed implementation items describe source changes, not runtime qualificatio
 Policy interference must remain unsupported even when the application catches a child failure and
 exits normally. A denied-input branch can depend on a namespace operation that accessible controls
 never exercise. Normal exit alone cannot exclude that case.
+
+The first transport milestone passed in
+[run 34154482610](https://github.com/synaptiai/flow-harness/actions/runs/34154482610) at `e615d44`.
+Two clean builds produced 23 identical artifacts. The fixed application returned its expected
+marker and private normal-exit record for 7, with outer status 0 and private-channel EOF.
+Both direct-host and unchanged-sandbox canary controls detected the extra descriptor.
+The observer path prevented that descriptor from reaching application entry. This does not yet
+qualify helper-entry attribution, other exit codes, failed execution, signals, private-writer
+protection, full descendant cleanup, policy interference, or repair eligibility.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
 responding to a forbidden operation or stopping the observed namespace. Missing observation, listener

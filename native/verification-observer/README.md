@@ -97,6 +97,13 @@ The focused hosted workflow builds this artifact and supplies its exact path thr
 [native transport testing guide](../../docs/testing-and-evaluation.md#develop-the-native-result-transport-independently)
 describes the separate behavioral gate. No qualified observer artifact is included in the published package.
 
+The first observer build and transport check passed in
+[run 34154482610](https://github.com/synaptiai/flow-harness/actions/runs/34154482610) at `e615d44`.
+All 23 artifacts matched across two clean builds. The observer binary SHA-256 was
+`67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d`.
+The fixed application's private exit-7 result passed. This is one application-result control,
+not qualification of failure paths, signals, protected writers, complete cleanup, or repairs.
+
 ## Preserve redistribution materials
 
 Keep the vendored Apache-2.0 license with the source and retain applicable notices. The build

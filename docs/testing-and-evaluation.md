@@ -607,8 +607,10 @@ This result does not select a production fixture policy or qualify the observer.
 The separate `proof-runtime` job also compares two clean builds of the unchanged upstream native
 helper after its proof acceptance tests. In a source checkout,
 `native/verification-observer/README.md` documents the pinned inputs and retained evidence.
-Successful comparison proves byte equality for
-those inputs, not modified-observer safety. Its first hosted build remains pending.
+Successful comparison proves byte equality for those inputs, not modified-observer safety.
+The first comparison passed in
+[run 34147986514](https://github.com/synaptiai/flow-harness/actions/runs/34147986514):
+all 15 artifacts matched across two clean builds of the unchanged helper.
 
 The probes check ordinary and new-session descendant termination before command settlement,
 private-file and descriptor isolation, host-process access, and forged candidate output.

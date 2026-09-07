@@ -326,6 +326,15 @@ It then confirmed the unchanged helper's exact unsupported-command error and fai
 private result frame. This is the required missing-protocol regression, not observer success.
 Implementation of the observer-only native patch and its separate reproducible build can now proceed.
 
+The implementation's first Linux run passed:
+[run 34154482610](https://github.com/synaptiai/flow-harness/actions/runs/34154482610) at `e615d44`.
+Two clean observer builds produced 23 identical artifacts. The real fixed application passed the
+private exit-7 transport test, including exact output, outer status 0, and channel EOF.
+The paired descriptor controls passed.
+
+Adversarial failure, signal, custody, and cleanup tests
+remain required. UC-01, UC-05, and verification-repair qualification remain open. Repairs stay disabled.
+
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three
 fixture tests passed, so the fixture profile remains unqualified. A candidate-side nested user

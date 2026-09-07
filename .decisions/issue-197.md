@@ -1833,3 +1833,29 @@ retained as /private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/fop-Y6qXN1,
 Full type checking, lint, formatting, source verification, and documentation checks passed. The
 unrelated constructor informational diagnostic remains. Real native compiler and transport checks
 are the next hosted gate, followed by adversarial failure, signal, custody, and settlement controls.
+
+### First native implementation GREEN
+
+Run 34154482610 at e615d44a44b1b4b8b2b4571f5b5ee63653fce635 passed in 1m58s on hosted Linux x64.
+Two clean observer builds compared 23 identical artifacts; the baseline source manifest remained
+cfd742fbe7ed805aac70d48f00f7b61828acb81cdea5a2973913089c00682dce.
+Observer binary SHA-256: 67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d.
+Observer object: 2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b.
+Patched translation unit: 8e71c800cf8bdf9af05d6b38ace5b67ea948258d97912e362a55262c97b8cac2.
+Observer header: 242e62ea86dac1f8392cf47158b2f046a6ab663a5e03cb98a3ed4978a7d0bf8c.
+Encoder: 0d4a986c506955f891f329b5985f06a8a556f5999d3b3acc8c6bdb97523fa34c.
+Patch: e054ce51f56cdcb4dcc33bff4c5e44b6affe6e44b464d51ae58f2a5d7cf974bd.
+
+Both direct-host and unchanged-SRT normal controls printed the exact marker and exited 7.
+Both FD 19 canaries were detected with exact exit-96 diagnostics. The observer path then passed
+the private normal_exit 7 frame assertion, exact marker, empty stderr, outer status 0, and actual
+private-channel EOF. One runtime test passed with zero skips. The retained root was
+/tmp/flow-observer-transport-DcQQIf on the ephemeral runner. No filesystem survival after runner
+disposal is claimed. Watch 74572 ended naturally with exit 0; all qualification runs are terminal.
+
+This completes initial normal-exit transport and build reproducibility only. The build receipt
+still says observerQualification:not-performed because the build itself does not run qualification.
+All 256 normal exits, signalled launch-unproven outcomes, invalid/execution-denied descriptors,
+failed reporting/self-killing/trap fallback, forged writers, helper-entry canary attribution,
+descendant teardown and policy interference remain mandatory controls. No behavioral classification,
+fixture-policy adoption, model run, repair enablement, merge, or release follows from this pass.
