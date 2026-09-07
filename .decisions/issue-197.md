@@ -2571,3 +2571,26 @@ required local socket permission. Typecheck, lint, formatting, production build,
 gates passed. Lint retains one unrelated informational constructor notice. Linux runtime results
 are still pending; macOS is not substitute evidence. Commit this scoped development increment
 and push only the existing dedicated native-qualification branch for its approved Linux test.
+
+### First owner build attempt and diagnostic correction
+
+Run 34165421260 at fad9d88d80af050602fcf7908c953eb1688c071d failed in the Docker build step,
+before either runtime test suite. The retained GitHub log reported only a generic Docker-operation
+failure and an ephemeral scratch path. This evidence cannot distinguish compilation from build
+infrastructure failure. Do not infer the cause or claim a native pass.
+
+The launcher had captured Docker output but discarded it on failure; a later cleanup exception
+could also hide the original error. Add bounded JSON diagnostics at each operation failure before
+aggregation. Preserve failure exits, existing deadlines, and the 1 MiB output stop. Output encoding
+is not secret redaction. No arguments, environment variables, or credential configuration are added
+to diagnostic records. This path receives only the trusted documented build inputs.
+
+Three actual Node subprocess tests first failed on the absent formatter, then exercise escaped,
+truncated, and empty diagnostics. Importing the formatter does not execute CLI commands; direct CLI
+execution remains covered by the existing source-freezing and artifact-comparison tests. Node's
+documented import.meta.main is present on the pinned 26.7.0 runtime. No substitute Docker process
+or mock native evidence is used. The hosted retry must exercise the actual Docker path.
+
+All 47 source/build/diagnostic tests passed. Typecheck, lint, formatting, and the three documentation
+gates passed. Independent review found no P1-P3 findings; its explicit limit is that formatter tests
+do not prove Docker failure-path behavior. The guardian C bytes and runtime cases are unchanged.

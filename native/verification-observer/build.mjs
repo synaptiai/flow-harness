@@ -309,6 +309,19 @@ async function compare(first, second, observer = false, controls = false) {
   return a;
 }
 
+// Trusted build diagnostics only: escaping is not secret redaction. Emit each
+// failure before aggregation so a later cleanup error cannot hide its cause.
+export function formatDockerFailure(output, code, signal, interrupted) {
+  return JSON.stringify({
+    event: "native-foundation-docker-failure",
+    code,
+    signal,
+    interrupted,
+    truncated: output.length > 16_384,
+    outputTail: output.subarray(Math.max(0, output.length - 16_384)).toString("utf8"),
+  });
+}
+
 function run(args, timeoutMs = 30_000) {
   return new Promise((resolveResult, reject) => {
     const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -333,9 +346,12 @@ function run(args, timeoutMs = 30_000) {
     });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
-      if (failed || code !== 0 || signal !== null)
+      if (failed || code !== 0 || signal !== null) {
+        process.stderr.write(
+          `${formatDockerFailure(Buffer.concat(chunks), code, signal, failed)}\n`,
+        );
         reject(new Error("native foundation Docker operation failed"));
-      else resolveResult(Buffer.concat(chunks).toString("utf8"));
+      } else resolveResult(Buffer.concat(chunks).toString("utf8"));
     });
   });
 }
@@ -474,49 +490,53 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-try {
-  const [mode, ...args] = process.argv.slice(2);
-  if (mode === "--check-sources" && args.length <= 1) {
-    const checked = await sourceCheck(args[0] ?? ownRoot);
-    process.stdout.write(
-      `${JSON.stringify({ verified: true, sourceManifestSha256: checked.manifestSha256, sourceCount: sources.length })}\n`,
+if (import.meta.main) {
+  try {
+    const [mode, ...args] = process.argv.slice(2);
+    if (mode === "--check-sources" && args.length <= 1) {
+      const checked = await sourceCheck(args[0] ?? ownRoot);
+      process.stdout.write(
+        `${JSON.stringify({ verified: true, sourceManifestSha256: checked.manifestSha256, sourceCount: sources.length })}\n`,
+      );
+    } else if (
+      ["--compare", "--compare-observer", "--compare-observer-failure-controls"].includes(mode) &&
+      args.length === 2
+    ) {
+      const artifacts = await compare(
+        args[0],
+        args[1],
+        mode !== "--compare",
+        mode === "--compare-observer-failure-controls",
+      );
+      process.stdout.write(
+        `${JSON.stringify({ comparisonOnly: true, identical: true, artifactCount: Object.keys(artifacts).length })}\n`,
+      );
+    } else if (
+      [
+        "--freeze-context",
+        "--freeze-observer-context",
+        "--freeze-observer-failure-controls-context",
+      ].includes(mode) &&
+      args.length === 2
+    ) {
+      const observer = mode !== "--freeze-context";
+      const controls = mode === "--freeze-observer-failure-controls-context";
+      const frozen = await freezeContext(args[0], args[1], observer, controls);
+      process.stdout.write(
+        `${JSON.stringify({ frozenOnly: true, observerQualified: false, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, ...(observer ? { observerInputs: frozen.observerInputs } : {}), ...(controls ? { failureControls: frozen.failureControls } : {}) })}\n`,
+      );
+    } else if (mode === "--build" && args.length === 1) await build(args[0]);
+    else if (mode === "--build-observer" && args.length === 1) await build(args[0], true);
+    else if (mode === "--build-observer-failure-controls" && args.length === 1)
+      await build(args[0], true, true);
+    else
+      throw new Error(
+        "Use --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
+      );
+  } catch (error) {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : "native foundation failed"}\n`,
     );
-  } else if (
-    ["--compare", "--compare-observer", "--compare-observer-failure-controls"].includes(mode) &&
-    args.length === 2
-  ) {
-    const artifacts = await compare(
-      args[0],
-      args[1],
-      mode !== "--compare",
-      mode === "--compare-observer-failure-controls",
-    );
-    process.stdout.write(
-      `${JSON.stringify({ comparisonOnly: true, identical: true, artifactCount: Object.keys(artifacts).length })}\n`,
-    );
-  } else if (
-    [
-      "--freeze-context",
-      "--freeze-observer-context",
-      "--freeze-observer-failure-controls-context",
-    ].includes(mode) &&
-    args.length === 2
-  ) {
-    const observer = mode !== "--freeze-context";
-    const controls = mode === "--freeze-observer-failure-controls-context";
-    const frozen = await freezeContext(args[0], args[1], observer, controls);
-    process.stdout.write(
-      `${JSON.stringify({ frozenOnly: true, observerQualified: false, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, ...(observer ? { observerInputs: frozen.observerInputs } : {}), ...(controls ? { failureControls: frozen.failureControls } : {}) })}\n`,
-    );
-  } else if (mode === "--build" && args.length === 1) await build(args[0]);
-  else if (mode === "--build-observer" && args.length === 1) await build(args[0], true);
-  else if (mode === "--build-observer-failure-controls" && args.length === 1)
-    await build(args[0], true, true);
-  else
-    throw new Error(
-      "Use --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
-    );
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : "native foundation failed"}\n`);
-  process.exitCode = 1;
+    process.exitCode = 1;
+  }
 }

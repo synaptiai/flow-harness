@@ -13,6 +13,42 @@ const foundation = fileURLToPath(
 );
 const execFile = promisify(execFileCallback);
 
+it.for(["escaped", "truncated", "empty"] as const)(
+  "retains bounded structured Docker failure diagnostics: %s",
+  async (mode) => {
+    const result = await execFile(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { formatDockerFailure } = await import(process.argv[1]);
+const mode = process.argv[2];
+const output = Buffer.from(mode === "escaped" ? '\\n::error::quoted"\\u001b[31m' : mode === "truncated" ? "p".repeat(20000) + "terminal-error" : "");
+process.stdout.write(formatDockerFailure(output, 7, null, false));`,
+        new URL("../../../native/verification-observer/build.mjs", import.meta.url).href,
+        mode,
+      ],
+      { timeout: 3_000, maxBuffer: 131_072 },
+    );
+    expect(result.stderr).toBe("");
+    expect(result.stdout).not.toMatch(/[\r\n]/);
+    expect(result.stdout).not.toContain(String.fromCharCode(27));
+    const record = JSON.parse(result.stdout);
+    expect(record).toMatchObject({
+      event: "native-foundation-docker-failure",
+      code: 7,
+      signal: null,
+      interrupted: false,
+    });
+    if (mode === "escaped") expect(record.outputTail).toBe('\n::error::quoted"\u001b[31m');
+    else if (mode === "truncated") {
+      expect(Buffer.byteLength(record.outputTail)).toBe(16_384);
+      expect(record.outputTail.endsWith("terminal-error")).toBe(true);
+      expect(record.truncated).toBe(true);
+    } else expect(record).toMatchObject({ outputTail: "", truncated: false });
+  },
+);
+
 it(
   "rejects altered upstream C bytes even when source metadata still looks valid",
   ownedTest(async (scope) => {

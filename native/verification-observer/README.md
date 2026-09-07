@@ -80,8 +80,8 @@ node native/verification-observer/build.mjs --build-observer /absolute/path/to/n
 ```
 
 This explicit mode freezes `observer.patch`, `observer-application.h`, `observer-result.h`, and
-`host-bridge-guardian.c`
-with the source manifest and build recipe. It applies the patch to a copy of the upstream source,
+`host-bridge-guardian.c` with the source manifest and build recipe. It applies the patch to a copy
+of the upstream source,
 then builds `flow-observer-apply-seccomp` and its relinkable object. It preserves the unchanged
 upstream artifacts and redistribution materials. The observer build adds the snapshot's `patch`
 package. The default `--build` mode does not install that package or apply the observer patch.
@@ -91,6 +91,13 @@ source. This separate executable owns trusted host-bridge processes during devel
 It is not connected to the production SRT manager. Its first release-contract tests do not qualify
 active descendants, complete interruption handling, or runtime custody. See the
 [host-bridge test guide](../../docs/testing-and-evaluation.md#test-the-host-bridge-owner).
+
+On a Docker failure, the launcher reports the exit state and the last 16 KiB of captured output as
+one JSON record. The limit applies before text decoding and JSON encoding. Each failed operation
+reports separately, including cleanup failures. The existing
+1 MiB capture limit still stops excessive output. JSON encoding escapes control characters; it does
+not redact secrets. Use this launcher only with the documented trusted build inputs. Do not pass
+credentials or private inputs to the build. A diagnostic record does not change the failed result.
 
 The launcher compares two clean builds before copying the results to the new output directory.
 The `observer/` output directory retains the patch, both headers, original and patched source,

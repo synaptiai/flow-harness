@@ -949,8 +949,8 @@ path before removing evidence. Do not signal a process using a PID reported by c
 ### Test the host-bridge owner
 
 This development gate uses a real `socat` bridge and a local echo server. It checks byte forwarding,
-explicit release, controller disconnection, and malformed release input. It requires Linux x64 and
-the separately built owner executable:
+explicit release, controller disconnection, and malformed release input. It requires Linux x64,
+`socat` installed at `/usr/bin/socat`, and the separately built owner executable:
 
 ```sh
 FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
