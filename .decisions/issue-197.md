@@ -1903,3 +1903,38 @@ the existing informational constructor diagnostic in the untouched external harn
 Mac collection registered all 266 cases as skipped, which is registration evidence only. The
 documentation checks and 40 focused documentation/workflow tests passed. The next source push
 is solely for hosted native qualification, not production activation or a full-CI claim.
+
+### Adversarial result gate GREEN
+
+Run 34155655729, job 101846814637, passed at source
+063843a2de9e315b0dc5b956835a332e8dbb58db. The job took 2m30s. All 266 runtime cases passed
+without skips in 22.64 seconds. Both original normal-launch controls and both descriptor canaries
+still passed. The 256 separately registered normal exits, SIGTERM distinction, inside/outside
+launcher placement, absent FD 4, malformed full-sized header, non-executable ELF, and three real
+syscall-denial chains all passed. No denial chain became a normal-exit record.
+
+Two clean builds again matched 23 artifacts. Observer binary SHA-256 remained
+67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d; its object remained
+2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b. No production native source
+changed from the first successful run. The retained fixture root was
+/tmp/flow-observer-transport-WwfKHg on the ephemeral runner, not a durable uploaded artifact.
+Watch 87600 completed naturally with exit 0. No qualification run or watcher remains active.
+
+This qualifies the specified application-result controls only. Remaining controls include signal
+state and additional setup failures, private-writer access, immutable application/runtime custody,
+descendants and cancellation, outer relay/bridge disposal, namespace-policy interference, fixture
+denial, and lifecycle composition. Repairs remain disabled; no model pilot, merge, or release follows.
+
+The next bounded control families are private-writer exclusion and descendant settlement. A known
+correlation deliberately disclosed to the fixed application must not let a forged ordinary-output
+frame replace the genuine private result. Test concrete access mechanisms against the actual inner
+report writer, with positive controls and live-parent calibration; generic missing-target failures
+are insufficient. Do not mistake this for complete writer or runtime custody qualification.
+
+For descendants, hold the fixed child until the host independently discovers and binds its kernel
+identity. Candidate-provided PIDs are not authority. Redirect child stdio before readiness so open
+output pipes cannot mask early private-result publication. Consider a host-owned pidfd after identity
+checks to prevent PID-reuse confusion, and distinguish termination from reaping. Require settlement
+at acceptance without a later wait-for-death loop or a natural-expiry explanation. Host visibility
+across the pinned namespaces needs its own positive calibration; do not assume ptrace-gated proc
+fields are readable. These are implementation constraints for the next tests, not completed evidence.

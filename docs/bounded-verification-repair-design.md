@@ -359,7 +359,8 @@ Completed implementation items describe source changes, not runtime qualificatio
   - [x] Connect the three private channels to the actual outer-stub, inner-init, and worker processes.
   - [x] Replace flattened wait statuses and unchecked setup with the observer-specific contract below.
   - [x] Pass the first real Linux x64 application-result control: exact output, private exit 7, and channel EOF.
-  - [ ] Execute the admitted ELF descriptor and qualify every worker failure path on Linux x64.
+  - [x] Test all 256 normal exits, SIGTERM, invalid inputs, and execution/reporting/self-kill denial on Linux x64.
+  - [ ] Qualify the remaining worker setup, reporting, signal-state, and termination failure paths.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.
 - [ ] Integrate private descriptors through the existing managed command boundary. Preserve ordinary
@@ -383,6 +384,18 @@ Both direct-host and unchanged-sandbox canary controls detected the extra descri
 The observer path prevented that descriptor from reaching application entry. This does not yet
 qualify helper-entry attribution, other exit codes, failed execution, signals, private-writer
 protection, full descendant cleanup, policy interference, or repair eligibility.
+
+The expanded result gate passed all 266 cases without skips in
+[run 34155655729](https://github.com/synaptiai/flow-harness/actions/runs/34155655729) at `063843a`.
+It distinguished every normal exit from SIGTERM and rejected missing descriptors and malformed headers.
+A valid non-executable ELF produced an execution error. Real syscall restrictions preserved execution
+failure, signal 9 after blocked reporting, and signal 4 after also blocking self-termination.
+Inside-sandbox launcher calibration and outside-sandbox rejection both passed.
+
+Two clean builds again produced 23 identical artifacts, including the unchanged observer binary.
+These controls qualify the tested result paths, not every failure mode or a protected execution boundary.
+Writer authenticity, exact immutable runtime custody, descendant cleanup, cancellation, policy
+interference, and repair eligibility remain open.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
 responding to a forbidden operation or stopping the observed namespace. Missing observation, listener

@@ -104,6 +104,12 @@ All 23 artifacts matched across two clean builds. The observer binary SHA-256 wa
 The fixed application's private exit-7 result passed. This is one application-result control,
 not qualification of failure paths, signals, protected writers, complete cleanup, or repairs.
 
+The expanded transport gate passed all 266 cases without skips in
+[run 34155655729](https://github.com/synaptiai/flow-harness/actions/runs/34155655729) at `063843a`.
+It covers every normal exit code, real SIGTERM, invalid inputs, and selected kernel-enforced failure paths.
+All 23 artifacts again matched across two clean builds; the observer binary hash remained unchanged.
+Protected writers, immutable runtime custody, full cleanup, policy interference, and repairs remain unqualified.
+
 ## Preserve redistribution materials
 
 Keep the vendored Apache-2.0 license with the source and retain applicable notices. The build

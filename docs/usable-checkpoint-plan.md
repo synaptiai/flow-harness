@@ -335,6 +335,15 @@ The paired descriptor controls passed.
 Adversarial failure, signal, custody, and cleanup tests
 remain required. UC-01, UC-05, and verification-repair qualification remain open. Repairs stay disabled.
 
+The expanded native result gate passed 266 tests without skips in
+[run 34155655729](https://github.com/synaptiai/flow-harness/actions/runs/34155655729) at `063843a`.
+It covered all normal exit codes, real SIGTERM, invalid inputs, and three kernel-enforced failure chains.
+The two clean builds again matched all 23 artifacts. The observer binary remained unchanged.
+
+Next, qualify private-writer exclusion and descendant settlement with independent host observations.
+Do not infer those properties from the passing result tests. Policy interference, fixture denial,
+ordinary-command descriptor hardening, and the remaining lifecycle gates still block repair readiness.
+
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three
 fixture tests passed, so the fixture profile remains unqualified. A candidate-side nested user

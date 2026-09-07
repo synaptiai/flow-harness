@@ -707,8 +707,13 @@ The test-only launcher must confirm the live canary immediately before helper ex
 It must also confirm that the canary refers to the admitted application inode.
 Its marker is test calibration, not production writer authentication.
 
+All 266 cases passed without skips in
+[run 34155655729](https://github.com/synaptiai/flow-harness/actions/runs/34155655729) at `063843a`.
+The runtime suite took 22.64 seconds on that host. This is one qualification run, not a performance
+benchmark. The job also reproduced all 23 build artifacts, including the previously tested observer binary.
+
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
-are retained as diagnostic evidence, including after a future result-channel pass. Process closure
+are retained as diagnostic evidence, including after passing result tests. Process closure
 and SRT reset do not yet establish complete relay and host-bridge disposal. A passing result-channel
 test does not qualify that separate cleanup boundary, fixture denial, or repair enablement.
 
