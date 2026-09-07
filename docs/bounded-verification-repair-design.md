@@ -354,6 +354,10 @@ Track the native boundary separately from its host integration and behavioral qu
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.
 - [ ] Extend trusted setup and the existing supervisor to launch the exact admitted application.
   Preserve failed execution, normal exit, signal, and policy-interference distinctions.
+  - [ ] Record an observer-only patch separately from unchanged vendored source and baseline output.
+  - [ ] Connect the three private channels to the actual outer-stub, inner-init, and worker processes.
+  - [ ] Replace flattened wait statuses and unchecked setup with the observer-specific contract below.
+  - [ ] Execute the admitted ELF descriptor and qualify every worker failure path on Linux x64.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.
 - [ ] Integrate private descriptors through the existing managed command boundary. Preserve ordinary
@@ -559,14 +563,88 @@ Verify that a failed fail-stop cannot fall through to an ordinary exit.
 
 Keep signaled workers launch-unproven and unsupported unless a separate trusted execution witness
 is qualified. Test descriptor errors such as `EBADF` independently from a broken reader and
-`SIGPIPE`. Kernel execution tracing is a stronger alternative, but it adds separate signal,
-thread, and reaping obligations. Neither inference nor tracing is qualified by this design alone.
+`SIGPIPE`. An initial-execution tracing witness is a stronger alternative. It requires separate
+tracing, signal, cancellation, and detachment qualification. Neither inference nor tracing is
+qualified by this design alone.
 
 Bind ordered arguments, an explicit environment, working directory, stdin, and the admitted runtime
 to the invocation. Launch the admitted ELF descriptor without PATH lookup or script fallback.
 An open descriptor pins an inode, not immutable contents. Artifact custody must also protect the
 executable bytes, dynamic loader, and libraries. Do not replace existing command evidence with the
 application result or treat ordinary command status as the private transport's success witness.
+
+#### Connect the native application-result path
+
+Implement this path in an observer-only patch to the pinned supervisor. Preserve the unchanged
+upstream source and baseline build. Record the patch, resulting source, toolchain, and binary hashes
+separately. The next slice must execute an actual admitted ELF and connect the existing encoder to
+its real wait result. Another standalone parser or encoder does not complete this slice.
+
+This path can be developed under the existing namespace topology before the additional fixture
+policy is resolved. Its records are application-result evidence only. They do not assert absence of
+policy interference, classify a private test failure, or enable repair. Missing custody or setup
+evidence must prevent a trusted normal-result record.
+
+Apply these changes to the actual process paths:
+
+1. Validate the observer invocation and inherited descriptors before creating private channels.
+   Keep descriptor 3 exclusively in the outer stub. Close unused endpoints after each fork.
+2. Check signal setup and non-dumpability in the outer stub and inner init before the worker starts.
+   Require the protected process view. Do not reuse ignored dumpability errors or tolerated
+   `/proc` mount failures as successful observer setup.
+3. In the worker, mark the executable and error writer close-on-exec. Execute descriptor 4 with
+   `execveat` and `AT_EMPTY_PATH`, using exact arguments and the bound environment. Do not use
+   `execvp`, PATH search, a shell, or script fallback. See the
+   [descriptor execution contract](https://man7.org/linux/man-pages/man2/execveat.2.html).
+4. In inner init, preserve the raw worker wait status and validate the complete error channel.
+   Do not reuse the upstream `128 + signal` conversion. Send one private report, then terminate.
+5. In the outer stub, wait for the exact inner-init PID and validate its report and termination.
+   A proxy child can exit first, so a wait for any child cannot substitute for this identity check.
+   Emit one final frame only after the inner settlement requirement is satisfied.
+
+Linux's
+[PID namespace teardown](https://github.com/torvalds/linux/blob/v6.17/kernel/pid_namespace.c#L179-L264)
+waits for namespace processes before allowing its init process to be reaped. This supports the
+targeted inner-init wait as an application-tree settlement mechanism. Qualify it on the deployed
+kernel and profile. It does not settle outer relays or host bridges. Becoming a subreaper after
+helper entry does not recover children that were already orphaned elsewhere.
+
+The worker failure mechanism must remain distinguishable when its own error write fails. Compare
+these mechanisms without changing the selected normal-exit-only contract:
+
+| Mechanism | What it establishes | Required qualification |
+| --- | --- | --- |
+| Non-normal fail-stop, next implementation candidate | An audited trusted worker cannot return a normal status after failed setup or execution, even if reporting fails. | Raw self-SIGKILL with a validated worker PID, a non-returning x64 instruction-trap fallback, inherited signal state, denied writes and kill calls, and every pre-execution exit path. |
+| Initial-execution tracing witness | A specific trusted worker reached the kernel's execution event before application instructions ran. | Trace admission, `PTRACE_O_TRACEEXEC`, exact worker identity, signal handling, cancellation, and confirmed detachment at the execution stop. |
+| Full-lifetime tracing | Could also observe later policy-relevant operations. | All thread and process events, signal races, ordering, cancellation, overhead, and complete policy history. This is not the next application-result slice. |
+
+The fail-stop candidate attempts a bounded error record and raw self-SIGKILL, then uses an explicit
+non-returning x64 trap if the kill call returns. It must never fall through to `exit`, `_exit`,
+upstream `die`, or a normal function return. A trusted active signal handler that exits normally
+would invalidate the inference. Check signal dispositions and masks before applying filters.
+These are Linux x64 requirements, not portable POSIX guarantees.
+
+Initial-execution tracing is narrower than full-lifetime tracing. The trusted single-threaded
+worker can stop at
+[`PTRACE_EVENT_EXEC`](https://man7.org/linux/man-pages/man2/ptrace.2.html)
+and detach before application instructions run. That design still needs independent qualification.
+It does not establish complete policy-interference history. Neither mechanism proves that application
+`main` ran: dynamic-loader failure remains possible after successful kernel execution.
+
+Run these controls through the actual patched artifact and SRT launch on Linux x64:
+
+- All 256 normal exit codes, real signals, and execution failures must remain distinct.
+- Invalid executable descriptors, malformed ELF files, and denied execution must not become
+  application failures. Verify complete error records separately from their fail-stop signals.
+- Closed readers, invalid writers, partial records, and denied writes must remain unsupported
+  without a complete valid failure record. Deny both writing and self-killing to test the trap fallback.
+- Test ignored and blocked signals. Mutate the worker failure path to `_exit(0)` and require
+  the negative control to detect false normal classification.
+- Applications and descendants must not retain private endpoints or forge a valid final report.
+- Long-lived descendants must be gone before accepting inner settlement. Early proxy exits must
+  not replace the application's result. Outer relay and host-bridge settlement remain separate gates.
+- Cancellation, missing or extra frames, unsupported setup, and unconfirmed release must prevent
+  behavioral classification.
 
 Evaluate existing Flow code before introducing another supervisor. The
 [Prime process driver](../prime-container/internal/supervisor/driver_process_unix.go)

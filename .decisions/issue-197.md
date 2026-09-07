@@ -1586,3 +1586,56 @@ the real proxy, modified supervisor, application launch evidence, or final chann
 Independent final reviews of the production rewrite and of the compiled shell-control files found
 no remaining concrete P1–P3 findings within their bounded scopes. Both reviewers explicitly kept
 host admission, real bubblewrap/proxy behavior, native result custody, and Linux qualification open.
+
+### Native integration boundary: source audit and next execution gate
+
+Re-read the active usable-checkpoint plan and the actual pinned supervisor after 7b9ca81. The
+next aligned slice is the observer-only native patch that executes the admitted ELF and transports
+its raw result, not another detached framing utility. Two independent source reviews agree this
+application-result path can be developed under the existing namespace topology while the fixture
+policy decision remains unresolved. It must not claim policy-clean verification or enable repair.
+
+The audit identified the specific upstream paths that cannot be reused unchanged: die() exits
+normally with 1, reap_until() flattens signals to 128+signal, signal setup ignores failures, outer
+dumpability restoration is unchecked, and failed proc overmount can be tolerated. The observer
+path needs checked custody and separate failure reports. Its outer process inherits relay children
+after the bootstrap exec, so it must wait for the exact inner PID rather than any child.
+
+Cross-checked kernel v6.17 PID namespace teardown against the process ownership design. Its
+zap_pid_ns_processes path waits for namespace tasks before allowing namespace init to be reaped.
+This grounds a targeted inner-init wait for inner application-tree settlement, subject to actual
+host qualification. It cannot settle the separate outer relay or host bridge trees. Setting
+subreaper after helper entry cannot recover descendants already orphaned to another reaper.
+Source: https://github.com/torvalds/linux/blob/v6.17/kernel/pid_namespace.c#L179-L264.
+
+Compared the approved normal-exit inference with an initial-execution-only tracing witness and
+full-lifetime tracing. The next fail-stop candidate uses a cached validated worker PID, raw
+self-SIGKILL, and an explicit non-returning x64 trap if the kill call returns. Every worker
+pre-exec failure must take that path, including a failed error write. No reserved ordinary exit
+code is safe. Linux's forced-signal path resets ignored or blocked synchronous signals, but an
+active unblocked trusted handler can invalidate the inference. Source inspection does not qualify
+the candidate. Required real controls include denied writes and kill calls, invalid descriptors,
+signal inheritance, exact channel EOF, and a normal-exit mutation exposing false success.
+Sources: https://github.com/torvalds/linux/blob/v6.17/kernel/signal.c#L1214-L1244 and
+https://man7.org/linux/man-pages/man7/signal.7.html.
+
+Initial-execution-only tracing need not trace the application's entire lifetime. A trusted
+single-threaded worker can stop at PTRACE_EVENT_EXEC and detach before application instructions
+run, subject to trace admission, identity, signal, cancellation, and detachment qualification.
+Neither approach proves application main ran: dynamic-loader failure remains possible. Exact ELF,
+loader, and library custody remain mandatory. Sources:
+https://man7.org/linux/man-pages/man2/ptrace.2.html and
+https://man7.org/linux/man-pages/man2/execveat.2.html.
+
+Expanded the canonical design with the actual process integration sequence, alternatives, and
+Linux qualification matrix. Independent review found no concrete P1–P3 corrections. Documentation
+style, links, and prose checks passed after fixing two wording violations. The architecture and
+community-file suites passed 39 tests. Unchanged pinned-source verification passed.
+
+Authoritative local checks report an ARM64 Mac and Linux aarch64 Docker daemon. No local image
+or container was created and no emulated build was attempted. The sole existing hosted watch
+35012 was revalidated live in this continuation, still preparing the Lean appliance for run
+34147986514. Its proof tests and native baseline comparison had not completed. Preserve that run;
+do not substitute ARM64 checks for native x64 evidence or implement the native patch before its
+real failing qualification control is runnable. No production code, credentials, model invocation,
+retained pilot candidate, merge, or release changed in this audit.
