@@ -2774,3 +2774,34 @@ Close sends no quit bytes, joins actual input finish/close and child close, and 
 Destroyed alone is not input settlement. Preserve a bounded first secondary error as well as the
 primary rejection and actual closure. Test assertions now require the actual error class too.
 The ordinary readiness path, C oracle, guardian, and production runtime are unchanged.
+
+### Qualified rejection and predicate controls
+
+Run 34169134481 succeeded at exact c73922747326ddfb5734e75fb067672ea24d9570,
+job 101885940027, September 7 UTC 23:10:31-23:13:08 (157 seconds). Three original owner cases,
+three active cases, one predicate calibration, and 306 native cases passed without skips (313 total).
+Active suite took 5.85 seconds (5.62 tests); predicate 738 ms (502 ms tests); native suite 30.22 seconds
+(29.77 tests). Both clean builds matched 32 artifacts; guardian/object, genuine observer, and
+false-normal binary hashes are unchanged from the previous verified identities. Test-only oracle
+and zombie-parent compilation remains separate from that 32-artifact comparison.
+
+The actual negative tests now prove BridgeDiscoveryRejection identity, exact EPROTO 71/EEXIST 17,
+and clean natural checker exit 1/null signal with settled input. The fresh held-connection positive
+also passed. Two real calibrated lifecycles supplied unchanged live/zombie/reaped snapshots to
+both predicate roles; the weak termination-only decision accepted unreaped observations while
+the actual predicate rejected them. This closes those selected controls, not simultaneous-tree
+calibration, exhaustive ancestry enumeration, runtime custody, or stage 2.
+
+Independent remaining-gate analysis identified the next bounded pair: held-connection SIGTERM
+and control EOF with failed guardian status/no SETTLED and independent reaped-descendant evidence
+before socket cleanup. Existing disconnect tests close the connection first and do not cover this.
+Startup failures, resistant-child escalation, owner loss with independent test cleanup custody,
+and admitted runtime custody remain. Pin runtime bytes and establish group/ancestry preservation;
+do not substitute canonical paths or an unbounded syscall-fault matrix for admission evidence.
+Multiplexing, partial manager startup, retained failures, and proxy compatibility remain stages 3/4.
+
+Independent GitHub verification corroborated the exact GREEN source, counts, timings, and hashes.
+Final review of the five-document update found no P1-P3 findings. All three documentation gates
+and 21 focused documentation/workflow tests passed. Commit this evidence-only update locally;
+the implementation is already pushed to the qualification branch. No unchanged native rerun,
+merge, release, model transmission, or credential operation is needed. The full goal remains active.

@@ -419,14 +419,17 @@ then passed its first active-connection case in
 All three original owner cases and 306 existing native cases passed without skips, and both builds
 matched 32 artifacts.
 
-Exact-argument mismatch, multiple-connection rejection, and explicit
-two-process predicate calibration remain required. Stage 2 and the usable checkpoint remain open.
-
 The tests reached the expected wrapper-classification failure in
 [run 34168850085](https://github.com/synaptiai/flow-harness/actions/runs/34168850085) at `069cb70`.
-Typed rejection handling is now implemented but still needs its hosted pass. Require specific
-native rejection, clean checker closure, the fresh positive case, and real predicate calibration
-before closing these three controls.
+Typed rejection handling, exact-argument mismatch, multiple-connection rejection, and explicit
+two-process predicate calibration then passed in
+[run 34169134481](https://github.com/synaptiai/flow-harness/actions/runs/34169134481) at `c739227`.
+All 313 selected tests passed without skips, and both clean builds matched 32 artifacts.
+These three additional controls are complete. Stage 2 and the usable checkpoint remain open.
+
+Next, qualify cancellation and controller disconnection with a held connection. Then complete the
+[remaining lifecycle gates](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
+for startup failure, escalation, owner loss, and runtime custody before manager integration.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

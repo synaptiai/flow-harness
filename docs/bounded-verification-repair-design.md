@@ -797,8 +797,25 @@ The test
 waits independently for forwarding and ownership and joins both checker input completion and
 process closure during cleanup. These checks avoid assuming event ordering across independent
 streams. Exact-argument mismatch, multiple-connection rejection, and explicit two-process predicate
-calibration remain open. This initial pass does not complete stage 2 or permit manager integration
-before its remaining prerequisites are qualified.
+calibration then passed in
+[run 34169134481](https://github.com/synaptiai/flow-harness/actions/runs/34169134481) at `c739227`.
+All 313 selected tests passed without skips, and both clean builds matched 32 artifacts.
+This does not complete stage 2 or permit integration before its remaining prerequisites are qualified.
+
+Complete these bounded stage-2 gates next:
+
+| Gate | Required evidence |
+| --- | --- |
+| Active cancellation and disconnection | Keep the real connection open. Interrupt the owned guardian or close its control input. Require failed owner status, no `SETTLED`, and independent descendant termination and reaping before test socket cleanup. |
+| Startup failure | Cover failure before execution and real relay listener-creation failure. Require bounded failure, no accepted settlement, and confirmed disposal of owned processes. |
+| Resistant descendants | Use a fixed, bounded test relay to show a child still alive after the first termination signal and fully reaped after escalation. Ordinary relay completion does not prove this case. |
+| Owner loss | Establish independent test-owned cleanup custody first. Loss of the guardian must remain unconfirmed cleanup, never accepted settlement. Do not create an orphaning test or signal discovered PIDs. |
+| Runtime custody | Bind the admitted executable and runtime bytes and establish the relay's process-group and ancestry-preservation premise. Canonical path equality is insufficient. |
+
+Start with active cancellation and disconnection because they reuse the qualified real-connection
+test and independent checker. Runtime custody is an admission prerequisite, not an invitation to
+expand these tests into general containment. Multiplexed bridges, partial manager startup, retained
+manager failures, and proxy compatibility remain in stages 3 and 4.
 
 #### Connect the native application-result path
 

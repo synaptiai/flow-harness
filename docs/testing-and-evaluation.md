@@ -1016,12 +1016,11 @@ Both clean builds matched 32 artifacts. The unchanged guardian settled the obser
 connection child before test socket cleanup. The run also passed the existing real live,
 unreaped, and reaped-process controls through the shared observation function.
 
-This result does not complete bridge qualification. Exact-argument mismatch and multiple-connection
-rejection controls remain open. The two-process acceptance predicate also needs explicit calibration
-with real unreaped observations. Do not infer an exhaustive ancestry proof, an atomic snapshot,
+That initial result did not cover exact-argument mismatch, multiple-connection rejection, or explicit
+two-process predicate calibration with real unreaped observations. Do not infer an exhaustive ancestry proof, an atomic snapshot,
 immutable executable custody, or repair readiness from this single passing case.
 
-The next test increment adds one-byte expected-argument mismatch and two-held-connection controls.
+The extended test adds one-byte expected-argument mismatch and two-held-connection controls.
 Each requires a specific discovery rejection and normal checker closure, not a generic exception.
 The existing settlement case supplies a fresh one-connection positive control.
 
@@ -1030,7 +1029,7 @@ at `069cb70`, passed the settlement case and failed both specific-rejection asse
 wrapper returned generic errors. Both rejected checkers exited with status 1 and no signal.
 The wrapper now recognizes a strict discovery-error record while keeping readiness rejected.
 Rejection cleanup requires natural exit status 1, actual input closure or completion, no additional
-stream or protocol failures, and no cancellation. Its hosted pass remains pending.
+stream or protocol failures, and no cancellation.
 
 The separate `test/runtime/host-bridge-predicate.runtime.test.ts` gate compiles the existing real
 process fixtures and records two independent live, unreaped, and reaped lifecycles. It applies
@@ -1038,6 +1037,18 @@ those observations to both roles in the shared bridge acceptance predicate. A de
 termination-only check must accept the unreaped observations while the actual predicate rejects
 them. These are replayed real observations, not a simultaneous bridge-topology measurement.
 The hosted workflow runs this calibration after the active-connection tests.
+
+These three additional controls passed in
+[run 34169134481](https://github.com/synaptiai/flow-harness/actions/runs/34169134481) at `c739227`.
+The run passed three original owner cases, three active-connection cases, one predicate calibration,
+and 306 existing native cases, with no skips. Both clean builds matched 32 artifacts.
+The mismatch and ambiguity tests confirmed discovery errors `EPROTO` (71) and `EEXIST` (17),
+respectively, followed by natural checker closure. The real predicate calibration passed in both roles.
+
+The selected controls are complete, but bridge qualification is not. Active cancellation and
+disconnection, startup failure, escalation, owner loss, and runtime custody remain open. The
+[lifecycle implementation plan](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
+defines their next evidence gates.
 
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
