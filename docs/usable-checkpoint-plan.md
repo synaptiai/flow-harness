@@ -380,11 +380,16 @@ All 303 cases passed without skips, and all 29 clean-build artifacts matched. Th
 malformed arguments and environment entries against real accepted-invocation controls.
 They do not qualify the complete input envelope or immutable executable identity.
 
-Next, run the three new [native interruption controls](testing-and-evaluation.md#check-native-interruption-and-host-escalation).
-They require real TERM delivery, interruption despite an application exit of zero, and independently
-observed descendant settlement after host escalation. These controls await native qualification.
-Address any demonstrated failure before connecting the observer to the managed command boundary.
-Remaining reporting and cancellation interleavings stay separate from test-helper cancellation checks.
+The three [native interruption controls](testing-and-evaluation.md#check-native-interruption-and-host-escalation)
+passed in [run 34162298538](https://github.com/synaptiai/flow-harness/actions/runs/34162298538) at `a234415`.
+All 306 cases passed without skips, and both clean builds matched all 29 artifacts. The controls
+observed real TERM receipt, protected interruption for an exit-zero fixture, and independent
+held-descendant settlement after host escalation. They do not expose the interrupted worker's raw
+exit status or qualify every cancellation interleaving.
+
+Next, qualify the remaining runtime custody and relay-settlement prerequisites before connecting
+the observer to the managed command boundary. Remaining reporting failures, startup races, and
+cancellation interleavings remain open, separately from the passed controls.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

@@ -2417,3 +2417,38 @@ and four-document review found no remaining P1–P3 findings. All 376 focused ve
 41 documentation/workflow tests, documentation gates, build, source integrity, typecheck, lint,
 format, and whitespace checks passed. The nine changed files are all in scope. Native execution
 is pending; local collection and static C syntax checks are not native qualification.
+
+### Native interruption qualification result
+
+Run https://github.com/synaptiai/flow-harness/actions/runs/34162298538 completed successfully at exact
+commit a234415cc7f9ef1c2404bff58082bb51f5a74ccf. Job 101866433013 ran from 21:12:51Z to 21:16:58Z
+on 2026-09-07 (247 seconds, 4 minutes 7 seconds). All 306 cases passed with zero skips: prior 303
+plus NC-1, NC-2, and NC-3. Suite duration was 24.59 seconds; test execution was 24.17 seconds.
+The longer job duration included a 163-second native-build comparison, not a test timeout.
+No retry or replacement run occurred. This is one qualification run, not a performance benchmark.
+
+Two clean builds matched all 29 artifacts. Genuine binary SHA-256 remained
+`67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d` and object remained
+`2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b`. Separate mutant remained
+`6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b`.
+Build evidence still reports `observerQualified: false`. Diagnostic root
+`/tmp/flow-observer-transport-9YLahJ` was retained on the ephemeral runner, not uploaded as an archive.
+
+An independent authenticated review corroborated the exact run, source, job, counts, times, hashes,
+and retention scope. NC-1 exposed an actual private normal0 result. NC-2 observed actual TERM receipt
+and protected supervisor_failed/EINTR/settlement for the cooperative exit-zero fixture; interruption
+is checked before raw worker status is exposed, so do not claim independently witnessed raw exit0
+for that interrupted worker. NC-3 observed receipt before host abort, actual owned process SIGKILL
+closure, private EOF with zero bytes, completed real release, and independent held-descendant
+pidfd termination/original-identity absence. This is the tested host escalation path, not native-only
+bounded escalation, complete relay cleanup, or every startup/cancellation race.
+
+No production observer defect was reproduced in these controls, so its implementation was not
+changed. The source-defined post-fork handler race and remaining custody/reporting/policy/fixture
+gates remain open. Continue with runtime custody and owned relay settlement before managed-boundary
+integration. No model pilot, repair enablement, merge, or release occurred. Goal remains active.
+
+Final four-document evidence review found no P1–P3 findings. All 41 documentation/workflow tests,
+all three documentation gates, and whitespace checks passed after this update. Save the evidence
+in a local documentation-only commit without rebuilding identical native inputs. The dedicated
+qualification branch contains a234415; the ordinary draft PR, main, and release remain unchanged.

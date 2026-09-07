@@ -903,7 +903,7 @@ limits, every blocked variable family, immutable executable identity, or the rem
 
 #### Check native interruption and host escalation
 
-Three new controls are implemented but await native qualification. They use the actual observer and
+Three controls exercise the actual observer and
 a fixed application with a held descendant in a new session. The application installs its TERM
 handler before starting that descendant. The test acquires an independent process handle for the
 live descendant before releasing the read-only gate.
@@ -925,8 +925,18 @@ output. Its three-second limit is a test admission bound, not a production cance
 Application readiness does not prove that both supervisor forwarding handlers are installed.
 An unexpected startup-race result must remain a failed test, not trigger a delay or automatic retry.
 These controls do not qualify every signal or cancellation interleaving, prove native escalation
-without the host, or establish complete outer-relay cleanup. The expanded suite contains 306 cases.
-The preceding 303-case run does not qualify these additions.
+without the host, or establish complete outer-relay cleanup.
+
+[Run 34162298538](https://github.com/synaptiai/flow-harness/actions/runs/34162298538) at `a234415`
+passed all 306 cases without skips. It observed real TERM receipt and protected interruption for the
+cooperative exit-zero fixture. The observer intentionally reports interruption instead of the raw
+worker wait status, so this case does not independently expose that status. The no-TERM control
+does expose a private normal-exit-zero result. The resistant case passed actual closure, release,
+and independent held-descendant termination checks after host cancellation.
+
+The suite took 24.59 seconds. Two clean builds matched all 29 artifacts, with unchanged genuine and
+mutant binaries. The run retained `/tmp/flow-observer-transport-9YLahJ` on its ephemeral host, not as
+an uploaded archive. This single run is not a performance benchmark or complete cancellation qualification.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure

@@ -365,6 +365,8 @@ Completed implementation items describe source changes, not runtime qualificatio
   - [x] Pass the first real Linux x64 application-result control: exact output, private exit 7, and channel EOF.
   - [x] Test all 256 normal exits, SIGTERM, invalid inputs, and execution/reporting/self-kill denial on Linux x64.
   - [x] Test held ordinary and new-session descendants with independent live/zombie/reaped calibration.
+  - [x] Test cooperative TERM handling and host escalation for a resistant fixed application with a held descendant.
+    Startup races, other signals, and native-only escalation remain unqualified.
   - [ ] Qualify the remaining worker setup, reporting, signal-state, and termination failure paths.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.
@@ -431,6 +433,13 @@ without skips. Two clean builds matched all 29 artifacts. The
 [testing guide](testing-and-evaluation.md#check-selected-native-invocation-rejections) defines the six
 malformed inputs and real accepted-invocation counterexamples. This qualifies those existing validation
 paths, not the complete input envelope, immutable identity, or the remaining observer gates.
+
+The [306-case run](https://github.com/synaptiai/flow-harness/actions/runs/34162298538) at `a234415`
+passed without skips and matched all 29 artifacts across two clean builds. It adds real TERM
+forwarding controls and host escalation with independent held-descendant termination checks.
+The [testing guide](testing-and-evaluation.md#check-native-interruption-and-host-escalation) distinguishes
+observed interruption from the cooperative fixture's unexposed raw worker status. This does not
+qualify every startup race, signal, native-only escalation path, or outer-relay cleanup.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
 responding to a forbidden operation or stopping the observed namespace. Missing observation, listener
