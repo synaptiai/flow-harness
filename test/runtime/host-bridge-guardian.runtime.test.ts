@@ -72,8 +72,9 @@ async function exerciseBridge(
 ): Promise<void> {
   // Baseline mode exercises the existing SRT direct-spawn contract. It is an
   // explicit RED experiment, never an execution fallback for the guardian.
+  const relay = baseline ? "/usr/bin/socat" : await realpath("/usr/bin/socat");
   signal.throwIfAborted();
-  const child = spawn(executable, baseline ? args : ["/usr/bin/socat", ...args], {
+  const child = spawn(executable, baseline ? args : [relay, ...args], {
     stdio: ["pipe", "pipe", "pipe"],
     env: { PATH: "/usr/bin:/bin" },
   });
@@ -130,6 +131,19 @@ async function exerciseBridge(
     );
   } catch (error) {
     failures.push(error);
+    failures.push(
+      new Error(
+        `Bridge state before emergency cleanup: ${JSON.stringify({
+          closed,
+          exitCode: child.exitCode,
+          signalCode: child.signalCode,
+          spawnErrorCode: (spawnError as NodeJS.ErrnoException | undefined)?.code ?? null,
+          output,
+          errors,
+          overflow,
+        })}`,
+      ),
+    );
   } finally {
     client?.destroy();
     // Signal only the ChildProcess created above. Never discover or signal an

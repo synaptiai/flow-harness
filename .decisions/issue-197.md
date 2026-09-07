@@ -2594,3 +2594,25 @@ or mock native evidence is used. The hosted retry must exercise the actual Docke
 All 47 source/build/diagnostic tests passed. Typecheck, lint, formatting, and the three documentation
 gates passed. Independent review found no P1-P3 findings; its explicit limit is that formatter tests
 do not prove Docker failure-path behavior. The guardian C bytes and runtime cases are unchanged.
+
+### Reproduced bridge startup failure and canonical-input correction
+
+Run 34165789137 at b5a183a79e661f44a13f1f10e034aec0abe1d5ce compiled both clean builds and
+matched all 32 artifacts. The guardian binary identity was
+1b5c57faf55976a30d8161bac667ec960b43279e22a3231abe0ae3698c729dff and its object was
+4cda7ac749e727c777484810004f3bea38d8b3a5195f9ac6a74e4c79274ce6f8. All three bridge runtime
+cases failed with ENOENT before forwarding. Test duration was 9.04 seconds, with zero skips;
+the 306 application-result cases were skipped. The previous build failure's cause remains unknown.
+
+Source review found the test passed literal /usr/bin/socat while the guardian requires canonical
+realpath equality. Ubuntu's package inventory includes socat and socat1; an alias is a hypothesis,
+not yet authenticated runner evidence. Resolve the test-owned relay argument before guardian
+spawn and recheck cancellation after that await. Preserve the direct baseline invocation and
+all guardian checks. Record actual relay realpath in the hosted prerequisite step. Retain bounded
+pre-emergency-cleanup process state on test failures, so cleanup cannot obscure startup results.
+The new workflow expectation failed before adding that diagnostic command, then passed.
+
+Independent code/test and documentation reviews found no P1-P3 findings in this correction.
+Typecheck, lint, formatting, and documentation gates passed. The three Linux cases are skipped
+on this Mac and still require hosted execution. The full non-live single-worker suite remains
+running separately; no full-suite pass is claimed before it finishes.

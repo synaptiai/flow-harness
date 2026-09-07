@@ -957,10 +957,16 @@ FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
   npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
 ```
 
+The test resolves the installed relay's canonical path before passing it to the owner. The owner
+rejects unresolved aliases. Path resolution satisfies the argument contract. It does not establish
+immutable executable custody. The hosted prerequisite step records the resolved path.
+
 The explicit release case requires the private `OWNED` and `SETTLED` records and actual normal
 owner closure. `OWNED` acknowledges process-group ownership, not listener readiness or immutable
 executable identity. Disconnection and malformed input must not produce `SETTLED` or exit status 0.
 The tests retain their temporary directories. Emergency test cleanup is not owner qualification.
+On failure, the test records bounded owner state before emergency cleanup, preserving the original
+exit state and captured protocol output.
 
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.

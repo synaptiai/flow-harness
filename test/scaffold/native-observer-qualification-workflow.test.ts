@@ -40,6 +40,7 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain('test "$(uname -m)" = x86_64');
     expect(commands).toContain('test "$(uname -s)" = Linux');
     expect(commands).toContain("npm ci --ignore-scripts");
+    expect(commands).toContain("realpath /usr/bin/socat");
     expect(commands).toContain("npm run build");
     const bridgeStep = job.steps.find(
       (step: { name: string }) => step.name === "Test the host bridge owner release contract",

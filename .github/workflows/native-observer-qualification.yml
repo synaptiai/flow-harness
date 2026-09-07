@@ -50,6 +50,7 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
           gcc --version
+          realpath /usr/bin/socat
 
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
