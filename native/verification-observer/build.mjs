@@ -88,6 +88,47 @@ const observerArtifacts = [
   "observer/source-manifest.json",
   ...observerInputNames.map((name) => `observer/${name}`),
 ];
+const controlDirectory = "test-controls/false-normal";
+const controlArtifacts = [
+  "flow-observer-apply-seccomp-false-normal",
+  "flow-observer-apply-seccomp-false-normal.o",
+  "apply-seccomp.c",
+  "observer-application.h",
+  "observer-result.h",
+  "mutation.json",
+].map((name) => `${controlDirectory}/${name}`);
+
+function falseNormalMutation(originalBytes) {
+  // This complete function anchor prevents a similar suffix in another function
+  // from becoming the mutation target. Source drift requires explicit review.
+  const original = `static void flow_observer_worker_fail(int writer, pid_t cached_pid,
+                                      const unsigned char correlation[32],
+                                      uint32_t kind, int error, uint32_t phase) {
+    (void)flow_observer_send(writer, correlation, kind,
+                             (uint32_t)flow_observer_errno(error), phase);
+    if (cached_pid > 1) (void)syscall(SYS_kill, cached_pid, SIGKILL);
+    for (;;) __asm__ volatile("ud2");
+}`;
+  const replacement = original.replace(
+    '    if (cached_pid > 1) (void)syscall(SYS_kill, cached_pid, SIGKILL);\n    for (;;) __asm__ volatile("ud2");',
+    "    (void)cached_pid;\n    _exit(0);",
+  );
+  const text = originalBytes.toString("utf8");
+  if (!Buffer.from(text).equals(originalBytes) || text.split(original).length !== 2)
+    throw new Error("false-normal mutation anchor must occur exactly once");
+  const bytes = Buffer.from(text.replace(original, replacement));
+  return {
+    bytes,
+    evidence: {
+      version: 1,
+      purpose: "test-only-false-normal-negative-control",
+      mutationId: "worker-fail-normal-zero-v1",
+      originalHeaderSha256: sha256(originalBytes),
+      mutantHeaderSha256: sha256(bytes),
+      replacement: { original, replacement },
+    },
+  };
+}
 
 async function sourceCheck(root) {
   const canonicalRoot = await realpath(root);
@@ -109,16 +150,31 @@ async function sourceCheck(root) {
   return { manifest, manifestSha256: sha256(manifestBytes), inputs };
 }
 
-async function freezeContext(root, destination, observer = false) {
+async function freezeContext(root, destination, observer = false, controls = false) {
   const canonicalRoot = await realpath(root);
   const checked = await sourceCheck(canonicalRoot);
   const recipe = {};
   const observerInputs = {};
+  let failureControls;
+  const controlInputs = {};
   if (observer) {
     for (const name of observerInputNames) {
       const bytes = await regularBytes(canonicalRoot, name, 131_072);
       checked.inputs.set(`observer/${name}`, bytes);
       observerInputs[name] = sha256(bytes);
+    }
+  }
+  if (controls) {
+    const mutation = falseNormalMutation(checked.inputs.get("observer/observer-application.h"));
+    failureControls = mutation.evidence;
+    const generated = {
+      "observer-application.h": mutation.bytes,
+      "mutation.json": Buffer.from(`${JSON.stringify(failureControls, null, 2)}\n`),
+    };
+    for (const [name, bytes] of Object.entries(generated)) {
+      const path = `${controlDirectory}/${name}`;
+      checked.inputs.set(path, bytes);
+      controlInputs[path] = sha256(bytes);
     }
   }
   for (const path of ["Dockerfile", "build.sh", "build.mjs"]) {
@@ -130,6 +186,8 @@ async function freezeContext(root, destination, observer = false) {
   await mkdir(destination, { mode: 0o700 });
   await mkdir(join(destination, "upstream"), { mode: 0o700 });
   await mkdir(join(destination, "observer"), { mode: 0o700 });
+  await mkdir(join(destination, "test-controls"), { mode: 0o700 });
+  if (controls) await mkdir(join(destination, controlDirectory), { mode: 0o700 });
   for (const [path, bytes] of checked.inputs)
     await writeFile(join(destination, path), bytes, { flag: "wx", mode: 0o600 });
   const copied = await sourceCheck(destination);
@@ -141,6 +199,9 @@ async function freezeContext(root, destination, observer = false) {
   for (const [name, digest] of Object.entries(observerInputs))
     if (sha256(await regularBytes(destination, `observer/${name}`, 131_072)) !== digest)
       throw new Error("source integrity: frozen observer input mismatch");
+  for (const [path, digest] of Object.entries(controlInputs))
+    if (sha256(await regularBytes(destination, path, 131_072)) !== digest)
+      throw new Error("source integrity: frozen failure-control input mismatch");
   await writeFile(
     join(destination, "upstream.sha256"),
     sources.map(([path, , hash]) => `${hash}  ${path}\n`).join(""),
@@ -151,6 +212,8 @@ async function freezeContext(root, destination, observer = false) {
     sourceManifestSha256: checked.manifestSha256,
     recipe,
     observerInputs,
+    failureControls,
+    controlInputs,
   };
 }
 
@@ -186,7 +249,7 @@ async function regularBytes(root, relative, limit) {
   }
 }
 
-async function inventory(root, relative = "", result = {}, observer = false) {
+async function inventory(root, relative = "", result = {}, observer = false, controls = false) {
   const entries = await readdir(join(root, relative), { withFileTypes: true });
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "en"))) {
     if (!/^[a-zA-Z0-9._+~-]+$/.test(entry.name))
@@ -194,15 +257,24 @@ async function inventory(root, relative = "", result = {}, observer = false) {
     const path = relative ? `${relative}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       if (
-        !["licenses", "sources", "sources/glibc", ...(observer ? ["observer"] : [])].includes(path)
+        ![
+          "licenses",
+          "sources",
+          "sources/glibc",
+          ...(observer ? ["observer"] : []),
+          ...(controls ? ["test-controls", controlDirectory] : []),
+        ].includes(path)
       )
         throw new Error("build comparison: unexpected directory");
-      await inventory(root, path, result, observer);
+      await inventory(root, path, result, observer, controls);
     } else {
       if (!entry.isFile() || Object.keys(result).length >= 64)
         throw new Error("build comparison: invalid artifact");
       if (
-        !(observer ? observerArtifacts : requiredArtifacts).includes(path) &&
+        ![
+          ...(observer ? observerArtifacts : requiredArtifacts),
+          ...(controls ? controlArtifacts : []),
+        ].includes(path) &&
         !/^sources\/glibc\/glibc_[a-zA-Z0-9.+~-]+\.(?:dsc|tar\.(?:xz|gz|bz2)(?:\.asc)?|diff\.gz)$/.test(
           path,
         )
@@ -214,11 +286,12 @@ async function inventory(root, relative = "", result = {}, observer = false) {
   return result;
 }
 
-async function compare(first, second, observer = false) {
-  const a = await inventory(await realpath(first), "", {}, observer);
-  const b = await inventory(await realpath(second), "", {}, observer);
+async function compare(first, second, observer = false, controls = false) {
+  const a = await inventory(await realpath(first), "", {}, observer, controls);
+  const b = await inventory(await realpath(second), "", {}, observer, controls);
   if (
     (observer ? observerArtifacts : requiredArtifacts).some((path) => !(path in a)) ||
+    (controls && controlArtifacts.some((path) => !(path in a))) ||
     !Object.keys(a).some((path) => path.startsWith("sources/glibc/") && path.endsWith(".dsc")) ||
     !Object.keys(a).some((path) =>
       /^sources\/glibc\/glibc_.*\.orig\.tar\.(?:xz|gz|bz2)$/.test(path),
@@ -260,7 +333,7 @@ function run(args, timeoutMs = 30_000) {
   });
 }
 
-async function build(output, observer = false) {
+async function build(output, observer = false, controls = false) {
   const platform = (await run(["info", "--format", "{{.OSType}}/{{.Architecture}}"])).trim();
   if (platform !== "linux/x86_64")
     throw new Error(
@@ -281,7 +354,7 @@ async function build(output, observer = false) {
   let failure;
   try {
     const context = join(scratch, "context");
-    const frozen = await freezeContext(ownRoot, context, observer);
+    const frozen = await freezeContext(ownRoot, context, observer, controls);
     for (const pass of ["first", "second"]) {
       builder = `flow-native-${randomUUID()}`;
       await run([
@@ -306,6 +379,7 @@ async function build(output, observer = false) {
           "--provenance=false",
           "--sbom=false",
           ...(observer ? ["--build-arg", "FLOW_NATIVE_MODE=observer"] : []),
+          ...(controls ? ["--build-arg", "FLOW_NATIVE_FAILURE_CONTROLS=false-normal-v1"] : []),
           "--output",
           `type=local,dest=${join(scratch, pass)}`,
           context,
@@ -315,7 +389,12 @@ async function build(output, observer = false) {
       await run(["buildx", "rm", "--force", builder]);
       builder = undefined;
     }
-    const artifacts = await compare(join(scratch, "first"), join(scratch, "second"), observer);
+    const artifacts = await compare(
+      join(scratch, "first"),
+      join(scratch, "second"),
+      observer,
+      controls,
+    );
     if (observer) {
       const preserved = {
         "observer/source-manifest.json": frozen.sourceManifestSha256,
@@ -330,6 +409,21 @@ async function build(output, observer = false) {
       for (const [path, digest] of Object.entries(preserved))
         if (artifacts[path] !== digest) throw new Error("observer build provenance mismatch");
     }
+    if (controls) {
+      const preserved = {
+        ...frozen.controlInputs,
+        [`${controlDirectory}/apply-seccomp.c`]: artifacts["observer/apply-seccomp.c"],
+        [`${controlDirectory}/observer-result.h`]: frozen.observerInputs["observer-result.h"],
+      };
+      for (const [path, digest] of Object.entries(preserved))
+        if (artifacts[path] !== digest)
+          throw new Error("failure-control build provenance mismatch");
+      if (
+        artifacts[`${controlDirectory}/flow-observer-apply-seccomp-false-normal`] ===
+        artifacts["flow-observer-apply-seccomp"]
+      )
+        throw new Error("failure-control binary must differ from genuine observer");
+    }
     await mkdir(destination, { mode: 0o700 });
     for (const path of Object.keys(artifacts)) {
       await mkdir(dirname(join(destination, path)), { recursive: true, mode: 0o700 });
@@ -341,7 +435,7 @@ async function build(output, observer = false) {
     }
     await writeFile(
       join(destination, "build-evidence.json"),
-      `${JSON.stringify({ version: 1, purpose: observer ? "observer-application-result-build" : frozen.manifest.purpose, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, build: observer ? { ...frozen.manifest.build, artifact: "flow-observer-apply-seccomp", packages: [...frozen.manifest.build.packages, "patch"] } : frozen.manifest.build, ...(observer ? { observerInputs: frozen.observerInputs } : {}), comparison: "two-clean-builds-identical", artifacts, observerQualification: "not-performed" }, null, 2)}\n`,
+      `${JSON.stringify({ version: 1, purpose: controls ? "observer-application-result-build-with-test-failure-controls" : observer ? "observer-application-result-build" : frozen.manifest.purpose, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, build: observer ? { ...frozen.manifest.build, artifact: "flow-observer-apply-seccomp", packages: [...frozen.manifest.build.packages, "patch"] } : frozen.manifest.build, ...(observer ? { observerInputs: frozen.observerInputs } : {}), ...(controls ? { failureControls: frozen.failureControls } : {}), comparison: "two-clean-builds-identical", artifacts, observerQualification: "not-performed" }, null, 2)}\n`,
       { flag: "wx", mode: 0o600 },
     );
     completed = true;
@@ -380,25 +474,40 @@ try {
     process.stdout.write(
       `${JSON.stringify({ verified: true, sourceManifestSha256: checked.manifestSha256, sourceCount: sources.length })}\n`,
     );
-  } else if (["--compare", "--compare-observer"].includes(mode) && args.length === 2) {
-    const artifacts = await compare(args[0], args[1], mode === "--compare-observer");
+  } else if (
+    ["--compare", "--compare-observer", "--compare-observer-failure-controls"].includes(mode) &&
+    args.length === 2
+  ) {
+    const artifacts = await compare(
+      args[0],
+      args[1],
+      mode !== "--compare",
+      mode === "--compare-observer-failure-controls",
+    );
     process.stdout.write(
       `${JSON.stringify({ comparisonOnly: true, identical: true, artifactCount: Object.keys(artifacts).length })}\n`,
     );
   } else if (
-    ["--freeze-context", "--freeze-observer-context"].includes(mode) &&
+    [
+      "--freeze-context",
+      "--freeze-observer-context",
+      "--freeze-observer-failure-controls-context",
+    ].includes(mode) &&
     args.length === 2
   ) {
-    const observer = mode === "--freeze-observer-context";
-    const frozen = await freezeContext(args[0], args[1], observer);
+    const observer = mode !== "--freeze-context";
+    const controls = mode === "--freeze-observer-failure-controls-context";
+    const frozen = await freezeContext(args[0], args[1], observer, controls);
     process.stdout.write(
-      `${JSON.stringify({ frozenOnly: true, observerQualified: false, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, ...(observer ? { observerInputs: frozen.observerInputs } : {}) })}\n`,
+      `${JSON.stringify({ frozenOnly: true, observerQualified: false, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, ...(observer ? { observerInputs: frozen.observerInputs } : {}), ...(controls ? { failureControls: frozen.failureControls } : {}) })}\n`,
     );
   } else if (mode === "--build" && args.length === 1) await build(args[0]);
   else if (mode === "--build-observer" && args.length === 1) await build(args[0], true);
+  else if (mode === "--build-observer-failure-controls" && args.length === 1)
+    await build(args[0], true, true);
   else
     throw new Error(
-      "Use --check-sources [root], --freeze-context/--freeze-observer-context root NEW_DIRECTORY, --compare/--compare-observer first second, or --build/--build-observer NEW_OUTPUT_DIRECTORY",
+      "Use --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
     );
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : "native foundation failed"}\n`);

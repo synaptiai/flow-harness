@@ -92,10 +92,12 @@ Its purpose is `observer-application-result-build`. Its `observerQualification` 
 `not-performed`. Successful compilation or reproducibility does not qualify application results,
 private-channel custody, policy interference, or repair enablement.
 
-The focused hosted workflow builds this artifact and supplies its exact path through
-`FLOW_TEST_NATIVE_OBSERVER_HELPER`. The
+The focused hosted workflow uses the separate failure-controls mode described in the
 [native transport testing guide](../../docs/testing-and-evaluation.md#develop-the-native-result-transport-independently)
-describes the separate behavioral gate. No qualified observer artifact is included in the published package.
+to build this artifact alongside a deliberately broken negative-control executable. It supplies
+distinct paths through `FLOW_TEST_NATIVE_OBSERVER_HELPER` and
+`FLOW_TEST_NATIVE_OBSERVER_FALSE_NORMAL_HELPER`. The ordinary observer build remains available
+without that control. No qualified observer artifact is included in the published package.
 
 The first observer build and transport check passed in
 [run 34154482610](https://github.com/synaptiai/flow-harness/actions/runs/34154482610) at `e615d44`.
@@ -109,6 +111,17 @@ The expanded transport gate passed all 266 cases without skips in
 It covers every normal exit code, real SIGTERM, invalid inputs, and selected kernel-enforced failure paths.
 All 23 artifacts again matched across two clean builds; the observer binary hash remained unchanged.
 Protected writers, immutable runtime custody, full cleanup, policy interference, and repairs remain unqualified.
+
+The later [275-case qualification](../../docs/testing-and-evaluation.md#develop-the-native-result-transport-independently)
+adds bounded writer-access and held-descendant evidence. The guide owns the current results and their
+limits. The implemented signal-state and false-normal expansion still requires native execution.
+
+The explicit `--build-observer-failure-controls` mode preserves the genuine build and adds six files
+under `test-controls/false-normal/`. They retain the test executable, relinkable object, source,
+two headers, and mutation metadata. The mode changes only an owned copy of the exact worker failure
+function. Its build evidence purpose is `observer-application-result-build-with-test-failure-controls`;
+its qualification remains `not-performed`. Never distribute or use the negative-control executable
+as the observer. Ordinary build and comparison modes do not admit these additional artifacts.
 
 ## Preserve redistribution materials
 

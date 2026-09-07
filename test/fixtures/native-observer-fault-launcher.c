@@ -7,6 +7,13 @@
  * Modes: passthrough; deny-exec; deny-exec-write; deny-exec-write-kill;
  * close-app-fd. The latter validates the live application descriptor and canary
  * before closing FD 4, producing a genuinely absent-descriptor control.
+ * Also: signal-{ignored,blocked}-{passthrough,deny-exec,deny-exec-write,
+ * deny-exec-write-kill,control}. TERM/PIPE/ILL state is installed and read back
+ * immediately before execution. Control execs THIS fixed launcher, not the
+ * production helper, and proves self-TERM returns normally with exit 99.
+ * Only blocked TERM is pending afterward. No control fabricates a result frame.
+ * Caught-handler reset on exec is not qualified. In particular a synchronous
+ * SIGILL outcome alone cannot prove that inherited signal state was reset.
  *
  * FD 8 is deliberately coupled to observer-application.h's checked topology:
  * close_range(5..UINT_MAX), report pipe 5/6, then worker error pipe 7/8.
@@ -26,12 +33,16 @@
 #include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <limits.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -39,7 +50,12 @@ extern char **environ;
 static int mode_number(const char *name) {
     static const char *const names[] = {
         "passthrough", "deny-exec", "deny-exec-write",
-        "deny-exec-write-kill", "close-app-fd"
+        "deny-exec-write-kill", "close-app-fd",
+        "signal-ignored-passthrough", "signal-ignored-deny-exec",
+        "signal-ignored-deny-exec-write", "signal-ignored-deny-exec-write-kill",
+        "signal-ignored-control", "signal-blocked-passthrough",
+        "signal-blocked-deny-exec", "signal-blocked-deny-exec-write",
+        "signal-blocked-deny-exec-write-kill", "signal-blocked-control"
     };
     for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (strcmp(name, names[i]) == 0) return (int)i;
@@ -133,7 +149,118 @@ static int write_all(const char *text) {
     return 0;
 }
 
+static uint64_t controlled_mask(void) {
+    return (UINT64_C(1) << (SIGTERM - 1)) | (UINT64_C(1) << (SIGPIPE - 1)) |
+        (UINT64_C(1) << (SIGILL - 1));
+}
+
+static int inspect_signals(int state) {
+    const int signals[] = {SIGTERM, SIGPIPE, SIGILL};
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i) {
+        struct sigaction action;
+        if (sigaction(signals[i], NULL, &action) != 0 ||
+            action.sa_handler != (state == 1 ? SIG_IGN : SIG_DFL)) return -1;
+    }
+    struct sigaction alarm_action, child_action;
+    uint64_t mask = 0;
+    if (sigaction(SIGALRM, NULL, &alarm_action) != 0 || alarm_action.sa_handler != SIG_DFL ||
+        sigaction(SIGCHLD, NULL, &child_action) != 0 || child_action.sa_handler != SIG_DFL ||
+        (child_action.sa_flags & SA_NOCLDWAIT) != 0 ||
+        syscall(SYS_rt_sigprocmask, SIG_SETMASK, NULL, &mask, sizeof(mask)) != 0)
+        return -1;
+    return mask == (state == 2 ? controlled_mask() : 0) ? 0 : -1;
+}
+
+static int install_signals(int state) {
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    if (sigemptyset(&action.sa_mask) != 0) return -1;
+    action.sa_handler = SIG_DFL;
+    if (sigaction(SIGALRM, &action, NULL) != 0 || sigaction(SIGCHLD, &action, NULL) != 0)
+        return -1;
+    action.sa_handler = state == 1 ? SIG_IGN : SIG_DFL;
+    const int signals[] = {SIGTERM, SIGPIPE, SIGILL};
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i)
+        if (sigaction(signals[i], &action, NULL) != 0) return -1;
+    const uint64_t mask = state == 2 ? controlled_mask() : 0;
+    return syscall(SYS_rt_sigprocmask, SIG_SETMASK, &mask, NULL, sizeof(mask)) == 0 &&
+        inspect_signals(state) == 0 ? 0 : -1;
+}
+
+static int signal_control_child(const char *name) {
+    const int state = strcmp(name, "ignored") == 0 ? 1 : strcmp(name, "blocked") == 0 ? 2 : 0;
+    int death_signal = 0;
+    if (state == 0 || syscall(SYS_close_range, 3u, UINT_MAX, 0u) != 0 ||
+        prctl(PR_GET_PDEATHSIG, &death_signal) != 0 || death_signal != SIGKILL ||
+        getppid() <= 1 || inspect_signals(state) != 0) return 123;
+    alarm(2); // ALRM is verified default and unblocked in both states.
+    uint64_t pending = 0;
+    if (syscall(SYS_rt_sigpending, &pending, sizeof(pending)) != 0 ||
+        (pending & controlled_mask()) != 0) return 124;
+    const pid_t self = getpid();
+    if (self <= 1 || syscall(SYS_kill, self, SIGTERM) != 0 || inspect_signals(state) != 0 ||
+        syscall(SYS_rt_sigpending, &pending, sizeof(pending)) != 0) return 125;
+    const uint64_t expected = state == 2 ? UINT64_C(1) << (SIGTERM - 1) : 0;
+    if ((pending & controlled_mask()) != expected) return 126;
+    return 99; // Real normal exit after signal delivery, never a private frame.
+}
+
+static long long signal_milliseconds(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static int signal_wait(pid_t child, int *status, int budget) {
+    const long long start = signal_milliseconds();
+    if (start < 0) return -1;
+    for (;;) {
+        const pid_t waited = waitpid(child, status, WNOHANG);
+        if (waited == child) return 0;
+        if (waited < 0 && errno != EINTR) return errno == ECHILD ? -2 : -1;
+        const long long now = signal_milliseconds();
+        if (now < 0 || now - start >= budget) return -1;
+        const struct timespec pause = { .tv_sec = 0, .tv_nsec = 1000000 };
+        if (nanosleep(&pause, NULL) != 0 && errno != EINTR) return -1;
+    }
+}
+
+static int run_signal_control(int state) {
+    alarm(3);
+    /* Descriptor execution binds the child to this actual launcher ELF, not
+     * argv[0], a caller-selected command, PATH lookup or a shell. */
+    const int executable = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+    if (executable < 0) return -1;
+    const pid_t parent = getpid();
+    const pid_t child = fork();
+    if (child == 0) {
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(127);
+        char *arguments[] = {
+            "flow-observer-signal-control", "--signal-control-child",
+            state == 1 ? "ignored" : "blocked", NULL
+        };
+        char *environment[] = {"LANG=C", "LC_ALL=C", NULL};
+        (void)syscall(SYS_execveat, executable, "", arguments, environment, AT_EMPTY_PATH);
+        _exit(127);
+    }
+    const int closed = close(executable);
+    if (child < 0) return -1;
+    int status = 0;
+    const int waited = signal_wait(child, &status, 1000);
+    if (waited != 0 && waited != -2) {
+        (void)kill(child, SIGKILL); // Only the exact still-owned child.
+        (void)signal_wait(child, &status, 250);
+    }
+    if (closed != 0 || waited != 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 99)
+        return -1;
+    return write_all(state == 1
+        ? "flow-observer-signal-control:ignored:term-returned-exit-99\n"
+        : "flow-observer-signal-control:blocked:term-returned-exit-99\n");
+}
+
 int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "--signal-control-child") == 0)
+        return signal_control_child(argv[2]);
     if (argc < 7 || argc > 71 || argv[2][0] != '/' ||
         strcmp(argv[3], "--flow-observer-v1") != 0 ||
         strlen(argv[4]) != 64 || strcmp(argv[5], "--") != 0 || argv[6][0] != '/') return 120;
@@ -142,10 +269,15 @@ int main(int argc, char **argv) {
     for (unsigned int i = 0; i < 64; ++i)
         if (!((argv[4][i] >= '0' && argv[4][i] <= '9') ||
               (argv[4][i] >= 'a' && argv[4][i] <= 'f'))) return 120;
-    if (topology() != 0 || install_filter(mode) != 0) return 121;
+    const int signal_state = mode < 5 ? 0 : mode < 10 ? 1 : 2;
+    const int control = mode >= 5 && (mode - 5) % 5 == 4;
+    const int filter_mode = mode < 5 ? mode : control ? 0 : (mode - 5) % 5;
+    if (topology() != 0 || install_filter(filter_mode) != 0 ||
+        (signal_state != 0 && install_signals(signal_state) != 0)) return 121;
     if (mode == 4 && close(4) != 0) return 121;
     if (write_all("flow-observer-fault:") != 0 || write_all(argv[1]) != 0 ||
         write_all(":canary=live-regular-matches-app\n") != 0) return 121;
+    if (control) return run_signal_control(signal_state) == 0 ? 0 : 121;
     /* execve is intentionally permitted: only the actual helper's application
      * execveat is denied. The original helper and its invocation are preserved. */
     execve(argv[2], &argv[2], environ);

@@ -1,18 +1,38 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ILP32__)
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
 
 /* Fixed static Linux application, not an observer or a descriptor custodian.
  * Enumerate the real entry descriptors, excluding only our inventory directory.
  * No candidate code, startup file, network or external command is loaded. */
+static int clean_signal_state(void) {
+#if defined(__linux__) && defined(__x86_64__) && !defined(__ILP32__)
+    const int signals[] = {SIGTERM, SIGPIPE, SIGILL};
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i) {
+        struct sigaction action;
+        if (sigaction(signals[i], NULL, &action) != 0 || action.sa_handler != SIG_DFL) return -1;
+    }
+    uint64_t mask = 0;
+    return syscall(SYS_rt_sigprocmask, SIG_SETMASK, NULL, &mask, sizeof(mask)) == 0 &&
+        mask == 0 ? 0 : -1;
+#else
+    return -1; // Only Linux x64 can qualify the raw 64-bit kernel mask.
+#endif
+}
+
 int main(int argc, char **argv) {
     alarm(2);
     for (int fd = 3; fd <= 4; ++fd) {
@@ -75,6 +95,8 @@ int main(int argc, char **argv) {
         exit_code = (int)value;
     } else if (argc == 2 && strcmp(argv[1], "--signal-term") == 0) {
         terminate = 1;
+    } else if (argc == 2 && strcmp(argv[1], "--signal-clean") == 0) {
+        if (clean_signal_state() != 0) return 99;
     } else if (argc != 1) return 99;
     static const char marker[] = "flow-observer-fixed-application-exit-7\n";
     static const char parameterized_marker[] = "flow-observer-fixed-application-result\n";

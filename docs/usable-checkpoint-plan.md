@@ -342,7 +342,7 @@ The two clean builds again matched all 23 artifacts. The observer binary remaine
 
 Private-writer and descendant controls now have bounded native evidence.
 
-The implemented test expansion registers 275 cases. It adds accessible-writer counterexamples,
+The qualified 275-case expansion adds accessible-writer counterexamples,
 forged-output rejection, and held descendants with independent live, zombie, and reaped controls.
 Source review and local static checks passed.
 
@@ -358,7 +358,12 @@ at `e39737a` passed all 275 cases without skips. Both fixed descendant types pas
 host identity and settlement checks. The writer-access and live/zombie/reaped controls passed.
 All 23 clean-build artifacts matched, including the unchanged observer binary.
 
-Next, qualify inherited signal state and the false-normal negative control, then remaining reporting
+The inherited-signal controls and separately identified false-normal test build are implemented.
+The expanded suite registers 289 cases. Native execution of this expansion is pending.
+The [testing guide](testing-and-evaluation.md#develop-the-native-result-transport-independently)
+defines the direct signal-state checks, real counterexamples, and genuine-versus-mutant assertion.
+
+Next, qualify this expansion, then remaining reporting
 and cancellation failures. Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

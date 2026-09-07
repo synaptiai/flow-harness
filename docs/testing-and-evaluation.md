@@ -650,8 +650,10 @@ path while a full CI run is active. It runs only
 `test/runtime/native-observer-transport.runtime.test.ts` on Ubuntu 24.04. Its unique check name,
 `Native observer development (not full CI)`, cannot replace the full CI or release gates.
 It uses the existing sandbox prerequisites, read-only repository permissions, no model credentials,
-and a separate non-cancelling concurrency group. It builds and compares the observer artifact through
-the explicit `--build-observer` mode before passing that artifact to the runtime test.
+and a separate non-cancelling concurrency group. It uses the explicit
+`--build-observer-failure-controls` mode to compare two clean builds of the genuine observer and a
+separately identified, deliberately broken test executable. Ordinary `--build` and `--build-observer`
+modes do not produce that negative control.
 
 The job has a 30-minute limit. Each build has a separate 10-minute limit, and native process
 checks have bounded deadlines. Job expiry is a failed run, not proof of completed cleanup.
@@ -771,6 +773,46 @@ The suite took 18.14 seconds on that host. This single run is not a performance 
 These results qualify only the tested paths in this profile. Other writer-access mechanisms,
 arbitrary descendants, immutable runtime custody, outer proxy cleanup, namespace policy,
 cancellation races, and repairs remain unqualified.
+
+The next expansion adds inherited-signal controls and a false-normal negative control. These
+cases are implemented but still require native qualification. The suite now registers 289 cases.
+
+For each inherited state, the trusted launcher sets SIGTERM, SIGPIPE, and SIGILL to ignored or
+blocked immediately before execution. An independent post-execution control must observe that state
+and return normally after sending SIGTERM to itself. Only the blocked case can retain pending SIGTERM.
+The actual observer-launched application must then observe default dispositions and an empty signal
+mask. Additional cases require the original application and failure results under each inherited state.
+A SIGILL result alone cannot prove signal reset because the kernel can force synchronous signal delivery.
+
+The build creates the negative control from a separate copy of the actual observer source. It changes
+only the worker failure function's final termination sequence to `_exit(0)`, preserving its attempt
+to report the failure. The build must reject a missing, duplicate, or changed mutation target.
+Separate source, header, object, executable, and mutation metadata identify the control. Both clean
+builds must match, and the mutant executable must differ from the genuine executable.
+
+The runtime gate first requires the mutant to transport a real application's normal exit zero.
+After execution and error reporting are denied, it must produce an exact private normal-zero record
+without application output. The same assertion that accepts the genuine signal-9 failure must reject
+that false-normal record. An unrelated launch or transport error cannot satisfy this test. A genuine
+application exit zero must remain accepted.
+
+To reproduce this gate, use an admitted Linux x64 host. Create a new output directory with the explicit
+test-only build mode, then select both executable paths:
+
+```sh
+node native/verification-observer/build.mjs --build-observer-failure-controls /absolute/path/to/new-test-output
+FLOW_TEST_NATIVE_OBSERVER_HELPER=/absolute/path/to/new-test-output/flow-observer-apply-seccomp \
+FLOW_TEST_NATIVE_OBSERVER_FALSE_NORMAL_HELPER=/absolute/path/to/new-test-output/test-controls/false-normal/flow-observer-apply-seccomp-false-normal \
+  npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts
+```
+
+Use the workflow's isolated launcher if your test runner inherits unrelated descriptors. Missing or
+mismatched artifacts fail the native gate. `build-evidence.json` binds both executables and all six
+test-control files. Its `observerQualification` remains `not-performed`. The runtime gate trusts the
+in-job builder to enforce the exact source mutation. It does not independently qualify untrusted build bundles.
+
+Do not distribute the mutant
+or use it for issue execution. These controls do not enable repairs or qualify remaining failure paths.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure

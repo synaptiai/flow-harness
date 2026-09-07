@@ -2058,3 +2058,59 @@ namespace restrictions and complete policy-interference history. All broader des
 Final evidence review corrected one P3 precision finding: frame-triggered asynchronous observation
 does not prove atomic absence at the instant the frame arrived or completion before output EOF.
 Public evidence now states the actual acceptance ordering and explicitly retains that limitation.
+
+### Qualify inherited signals and a false-normal counterexample
+
+The previous goal turn made verified progress: the 275-case native gate passed and its reviewed
+evidence was committed as2e98b51. The current tree is clean at that commit, and GitHub confirms
+run34157941663 is terminal success at e39737a. The full usable-checkpoint objective remains active.
+
+Criterion1 (real inherited state and reset): use the existing calibrated inside-bwrap launcher to
+install ignored or blocked TERM/PIPE/ILL immediately before helper execution. Fixed owned children
+must independently verify the state after exec and show that self-TERM returns normally, with the
+pending bit present only for blocked TERM. No synthetic private record is permitted. The actual
+application must inspect default dispositions and an empty mask before marker+exit7. Also preserve
+real TERM15, denied execution, denied reporting/SIGKILL9 and denied self-kill/SIGILL4. SIGILL alone
+does not prove signal reset, and caught-handler inheritance is not claimed.
+
+Criterion2 (false-normal sensitivity): build a separately named test-only executable by changing
+only the exact worker failure suffix in an owned copy to _exit(0). Preserve failed report writing.
+First prove real application exit0 through that executable. Then deny actual execution and reporting,
+require complete mutant normal0 transport with no application marker, and require the SAME genuine
+signal9 assertion to reject that record. Genuine controls before/after must still pass. The mutant
+must never replace genuine source/header/artifact names or enter a production release.
+
+Verification for both criteria: the existing hosted workflow invokes `npm run test:runtime --
+test/runtime/native-observer-transport.runtime.test.ts` with distinct absolute genuine and false-normal
+helper paths. Expected evidence is zero-skips real Linux x64 controls, valid private framing/EOF,
+exact markers/statuses, and two identical clean artifact inventories with explicit mutant provenance.
+The combined failure-controls build reuses each existing builder for one additional small compile/link.
+Default baseline/observer build modes remain unchanged. Local source/mutation/build admission tests,
+typecheck, lint, formatting, and documentation gates precede the hosted run.
+
+The workflow regression produced actual RED for the missing explicit failure-controls build mode,
+then GREEN after wiring the separate paths. Native controls remain unqualified until actual execution.
+Not promised: all signals/active handlers, arbitrary application or concurrency behavior, cancellation,
+remaining reporting failures, immutable runtime custody, outer relays, namespace-policy history,
+fixture denial, behavioral repair selection, full CI, a new model run, or release readiness.
+
+The build-tool TDD run exposed 13 new failures before implementation, then passed all 41 cases.
+The workflow regression also moved from actual missing-mode RED to GREEN. The full focused set
+passed all 375 cases across eight files. Its first sandboxed run passed 372 and failed three existing
+Unix-socket producer cases with EPERM; the unchanged suite passed with local socket permission.
+Those initial failures are environment admission evidence, not a source regression or Linux result.
+
+Full typecheck, lint, formatting, production build, pinned-source checks, transport application C
+syntax checks, all 29 documentation tests, and all three documentation gates passed. Mac collection
+registers and skips all 289 native cases. There are no Linux execution claims for this expansion yet.
+The existing informational lint note in external-harness-adapter.ts remains untouched.
+
+The testing guide records exact build/runtime commands and the runtime's trust in the in-job builder
+for the anchored mutation relation. Runtime identity checks are not independent qualification of
+untrusted source bundles. The architecture diagram records the separate test-only executable.
+All 15 changed files are in the approved qualification scope; no production observer headers, patch,
+published package identities, credentials, or model execution settings changed.
+
+Final independent source, test, workflow, build, and public-documentation review found no remaining
+P1–P3 issues. The reviewer explicitly retained native execution as a mandatory next gate and
+confirmed that historical 275-case evidence does not qualify the new 289-case expansion.

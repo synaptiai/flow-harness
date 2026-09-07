@@ -42,12 +42,15 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain("npm ci --ignore-scripts");
     expect(commands).toContain("npm run build");
     expect(commands).toContain(
-      'node native/verification-observer/build.mjs --build-observer "$RUNNER_TEMP/flow-native-observer"',
+      'node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"',
     );
     expect(job.steps.at(-1).env).toEqual({
       FLOW_TEST_NATIVE_OBSERVER_HELPER:
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal GitHub runner path expression.
         "${{ runner.temp }}/flow-native-observer/flow-observer-apply-seccomp",
+      FLOW_TEST_NATIVE_OBSERVER_FALSE_NORMAL_HELPER:
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal separately identified test-only artifact path.
+        "${{ runner.temp }}/flow-native-observer/test-controls/false-normal/flow-observer-apply-seccomp-false-normal",
     });
     expect(commands).toContain(
       "/usr/bin/python3 -I -S -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))'",

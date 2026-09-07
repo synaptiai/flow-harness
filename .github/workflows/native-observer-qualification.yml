@@ -57,14 +57,15 @@ jobs:
       - name: Build the production runtime
         run: npm run build
 
-      - name: Compare two clean observer builds
+      - name: Compare two clean observer builds and separate failure controls
         run: |
-          node native/verification-observer/build.mjs --build-observer "$RUNNER_TEMP/flow-native-observer"
+          node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"
           cat "$RUNNER_TEMP/flow-native-observer/build-evidence.json"
 
       - name: Test the native application-result path
         env:
           FLOW_TEST_NATIVE_OBSERVER_HELPER: ${{ runner.temp }}/flow-native-observer/flow-observer-apply-seccomp
+          FLOW_TEST_NATIVE_OBSERVER_FALSE_NORMAL_HELPER: ${{ runner.temp }}/flow-native-observer/test-controls/false-normal/flow-observer-apply-seccomp-false-normal
         # The hosted parent can have inherited non-CLOEXEC pipes. Isolate only
         # the test child; never close or change the parent runner's descriptors.
         # This is not evidence of the native observer's own descriptor custody.

@@ -4,6 +4,8 @@ umask 022
 test "$(uname -m)" = x86_64
 mode=${1:-baseline}
 case "$mode" in baseline|observer) ;; *) exit 1 ;; esac
+controls=${2:-none}
+case "$mode:$controls" in baseline:none|observer:none|observer:false-normal-v1) ;; *) exit 1 ;; esac
 mkdir -p /build /out/licenses /out/sources/glibc
 cd /build
 gcc -static -O2 -Wall -Wextra -ffile-prefix-map=/source=. -ffile-prefix-map=/build=. \
@@ -41,6 +43,23 @@ if [ "$mode" = observer ]; then
   cp apply-seccomp.c observer.patch observer-application.h observer-result.h /out/observer/
   cp /source/upstream/apply-seccomp.c /out/observer/upstream-apply-seccomp.c
   cp /source/source-manifest.json /out/observer/source-manifest.json
+  if [ "$controls" = false-normal-v1 ]; then
+    # Never mutate /source, the genuine TU directory, or genuine output. Quoted
+    # header lookup resolves within this physically separate test-only copy.
+    mkdir -p /build/test-controls/false-normal /out/test-controls/false-normal
+    cp /build/observer/apply-seccomp.c /build/observer/observer-result.h /build/test-controls/false-normal/
+    cp /source/test-controls/false-normal/observer-application.h /source/test-controls/false-normal/mutation.json /build/test-controls/false-normal/
+    cd /build/test-controls/false-normal
+    gcc -O2 -Wall -Wextra -Werror -ffile-prefix-map=/source=. -ffile-prefix-map=/build=. \
+      -fdebug-prefix-map=/out=. -frandom-seed=flow-observer-apply-seccomp \
+      -I /out -c apply-seccomp.c -o /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal.o
+    gcc -static -Wl,--build-id=none -o /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal.o
+    strip --strip-all /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal
+    readelf --file-header /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal | grep -q 'Advanced Micro Devices X86-64'
+    if readelf --program-headers /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal | grep -q INTERP; then exit 1; fi
+    if readelf --dynamic /out/test-controls/false-normal/flow-observer-apply-seccomp-false-normal | grep -q NEEDED; then exit 1; fi
+    cp apply-seccomp.c observer-application.h observer-result.h mutation.json /out/test-controls/false-normal/
+  fi
 fi
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' | LC_ALL=C sort > /out/toolchain.txt
 gcc --version >> /out/toolchain.txt

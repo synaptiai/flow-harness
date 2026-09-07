@@ -409,8 +409,10 @@ result acceptance, not atomic ordering between frame arrival and termination.
 The [testing guide](testing-and-evaluation.md#develop-the-native-result-transport-independently)
 retains the preceding fixture failure, diagnostic proof, correction, and exact evidence scope.
 
-This closes those bounded controls only. Qualify inherited ignored and blocked signal state next,
-with negative controls that expose false normal-exit classification. Remaining reporting failures,
+This closes those bounded controls only. The next test expansion implements inherited ignored and
+blocked signal-state checks and a separately identified false-normal executable. It inspects actual
+application dispositions and masks, then requires the genuine failure assertion to reject the mutant's
+complete false-normal result. Native qualification of this expansion is pending. Remaining reporting failures,
 cancellation, immutable custody, outer relays, and policy interference remain mandatory.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before

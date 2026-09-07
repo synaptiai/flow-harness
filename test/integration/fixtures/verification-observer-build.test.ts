@@ -242,7 +242,7 @@ const observerArtifacts = [
   ...observerInputs.map((name) => `observer/${name}`),
 ];
 
-for (const mode of ["--build", "--build-observer"]) {
+for (const mode of ["--build", "--build-observer", "--build-observer-failure-controls"]) {
   it(
     `dispatches ${mode} through Docker admission, not a synthetic successful build`,
     ownedTest(async (scope) => {
@@ -334,6 +334,139 @@ it(
     const second = await observerComparisonFixture(scope);
     await writeFile(join(second, "observer/apply-seccomp.c"), "different\n");
     await expect(command("--compare-observer", first, second)).rejects.toThrow(
+      "different artifacts",
+    );
+  }),
+);
+
+const controlDirectory = "test-controls/false-normal";
+const controlArtifacts = [
+  "flow-observer-apply-seccomp-false-normal",
+  "flow-observer-apply-seccomp-false-normal.o",
+  "apply-seccomp.c",
+  "observer-application.h",
+  "observer-result.h",
+  "mutation.json",
+].map((name) => `${controlDirectory}/${name}`);
+const originalFailStop =
+  '    if (cached_pid > 1) (void)syscall(SYS_kill, cached_pid, SIGKILL);\n    for (;;) __asm__ volatile("ud2");';
+const falseNormal = "    (void)cached_pid;\n    _exit(0);";
+
+async function actualObserverSources(scope: OwnedTestScope) {
+  const root = await copySources(scope);
+  for (const name of observerInputs) await copyFile(join(foundation, name), join(root, name));
+  return root;
+}
+
+it(
+  "derives a separately identified false-normal header from actual source without changing original inputs",
+  ownedTest(async (scope) => {
+    const root = await actualObserverSources(scope);
+    const before = await readFile(join(root, "observer-application.h"));
+    const destination = join(root, "frozen");
+    const result = await command("--freeze-observer-failure-controls-context", root, destination);
+    const expected = before.toString("utf8").replace(originalFailStop, falseNormal);
+    expect(expected).not.toBe(before.toString("utf8"));
+    expect(await readFile(join(root, "observer-application.h"))).toEqual(before);
+    expect(await readFile(join(destination, "observer/observer-application.h"))).toEqual(before);
+    expect(
+      await readFile(join(destination, controlDirectory, "observer-application.h"), "utf8"),
+    ).toBe(expected);
+    const mutation = JSON.parse(
+      await readFile(join(destination, controlDirectory, "mutation.json"), "utf8"),
+    );
+    expect(mutation).toEqual({
+      version: 1,
+      purpose: "test-only-false-normal-negative-control",
+      mutationId: "worker-fail-normal-zero-v1",
+      originalHeaderSha256: createHash("sha256").update(before).digest("hex"),
+      mutantHeaderSha256: createHash("sha256").update(expected).digest("hex"),
+      replacement: {
+        original: expect.stringContaining(originalFailStop),
+        replacement: expect.stringContaining(falseNormal),
+      },
+    });
+    expect(mutation.replacement.original).toContain("static void flow_observer_worker_fail(");
+    expect(mutation.replacement.replacement).toBe(
+      mutation.replacement.original.replace(originalFailStop, falseNormal),
+    );
+    expect(result.failureControls).toEqual(mutation);
+    expect(result).toMatchObject({ frozenOnly: true, observerQualified: false });
+  }),
+);
+
+for (const invalid of ["missing", "duplicate", "wrong-function"] as const) {
+  it(
+    `rejects ${invalid} fail-stop mutation anchors before writing a build context`,
+    ownedTest(async (scope) => {
+      const root = await actualObserverSources(scope);
+      const header = join(root, "observer-application.h");
+      const original = await readFile(header, "utf8");
+      const changed =
+        invalid === "missing"
+          ? original.replace(originalFailStop, falseNormal)
+          : invalid === "duplicate"
+            ? original + original
+            : original.replace(
+                "static void flow_observer_worker_fail(",
+                "static void unrelated_worker_fail(",
+              );
+      await writeFile(header, changed);
+      const destination = join(root, "frozen");
+      await expect(
+        command("--freeze-observer-failure-controls-context", root, destination),
+      ).rejects.toThrow("false-normal mutation anchor");
+      await expect(readFile(join(destination, "source-manifest.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await readFile(header, "utf8")).toBe(changed);
+    }),
+  );
+}
+
+async function controlComparisonFixture(scope: OwnedTestScope) {
+  const root = await observerComparisonFixture(scope);
+  await mkdir(join(root, controlDirectory), { recursive: true });
+  for (const path of controlArtifacts)
+    await writeFile(join(root, path), `synthetic comparison only: ${path}\n`);
+  return root;
+}
+
+it(
+  "compares complete failure controls only in their explicit mode",
+  ownedTest(async (scope) => {
+    const first = await controlComparisonFixture(scope);
+    const second = await controlComparisonFixture(scope);
+    expect(await command("--compare-observer-failure-controls", first, second)).toEqual({
+      comparisonOnly: true,
+      identical: true,
+      artifactCount: artifactNames.length + observerArtifacts.length + controlArtifacts.length,
+    });
+    await expect(command("--compare-observer", first, second)).rejects.toThrow("unexpected");
+  }),
+);
+
+for (const missing of controlArtifacts) {
+  it(
+    `requires false-normal provenance and artifact ${missing}`,
+    ownedTest(async (scope) => {
+      const first = await controlComparisonFixture(scope);
+      const second = await controlComparisonFixture(scope);
+      for (const root of [first, second]) await rm(join(root, missing));
+      await expect(command("--compare-observer-failure-controls", first, second)).rejects.toThrow(
+        "incomplete",
+      );
+    }),
+  );
+}
+
+it(
+  "rejects different mutant header bytes across clean builds",
+  ownedTest(async (scope) => {
+    const first = await controlComparisonFixture(scope);
+    const second = await controlComparisonFixture(scope);
+    await writeFile(join(second, controlDirectory, "observer-application.h"), "different\n");
+    await expect(command("--compare-observer-failure-controls", first, second)).rejects.toThrow(
       "different artifacts",
     );
   }),

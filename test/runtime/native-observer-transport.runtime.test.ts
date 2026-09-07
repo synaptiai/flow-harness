@@ -14,7 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -61,12 +61,15 @@ const resultMarker = "flow-observer-fixed-application-result\n";
 const canaryDiagnostic =
   "unexpected-fd=19 inventory-fd=3 flags=0 fd-errno=0 kind=regular stat-errno=0\n";
 const upstreamSha256 = "5c92b0f369a626f5d7cb27d7912cfa882dc26a3690f17cc0016480c5b8b01df7";
+type SignalState = "ignored" | "blocked";
+type SignalFault = "passthrough" | "deny-exec" | "deny-exec-write" | "deny-exec-write-kill";
 type FaultMode =
   | "passthrough"
   | "deny-exec"
   | "deny-exec-write"
   | "deny-exec-write-kill"
-  | "close-app-fd";
+  | "close-app-fd"
+  | `signal-${SignalState}-${SignalFault | "control"}`;
 type OwnedApplication = { path: string; handle: FileHandle };
 type Fixture = {
   home: string;
@@ -89,6 +92,8 @@ type Fixture = {
   faultCalibration?: Promise<void>;
   hostCalibration?: Promise<void>;
   zombieCalibration?: Promise<void>;
+  signalCalibrations?: Partial<Record<SignalState, Promise<void>>>;
+  falseNormal?: { helper: string; sandbox: SrtCommandSandbox; calibration?: Promise<void> };
 };
 type CaptureHooks = {
   onStarted?: (signal: AbortSignal) => Promise<void>;
@@ -361,6 +366,9 @@ describe
         expected: { kind: "signalled", signal: 4, clone3FallbackUsed: false },
       },
     ] as const;
+    function expectDeniedReporting(record: ReturnType<typeof parseNativeObserverResult>) {
+      expect(record).toEqual(faults[1].expected);
+    }
     it.for(faults)(
       "keeps real $mode failure out of normal application results",
       { timeout: 45_000 },
@@ -369,9 +377,100 @@ describe
           await requireArtifact(value, context.signal);
           await calibrateFaults(value, context.signal);
           const result = await observe(value, context.signal, { fault: mode });
-          expect(result.record).toEqual(expected);
+          if (mode === "deny-exec-write") expectDeniedReporting(result.record);
+          else expect(result.record).toEqual(expected);
           expectTransport(result, "", faultMarker(mode));
         }),
+    );
+
+    it.for(["ignored", "blocked"] as const)(
+      "calibrates real %s signals across exec without the observer",
+      { timeout: 45_000 },
+      (state, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateSignals(value, state, context.signal);
+        }),
+    );
+
+    const signalCases = (["ignored", "blocked"] as const).flatMap((state) => [
+      {
+        state,
+        mode: `signal-${state}-passthrough` as const,
+        label: "checked clean dispositions and mask",
+        args: ["--signal-clean"],
+        expected: { kind: "normal_exit", exitCode: 7, clone3FallbackUsed: false },
+        output: resultMarker,
+      },
+      {
+        state,
+        mode: `signal-${state}-passthrough` as const,
+        label: "actual SIGTERM",
+        args: ["--signal-term"],
+        expected: { kind: "signalled", signal: 15, clone3FallbackUsed: false },
+        output: resultMarker,
+      },
+      ...faults.map(({ mode, expected }) => ({
+        state,
+        mode: `signal-${state}-${mode}` as const,
+        label: mode,
+        args: [] as string[],
+        expected,
+        output: "",
+      })),
+    ]);
+    it.for(signalCases)(
+      "preserves $label after inherited $state signal state",
+      { timeout: 45_000 },
+      ({ state, mode, args, expected, output }, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateSignals(value, state, context.signal);
+          const result = await observe(value, context.signal, { fault: mode, args });
+          expect(result.record).toEqual(expected);
+          expectTransport(result, output, faultMarker(mode));
+        }),
+    );
+
+    it(
+      "calibrates the separate false-normal mutant with real application exit zero",
+      (context) =>
+        runCase(context, async (value) => {
+          await calibrateFalseNormal(value, context.signal);
+        }),
+      45_000,
+    );
+
+    it(
+      "rejects a real false-normal mutant through the genuine failed-report assertion",
+      (context) =>
+        runCase(context, async (value) => {
+          await calibrateFalseNormal(value, context.signal);
+          const genuine = await observe(value, context.signal, { fault: "deny-exec-write" });
+          expectDeniedReporting(genuine.record);
+          expectTransport(genuine, "", faultMarker("deny-exec-write"));
+          const mutant = await observe(falseNormalFixture(value), context.signal, {
+            fault: "deny-exec-write",
+          });
+          // Prove a healthy transport carrying the precise false classification
+          // BEFORE invoking the same assertion as the genuine failure case.
+          expect(mutant.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 0,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(mutant, "", faultMarker("deny-exec-write"));
+          expect(() => expectDeniedReporting(mutant.record)).toThrowError();
+          // The deliberately broken helper never replaces the genuine fixture.
+          const restored = await observe(value, context.signal, { args: ["--exit", "0"] });
+          expect(restored.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 0,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(restored, resultMarker, "");
+        }),
+      45_000,
     );
 
     it(
@@ -665,6 +764,66 @@ async function createFixture(
     zombieParent,
   ])
     artifacts.push({ path, before: await identity(path) });
+  let falseNormal: Fixture["falseNormal"];
+  const mutantInput = process.env.FLOW_TEST_NATIVE_OBSERVER_FALSE_NORMAL_HELPER;
+  if (mutantInput !== undefined) {
+    if (selected === undefined)
+      throw new Error("Failure controls require an explicit genuine helper");
+    const buildRoot = dirname(helper);
+    const relativeRoot = "test-controls/false-normal";
+    const controlRoot = join(buildRoot, relativeRoot);
+    const expectedPath = join(controlRoot, "flow-observer-apply-seccomp-false-normal");
+    if (mutantInput !== expectedPath || (await realpath(mutantInput)) !== mutantInput)
+      throw new Error("Expected the separate canonical false-normal build artifact");
+    const evidencePath = join(buildRoot, "build-evidence.json");
+    const tracked = [
+      evidencePath,
+      ...[
+        "flow-observer-apply-seccomp-false-normal",
+        "flow-observer-apply-seccomp-false-normal.o",
+        "apply-seccomp.c",
+        "observer-application.h",
+        "observer-result.h",
+        "mutation.json",
+      ].map((name) => join(controlRoot, name)),
+    ];
+    for (const path of tracked) {
+      if ((await realpath(path)) !== path) throw new Error("Indirect failure-control artifact");
+      artifacts.push({ path, before: await identity(path) });
+    }
+    const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+    const mutation = JSON.parse(await readFile(join(controlRoot, "mutation.json"), "utf8"));
+    expect(evidence).toMatchObject({
+      version: 1,
+      purpose: "observer-application-result-build-with-test-failure-controls",
+      comparison: "two-clean-builds-identical",
+      failureControls: mutation,
+    });
+    const originalHeader = await readFile(
+      new URL("../../native/verification-observer/observer-application.h", import.meta.url),
+    );
+    expect(mutation).toMatchObject({
+      version: 1,
+      purpose: "test-only-false-normal-negative-control",
+      mutationId: "worker-fail-normal-zero-v1",
+      originalHeaderSha256: createHash("sha256").update(originalHeader).digest("hex"),
+      mutantHeaderSha256: (await identity(join(controlRoot, "observer-application.h"))).sha256,
+    });
+    expect(evidence.artifacts["flow-observer-apply-seccomp"]).toBe((await identity(helper)).sha256);
+    for (const path of tracked.slice(1)) {
+      const relative = `${relativeRoot}/${path.slice(controlRoot.length + 1)}`;
+      expect(evidence.artifacts[relative]).toBe((await identity(path)).sha256);
+    }
+    expect((await identity(mutantInput)).sha256).not.toBe((await identity(helper)).sha256);
+    falseNormal = {
+      helper: mutantInput,
+      sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
+        backendVersion: "0.0.70",
+        environment,
+        seccompApplyPath: mutantInput,
+      }),
+    };
+  }
   expect(
     JSON.parse(
       await readFile(
@@ -704,6 +863,7 @@ async function createFixture(
     helper,
     explicitHelper: selected !== undefined,
     faultLauncher,
+    ...(falseNormal === undefined ? {} : { falseNormal }),
     sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
       backendVersion: "0.0.70",
       environment,
@@ -788,6 +948,27 @@ function faultMarker(mode: FaultMode) {
   return `flow-observer-fault:${mode}:canary=live-regular-matches-app\n`;
 }
 
+function falseNormalFixture(value: Fixture): Fixture {
+  if (value.falseNormal === undefined)
+    throw new Error("Missing separately identified false-normal failure control");
+  return { ...value, helper: value.falseNormal.helper, sandbox: value.falseNormal.sandbox };
+}
+
+async function calibrateFalseNormal(value: Fixture, signal: AbortSignal): Promise<void> {
+  await requireArtifact(value, signal);
+  if (value.falseNormal === undefined)
+    throw new Error(
+      "FLOW_TEST_NATIVE_OBSERVER_FALSE_NORMAL_HELPER is required for mutation controls",
+    );
+  value.falseNormal.calibration ??= (async () => {
+    await calibrateFaults(value, signal);
+    const result = await observe(falseNormalFixture(value), signal, { args: ["--exit", "0"] });
+    expect(result.record).toEqual({ kind: "normal_exit", exitCode: 0, clone3FallbackUsed: false });
+    expectTransport(result, resultMarker, "");
+  })();
+  await value.falseNormal.calibration;
+}
+
 function calibrateFaults(value: Fixture, signal: AbortSignal): Promise<void> {
   value.faultCalibration ??= (async () => {
     const result = await observe(value, signal, { fault: "passthrough" });
@@ -795,6 +976,26 @@ function calibrateFaults(value: Fixture, signal: AbortSignal): Promise<void> {
     expectTransport(result, marker, faultMarker("passthrough"));
   })();
   return value.faultCalibration;
+}
+
+function calibrateSignals(value: Fixture, state: SignalState, signal: AbortSignal): Promise<void> {
+  value.signalCalibrations ??= {};
+  value.signalCalibrations[state] ??= (async () => {
+    await calibrateFaults(value, signal);
+    const mode = `signal-${state}-control` as const;
+    const result = await observe(value, signal, { fault: mode });
+    // This real post-exec counterexample is not a private application result.
+    // The fixed child checks dispositions, mask and actual TERM pending state;
+    // its parent requires exact normal exit 99 and reaps it before this marker.
+    expect(result.record).toBeNull();
+    expect(result.privateBytes.length).toBe(0);
+    expectTransport(
+      result,
+      "",
+      `${faultMarker(mode)}flow-observer-signal-control:${state}:term-returned-exit-99\n`,
+    );
+  })();
+  return value.signalCalibrations[state];
 }
 
 async function observe(
