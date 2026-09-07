@@ -302,6 +302,11 @@ skips. Type checking, lint, formatting, build, capability-reference, and documen
 The two original timeout cases also passed separately with unchanged deadlines. These results do
 not explain the earlier timing failures or constitute a complete repository test run.
 
+A later passing Mac measurement localized most callback time to lifecycle execution and verification,
+not setup or assertions. Initial execution accounted for about 92% of the repair-case callback.
+Verification accounted for about 77% of the ignored-output callback. This single sample did not
+reproduce the original timeouts, and cleanup was not measured. Keep the timing investigation open.
+
 In particular, generic error codes do not prove a behavioral defect, and the current shared
 command sandbox does not establish a trusted verifier-result channel. Prove verifier isolation before
 enabling repair selection. This approval does not authorize another pilot, retained-candidate modification, publication, or merge.

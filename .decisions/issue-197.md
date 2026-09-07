@@ -1176,3 +1176,44 @@ B's identity-provisioning and recovery costs, and C's incomplete usability outco
 design states that upstream attestation does not authenticate a custom binary and that no existing
 native command policy changes implicitly. Documentation style, links, and changed-prose gates passed
 after splitting long prose. No executable code changed in this diagnosis update.
+
+### Temporary Mac phase measurement
+
+While the revised native-boundary decision remained pending, the independent timing investigation
+continued within the approved test-correction scope. The agent added 34 temporary diagnostic lines
+to the two previously slow test bodies. They recorded static phase names, monotonic elapsed times,
+and completion/abort status only. Original awaits, assertions, deadlines, and owned-scope cleanup
+were unchanged. Full type checking passed in agent session 55624. The selected two-case run used
+one worker and host permission for its localhost ownership locks.
+
+Agent session 63436 passed both cases, with 35 name-filtered skips, 63.61 seconds reported in tests,
+and 67.53 seconds total. Both callbacks reported completed=true and aborted=false. Raw output was
+returned in tool chunks b5d222 and 3ba333, not saved to a disk log. The phase durations below are
+milliseconds, rounded to three decimal places:
+
+| Phase | Two repair cycles | Ignored output |
+| --- | ---: | ---: |
+| Fixture setup | 289.858 | 1080.004 |
+| Service construction | 3.051 | Not applicable |
+| Initial execution or verification | 53881.716 | 3637.084 |
+| Evidence or filesystem assertions | 53.177 | 0.281 |
+| Resume construction | 1.291 | Not applicable |
+| Resume execution | 4592.566 | Not applicable |
+| Final assertions | 12.099 | Not applicable |
+| Complete callback | 58833.757 | 4717.369 |
+
+Main independently summed the unrounded phase values: 58833.757333 and 4717.369375 ms. Initial
+execution accounts for 91.583% of the repair callback, resume for 7.806%, and verification for
+77.100% of the ignored-output callback. The two callback totals sum to 63.551 seconds. These
+nonoverlapping callback phase sums exclude owned-scope cleanup and runner startup/teardown.
+
+The measurement localizes time in one passing sample. It does not reproduce either earlier
+timeout or establish a production bottleneck, filesystem cause, process-startup cause, or host
+scheduling cause. No durability check, integrity proof, timeout, or production code was relaxed.
+If further diagnosis is needed, subdivide the measured initial execution boundary rather than
+optimizing fixture setup from assumption. Keep the original timeout-cause item open.
+
+The agent removed all temporary lines with inverse apply_patch and verified both original SHA-256
+file hashes. Main independently confirmed no test-file diff and a clean worktree at
+cce5321ee15a44c14316943ec594dac03d353ec4 before this evidence update. No instrumentation is retained
+or proposed for publication, and no new security profile or model run was started.
