@@ -416,3 +416,50 @@ payment/quota, and request-rejection statuses are nonretryable. A 429 or documen
 timeout/gateway/server status remains retryable when the node's ordinary effect and resource gates
 allow recovery. Keep raw provider text, credentials, and nested causes private. Rerun only after the
 selected provider credential is restored and `flow issue doctor` passes.
+
+## September 7, 2026: no-input admission process race
+
+Hosted CI run `34104676944` at `c99836b` failed one of 6,687 quality tests. The failing
+production lifecycle test was `binds two repair cycles to fresh reviews and publishes only the
+final candidate`. Git admission returned `command_failed` before implementation. Dependency
+audit passed. The proof-runtime job was still running when this correction was prepared.
+
+The retained failure does not include the Git subcommand, native error, exit status, or signal.
+The failing admission files were unchanged from qualified source `544aebc`. These observations
+do not establish the historical cause, and a passing rerun cannot establish it either.
+
+An independent real-process experiment confirmed a defect in `runStrictReadProcess`.
+Calling `child.stdin.end("")` can emit `EPIPE` after a successful no-input child has closed stdin.
+The existing handler then reports `command_failed`, despite the child's zero exit status.
+Without a scheduling delay, 100 `/usr/bin/true` calls passed. With delayed parent delivery,
+10 of 10 failed incorrectly. A real Git admission probe reproduced the same error in two of
+three delayed calls. Omitting the empty payload passed all 10 counterfactual calls.
+
+Close stdin without a payload when input is absent or empty. Preserve byte-exact nonempty input
+delivery and the existing rejection of genuine input errors, nonzero exits, timeouts, and aborts.
+This is a narrow process correction, not verification-failure repair or permission relaxation.
+Node's [writable stream contract](https://nodejs.org/api/stream.html#writableendchunk-encoding-callback)
+distinguishes closing a stream from providing an optional final chunk.
+
+The regression suite uses real subprocesses and a readiness marker to order child stdin closure
+before parent delivery. Its spawn wrapper controls scheduling only, not outputs, exits, or errors.
+Before the correction, the absent-input and empty-input tests failed and five safety tests passed.
+After the correction, all seven passed. Independent review found no P1, P2, or P3 findings and
+passed all 55 tests across the regression and existing Git/GitHub admission suites.
+
+Type checking, lint, formatting, compilation, documentation style, local documentation links,
+changed-prose checks, and whitespace checks passed. Lint retained one pre-existing informational
+constructor suggestion outside this change.
+
+The first local production lifecycle rerun stopped at a sandbox-denied loopback listener
+(`listen EPERM`), not Git admission. The permitted rerun exceeded its unchanged 240-second test
+timeout while compilation also ran. Neither result is a passing lifecycle check. A standalone
+rerun started after compilation finished, with the original timeout. Read-only inspection found
+substantial cumulative Git, subprocess, and durable-write work, but no proven timeout cause.
+The standalone rerun passed in 178.51 seconds of test execution (187.77 seconds total).
+It selected one test and skipped the other ten. This does not erase the preceding timeout or
+establish its cause. No timeout or production resource limit changed.
+
+The new verification-repair proposal remains unapproved. No new pilot, temporary credential,
+candidate edit, publication, or merge is authorized by this correction. Updated package bytes
+must be qualified again before they can inherit any installed-package success claim.

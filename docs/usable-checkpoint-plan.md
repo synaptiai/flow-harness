@@ -269,6 +269,13 @@ Focused compiler, reducer, persisted-ledger, and real-Git tests have passed. Usa
 documentation are updated. Independent source and test audits identified defects that were
 corrected before final qualification.
 
+The later [quality job](https://github.com/synaptiai/flow-harness/actions/runs/34104676944/job/101686854110)
+failed one of 6,687 tests during Git admission. Investigation reproduced a separate empty-input
+pipe race and added a focused correction with seven passing regression tests. Independent review
+also passed the existing admission suites. The retained CI diagnostics cannot establish that race
+as the historical failure's cause. This correction still requires fresh hosted qualification and
+does not enable verification-failure repair or authorize another pilot.
+
 Local verification passed 6,683 coverage tests, 44 runtime
 tests, and two browser tests, plus build, type checking, formatting, lint, and documentation gates.
 The local runtime suite skipped 42 platform-specific tests. Installed-package live qualification

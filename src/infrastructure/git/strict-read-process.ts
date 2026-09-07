@@ -137,7 +137,13 @@ export async function runStrictReadProcess(request: StrictReadProcessRequest): P
     child.stdin.once("error", () => {
       stop(new StrictReadProcessError("command_failed"));
     });
-    child.stdin.end(request.stdin ?? "");
+    // Even an empty chunk can race a successful child that has already closed its input.
+    // Close without writing when no input bytes are required.
+    if (request.stdin === undefined || request.stdin.length === 0) {
+      child.stdin.end();
+    } else {
+      child.stdin.end(request.stdin);
+    }
   });
 }
 
