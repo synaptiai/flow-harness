@@ -242,6 +242,41 @@ cause from a numeric value or classify a behavior result. Qualify the actual app
 before composing the observer, including setup failures and deliberate versus signal-encoded exits.
 No new status channel, numeric cutoff, or weaker behavioral acceptance rule is selected here.
 
+### Resolve the application result boundary
+
+Further source inspection found the same ambiguity inside the pinned SRT helper, before bubblewrap.
+The helper's [kernel wait handling](https://github.com/anthropic-experimental/sandbox-runtime/blob/44ab607c46f20381aeaf3e22ca0e0151d4c6b29c/vendor/seccomp-src/apply-seccomp.c#L631-L658)
+distinguishes normal exit from signal termination, then reduces both to a numeric exit status.
+Its worker launches the SRT shell. Setup and failed application launch can share an ordinary
+failure code. Flow therefore cannot recover the missing distinction from current outer evidence.
+
+The optional [filesystem observation channel](https://github.com/anthropic-experimental/sandbox-runtime/blob/44ab607c46f20381aeaf3e22ca0e0151d4c6b29c/vendor/seccomp-src/apply-seccomp.c#L92-L110)
+is diagnostic, fail-open telemetry. It does not provide an authenticated application-result record.
+Its presence is not a reason to enable it for classification.
+
+The following alternatives require a user decision. No alternative is selected yet.
+
+| Dimension | Extend the pinned native supervisor, recommended | Add a separate isolated supervisor | Keep ambiguous results unsupported |
+| --- | --- | --- | --- |
+| Mechanism | Launch exact application arguments and preserve protected setup, launch, and kernel wait records at the existing native boundary. | Give a separate trusted process ownership of application launch and wait status, isolated from candidate access. | Stop when the current result cannot establish the required preconditions. |
+| Simplicity | Reuses containment, but adds a native result protocol. | Adds a separate containment and lifecycle design. | Preserves the current implementation. |
+| Flexibility | Coupled to the pinned sandbox integration. | Could support other execution backends after separate qualification. | Does not resolve this verification-repair requirement. |
+| Performance | Unmeasured protocol overhead. | Unmeasured process and isolation overhead. | No added execution overhead. |
+| Effort | Medium to large: native changes, artifact provenance, integration, and adversarial tests. | Large: new supervision, deployment, and qualification contracts. | Small: retain unsupported outcomes and document the limitation. |
+| Principal risk | A forged, incomplete, or misbound record could falsely establish application completion. | A new boundary could expose controller state or lose descendant ownership. | The usable checkpoint remains incomplete. |
+
+The recommendation reuses the process boundary that already observes the kernel result. It does
+not assume that a custom native helper is qualified or inexpensive to maintain. Before implementation,
+the selected design must specify descriptor ownership, exact application identity, failed-exec
+handling, bounded framing, cancellation, descendant settlement, and source-to-artifact verification.
+Candidate output must not substitute for these records. Missing or contradictory records must stop
+classification without repair selection.
+
+Research correlated the npm release attestation with source commit `44ab607c` and matched the
+installed x64 helper to the published tarball by SHA-256. It did not cryptographically verify the
+attestation or reproduce the native build. Those limits remain explicit qualification work, not
+evidence that a modified supervisor is trusted.
+
 Real-process qualification must cover correct rejection, incorrect success, an always-failing CLI,
 forged output, damaged fixtures, stale identity, interruption, bounded output, and descendant cleanup.
 The separately qualified base control, durable attempt accounting, cross-stage privacy gate, and

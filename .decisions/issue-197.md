@@ -821,3 +821,26 @@ channel refers to its immediate child boundary, which is not necessarily the can
 SRT shell and seccomp launcher. The design therefore leaves application launch and normal-exit proof
 open. No numeric cutoff, replacement launcher, weaker acceptance rule, or new status channel has
 been selected. The complete protected observer remains VR-02 work.
+
+### Application result research and pending decision
+
+Independent dependency research located SRT 0.0.70's release source at commit
+`44ab607c46f20381aeaf3e22ca0e0151d4c6b29c`. The main agent separately read the upstream C source
+and installed JavaScript wrapper. `vendor/seccomp-src/apply-seccomp.c` reduces the worker's kernel
+wait status to an exit code or 128 plus signal at lines 637–653. Its worker executes the SRT shell
+at line 871, while setup and failed exec use the ordinary failure path. Numeric ambiguity therefore
+precedes bubblewrap. The optional observation socket supplies fail-open write-intent telemetry,
+not an application-result protocol. Its header is triggered by a pre-exec filter handoff and does
+not prove final filter installation or exec succeeded.
+
+The installed x64 helper hashes to
+`5c92b0f369a626f5d7cb27d7912cfa882dc26a3690f17cc0016480c5b8b01df7`.
+An independent agent matched it to the official tarball and inspected npm provenance identifying
+the release commit. The main agent independently matched the installed hash. Neither cryptographic
+attestation verification nor a reproducible native build was completed during this read-only research.
+
+The design now compares three alternatives: extend the pinned supervisor, add a separate isolated
+supervisor, or retain unsupported terminal outcomes. The recommendation is a narrow extension at
+the existing kernel-result boundary, with exact application launch and a protected result protocol.
+The user decision is pending. No new protocol, custom binary, dependency version, or sandbox policy
+is implemented or selected. Existing approved tests and CI work can proceed independently.
