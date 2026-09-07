@@ -358,6 +358,9 @@ Track the native boundary separately from its host integration and behavioral qu
   from the application and all descendants through a mandatory protected channel.
 - [ ] Integrate private descriptors through the existing managed command boundary. Preserve ordinary
   command evidence and require stream completion, process settlement, and successful sandbox release.
+  - [ ] Adapt and review the observer-specific launch producer. The current production SRT manager
+    emits a proxy wrapper even when its domain allowlist is empty. The internal rewrite rejects it.
+    Review the authority contract before changing proxy configuration or shell parsing.
 - [ ] Qualify namespace restrictions, application results, and fixture denial on native Linux x64.
   Test ordinary processes and threads, cancellation, forged records, and descendant cleanup.
 - [ ] Compose the behavioral observer and complete the remaining verification-repair gates.
@@ -470,6 +473,27 @@ Close unnecessary endpoints immediately after each fork. Mark the worker error c
 executable descriptor close-on-exec. The outer stub must wait for the inner supervisor and its
 namespace teardown before emitting a successful transport result. The host still requires complete
 streams, exact frame EOF, cancellation checks, and successful sandbox release.
+
+The observer launch must preserve the admitted sandbox options and replace only the shell-based
+workload with the exact trusted helper invocation. Do not add a `--preserve-fds` option: bubblewrap
+0.9.0 does not provide it. Its
+[workload launch path](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L3088-L3149)
+inherits extra open descriptors, while its monitoring processes close their copies. This source
+inspection is not runtime qualification. Before integration, verify the host's child-descriptor
+mapping, inheritance through the actual installed launcher, closure before application execution,
+and final EOF after all trusted writers settle.
+
+The proposed fixed mapping reserves child descriptor
+3 for the final-result writer and descriptor 4 for the admitted executable. Neither descriptor can
+remain available to application code. Reject unsupported launch shapes without running a fallback.
+
+The current rewrite accepts only the dependency's proxy-free helper form. The production SRT
+manager does not emit that form for Flow's network-denied configuration. It supplies proxy sockets
+even for an empty domain allowlist. The Linux generator adds proxy environment variables and
+a shell wrapper that starts relay processes. Those launches remain rejected.
+
+An observer-specific producer adaptation is still required. The pure rewrite alone is not production
+compatibility proof.
 
 An empty close-on-exec error channel does not independently prove successful execution. For an
 initial normal-exit-only classifier, audit every trusted pre-execution path. A failed or partial

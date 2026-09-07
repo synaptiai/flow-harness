@@ -276,11 +276,25 @@ experiment passed in [run 34147986514](https://github.com/synaptiai/flow-harness
 The focused job passed 23 cases and failed the unchanged original fixture case, with no skips.
 The source `68de0d7` and tested merge `8234525` have identical file trees.
 
-The group experiment
-supports further evaluation of an existing-group fixture boundary, not policy adoption or observer
-qualification. Mount-identity attack coverage remains open. The broader quality, proof, and native
-build comparison results are still pending. Mac skips do not qualify Linux behavior.
+The group experiment supports further evaluation of an existing-group fixture boundary, not policy
+adoption or observer qualification. Mount-identity attack coverage remains open.
+
+The quality job independently reproduced
+the same fixture failure: 105 runtime tests passed, one failed, and four were skipped. Its coverage
+suite passed 6,983 tests with one skip, and both browser tests passed. Proof and native build
+comparison results remain pending. Mac skips do not qualify Linux behavior.
 VR-06 requires separate live-experiment authorization.
+
+The shared result-transport work now includes an internal launch rewrite. It preserves admitted
+Linux sandbox options, verifies the original nested command, and constructs an exact helper
+invocation without a shell-based workload. It does not start the helper, open the admitted executable,
+or transfer private descriptors. The source check corrected an unsupported bubblewrap option before
+integration.
+
+Independent review also found that the production manager emits a proxy wrapper even
+with an empty domain allowlist. The rewrite rejects that form. Producer adaptation remains open.
+Real Linux descriptor inheritance, the modified supervisor, and full protected-result
+qualification remain open. Ordinary command execution and repair enablement are unchanged.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three

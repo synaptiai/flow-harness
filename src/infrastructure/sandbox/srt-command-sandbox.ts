@@ -1194,6 +1194,29 @@ interface BwrapDescriptor {
   readonly command: readonly string[];
 }
 
+/** Parses the existing Linux containment shape without admitting a new policy.
+ * Callers must independently authenticate the backend, paths, and artifacts.
+ * Ordinary process-containment validation intentionally remains unchanged.
+ */
+export function parseSrtLinuxLaunchDescriptor(
+  argv: readonly string[],
+  trustedBwrapPath: string,
+): Readonly<BwrapDescriptor & { readonly innerArgv: readonly string[] }> | null {
+  try {
+    validateDescriptor(argv);
+    validateProcessContainment("linux", argv, trustedBwrapPath);
+    const wrapper = parseCanonicalSrtShellArgv(argv[2] as string);
+    const descriptor = wrapper === null ? null : parseBwrapDescriptor(wrapper);
+    const innerArgv =
+      descriptor === null ? null : parseCanonicalSrtShellArgv(descriptor.command[2] as string);
+    return descriptor === null || innerArgv === null
+      ? null
+      : Object.freeze({ ...descriptor, innerArgv });
+  } catch {
+    return null;
+  }
+}
+
 const BWRAP_OPTION_ARITY = new Map<string, number>([
   ["--new-session", 0],
   ["--die-with-parent", 0],

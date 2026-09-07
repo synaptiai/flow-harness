@@ -1456,3 +1456,64 @@ A manual linked-control diagnostic remains at /private/tmp/flow-encoder-link-dia
 These contain synthetic compiler/control artifacts, not pilot data. No broad process cleanup or
 deletion is authorized by this record. Normal completed mutation-test scopes were cleaned by
 their own lifetime owner. No subsequent push was made while the hosted proof build remained active.
+
+### Observer launch preparation: corrected descriptor and producer assumptions
+
+Prepared a pure proxy-free launch rewrite and a narrow exported wrapper around the existing SRT
+descriptor parser. Generic containment validation and the allowed bubblewrap options are unchanged.
+The rewrite checks the exact original helper/shell/application relationship, existing command-byte
+limits, lossless UTF-8, immutable output, and explicit environment. It starts no process, opens no
+executable, transfers no descriptor, and authenticates no binary. Host integration remains open.
+
+The initial design mistakenly proposed bubblewrap --preserve-fds. Upstream v0.9.0 does not offer
+that option. Independent source checks found that the monitor and PID1 close their inherited extra
+descriptors, while the workload child retains them through exec. Corrected the output to preserve
+all admitted options without adding a flag. A regression first failed against the emitted invalid
+flag, then passed after correction. Real Linux FD3/FD4 mapping, helper-only ownership, application
+closure, and final EOF are still unqualified. Source references:
+https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L479-L488 and
+https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L3088-L3149.
+
+Independent review then found a P2 compatibility and test-oracle gap: current Flow uses the pinned
+manager's proxy-enabled launch even with an empty domain allowlist. Installed sandbox-manager.js
+603–647 initializes the bridge, 1174–1189 deliberately selects proxy use for empty allowlists, and
+1227–1239 passes sockets. linux-sandbox-utils.js 1448–1473 emits proxy environment options and
+1528–1530 selects the relay shell wrapper. The new rewrite correctly rejects that production shape.
+Do not loosen rejection or strip policy to make a synthetic no-proxy test pass. Track producer
+adaptation as an open integration gate and test the actual dependency generator. This is a partial
+internal component, not production observer compatibility or completion of the broader goal.
+
+The first corrected local gate passed 87 tests across five launch, sandbox, architecture, and
+library/documentation suites. Full type checking, production build, capability reference,
+formatting, lint, and documentation gates passed. Lint retained only the pre-existing informational
+constructor diagnostic. The library audit measured 382 source modules and 3,460 exported internal
+declarations (1,103 infrastructure); the CLI still reaches 346 modules. Public exports stay empty.
+Later producer-coverage results must be recorded separately from this first gate.
+
+Added two controls using the actual installed wrapCommandWithSandboxLinux generator. The proxy-free
+form passes transformation; the bridge-enabled form contains real generated proxy settings and
+relay commands and is rejected. The controls do not initialize the production manager, execute
+bubblewrap/helper/relay binaries, or reproduce production filesystem policy. Real private Unix
+listeners supply bridge inputs without traffic. Successful generation is paired with the dependency's
+active-invocation cleanup, followed by bounded listener closure even if dependency cleanup fails.
+Uncertain resource settlement retains its private root. The sandbox-denied listen attempt retained
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/fop-5DDSYh; no removal was attempted.
+The same controls passed with ordinary host permission for these temporary local listeners.
+
+Final main verification passed 89 tests across six files, including the two actual-generator
+controls and 48 pure rewrite cases. Full type checking passed with the new integration file.
+Independent final review found no remaining P1–P3 in this bounded component. The test-oracle and
+claim gap is corrected, but actual production producer adaptation is not implemented or qualified.
+No ordinary SRT validator, option allowlist, network profile, public export, or issue execution
+path was changed. This does not close protected-result transport or Linux security qualification.
+
+### Second hosted reproduction of the new controls
+
+Run 34147986514 quality job 101824043311 failed after 24m7s only on the unchanged nested denied-file
+fixture assertion. Coverage passed all 474 files with 6,983 passing tests and one skip. Browser
+checks passed 2/2. Runtime checks passed 105, failed one, and skipped four proof cases across
+28 files. The separate focused and quality runners independently reproduced the original defect.
+The secondary-group experiment again retained the same UID/GID maps, denied reads, mounted-alias
+outcomes, and unchanged fixture identities; all four clone3 controls passed with the prior counts.
+The proof job remains active in appliance preparation. Its native baseline comparison has not
+reported a result. No job was cancelled, no local changes were pushed, and repair remains disabled.
