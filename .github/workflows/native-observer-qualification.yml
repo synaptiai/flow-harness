@@ -57,6 +57,11 @@ jobs:
       - name: Build the production runtime
         run: npm run build
 
+      - name: Reproduce the direct host bridge release gap
+        env:
+          FLOW_TEST_HOST_BRIDGE_BASELINE: "1"
+        run: npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
+
       - name: Compare two clean observer builds and separate failure controls
         run: |
           node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"

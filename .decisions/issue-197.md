@@ -2510,3 +2510,33 @@ Independent final review found no P1-P3 findings. All 41 documentation/workflow 
 documentation gates passed. Both changed files are in scope and already belong to the issue branch.
 Save this research-only delta locally. No dependency, native artifact, CI job, or public capability
 changed, so no new native qualification or capability regeneration is claimed.
+
+### RL-A approval and first executable release contract
+
+User explicitly approved RL-A. This clears the dependency-lifecycle decision blocker, not the
+remaining qualification gates. No pilot, model transmission, repair enablement, merge, or release
+is authorized by this approval. Preserve ordinary SRT execution and the existing native result.
+
+Parallel source investigations found that unmodified bwrap still needs a bound PID1 termination
+witness beyond its early monitor result. Select a narrow native subreaper owner for each distinct
+trusted bridge, retaining an unreaped group leader until the final group signal and then reaping
+all owned children. Group/ancestry preservation of the admitted relay is a required premise, not
+an assumed guarantee for arbitrary programs. Loss of the guardian makes cleanup unconfirmed.
+This does not guarantee cleanup after the complete ownership hierarchy is killed.
+
+Delivery stages now cover the direct-bridge RED test, native owner qualification, a separately
+identified SRT dependency tree, and observer integration. The package tree must preserve SRT's
+nested Zod 3 rather than resolving root Zod 4. Initialization failure must retain owned bridges
+before asynchronous waits and must await cleanup instead of clearing state and detaching reset.
+
+The new Linux x64 runtime test uses actual socat and a real loopback echo server. It verifies exact
+forwarding before requesting the future owner release protocol. Baseline mode deliberately runs
+the existing direct bridge shape and expects the missing joined release/terminal receipt contract
+to fail. It is test-only, not a fallback and not a claim of reproduced descendant leakage. The
+dedicated development workflow runs this RED step before the unchanged native build and 306 tests.
+No production guardian has been written before this RED observation.
+
+Pre-run review found and fixed cleanup coverage for listener startup, cancellation admission and
+late acceptance checks, and stale mechanism-selection wording. Cleanup is independently bounded
+and preserves failures and diagnostic directories. Local Docker is Linux aarch64, not x64, so it
+does not replace the hosted acceptance profile. No emulation or new local Linux setup was started.

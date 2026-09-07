@@ -396,9 +396,11 @@ ownership on some startup failures. Its escalation path can finish reset before 
 The [host-bridge lifecycle proposal](bounded-verification-repair-design.md#resolve-host-bridge-ownership-before-integration)
 compares three options and recommends an observer-only extension to the pinned manager (RL-A).
 
-This extension is proposed, not implemented or approved. Descendant ownership remains a design
-gate. Exposing parent handles alone does not close it. Preserve the approved native extension and
-proxy policy while resolving this decision. The 306 passing controls do not authorize repair enablement.
+The user approved RL-A on September 7, 2026. Its
+[implementation stages](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
+cover a native bridge owner, isolated dependency changes, and integration qualification.
+Exposing parent handles alone does not close the descendant-ownership gate. Preserve the existing
+proxy policy. The 306 passing controls do not authorize repair enablement.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

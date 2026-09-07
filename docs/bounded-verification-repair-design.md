@@ -643,8 +643,9 @@ application result or treat ordinary command status as the private transport's s
 
 #### Resolve host-bridge ownership before integration
 
-Status: proposed lifecycle extension, not implemented or qualified. This decision is separate from
-the approved native-supervisor extension. The existing 306 passing native cases do not qualify it.
+Status: RL-A approved on September 7, 2026. Implementation and qualification remain incomplete.
+This decision extends the approved native-supervisor work. The existing 306 passing native cases
+do not qualify host-bridge lifecycle ownership.
 
 The required user flow is unchanged: verify the candidate, stop every process owned by verification,
 and then classify the evidence. Cancellation follows the same cleanup boundary. If cleanup cannot
@@ -678,8 +679,8 @@ Compare these implementation boundaries before changing the dependency:
 | RL-B: Dedicated manager process | Separates the manager's global state and descriptor environment from the main host. | Adds a bounded communication protocol and crash recovery. Owning or killing this process alone does not prove descendant settlement. |
 | RL-C: Rebuild the observer manager from lower-level components | Gives Flow direct control of process creation. | Duplicates proxy authentication, multiplexing, filtering, TLS, and cleanup behavior. Creates the largest policy-drift risk. |
 
-RL-A is the recommendation because it changes the ownership boundary without replacing proxy
-behavior. It is not yet an approved implementation contract. Complete the descendant-ownership
+RL-A is selected because it changes the ownership boundary without replacing proxy
+behavior. The approval permits implementation and qualification. Complete the descendant-ownership
 design before implementation. Do not substitute PID discovery, a signal request, or a timer for
 termination evidence. No privileged host provisioning is assumed.
 
@@ -714,7 +715,7 @@ remain required. Executable bytes, loaders, and libraries need their own custody
 
 ##### Descendant-ownership research gate
 
-RL-A still needs a concrete ownership mechanism. Source review narrows the investigation:
+The following source review informed the native-owner selection in the next section:
 
 | Mechanism | Evidence and remaining constraint |
 | --- | --- |
@@ -723,19 +724,49 @@ RL-A still needs a concrete ownership mechanism. Source review narrows the inves
 | Bubblewrap PID namespace | Reuses an existing prerequisite, but its [default monitor returns on the initial workload's result](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L512-L525), before the namespace reaper necessarily finishes. Ordinary monitor closure is insufficient. |
 | Delegated cgroup v2 | The [kernel interface](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html) supports subtree termination and reports live-process population. Flow must first establish delegation, exclusive ownership, and prevention of new admission during cleanup. |
 
-Evaluate namespace reuse first because the Linux profile already requires bubblewrap and user
-namespaces. This is an investigation order, not a selected implementation. Keeping the host network
-namespace does not by itself preserve mount, identity, signal, or descriptor semantics.
+The review evaluated namespace reuse first because the Linux profile already requires bubblewrap
+and user namespaces. Keeping the host network namespace does not by itself preserve mount,
+identity, signal, or descriptor semantics.
 
 Bubblewrap's `--as-pid-1` variant avoids the default early workload-result event. It also makes the
 relay responsible for PID 1 behavior. Qualify signal handling, child reaping, and owner interruption
 before considering it compatible. Killing the outer monitor still does not establish a joined
 namespace teardown. Do not infer settlement from its parent-death signal configuration.
 
-Compare any viable mechanism with a dedicated subreaper before selection. Do not assume cgroup
-delegation from hosted CI's ability to install packages. No mechanism in this table is qualified.
+The comparison favors a dedicated subreaper for implementation. Do not assume cgroup delegation
+from hosted CI's ability to install packages. No mechanism in this table is qualified.
 Keep this gate open until actual bridge connections, partial startup, and interrupted ownership
 pass real-process tests with independent termination evidence.
+
+##### Implement the approved lifecycle extension
+
+The namespace-first review found no complete termination witness in the existing Node integration.
+Select a narrow native owner for each distinct, trusted host bridge. Preserve the exact relay
+arguments, environment, identity, working directory, and host network. This owner is not a general
+container for arbitrary candidate programs.
+
+Before creating a bridge, the owner must establish checked subreaper status and a private control
+channel. The bridge must acknowledge its new process group before group signaling becomes valid.
+Retain the direct leader's wait status until the last group signal. Then reap owned children until
+none remain. Require a valid terminal receipt and actual owner closure before accepting settlement.
+
+This mechanism requires the admitted relay to preserve its process group and ancestry. Missing
+proof of that fixed-command behavior prevents admission. Unexpected process-group escape or loss
+of the native owner must produce unconfirmed cleanup, never successful settlement. Controller
+disconnection starts cleanup in a surviving owner. This design does not guarantee cleanup after
+the complete ownership hierarchy is killed.
+
+Track implementation in these stages:
+
+1. Reproduce the missing release contract against a real direct bridge on Linux x64.
+2. Implement and qualify the native owner, including forwarding, startup failure, active descendants,
+   cancellation, and unconfirmed-owner-loss controls.
+3. Generate a separately identified copy of pinned SRT and its dependency closure. Patch bridge
+   creation and reset there. Preserve the ordinary manager and record source and artifact identities.
+4. Integrate the observer-only manager. Verify multiplexed and separate bridges, partial startup,
+   retained failures, proxy-policy compatibility, and the existing observer gates.
+
+Each stage requires review and its own evidence. None enables repairs, another pilot, merge, or release.
 
 #### Connect the native application-result path
 
