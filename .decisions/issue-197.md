@@ -747,3 +747,18 @@ corroborate its existing help inventory, not a universal discovery protocol. The
 qualification approach binds that inventory to audited frozen source. Alternatives are a closed
 structural source parser or a separately authorized target discovery interface. No target changes,
 new model calls, or new run authority result from this design refinement.
+
+### Cross-stage private-data boundary review
+
+Independent source traces distinguished the existing review path from the proposed verification
+repair path. `local-issue-review-evidence.ts` resets and pristine-proves the verification worktree
+before returning model context. Verification command postconditions can accept ignored output,
+and a failed verification does not itself perform that final reset. The new failure-to-repair
+transition therefore needs an explicit reset and disposal gate before model dispatch.
+
+Built-in workspace-limited reads do not prove that an approved command cannot read sibling paths.
+The native sandbox's home restriction is not a universal substitute for protecting the issue-owned
+verification root, particularly for projects outside home. The design now requires explicit private
+path protection, confirmed temporary-storage cleanup, and real cross-stage alias/residue probes.
+These are prospective qualification requirements, not a claim of an exploit in the current path.
+No production behavior, model authority, or retained target candidate changed during this review.

@@ -227,6 +227,34 @@ Keep the feedback alphabet and ordering fixed. Bound disclosures by the shared r
 Do not add more detailed hints after unsuccessful repairs. Evaluation must distinguish qualification
 on this feedback-guided task from fresh tasks that were not used to tune the harness.
 
+### Prevent disclosure between stages
+
+Candidate execution can copy any readable fixture data into its writable workspace. Protecting
+the observer's receipt file during execution does not prevent that separate disclosure channel.
+Qualify the transition to the next model workflow as well as the observation itself.
+
+The current [review evidence reader](../src/infrastructure/git/local-issue-review-evidence.ts)
+removes and recreates the verification worktree at the exact candidate before returning review
+context. Its final proof requires a pristine worktree, including no ignored files. This protects
+the existing successful-verification-to-review transition. Verification command postconditions
+permit ignored output, so a failed command alone does not provide the same cleanup proof.
+
+The new verification-to-repair transition must satisfy these requirements before model dispatch:
+
+- Confirm termination of all verification descendants and cleanup of their private temporary storage.
+- Recreate the owned verification worktree from the exact candidate and prove it pristine. Retain
+  private evidence in controller-owned storage, not in a workspace that a later model can read.
+- Explicitly deny repair subprocess access to private fixtures, receipts, and the verification
+  worktree. Do not rely on the project being inside the operator's home directory.
+- Test direct paths, aliases, ignored files, and shared temporary paths across consecutive stages.
+  A built-in file tool's workspace restriction does not establish a subprocess read restriction.
+- If cleanup, identity, or disclosure-boundary proof is missing, retain the evidence and stop
+  before admitting model work. Do not weaken these checks to recover a failed verification.
+
+This is a requirement for the proposed transition, not a demonstrated leak in the existing review
+flow. Repair currently follows review, whose preparation already resets the verification worktree.
+Source tracing alone does not qualify the new transition or every writable-path channel.
+
 ## Reuse limits without resetting them
 
 Verification repair and review repair consume the same monotonic repair count and implementation
