@@ -270,8 +270,9 @@ capture now have local tests and independent review. Their hosted qualification,
 behavioral observer, and proof of actual application launch and exit remain pending. An outer
 sandbox exit code alone cannot distinguish a deliberate exit from a signal.
 
-The focused Linux job now contains 23 tests across five suites. Two notification-history
-counterexample cases and four Node compatibility measurements await their first hosted execution.
+The focused Linux job now contains 24 tests across six suites. Two notification-history
+counterexample cases, four Node compatibility measurements, and one paired supplementary-group
+experiment await their first hosted execution.
 Mac skips do not qualify these tests.
 VR-06 requires separate live-experiment authorization.
 

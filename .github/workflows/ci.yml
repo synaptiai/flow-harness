@@ -260,6 +260,7 @@ jobs:
           test/runtime/linux-observer-command.runtime.test.ts
           test/runtime/observer-notification-history.runtime.test.ts
           test/runtime/observer-clone3-compatibility.runtime.test.ts
+          test/runtime/observer-secondary-group.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest

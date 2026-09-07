@@ -526,8 +526,9 @@ The `verifier-isolation` CI job runs
 `test/runtime/verification-observer-isolation.runtime.test.ts`,
 `test/runtime/verification-observer-fixture.runtime.test.ts`,
 `test/runtime/linux-observer-command.runtime.test.ts`,
-`test/runtime/observer-notification-history.runtime.test.ts`, and
-`test/runtime/observer-clone3-compatibility.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+`test/runtime/observer-notification-history.runtime.test.ts`,
+`test/runtime/observer-clone3-compatibility.runtime.test.ts`, and
+`test/runtime/observer-secondary-group.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
 It checks the host and Node.js architecture before building the runtime. The job uses the
 production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
 Missing dependencies or sandbox admission failures fail the job.
@@ -552,6 +553,19 @@ These whole-invocation timings
 include tracing overhead and are not benchmarks. Passing fixed controls does not prove that a
 restriction preserves arbitrary candidate behavior or that a replacement observer is secure.
 Linux hosts require `strace`. A missing tool fails rather than skips these measurements.
+
+The supplementary-group experiment compares two synthetic fixture sets under unchanged SRT.
+One uses the host's primary group and must reproduce the nested capability bypass. The other
+uses an already-held supplementary group and must preserve `EACCES` for denied inputs.
+Both sets include readable and missing controls. The test checks original and bind-mounted paths,
+credential and mapping changes, ancestor namespace entry, and unchanged host fixture identities.
+It reports only bounded synthetic results after the integrity checks pass.
+
+The experiment requires a non-root Linux x64 user with an existing supplementary group distinct
+from the primary group, zero, and the overflow display value. Missing prerequisites fail the test.
+It does not create groups or change host group membership. Mount identity remapping remains
+outside this experiment's qualification scope. The first hosted execution is pending, and a pass
+would not select a production fixture policy or qualify the observer.
 
 The separate `proof-runtime` job also compares two clean builds of the unchanged upstream native
 helper after its proof acceptance tests. In a source checkout,
@@ -578,7 +592,8 @@ npm run test:runtime -- \
   test/runtime/verification-observer-fixture.runtime.test.ts \
   test/runtime/linux-observer-command.runtime.test.ts \
   test/runtime/observer-notification-history.runtime.test.ts \
-  test/runtime/observer-clone3-compatibility.runtime.test.ts
+  test/runtime/observer-clone3-compatibility.runtime.test.ts \
+  test/runtime/observer-secondary-group.runtime.test.ts
 ```
 
 Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS

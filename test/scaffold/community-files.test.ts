@@ -421,7 +421,8 @@ describe("public repository contracts", () => {
         "test/runtime/verification-observer-fixture.runtime.test.ts " +
         "test/runtime/linux-observer-command.runtime.test.ts " +
         "test/runtime/observer-notification-history.runtime.test.ts " +
-        "test/runtime/observer-clone3-compatibility.runtime.test.ts",
+        "test/runtime/observer-clone3-compatibility.runtime.test.ts " +
+        "test/runtime/observer-secondary-group.runtime.test.ts",
     );
     for (const step of steps) {
       expect(step["continue-on-error"]).toBeUndefined();

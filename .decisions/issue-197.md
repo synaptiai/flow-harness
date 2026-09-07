@@ -1347,3 +1347,27 @@ read-only mounts, exact inode identities, and actual bypass controls remain requ
 supplementary membership is not equivalent to an inode GID mapping. A successful paired experiment
 would not establish private-result authenticity, mount-identity attack coverage, or complete
 observer safety. Production restrictions and repair enablement remain unchanged.
+
+### Paired supplementary-group experiment prepared
+
+Added a test-only C participant and Linux x64 runtime wrapper under unchanged production SRT.
+The required primary-group arm reproduces the denied-file and denied-parent capability bypass.
+The paired arm uses only an already-held secondary group, requiring EACCES while readable and
+missing controls remain exact. No group creation or host membership changes occur. The existing
+failing fixture suite remains unchanged.
+
+The probe captures actual outer/nested UID and GID maps before attack attempts. It checks current
+versus secondary/overflow mapping writes, credential changes, ancestor namespace entry, chmod,
+chgrp, bind remount, and reads through original and mounted-alias paths. Host inventories cover
+dev/ino/type/mode/UID/GID, directory children, and content hashes, including the private expectation
+and test executable. Unsupported settlement or uncertain integrity retains the owned fixture scope.
+A successful bounded diagnostic is emitted only after integrity checks; it explicitly disclaims
+idmapped-mount and observer qualification and contains no paths or full group inventory.
+
+Main review added alias reads and constrained private-file denial to EACCES/ENOENT. Independent
+review of the stable C and TypeScript files found no remaining P1–P3 findings. Full type checking,
+production build, formatting, lint, and diff checks passed. Runtime collection of the three new
+Linux-only suites reported seven Mac skips, not native qualification. No C compilation or Linux
+execution occurred locally. All 35 scaffold tests and the documentation gates passed after the
+CI file-list test first rejected the missing experiment. The focused hosted job now contains
+24 cases across six suites. Native outcomes and group availability remain pending.
