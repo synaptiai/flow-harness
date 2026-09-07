@@ -349,7 +349,10 @@ Source review and local static checks passed.
 Linux
 [run 34157090197](https://github.com/synaptiai/flow-harness/actions/runs/34157090197) passed 273 cases.
 The ordinary descendant failed its readiness precondition, so the next case could not start.
-Descendant settlement remains unqualified. Diagnose the readiness failure before changing the fixture.
+The [diagnostic run](https://github.com/synaptiai/flow-harness/actions/runs/34157520762) confirmed
+that the fixture incorrectly rejected a namespace-relative session ID of zero. The test-only
+correction preserves independent host identity checks. Descendant settlement remains unqualified
+until the corrected native run passes.
 
 Do not infer those properties from the passing result tests. Policy interference, fixture denial,
 ordinary-command descriptor hardening, and the remaining lifecycle gates still block repair readiness.

@@ -749,6 +749,14 @@ calibration controls passed. The ordinary descendant did not publish readiness w
 The suite then refused to start the new-session case. Diagnose that precondition before claiming
 descendant settlement or changing the fixture.
 
+The diagnostic [run 34157520762](https://github.com/synaptiai/flow-harness/actions/runs/34157520762)
+confirmed that the ordinary child saw session ID zero and the fixture rejected it before readiness.
+Linux maps a session leader outside the current PID namespace to zero through
+[its namespace-relative PID lookup](https://github.com/torvalds/linux/blob/v6.17/kernel/pid.c#L459-L475).
+The corrected fixture must distinguish this valid value from a syscall error. Its ordinary
+namespace control requires an explicit zero-session readiness notice, followed by independent host
+identity and settlement checks. The corrected native execution remains pending.
+
 Host visibility for sandbox descendants and the read-only release handoff remain unqualified.
 These results do not qualify all writer-access mechanisms, immutable runtime custody, outer proxy
 cleanup, namespace policy, cancellation races, or repairs.

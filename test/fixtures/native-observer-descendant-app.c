@@ -62,20 +62,16 @@ static int held(int argc, char **argv) {
     alarm(60); /* Host acceptance must occur well before this safety expiry. */
     const pid_t own = getpid();
     const pid_t session = getsid(0);
-    /* Diagnostic only: preserve the existing rejection until native execution
-     * proves whether this child inherits an out-of-namespace session leader. */
-    if (session == 0) {
-        (void)publish_notice(argv[3], "session-zero\n");
-        return 111;
-    }
-    if (own <= 1 || getppid() <= 1 || session <= 0 ||
+    /* An inherited session leader outside this PID namespace maps to zero.
+     * Only -1 is a getsid failure. The host independently checks its own SID. */
+    if (own <= 1 || getppid() <= 1 || session < 0 ||
         ((strcmp(argv[2], "new-session") == 0) != (session == own))) return 111;
     for (int fd = 0; fd <= 2; ++fd) {
         struct stat actual, expected;
         if (fstat(fd, &actual) != 0 || stat("/dev/null", &expected) != 0 ||
             !S_ISCHR(actual.st_mode) || actual.st_rdev != expected.st_rdev) return 112;
     }
-    const int published = publish_notice(argv[3], "ready\n");
+    const int published = publish_notice(argv[3], session == 0 ? "ready-session-zero\n" : "ready\n");
     if (published != 0) return published;
     for (;;) pause();
 }

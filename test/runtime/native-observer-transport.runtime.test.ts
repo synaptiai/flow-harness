@@ -34,6 +34,7 @@ import {
 import { rewriteNativeObserverLaunch } from "../../src/infrastructure/verification/native-observer-launch.js";
 import { parseNativeObserverResult } from "../../src/infrastructure/verification/native-observer-result.js";
 import { type HostProbe, startHostProbe } from "./helpers/native-observer-host-probe.js";
+import { waitForReady } from "./helpers/native-observer-readiness.js";
 import { calibrateZombie } from "./helpers/native-observer-zombie-control.js";
 
 const execFile = promisify(callbackExecFile);
@@ -492,7 +493,11 @@ describe
               runtimeSupportPaths: [releasePath],
               hooks: {
                 onStarted: async (hookSignal) => {
-                  await waitForReady(readyPath, hookSignal);
+                  await waitForReady(
+                    readyPath,
+                    hookSignal,
+                    mode === "ordinary" ? "ready-session-zero\n" : "ready\n",
+                  );
                   probe = await startHostProbe({
                     executable: value.hostProcess,
                     mode: "discover",
@@ -905,27 +910,6 @@ function ownUid(): number {
   if (uid === undefined || uid === 0)
     throw new Error("Native controls require a non-root host UID");
   return uid;
-}
-
-async function waitForReady(path: string, signal: AbortSignal): Promise<void> {
-  const deadline = performance.now() + 1000;
-  while (performance.now() < deadline) {
-    signal.throwIfAborted();
-    try {
-      expect((await readFile(path)).toString("utf8")).toBe("ready\n");
-      return;
-    } catch (error) {
-      if (
-        typeof error !== "object" ||
-        error === null ||
-        !("code" in error) ||
-        error.code !== "ENOENT"
-      )
-        throw error;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Held child did not publish bounded readiness");
 }
 
 function calibrateHostZombie(value: Fixture, signal: AbortSignal): Promise<void> {

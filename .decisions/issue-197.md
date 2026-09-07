@@ -2002,3 +2002,25 @@ Kernel v6.8 sys.c routes getsid through pid_vnr, and pid.c returns zero for an u
 Other hypotheses remain child execution failure or readiness-file access failure. Add a fixed
 session-zero diagnostic to the existing readiness file without changing rejection or any deadline.
 Require the actual Linux failure to identify that payload before correcting the fixture predicate.
+
+Run 34157520762 at 832dbe685d1cfcbbb20e9bda2e4248c741ea3579 confirmed the hypothesis:
+the actual ordinary child published exact session-zero, rejected against ready, before host release.
+The job completed in 2m19s. This proves child execution reached getsid and could write the readiness
+file; it is not a timing-budget explanation. Kernel v6.17 source independently preserves the same
+fork/session translation behavior. Correct the fixture's syscall-error predicate from <=0 to <0,
+keep every PID/parent/session-relation and /dev/null check, and publish ready-session-zero only
+after those checks. Require that exact notice for the ordinary namespace case; the new-session and
+host controls still require ready. Independent host identity/session checks remain unchanged.
+
+Review also identified the real create-before-write empty-file window. A separate helper must
+retry only absence or zero bytes within the original absolute one-second deadline, never accept
+empty content, and still reject any wrong nonempty notice. Add real-filesystem RED/GREEN coverage
+before integration. No production observer code or test deadlines change.
+
+The real-filesystem readiness RED run exposed five failures against the old strict-empty behavior:
+persistent empty content, both completion transitions, cancellation during a read, and late read
+completion. The corrected helper passed all 15 cases. Independent source review found no P1–P3
+issues. Tests use actual files and elapsed time without filesystem mocks or fake clocks. Transition
+tests join both real operations and do not assume which I/O completes first; the persistent-empty
+case independently establishes that empty content retries without acceptance. Integration imports
+the helper and removes the old local implementation. Native execution of this correction is pending.
