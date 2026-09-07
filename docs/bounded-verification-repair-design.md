@@ -254,9 +254,10 @@ The optional [filesystem observation channel](https://github.com/anthropic-exper
 is diagnostic, fail-open telemetry. It does not provide an authenticated application-result record.
 Its presence is not a reason to enable it for classification.
 
-The following alternatives require a user decision. No alternative is selected yet.
+The following alternatives require a user decision. No alternative is selected yet. The revised
+comparison addresses both application-result integrity and the measured fixture-access failure.
 
-| Dimension | Extend the pinned native supervisor, recommended | Add a separate isolated supervisor | Keep ambiguous results unsupported |
+| Dimension | A: Extend the pinned native supervisor, recommended | B: Add a separate isolated supervisor | C: Keep ambiguous results unsupported |
 | --- | --- | --- | --- |
 | Mechanism | Launch exact application arguments and preserve protected setup, launch, and kernel wait records at the existing native boundary. | Give a separate trusted process ownership of application launch and wait status, isolated from candidate access. | Stop when the current result cannot establish the required preconditions. |
 | Simplicity | Reuses containment, but adds a native result protocol. | Adds a separate containment and lifecycle design. | Preserves the current implementation. |
@@ -264,6 +265,8 @@ The following alternatives require a user decision. No alternative is selected y
 | Performance | Unmeasured protocol overhead. | Unmeasured process and isolation overhead. | No added execution overhead. |
 | Effort | Medium to large: native changes, artifact provenance, integration, and adversarial tests. | Large: new supervision, deployment, and qualification contracts. | Small: retain unsupported outcomes and document the limitation. |
 | Principal risk | A forged, incomplete, or misbound record could falsely establish application completion. | A new boundary could expose controller state or lose descendant ownership. | The usable checkpoint remains incomplete. |
+| Fixture boundary | Qualify a narrow profile that restricts further namespace creation or joining after trusted setup. | Qualify separately provisioned fixture ownership outside candidate identity mappings. | Retain the failed fixture qualification and stop without repair selection. |
+| Compatibility and operator cost | Requires a maintained native artifact and tests that ordinary subprocesses and threads still work. Namespace-dependent workloads might be unsupported by this observer profile. | Requires additional identity provisioning, deployment, cleanup, and recovery controls. A separate supervisor alone does not protect fixture access. | Requires no new host setup, but verification failures continue to require operator intervention. |
 
 The recommendation reuses the process boundary that already observes the kernel result. It does
 not assume that a custom native helper is qualified or inexpensive to maintain. Before implementation,
@@ -284,13 +287,31 @@ A nested user namespace read a mode-000 input after the probe confirmed that chm
 attempts failed. Sixteen of 17 tests passed, but the fixture profile remains unqualified. A protected exit
 protocol alone cannot resolve that failed permission precondition.
 
-Linux documents that [namespaced capabilities](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)
-can bypass file-mode checks when the file's owner and group are mapped into that namespace.
-This is a source-supported hypothesis for the observed read, not a runtime-confirmed explanation.
-Capture bounded capability, identity, mapping, and pre-mutation read evidence before selecting a
-correction. Preserve the failing assertion. Any selected observer must qualify both application
-results and fixture access under nested execution, without treating read-only mounts as proof of
-unreadability.
+The [diagnostic run at `565a89d`](https://github.com/synaptiai/flow-harness/actions/runs/34141891105/job/101805484054)
+again passed 16 tests and failed the same read assertion. Before nested mutation attempts, both
+denied inputs were readable with permission bits `000`. The child reported effective user and group
+IDs of zero, fixture ownership `0:0`, and user/group mappings `0 1001 1`.
+Its capability mask `000001ffffffffff` includes both `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`.
+Missing and readable controls retained their expected outcomes.
+
+Linux's [namespaced capability rules](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)
+permit those capabilities to bypass file-mode checks when the owner and group are mapped.
+Upstream Linux 6.17 independently implements the
+[mapping check](https://github.com/torvalds/linux/blob/v6.17/kernel/capability.c#L418-L449) and
+[read-permission override](https://github.com/torvalds/linux/blob/v6.17/fs/namei.c#L438-L478).
+These sources and runtime observations strongly corroborate capability-based access. They do not
+trace the exact deployed kernel or provide a controlled capability-removal experiment.
+
+The failed assertion checks the post-attempt read. Its attached diagnostic records reads before
+the nested attacks, not before the earlier outer alias-mount attempt. Nested metadata does not
+include inode identity. Host controls, distinct synthetic contents, and final integrity checks
+reject setup mistakes and persistent drift, but cannot exclude every transient change.
+
+The runtime probe owns its fixture directly. It does not call the new production fixture helper.
+This result establishes candidate-view fixture access, not access to protected host files.
+
+Preserve the failing assertion. Any selected observer must qualify both application results and
+fixture access under nested execution. Read-only mounts do not establish unreadability.
 
 Do not add an outer `--disable-userns` flag as a shortcut. Bubblewrap applies that restriction
 [before launching its command](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L2988-L3034).
@@ -303,6 +324,19 @@ setup but before candidate execution, or provision fixture ownership outside can
 identity mappings. The first requires complete coverage of namespace creation and joining without
 breaking ordinary processes and threads. The second requires new provisioning and mapping proofs.
 Neither replaces the independent application-result gate.
+
+For A, keep the stricter profile specific to the closed behavioral observer. Do not silently change
+all native commands or require new host privileges. Apply restrictions only after trusted namespace
+and mount setup. Prove coverage of namespace creation and joining, including alternative syscall
+forms, while preserving supported subprocess and thread behavior. Policy-induced failures must not
+become behavioral repair evidence. Missing setup, launch, result, or settlement proof remains unsupported.
+
+Before enabling A, qualify fixture denial with controlled capability comparisons. Independently verify
+protected application-result transport, exact argument and artifact identity, failed execution,
+signals, cancellation, and descendant cleanup. Maintain source-to-binary provenance and license notices
+for the native artifact. The existing signed upstream package does not authenticate a modified binary.
+Qualification must also cover ordinary runtime compatibility and the transition to the next model stage.
+This recommendation is a proposed design direction, not authorization to implement a new profile.
 
 Evaluate existing Flow code before introducing another supervisor. The
 [Prime process driver](../prime-container/internal/supervisor/driver_process_unix.go)

@@ -279,6 +279,12 @@ fixture tests passed, so the fixture profile remains unqualified. A candidate-si
 namespace read the denied file without successful chmod or remount. Preserve this failed result and
 confirm the capability mechanism before selecting a correction. Repair remains disabled.
 
+The diagnostic job at `565a89d` reproduced the failure with mapped fixture ownership and effective
+read-bypass capabilities. Reads succeeded before nested mutation attempts while permission bits remained
+`000`. The [revised design comparison](bounded-verification-repair-design.md#resolve-the-application-result-boundary)
+addresses fixture denial and protected application results together. The recommended native-supervisor
+extension remains a pending user decision. It is not covered by the earlier Linux-first host choice.
+
 Local validation also found test-lifetime cleanup failures. Complete this verification work before
 claiming a clean checkpoint:
 

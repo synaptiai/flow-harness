@@ -1137,3 +1137,42 @@ Independent helper, integration, diagnostic, and documentation reviews found no 
 findings after the timing-sensitive regression tests were corrected. This is not a full repository
 suite pass. Mac timing attribution and Linux fixture qualification remain unresolved, and no
 production repair capability has been enabled.
+
+### Diagnostic Linux result and revised combined decision
+
+At head 565a89d0889556e0932f8508843a4192c7b05fd4, job 101805484054 in run 34141891105
+again reported 16 passing and one failing isolation tests, with zero skips. Main independently
+retrieved the completed log using the GitHub CLI. The unchanged failing assertion at line 233
+checks the post-attempt denied-file read. Earlier direct and nested mount-denial assertions and
+both chmod-false assertions passed. The attached beforeMutation diagnostic records reads before
+the nested attacks, but after the outer direct alias-mount attempt.
+
+The nested child reported uid/euid/gid/egid zero; UID and GID maps each contained `0 1001 1`.
+Denied file and directory ownership was 0:0 in that view. File modes were 32768 and 16384;
+masking with 07777 gives zero for both. Readable mode 33152 gives 0600. Effective capability
+mask 000001ffffffffff contains bit 1 (CAP_DAC_OVERRIDE) and bit 2 (CAP_DAC_READ_SEARCH), verified
+independently with BigInt bit operations. Both denied inputs were already readable in the
+pre-nested-mutation observation; distinct synthetic prefixes identify the requested fixtures.
+The missing control remained ENOENT and the readable control succeeded.
+
+Linux man-pages and upstream Linux 6.17 kernel/capability.c:418-449 and fs/namei.c:438-478
+independently corroborate the capability-and-mapped-owner mechanism. This is not a trace of the
+deployed Azure kernel or a controlled capability-removal experiment. Independent review found
+no concrete setup or path-selection defect. The runtime probe does not call the production
+immutable fixture helper. Pre/post host checks reject persistent drift, not all transient changes,
+and nested diagnostics do not include inode identity. Do not claim a protected-host-file escape.
+
+The revised pending design compares A, a narrow pinned-supervisor extension with post-setup
+namespace restrictions and protected application results; B, separate supervision with separately
+provisioned fixture identity; and C, continued unsupported outcomes. A is recommended for reuse
+and reduced host provisioning, with native artifact maintenance and workload compatibility costs
+made explicit. No new profile, native result protocol, pilot, merge, or release is selected by
+this diagnosis. A material user decision remains required. Current quality and proof jobs remain
+active; no push may cancel the current proof build merely to publish this evidence update.
+
+Independent review found no P1–P3 findings in the revised diagnosis and combined design direction.
+It specifically retained A's unresolved clone3/fallback and namespace-join compatibility proofs,
+B's identity-provisioning and recovery costs, and C's incomplete usability outcome. The public
+design states that upstream attestation does not authenticate a custom binary and that no existing
+native command policy changes implicitly. Documentation style, links, and changed-prose gates passed
+after splitting long prose. No executable code changed in this diagnosis update.
