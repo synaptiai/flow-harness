@@ -430,6 +430,7 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
     ).rejects.toMatchObject({ code: "operation_cancelled" });
   }, 30_000);
 
+  // The watchdog includes a failed verification attempt and its complete retry.
   it("replays safely after private evidence publication loses its result", async () => {
     const fixture = await createFixture();
     const sandbox = new RecordingProcessSandbox();
@@ -445,9 +446,10 @@ describe("LocalIssueVerification", { timeout: 30_000 }, () => {
     expect(replay.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(sandbox.requests).toHaveLength(4);
     expect(await git(fixture.workspace.root, "rev-parse", "HEAD")).toBe(fixture.candidateHead);
-  }, 20_000);
+  });
 });
 
+// Complete verification and real Git diff capture share the suite's bounded watchdog.
 describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
   it("captures one exact bounded private diff and returns content-free review evidence", async () => {
     const fixture = await createFixture();
@@ -539,7 +541,7 @@ describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
     expect(invocation.args).not.toContain("--force");
     expect(invocation.args.join(" ")).not.toContain("protocol.file");
     expect(invocation.environmentNames).not.toContain("OPENAI_API_KEY");
-  }, 20_000);
+  });
 
   it("captures an exact review diff above the legacy 32 KiB boundary", async () => {
     const fixture = await createFixture({ candidateContent: "x".repeat(40_000) });
@@ -561,7 +563,7 @@ describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
 
     expect(evidence.diffBlob.byteLength).toBeGreaterThan(32_768);
     expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
-  }, 20_000);
+  });
 
   it("captures an exact review diff at the field-pilot scale above 128 KiB", async () => {
     const fixture = await createFixture({ candidateContent: "x".repeat(190_000) });
@@ -583,7 +585,7 @@ describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
 
     expect(evidence.diffBlob.byteLength).toBeGreaterThan(131_072);
     expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
-  }, 20_000);
+  });
 
   it("rejects a configured review diff boundary above the public maximum", async () => {
     const fixture = await createFixture();

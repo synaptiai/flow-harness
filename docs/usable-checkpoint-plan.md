@@ -276,7 +276,16 @@ also passed the existing admission suites. The retained CI diagnostics cannot es
 as the historical failure's cause. This correction still requires fresh hosted qualification and
 does not enable verification-failure repair or authorize another pilot.
 
-Local verification passed 6,683 coverage tests, 44 runtime
+A full local coverage attempt at `1a841be` ended with exit code 137 before a final report.
+Five tests had reported failures. A bounded reproduction confirmed four test-runner timeouts
+and one pass.
+
+A scoped test-only correction uses the repository's existing 30-second test timeout
+policy. The five selected behaviors then passed. Both complete affected files subsequently passed
+all 47 tests, alongside formatting, lint, type checking, and compilation. Full coverage remains
+open. No production budgets, assertions, or coverage thresholds changed.
+
+Earlier local verification passed 6,683 coverage tests, 44 runtime
 tests, and two browser tests, plus build, type checking, formatting, lint, and documentation gates.
 The local runtime suite skipped 42 platform-specific tests. Installed-package live qualification
 remains open. The internal decision log retains failed attempts and their corrections.

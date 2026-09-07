@@ -463,3 +463,75 @@ establish its cause. No timeout or production resource limit changed.
 The new verification-repair proposal remains unapproved. No new pilot, temporary credential,
 candidate edit, publication, or merge is authorized by this correction. Updated package bytes
 must be qualified again before they can inherit any installed-package success claim.
+
+### Broader verification after the admission correction
+
+Hosted run `34104676944` at `c99836b` completed. Dependency audit passed, and the proof-runtime
+job verified appliance image `sha256:73559bb7a6d90c71601661ff13e82e59e1efa7ba05db22b5fb3e619f7e146a73`.
+All four proof tests passed in 92.41 seconds of test execution. Quality retained its admission
+failure. The complete run therefore failed; the successful proof job does not qualify the newer head.
+
+After that run became terminal, both reviewed commits were pushed through `1a841be`. Fresh hosted
+run `34111318839` started on that exact head. PR 201 remains draft and unmerged. Its description
+distinguishes the incremental correction, incomplete full verification, and unapproved repair design.
+
+The full local single-worker coverage run at `1a841be` terminated with exit code 137 and no final
+report. Before termination, it reported four failures in `local-issue-verification.test.ts` and
+one in `local-effective-harness-store.test.ts`. No complete test count or coverage result is available.
+The saved Vitest cache predates this run and cannot substitute for its missing result.
+
+The four verification/review tests took approximately their explicit 20-second test limits.
+The storage test, which prepares 256 distinct artifacts, took approximately the runner's
+five-second default. These observations suggest investigating test deadlines, but do not prove
+timeout errors or identify the cause of termination. Independent tracing excludes the changed
+`strict-read-process.ts` from the four verification/review test paths.
+
+The known process was absent after termination. The host reported 16 GiB of physical memory and
+20,419.12 MiB of used swap at the subsequent observation. A kernel-log query for the known process
+identifier returned no matching event. Neither exit code 137 nor the swap observation alone proves
+an out-of-memory kill. Do not classify this as a successful suite or silently discard its failures.
+
+One diagnostic rerun selects only the five reported failing tests, retains coverage and their
+original timeouts, and requests verbose output. No full-suite restart, production-limit change,
+candidate mutation, or model call is part of that diagnostic. Hosted qualification remains open.
+
+The bounded diagnostic completed: four tests failed explicitly at their test watchdogs, one passed,
+and 42 were not selected. Replay, ordinary diff capture, and the 128 KiB case hit 20 seconds.
+The physical-artifact inventory case hit the default five seconds. The 32 KiB case passed in
+18.85 seconds. This identifies test-deadline failures, not the cause of the earlier exit 137.
+
+Choose the existing narrow watchdog policy from `uc08-command-discovery.md` and commit `4ed4a64`.
+The four observed Git cases inherit their enclosing 30-second suite watchdog instead of overriding
+it with 20 seconds. The specific 256-artifact case receives the same finite watchdog. No assertion,
+fixture size, production deadline, model budget, coverage threshold, or runtime limit changes.
+The alternatives were an unchanged-limit run on a recovered host, which leaves timing sensitivity,
+or fixture optimization, which has a larger isolation and correctness review scope. Thirty seconds
+is repository precedent, not an optimal duration or a guarantee for arbitrary host conditions.
+
+The same five covered tests then passed. Their test durations were 17.835 seconds for replay,
+15.144 for ordinary diff capture, 17.420 for the 32 KiB case, 19.175 for the 128 KiB case, and
+9.350 for physical-artifact rejection. The Git cases happened to finish below their former limits
+in this run; do not attribute their shorter durations to the watchdog change. The storage case
+completed its unchanged assertions beyond its former five-second watchdog.
+
+This diagnostic selected five tests and skipped 42. Its command exited 1 because those five tests
+do not meet the unchanged repository-wide coverage thresholds. Its 6.01% statement coverage is
+not the full suite's coverage, a new baseline, or a successful coverage gate. Both complete affected
+files and static checks remain required before committing the watchdog correction.
+
+Independent review found and corrected a P3 comment error: the replay contains a partial failed
+attempt followed by one complete retry, not two complete verification passes. Rereview found no
+remaining P1, P2, or P3 findings in the watchdog diff. Keep all failed and interrupted runs recorded.
+
+The complete affected-file run then passed all 47 tests across both files, with no skipped tests.
+It took 218.07 seconds of test execution and 220.28 seconds total. Formatting, lint, type checking,
+and compilation passed in the same serialized verification chain. Lint retained its existing
+informational constructor suggestion. This is affected-file verification without coverage, not
+a replacement for the interrupted full coverage run or fresh hosted qualification.
+
+The broader PR review stops at specification compliance. Issue 197 explicitly requires an installed
+package to complete a previously unhandled external issue through hosted Linux x64 merge and
+post-merge verification. All five issue 106 attempts remain unsuccessful at that criterion.
+The source-built issue 6 result and offline installed lifecycle tests cannot replace it.
+Therefore, the incremental correction can be committed after its checks, but PR 201 remains draft
+and is not ready for approval or merge. The unapproved verification-repair proposal remains separate.
