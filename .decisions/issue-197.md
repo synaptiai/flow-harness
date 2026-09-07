@@ -1779,3 +1779,57 @@ not prove the extra descriptor reaches the native boundary through the sandbox. 
 unchanged-SRT FD19 negative control and narrowed documentation to end-to-end application-entry
 closure. The observer-specific bootstrap differs from the original, so native helper-entry
 attribution remains a mandatory later qualification rather than an inferred pass.
+
+### Genuine native transport RED reached
+
+Run 34153761937 at 8ef9520065c7dde801abc8798c978167cbdd9a4b completed in 62 seconds. It logged
+system Python3.12.3 and passed all prerequisites. The direct-host positive and unchanged-SRT
+positive both printed the exact marker and exited7. Both explicit FD19 negative controls reported
+the exact regular-file diagnostic and exited96. The rewritten upstream helper then produced its
+exact unsupported-exec ENOENT result with private EOF. Only the required private normal_exit7
+frame assertion failed: parser result null. This is genuine intended RED, unlike the prior
+precondition failures. Root /tmp/flow-observer-transport-8lcAk0 was retained on the ephemeral host.
+
+Started two disjoint implementation tasks: observer-only native process/reporting patch, and
+separate reproducible observer build mode/provenance. The main task owns hosted wiring and final
+qualification. Unchanged upstream sources and ordinary execution semantics remain preserved.
+No policy-clean classification, fixture-policy adoption, model invocation, repair enablement,
+merge, or release is authorized by this regression result.
+
+### Observer-only native implementation and explicit build mode
+
+Implemented observer.patch and observer-application.h after genuine Linux RED. The patch adds a
+reserved observer dispatch to a copy of the pinned supervisor, leaving upstream bytes unchanged.
+The header uses exact ELF descriptor execution, outer-only final writer3, executable4, two private
+nonblocking CLOEXEC pipes, checked namespace/proc/dumpability setup, and exact worker/inner waits.
+It closes all descriptors >=5 before allocating private pipes, without a guessed upper FD limit.
+The worker reports failures then uses raw self-SIGKILL and a non-returning x64 UD2 fallback.
+Checked kernel signal reset covers all x64 signals except KILL/STOP, including glibc-reserved32/33.
+Signalled workers remain launch-unproven. The nonzero equal real/effective/saved identity check is
+not a capability-free-entry proof; the admitted SRT bwrap cap-drop profile remains a prerequisite.
+
+The new --build-observer mode freezes the patch and both headers separately, applies the patch to
+copied source, retains original/patched source and relinkable objects, compares two clean builds,
+and checks preserved output hashes against frozen inputs. Default baseline mode and the pinned
+source-manifest are unchanged. Observer mode alone installs patch from the existing signed snapshot.
+Its receipt purpose is observer-application-result-build with observerQualification:not-performed.
+The focused workflow selects that exact output artifact. Its timeout changed from15 to30minutes
+because two individually bounded10minute builds plus preparation/cleanup cannot fit15minutes.
+This changes only the native CI limit, not a model, pilot, or application budget.
+
+Build-tool TDD:12 missing-mode/provenance failures were observed before implementation;28 tests
+now pass including two explicit Docker-unavailable dispatch controls. Workflow artifact selection
+and timeout assertions failed before their corrections and passed afterward. Independent reviews
+found no remaining P1–P3 in native source, build integration, or workflow after correcting errno
+preservation and the aggregate-timeout mismatch. Root separately inspected the complete native
+header and build diff. None of these checks qualifies native compilation or runtime behavior.
+
+Root's focused local run passed343 cases; three real Unix-socket generator cases were initially
+denied by the local tool sandbox. An appropriately permitted rerun passed all four generator
+cases, for346 distinct passing cases across these seven files. The denied-run test roots were
+retained as /private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/fop-Y6qXN1,
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/fop-X7ILbC, and
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/fop-75sSfd. They were not manually removed.
+Full type checking, lint, formatting, source verification, and documentation checks passed. The
+unrelated constructor informational diagnostic remains. Real native compiler and transport checks
+are the next hosted gate, followed by adversarial failure, signal, custody, and settlement controls.

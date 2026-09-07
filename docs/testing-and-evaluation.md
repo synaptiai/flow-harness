@@ -648,7 +648,9 @@ path while a full CI run is active. It runs only
 `test/runtime/native-observer-transport.runtime.test.ts` on Ubuntu 24.04. Its unique check name,
 `Native observer development (not full CI)`, cannot replace the full CI or release gates.
 It uses the existing sandbox prerequisites, read-only repository permissions, no model credentials,
-and a separate non-cancelling concurrency group.
+and a separate non-cancelling concurrency group. It builds and compares the observer artifact through
+the explicit `--build-observer` mode before passing that artifact to the runtime test. Its 30-minute
+job limit covers two 10-minute build limits, preparation, checks, and cleanup attempts.
 
 The first trigger is a push of reviewed source to the exact branch
 `codex/issue-197-native-qualification`. Check that the branch is absent or has the expected prior
@@ -671,7 +673,9 @@ does not change production launches or prove the observer's descriptor custody.
 The black-box test requires a direct host launch and the unchanged SRT launch to execute a fixed application with
 exact output and exit code 7. It then requires the observer launch to deliver a private normal-exit
 record for 7, exact channel EOF, and outer transport status 0. The upstream helper does not implement
-that protocol, so the initial native regression is expected to fail after the positive control.
+that protocol. The initial native regression reached the missing-frame failure after all controls
+passed in [run 34153761937](https://github.com/synaptiai/flow-harness/actions/runs/34153761937).
+The explicit observer artifact must now pass the same result assertion.
 A platform skip or failure before that control is not the required failing-test evidence.
 
 The test deliberately passes an owned extra descriptor after runner isolation. Its direct-host and

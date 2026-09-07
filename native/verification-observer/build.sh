@@ -2,6 +2,8 @@
 set -eu
 umask 022
 test "$(uname -m)" = x86_64
+mode=${1:-baseline}
+case "$mode" in baseline|observer) ;; *) exit 1 ;; esac
 mkdir -p /build /out/licenses /out/sources/glibc
 cd /build
 gcc -static -O2 -Wall -Wextra -ffile-prefix-map=/source=. -ffile-prefix-map=/build=. \
@@ -22,6 +24,24 @@ strip --strip-all /out/upstream-apply-seccomp
 readelf --file-header /out/upstream-apply-seccomp | grep -q 'Advanced Micro Devices X86-64'
 if readelf --program-headers /out/upstream-apply-seccomp | grep -q INTERP; then exit 1; fi
 if readelf --dynamic /out/upstream-apply-seccomp | grep -q NEEDED; then exit 1; fi
+if [ "$mode" = observer ]; then
+  mkdir /build/observer /out/observer
+  cp /source/upstream/apply-seccomp.c /build/observer/apply-seccomp.c
+  cp /source/observer/observer.patch /source/observer/observer-application.h /source/observer/observer-result.h /build/observer/
+  cd /build/observer
+  patch --batch --forward --fuzz=0 -p1 < observer.patch
+  gcc -O2 -Wall -Wextra -Werror -ffile-prefix-map=/source=. -ffile-prefix-map=/build=. \
+    -fdebug-prefix-map=/out=. -frandom-seed=flow-observer-apply-seccomp \
+    -I /out -c apply-seccomp.c -o /out/flow-observer-apply-seccomp.o
+  gcc -static -Wl,--build-id=none -o /out/flow-observer-apply-seccomp /out/flow-observer-apply-seccomp.o
+  strip --strip-all /out/flow-observer-apply-seccomp
+  readelf --file-header /out/flow-observer-apply-seccomp | grep -q 'Advanced Micro Devices X86-64'
+  if readelf --program-headers /out/flow-observer-apply-seccomp | grep -q INTERP; then exit 1; fi
+  if readelf --dynamic /out/flow-observer-apply-seccomp | grep -q NEEDED; then exit 1; fi
+  cp apply-seccomp.c observer.patch observer-application.h observer-result.h /out/observer/
+  cp /source/upstream/apply-seccomp.c /out/observer/upstream-apply-seccomp.c
+  cp /source/source-manifest.json /out/observer/source-manifest.json
+fi
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' | LC_ALL=C sort > /out/toolchain.txt
 gcc --version >> /out/toolchain.txt
 ld --version >> /out/toolchain.txt

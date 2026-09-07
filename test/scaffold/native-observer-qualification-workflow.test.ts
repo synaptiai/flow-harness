@@ -23,7 +23,7 @@ describe("native observer qualification workflow", () => {
     const job = workflow.jobs["native-observer-development"];
     expect(job.name).toBe("Native observer development (not full CI)");
     expect(job["runs-on"]).toBe("ubuntu-24.04");
-    expect(job["timeout-minutes"]).toBe(15);
+    expect(job["timeout-minutes"]).toBe(30);
     expect(job.steps[0].with["persist-credentials"]).toBe(false);
     expect(
       job.steps
@@ -41,6 +41,14 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain('test "$(uname -s)" = Linux');
     expect(commands).toContain("npm ci --ignore-scripts");
     expect(commands).toContain("npm run build");
+    expect(commands).toContain(
+      'node native/verification-observer/build.mjs --build-observer "$RUNNER_TEMP/flow-native-observer"',
+    );
+    expect(job.steps.at(-1).env).toEqual({
+      FLOW_TEST_NATIVE_OBSERVER_HELPER:
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal GitHub runner path expression.
+        "${{ runner.temp }}/flow-native-observer/flow-observer-apply-seccomp",
+    });
     expect(commands).toContain(
       "/usr/bin/python3 -I -S -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))'",
     );

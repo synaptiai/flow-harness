@@ -78,6 +78,16 @@ const requiredArtifacts = [
   "licenses/GPL-2",
   "licenses/GPL-3",
 ];
+const observerInputNames = ["observer.patch", "observer-application.h", "observer-result.h"];
+const observerArtifacts = [
+  ...requiredArtifacts,
+  "flow-observer-apply-seccomp",
+  "flow-observer-apply-seccomp.o",
+  "observer/apply-seccomp.c",
+  "observer/upstream-apply-seccomp.c",
+  "observer/source-manifest.json",
+  ...observerInputNames.map((name) => `observer/${name}`),
+];
 
 async function sourceCheck(root) {
   const canonicalRoot = await realpath(root);
@@ -99,10 +109,18 @@ async function sourceCheck(root) {
   return { manifest, manifestSha256: sha256(manifestBytes), inputs };
 }
 
-async function freezeContext(root, destination) {
+async function freezeContext(root, destination, observer = false) {
   const canonicalRoot = await realpath(root);
   const checked = await sourceCheck(canonicalRoot);
   const recipe = {};
+  const observerInputs = {};
+  if (observer) {
+    for (const name of observerInputNames) {
+      const bytes = await regularBytes(canonicalRoot, name, 131_072);
+      checked.inputs.set(`observer/${name}`, bytes);
+      observerInputs[name] = sha256(bytes);
+    }
+  }
   for (const path of ["Dockerfile", "build.sh", "build.mjs"]) {
     const bytes =
       path === "build.mjs" ? launcherBytes : await regularBytes(canonicalRoot, path, 131_072);
@@ -111,6 +129,7 @@ async function freezeContext(root, destination) {
   }
   await mkdir(destination, { mode: 0o700 });
   await mkdir(join(destination, "upstream"), { mode: 0o700 });
+  await mkdir(join(destination, "observer"), { mode: 0o700 });
   for (const [path, bytes] of checked.inputs)
     await writeFile(join(destination, path), bytes, { flag: "wx", mode: 0o600 });
   const copied = await sourceCheck(destination);
@@ -119,12 +138,20 @@ async function freezeContext(root, destination) {
   for (const [path, digest] of Object.entries(recipe))
     if (sha256(await regularBytes(destination, path, 131_072)) !== digest)
       throw new Error("source integrity: frozen recipe mismatch");
+  for (const [name, digest] of Object.entries(observerInputs))
+    if (sha256(await regularBytes(destination, `observer/${name}`, 131_072)) !== digest)
+      throw new Error("source integrity: frozen observer input mismatch");
   await writeFile(
     join(destination, "upstream.sha256"),
     sources.map(([path, , hash]) => `${hash}  ${path}\n`).join(""),
     { flag: "wx", mode: 0o600 },
   );
-  return { manifest: checked.manifest, sourceManifestSha256: checked.manifestSha256, recipe };
+  return {
+    manifest: checked.manifest,
+    sourceManifestSha256: checked.manifestSha256,
+    recipe,
+    observerInputs,
+  };
 }
 
 async function regularBytes(root, relative, limit) {
@@ -159,21 +186,23 @@ async function regularBytes(root, relative, limit) {
   }
 }
 
-async function inventory(root, relative = "", result = {}) {
+async function inventory(root, relative = "", result = {}, observer = false) {
   const entries = await readdir(join(root, relative), { withFileTypes: true });
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "en"))) {
     if (!/^[a-zA-Z0-9._+~-]+$/.test(entry.name))
       throw new Error("build comparison: invalid artifact name");
     const path = relative ? `${relative}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      if (!["licenses", "sources", "sources/glibc"].includes(path))
+      if (
+        !["licenses", "sources", "sources/glibc", ...(observer ? ["observer"] : [])].includes(path)
+      )
         throw new Error("build comparison: unexpected directory");
-      await inventory(root, path, result);
+      await inventory(root, path, result, observer);
     } else {
       if (!entry.isFile() || Object.keys(result).length >= 64)
         throw new Error("build comparison: invalid artifact");
       if (
-        !requiredArtifacts.includes(path) &&
+        !(observer ? observerArtifacts : requiredArtifacts).includes(path) &&
         !/^sources\/glibc\/glibc_[a-zA-Z0-9.+~-]+\.(?:dsc|tar\.(?:xz|gz|bz2)(?:\.asc)?|diff\.gz)$/.test(
           path,
         )
@@ -185,11 +214,11 @@ async function inventory(root, relative = "", result = {}) {
   return result;
 }
 
-async function compare(first, second) {
-  const a = await inventory(await realpath(first));
-  const b = await inventory(await realpath(second));
+async function compare(first, second, observer = false) {
+  const a = await inventory(await realpath(first), "", {}, observer);
+  const b = await inventory(await realpath(second), "", {}, observer);
   if (
-    requiredArtifacts.some((path) => !(path in a)) ||
+    (observer ? observerArtifacts : requiredArtifacts).some((path) => !(path in a)) ||
     !Object.keys(a).some((path) => path.startsWith("sources/glibc/") && path.endsWith(".dsc")) ||
     !Object.keys(a).some((path) =>
       /^sources\/glibc\/glibc_.*\.orig\.tar\.(?:xz|gz|bz2)$/.test(path),
@@ -231,7 +260,7 @@ function run(args, timeoutMs = 30_000) {
   });
 }
 
-async function build(output) {
+async function build(output, observer = false) {
   const platform = (await run(["info", "--format", "{{.OSType}}/{{.Architecture}}"])).trim();
   if (platform !== "linux/x86_64")
     throw new Error(
@@ -252,7 +281,7 @@ async function build(output) {
   let failure;
   try {
     const context = join(scratch, "context");
-    const frozen = await freezeContext(ownRoot, context);
+    const frozen = await freezeContext(ownRoot, context, observer);
     for (const pass of ["first", "second"]) {
       builder = `flow-native-${randomUUID()}`;
       await run([
@@ -276,6 +305,7 @@ async function build(output) {
           "--no-cache",
           "--provenance=false",
           "--sbom=false",
+          ...(observer ? ["--build-arg", "FLOW_NATIVE_MODE=observer"] : []),
           "--output",
           `type=local,dest=${join(scratch, pass)}`,
           context,
@@ -285,7 +315,21 @@ async function build(output) {
       await run(["buildx", "rm", "--force", builder]);
       builder = undefined;
     }
-    const artifacts = await compare(join(scratch, "first"), join(scratch, "second"));
+    const artifacts = await compare(join(scratch, "first"), join(scratch, "second"), observer);
+    if (observer) {
+      const preserved = {
+        "observer/source-manifest.json": frozen.sourceManifestSha256,
+        "observer/upstream-apply-seccomp.c": sources[0][2],
+        ...Object.fromEntries(
+          Object.entries(frozen.observerInputs).map(([name, digest]) => [
+            `observer/${name}`,
+            digest,
+          ]),
+        ),
+      };
+      for (const [path, digest] of Object.entries(preserved))
+        if (artifacts[path] !== digest) throw new Error("observer build provenance mismatch");
+    }
     await mkdir(destination, { mode: 0o700 });
     for (const path of Object.keys(artifacts)) {
       await mkdir(dirname(join(destination, path)), { recursive: true, mode: 0o700 });
@@ -297,7 +341,7 @@ async function build(output) {
     }
     await writeFile(
       join(destination, "build-evidence.json"),
-      `${JSON.stringify({ version: 1, purpose: frozen.manifest.purpose, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, build: frozen.manifest.build, comparison: "two-clean-builds-identical", artifacts, observerQualification: "not-performed" }, null, 2)}\n`,
+      `${JSON.stringify({ version: 1, purpose: observer ? "observer-application-result-build" : frozen.manifest.purpose, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, build: observer ? { ...frozen.manifest.build, artifact: "flow-observer-apply-seccomp", packages: [...frozen.manifest.build.packages, "patch"] } : frozen.manifest.build, ...(observer ? { observerInputs: frozen.observerInputs } : {}), comparison: "two-clean-builds-identical", artifacts, observerQualification: "not-performed" }, null, 2)}\n`,
       { flag: "wx", mode: 0o600 },
     );
     completed = true;
@@ -336,20 +380,25 @@ try {
     process.stdout.write(
       `${JSON.stringify({ verified: true, sourceManifestSha256: checked.manifestSha256, sourceCount: sources.length })}\n`,
     );
-  } else if (mode === "--compare" && args.length === 2) {
-    const artifacts = await compare(args[0], args[1]);
+  } else if (["--compare", "--compare-observer"].includes(mode) && args.length === 2) {
+    const artifacts = await compare(args[0], args[1], mode === "--compare-observer");
     process.stdout.write(
       `${JSON.stringify({ comparisonOnly: true, identical: true, artifactCount: Object.keys(artifacts).length })}\n`,
     );
-  } else if (mode === "--freeze-context" && args.length === 2) {
-    const frozen = await freezeContext(args[0], args[1]);
+  } else if (
+    ["--freeze-context", "--freeze-observer-context"].includes(mode) &&
+    args.length === 2
+  ) {
+    const observer = mode === "--freeze-observer-context";
+    const frozen = await freezeContext(args[0], args[1], observer);
     process.stdout.write(
-      `${JSON.stringify({ frozenOnly: true, observerQualified: false, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe })}\n`,
+      `${JSON.stringify({ frozenOnly: true, observerQualified: false, sourceManifestSha256: frozen.sourceManifestSha256, recipe: frozen.recipe, ...(observer ? { observerInputs: frozen.observerInputs } : {}) })}\n`,
     );
   } else if (mode === "--build" && args.length === 1) await build(args[0]);
+  else if (mode === "--build-observer" && args.length === 1) await build(args[0], true);
   else
     throw new Error(
-      "Use --check-sources [root], --freeze-context root NEW_DIRECTORY, --compare first second, or --build NEW_OUTPUT_DIRECTORY",
+      "Use --check-sources [root], --freeze-context/--freeze-observer-context root NEW_DIRECTORY, --compare/--compare-observer first second, or --build/--build-observer NEW_OUTPUT_DIRECTORY",
     );
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : "native foundation failed"}\n`);

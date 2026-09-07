@@ -345,6 +345,7 @@ It does not enable repairs or authorize another live model pilot, merge, or rele
 ### Implement the approved extension in phases
 
 Track the native boundary separately from its host integration and behavioral qualification:
+Completed implementation items describe source changes, not runtime qualification.
 
 - [ ] Preserve the pinned upstream sources and license. Build a Linux x64 artifact with recorded
   toolchain, source, patch, generated-filter, and binary identities. Compare independent clean builds.
@@ -354,9 +355,9 @@ Track the native boundary separately from its host integration and behavioral qu
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.
 - [ ] Extend trusted setup and the existing supervisor to launch the exact admitted application.
   Preserve failed execution, normal exit, signal, and policy-interference distinctions.
-  - [ ] Record an observer-only patch separately from unchanged vendored source and baseline output.
-  - [ ] Connect the three private channels to the actual outer-stub, inner-init, and worker processes.
-  - [ ] Replace flattened wait statuses and unchecked setup with the observer-specific contract below.
+  - [x] Record an observer-only patch separately from unchanged vendored source and baseline output.
+  - [x] Connect the three private channels to the actual outer-stub, inner-init, and worker processes.
+  - [x] Replace flattened wait statuses and unchecked setup with the observer-specific contract below.
   - [ ] Execute the admitted ELF descriptor and qualify every worker failure path on Linux x64.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.

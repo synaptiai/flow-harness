@@ -1,9 +1,10 @@
 # Native observer build foundation
 
-This directory is for contributors preparing the Linux x64 observer. It contains unchanged
-upstream source and a build recipe, not a qualified observer. Flow does not load its output.
-`observer-result.h` separately implements the internal result-frame encoder. It is not linked into
-the unchanged upstream baseline or connected to production execution.
+This directory is for contributors preparing the Linux x64 observer. It preserves unchanged
+upstream source and provides a separate observer-only patch and build mode. Neither artifact is a
+qualified observer. Flow does not load the output in production issue runs.
+`observer-result.h` implements the internal result-frame encoder. The observer-only build connects
+it to the native process path. The unchanged upstream baseline does not include it.
 The [verification repair design](../../docs/bounded-verification-repair-design.md) owns the
 observer contract and the remaining implementation and qualification gates.
 
@@ -58,14 +59,43 @@ output. The launcher does not overwrite an existing output directory or report s
 cleanup completes. Docker calls have bounded deadlines and captured output; filesystem cleanup
 does not have a hard operating-system deadline.
 
-The recipe has not yet been built or compared on a Linux x64 host. Source checks, synthetic
-artifact comparisons, and a pinned recipe do not prove native compilation, reproducibility,
-compatibility, or isolation. No artifact hash is supplied in advance.
+The first hosted Linux x64 comparison passed in
+[run 34147986514](https://github.com/synaptiai/flow-harness/actions/runs/34147986514).
+Two clean builds produced 15 identical artifacts. The baseline helper SHA-256 was
+`9883ef93f808fec05f95cdf71cb43642ef3ef825d7d9d73cb85417f1b0376d5d`.
+This verifies reproducibility for that recorded source and recipe, not observer compatibility or
+isolation. A later source or recipe change requires new evidence.
 
 The existing hosted `proof-runtime` CI job runs this comparison after the proof acceptance tests.
 It reuses that job's native Linux x64 Docker host and prints `build-evidence.json` only after a
 successful comparison and cleanup. A failed comparison fails the job. This step does not load,
-publish, or qualify the baseline as an observer. The first hosted execution is pending.
+publish, or qualify the baseline as an observer.
+
+## Build the observer-only application-result artifact
+
+Use the same Linux x64 Docker prerequisites and a new output directory:
+
+```sh
+node native/verification-observer/build.mjs --build-observer /absolute/path/to/new-observer-output
+```
+
+This explicit mode freezes `observer.patch`, `observer-application.h`, and `observer-result.h`
+with the source manifest and build recipe. It applies the patch to a copy of the upstream source,
+then builds `flow-observer-apply-seccomp` and its relinkable object. It preserves the unchanged
+upstream artifacts and redistribution materials. The observer build adds the snapshot's `patch`
+package. The default `--build` mode does not install that package or apply the observer patch.
+
+The launcher compares two clean builds before copying the results to the new output directory.
+The `observer/` output directory retains the patch, both headers, original and patched source,
+and source manifest. `build-evidence.json` records their identities and the build inputs.
+Its purpose is `observer-application-result-build`. Its `observerQualification` remains
+`not-performed`. Successful compilation or reproducibility does not qualify application results,
+private-channel custody, policy interference, or repair enablement.
+
+The focused hosted workflow builds this artifact and supplies its exact path through
+`FLOW_TEST_NATIVE_OBSERVER_HELPER`. The
+[native transport testing guide](../../docs/testing-and-evaluation.md#develop-the-native-result-transport-independently)
+describes the separate behavioral gate. No qualified observer artifact is included in the published package.
 
 ## Preserve redistribution materials
 
@@ -109,3 +139,7 @@ For source-snapshot diagnostics, `--freeze-context ROOT NEW_DIRECTORY` writes a 
 context and reports its hashes without building. `--compare FIRST SECOND` compares complete
 artifact trees without claiming their origin or native qualification. Neither operation
 enables the observer or changes the sandbox policy.
+
+The explicit `--freeze-observer-context ROOT NEW_DIRECTORY` and `--compare-observer FIRST SECOND`
+operations provide the corresponding observer-input and artifact diagnostics. They do not build,
+execute, or qualify the artifact.

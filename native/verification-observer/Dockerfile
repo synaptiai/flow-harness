@@ -14,8 +14,15 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install --yes --no-install-recommends binutils ca-certificates gcc libc6-dev libseccomp-dev
 WORKDIR /source
+ARG FLOW_NATIVE_MODE=baseline
 COPY upstream ./upstream
-COPY upstream.sha256 build.sh ./
-RUN sha256sum --check upstream.sha256 && sh build.sh
+COPY observer ./observer
+COPY upstream.sha256 source-manifest.json build.sh ./
+RUN case "$FLOW_NATIVE_MODE" in \
+      baseline) ;; \
+      observer) apt-get install --yes --no-install-recommends patch ;; \
+      *) exit 1 ;; \
+    esac \
+    && sha256sum --check upstream.sha256 && sh build.sh "$FLOW_NATIVE_MODE"
 FROM scratch AS artifacts
 COPY --from=build /out/ /

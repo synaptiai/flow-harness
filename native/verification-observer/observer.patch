@@ -1,0 +1,14 @@
+--- a/apply-seccomp.c
++++ b/apply-seccomp.c
+@@ -657,7 +657,11 @@
+     }
+ }
+ 
++#include "observer-application.h"
++
+ int main(int argc, char *argv[]) {
++    if (argc > 1 && strcmp(argv[1], "--flow-observer-v1") == 0)
++        return flow_observer_application_main(argc, argv);
+     if (argc < 2) {
+         fprintf(stderr, "Usage: %s <command> [args...]\n", argv[0]);
+         return 1;

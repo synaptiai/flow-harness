@@ -17,7 +17,8 @@ jobs:
   native-observer-development:
     name: Native observer development (not full CI)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Two builds each allow ten minutes, plus preparation and bounded cleanup.
+    timeout-minutes: 30
     steps:
       - name: Check out the triggering commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -56,7 +57,14 @@ jobs:
       - name: Build the production runtime
         run: npm run build
 
+      - name: Compare two clean observer builds
+        run: |
+          node native/verification-observer/build.mjs --build-observer "$RUNNER_TEMP/flow-native-observer"
+          cat "$RUNNER_TEMP/flow-native-observer/build-evidence.json"
+
       - name: Test the native application-result path
+        env:
+          FLOW_TEST_NATIVE_OBSERVER_HELPER: ${{ runner.temp }}/flow-native-observer/flow-observer-apply-seccomp
         # The hosted parent can have inherited non-CLOEXEC pipes. Isolate only
         # the test child; never close or change the parent runner's descriptors.
         # This is not evidence of the native observer's own descriptor custody.

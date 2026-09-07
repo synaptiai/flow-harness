@@ -320,6 +320,12 @@ inject an owned extra descriptor and prove that the observer closes it. Track or
 descriptor inheritance as an unresolved release hardening item. This test-environment correction
 does not fix or qualify production command isolation.
 
+[Run 34153761937](https://github.com/synaptiai/flow-harness/actions/runs/34153761937) at `8ef9520`
+passed both normal-launch controls and both injected-descriptor controls on native Linux x64.
+It then confirmed the unchanged helper's exact unsupported-command error and failed on the absent
+private result frame. This is the required missing-protocol regression, not observer success.
+Implementation of the observer-only native patch and its separate reproducible build can now proceed.
+
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three
 fixture tests passed, so the fixture profile remains unqualified. A candidate-side nested user

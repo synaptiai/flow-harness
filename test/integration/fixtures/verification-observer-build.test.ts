@@ -231,3 +231,110 @@ it("keeps the Docker recipe on the recorded base, snapshot, platform, and epoch"
   expect(recipe).toContain("--build-id=none");
   expect(recipe).toContain("--download-only");
 });
+
+const observerInputs = ["observer.patch", "observer-application.h", "observer-result.h"];
+const observerArtifacts = [
+  "flow-observer-apply-seccomp",
+  "flow-observer-apply-seccomp.o",
+  "observer/apply-seccomp.c",
+  "observer/upstream-apply-seccomp.c",
+  "observer/source-manifest.json",
+  ...observerInputs.map((name) => `observer/${name}`),
+];
+
+for (const mode of ["--build", "--build-observer"]) {
+  it(
+    `dispatches ${mode} through Docker admission, not a synthetic successful build`,
+    ownedTest(async (scope) => {
+      const root = await scope.temporaryDirectory("flow-native-no-docker-");
+      await expect(
+        execFile(process.execPath, [join(foundation, "build.mjs"), mode, join(root, "output")], {
+          env: { PATH: root },
+          timeout: 3_000,
+          maxBuffer: 65_536,
+        }),
+      ).rejects.toThrow("native foundation Docker operation failed");
+    }),
+  );
+}
+
+it(
+  "freezes observer inputs separately without changing upstream manifest bytes",
+  ownedTest(async (scope) => {
+    const root = await copySources(scope);
+    for (const name of observerInputs) await writeFile(join(root, name), `synthetic ${name}\n`);
+    const parent = await scope.temporaryDirectory("flow-observer-freeze-");
+    const context = join(parent, "context");
+    const manifest = await readFile(join(root, "source-manifest.json"));
+    const result = await command("--freeze-observer-context", root, context);
+    expect(result).toMatchObject({ frozenOnly: true, observerQualified: false });
+    expect(await readFile(join(context, "source-manifest.json"))).toEqual(manifest);
+    for (const name of observerInputs) {
+      const bytes = await readFile(join(root, name));
+      await writeFile(join(root, name), "changed after freeze");
+      expect(await readFile(join(context, "observer", name))).toEqual(bytes);
+      expect(result.observerInputs).toMatchObject({
+        [name]: createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+  }),
+);
+
+it(
+  "rejects a symlink observer header before freezing executable inputs",
+  ownedTest(async (scope) => {
+    const root = await copySources(scope);
+    for (const name of observerInputs) await writeFile(join(root, name), `synthetic ${name}\n`);
+    await rm(join(root, "observer-result.h"));
+    await symlink(join(foundation, "observer-result.h"), join(root, "observer-result.h"));
+    await expect(command("--freeze-observer-context", root, join(root, "context"))).rejects.toThrow(
+      "indirect path",
+    );
+  }),
+);
+
+async function observerComparisonFixture(scope: OwnedTestScope) {
+  const root = await comparisonFixture(scope);
+  await mkdir(join(root, "observer"));
+  // These inputs check inventory/comparison only, never compilation or native safety.
+  for (const path of observerArtifacts) await writeFile(join(root, path), `synthetic ${path}\n`);
+  return root;
+}
+
+it(
+  "compares observer artifacts only in the explicit observer mode without qualification",
+  ownedTest(async (scope) => {
+    const first = await observerComparisonFixture(scope);
+    const second = await observerComparisonFixture(scope);
+    expect(await command("--compare-observer", first, second)).toMatchObject({
+      comparisonOnly: true,
+      identical: true,
+      artifactCount: artifactNames.length + observerArtifacts.length,
+    });
+    await expect(command("--compare", first, second)).rejects.toThrow("unexpected");
+  }),
+);
+
+for (const missing of observerArtifacts) {
+  it(
+    `requires observer provenance and relinkable artifact ${missing}`,
+    ownedTest(async (scope) => {
+      const first = await observerComparisonFixture(scope);
+      const second = await observerComparisonFixture(scope);
+      for (const root of [first, second]) await rm(join(root, missing));
+      await expect(command("--compare-observer", first, second)).rejects.toThrow("incomplete");
+    }),
+  );
+}
+
+it(
+  "rejects a changed patched translation unit between observer builds",
+  ownedTest(async (scope) => {
+    const first = await observerComparisonFixture(scope);
+    const second = await observerComparisonFixture(scope);
+    await writeFile(join(second, "observer/apply-seccomp.c"), "different\n");
+    await expect(command("--compare-observer", first, second)).rejects.toThrow(
+      "different artifacts",
+    );
+  }),
+);
