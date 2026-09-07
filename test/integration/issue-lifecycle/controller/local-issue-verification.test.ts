@@ -1,11 +1,10 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { stringify } from "yaml";
 
 import type {
@@ -39,651 +38,735 @@ import {
   LocalIssueVerification,
   LocalIssueVerificationError,
 } from "../../../../src/infrastructure/git/local-issue-verification.js";
+import { type OwnedTestScope, ownedTest } from "../../../fixtures/owned-test-scope.js";
 
 const execFile = promisify(execFileCallback);
-const temporaryDirectories: string[] = [];
 const RUN_ID = "issue-run-197-verification";
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-});
 
 describe("LocalIssueVerification", { timeout: 30_000 }, () => {
-  it("runs the exact negative control and every frozen check against proven Git trees", async () => {
-    const fixture = await createFixture();
-    const sandbox = new RecordingProcessSandbox();
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verifier = createVerifier(fixture, sandbox, store);
-    const qualityCommand = fixture.plan.verification.find(({ id }) => id === "quality")?.command;
-    if (qualityCommand === undefined) throw new Error("quality command fixture is absent");
+  it(
+    "runs the exact negative control and every frozen check against proven Git trees",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const sandbox = new RecordingProcessSandbox();
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verifier = createVerifier(fixture, sandbox, store);
+      const qualityCommand = fixture.plan.verification.find(({ id }) => id === "quality")?.command;
+      if (qualityCommand === undefined) throw new Error("quality command fixture is absent");
 
-    const result = await verifier.verify(request(fixture));
+      const result = await verifier.verify(request(fixture));
 
-    expect(result).toMatchObject({
-      negativeControl: {
-        baseCommit: fixture.base,
-        baseOutcome: "failed",
-        candidateHead: fixture.candidateHead,
-        candidateOutcome: "passed",
-      },
-      deterministic: [
-        {
-          id: "quality",
-          commandDigest: calculateFrozenIssueVerificationCommandDigest(qualityCommand),
-          headCommit: fixture.candidateHead,
+      expect(result).toMatchObject({
+        negativeControl: {
+          baseCommit: fixture.base,
+          baseOutcome: "failed",
+          candidateHead: fixture.candidateHead,
+          candidateOutcome: "passed",
         },
-      ],
-      candidateDelta: {
-        baseCommit: fixture.base,
-        candidateHead: fixture.candidateHead,
-        pathCount: 1,
-        logicalBytes: Buffer.byteLength("candidate\n"),
-        relevant: true,
-      },
-    });
-    expect(result.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(JSON.stringify(result)).not.toContain("private-command-output");
-    expect(store.blobs.some((blob) => decode(blob).includes("private-command-output"))).toBe(true);
-    expect(store.blobs.length).toBeGreaterThanOrEqual(7);
-    expect(sandbox.requests.map(({ cwd }) => cwd)).toEqual([
-      fixture.workspace.verificationRoot,
-      fixture.workspace.verificationRoot,
-      fixture.workspace.verificationRoot,
-    ]);
-    expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.root);
-    expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
-    expect(
-      sandbox.requests.every(({ runtimeEnvironment }) => runtimeEnvironment === undefined),
-    ).toBe(true);
-    expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
-    expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.root);
-    expect(Object.isFrozen(result)).toBe(true);
-  });
-
-  it("runs one manifest-bound private holdout over stdin without disclosing its source", async () => {
-    const source = Buffer.from(
-      `process.stderr.write("private-stdin-output"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);\n`,
-      "utf8",
-    );
-    const fixture = await createFixture({
-      holdoutCommand: { executable: process.execPath, args: ["-"], timeoutMs: 2_000 },
-      holdoutStdin: source,
-    });
-    const store = new MemoryPrivateStore(
-      fixture.planBlob,
-      undefined,
-      fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
-    );
-
-    await expect(
-      createVerifier(fixture, undefined, store).verify(request(fixture)),
-    ).resolves.toMatchObject({
-      negativeControl: { baseOutcome: "failed", candidateOutcome: "passed" },
-    });
-
-    const stdinHash = createHash("sha256").update(source).digest("hex");
-    const commandEvidence = store.blobs
-      .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
-      .map((blob) => JSON.parse(decode(blob)) as { readonly stdinHash?: string });
-    expect(commandEvidence).toHaveLength(3);
-    expect(commandEvidence.slice(0, 2).every((evidence) => evidence.stdinHash === stdinHash)).toBe(
-      true,
-    );
-    expect(commandEvidence[2]?.stdinHash).toBeUndefined();
-    expect(JSON.stringify(commandEvidence)).not.toContain(source.toString("utf8"));
-  });
-
-  it("distinguishes a passing base from a candidate that still fails the holdout", async () => {
-    const passingBase = await createFixture({
-      holdoutCommand: nodeCommand("process.exit(0);"),
-    });
-    await expect(createVerifier(passingBase).verify(request(passingBase))).rejects.toMatchObject({
-      code: "negative_control_mismatch",
-    });
-
-    const failingCandidate = await createFixture({
-      holdoutCommand: nodeCommand("process.exit(7);"),
-    });
-    await expect(
-      createVerifier(failingCandidate).verify(request(failingCandidate)),
-    ).rejects.toMatchObject({
-      code: "candidate_holdout_failed",
-    });
-  });
-
-  it("does not classify candidate infrastructure failures as holdout failures", async () => {
-    const fixture = await createFixture();
-    const sandbox = new RecordingProcessSandbox(undefined, 1, 2);
-
-    await expect(createVerifier(fixture, sandbox).verify(request(fixture))).rejects.toMatchObject({
-      code: "command_execution_failed",
-    });
-  });
-
-  it("retains evidence when private stdin closes before write settlement", async () => {
-    const source = Buffer.alloc(1_048_576, 0x61);
-    const fixture = await createFixture({
-      holdoutCommand: nodeCommand("process.exit(0);"),
-      holdoutStdin: source,
-    });
-    const store = new MemoryPrivateStore(
-      fixture.planBlob,
-      undefined,
-      fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
-    );
-
-    await expect(
-      createVerifier(fixture, undefined, store).verify(request(fixture)),
-    ).rejects.toMatchObject({ code: "command_stdin_failed" });
-
-    const commandEvidence = store.blobs
-      .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
-      .map((blob) => JSON.parse(decode(blob)) as { readonly stdinHash?: string });
-    expect(commandEvidence).toHaveLength(1);
-    expect(commandEvidence[0]).not.toHaveProperty("stdinHash");
-  });
-
-  it("preserves timeout precedence when private stdin remains unsettled", async () => {
-    const source = Buffer.alloc(1_048_576, 0x61);
-    const fixture = await createFixture({
-      holdoutCommand: nodeCommand("setInterval(() => undefined, 1000);", 30),
-      holdoutStdin: source,
-    });
-    const store = new MemoryPrivateStore(
-      fixture.planBlob,
-      undefined,
-      fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
-    );
-
-    await expect(
-      createVerifier(fixture, undefined, store, {
-        terminationGraceMs: 5,
-        terminationConfirmationMs: 100,
-      }).verify(request(fixture)),
-    ).rejects.toMatchObject({ code: "command_timeout" });
-
-    const commandEvidence = store.blobs
-      .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
-      .map(
-        (blob) =>
-          JSON.parse(decode(blob)) as { readonly stdinHash?: string; readonly timedOut: boolean },
+        deterministic: [
+          {
+            id: "quality",
+            commandDigest: calculateFrozenIssueVerificationCommandDigest(qualityCommand),
+            headCommit: fixture.candidateHead,
+          },
+        ],
+        candidateDelta: {
+          baseCommit: fixture.base,
+          candidateHead: fixture.candidateHead,
+          pathCount: 1,
+          logicalBytes: Buffer.byteLength("candidate\n"),
+          relevant: true,
+        },
+      });
+      expect(result.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(result)).not.toContain("private-command-output");
+      expect(store.blobs.some((blob) => decode(blob).includes("private-command-output"))).toBe(
+        true,
       );
-    expect(commandEvidence).toHaveLength(1);
-    expect(commandEvidence[0]).toMatchObject({ timedOut: true });
-    expect(commandEvidence[0]).not.toHaveProperty("stdinHash");
-  });
+      expect(store.blobs.length).toBeGreaterThanOrEqual(7);
+      expect(sandbox.requests.map(({ cwd }) => cwd)).toEqual([
+        fixture.workspace.verificationRoot,
+        fixture.workspace.verificationRoot,
+        fixture.workspace.verificationRoot,
+      ]);
+      expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.root);
+      expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
+      expect(
+        sandbox.requests.every(({ runtimeEnvironment }) => runtimeEnvironment === undefined),
+      ).toBe(true);
+      expect(sandbox.requests[0]?.protectedPaths).toContain(fixture.workspace.sourceRoot);
+      expect(sandbox.requests[1]?.protectedPaths).toContain(fixture.workspace.root);
+      expect(Object.isFrozen(result)).toBe(true);
+    }),
+  );
 
-  it("rejects a substituted frozen command before starting a process", async () => {
-    const fixture = await createFixture();
-    const sandbox = new RecordingProcessSandbox();
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const manifest = parseIssuePrivateManifest({
-      ...fixture.manifest,
-      holdout: { ...fixture.manifest.holdout, commandDigest: "0".repeat(64) },
-    });
+  it(
+    "runs one manifest-bound private holdout over stdin without disclosing its source",
+    ownedTest(async (scope) => {
+      const source = Buffer.from(
+        `process.stderr.write("private-stdin-output"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);\n`,
+        "utf8",
+      );
+      const fixture = await createFixture(scope, {
+        holdoutCommand: { executable: process.execPath, args: ["-"], timeoutMs: 2_000 },
+        holdoutStdin: source,
+      });
+      const store = new MemoryPrivateStore(
+        fixture.planBlob,
+        undefined,
+        fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+      );
 
-    await expect(
-      createVerifier(fixture, sandbox, store).verify(request(fixture, { manifest })),
-    ).rejects.toMatchObject({ code: "frozen_input_mismatch" });
-    expect(sandbox.requests).toHaveLength(0);
-  });
+      await expect(
+        createVerifier(fixture, undefined, store).verify(request(fixture)),
+      ).resolves.toMatchObject({
+        negativeControl: { baseOutcome: "failed", candidateOutcome: "passed" },
+      });
 
-  it("rejects a substituted frozen contract digest before starting a process", async () => {
-    const fixture = await createFixture();
-    const sandbox = new RecordingProcessSandbox();
+      const stdinHash = createHash("sha256").update(source).digest("hex");
+      const commandEvidence = store.blobs
+        .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
+        .map((blob) => JSON.parse(decode(blob)) as { readonly stdinHash?: string });
+      expect(commandEvidence).toHaveLength(3);
+      expect(
+        commandEvidence.slice(0, 2).every((evidence) => evidence.stdinHash === stdinHash),
+      ).toBe(true);
+      expect(commandEvidence[2]?.stdinHash).toBeUndefined();
+      expect(JSON.stringify(commandEvidence)).not.toContain(source.toString("utf8"));
+    }),
+  );
 
-    await expect(
-      createVerifier(fixture, sandbox).verify(
-        request(fixture, { frozenContractDigest: "0".repeat(64) }),
-      ),
-    ).rejects.toMatchObject({ code: "frozen_input_mismatch" });
-    expect(sandbox.requests).toHaveLength(0);
-  });
+  it(
+    "distinguishes a passing base from a candidate that still fails the holdout",
+    ownedTest(async (scope) => {
+      const passingBase = await createFixture(scope, {
+        holdoutCommand: nodeCommand("process.exit(0);"),
+      });
+      await expect(createVerifier(passingBase).verify(request(passingBase))).rejects.toMatchObject({
+        code: "negative_control_mismatch",
+      });
 
-  it("preserves cancellation while resolving the owned workspace", async () => {
-    const fixture = await createFixture();
-    const controller = new AbortController();
-    const sandbox = new RecordingProcessSandbox();
-    const verifier = new LocalIssueVerification({
-      git: fixture.effects,
-      workspaceProvider: {
-        readWorkspace: async () => {
-          controller.abort("operator cancelled");
-          throw new Error("cancelled workspace read");
+      const failingCandidate = await createFixture(scope, {
+        holdoutCommand: nodeCommand("process.exit(7);"),
+      });
+      await expect(
+        createVerifier(failingCandidate).verify(request(failingCandidate)),
+      ).rejects.toMatchObject({
+        code: "candidate_holdout_failed",
+      });
+    }),
+  );
+
+  it(
+    "does not classify candidate infrastructure failures as holdout failures",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const sandbox = new RecordingProcessSandbox(undefined, 1, 2);
+
+      await expect(createVerifier(fixture, sandbox).verify(request(fixture))).rejects.toMatchObject(
+        {
+          code: "command_execution_failed",
         },
-      },
-      privateStore: new MemoryPrivateStore(fixture.planBlob),
-      sandbox,
-    });
+      );
+    }),
+  );
 
-    await expect(
-      verifier.verify(request(fixture, { signal: controller.signal })),
-    ).rejects.toMatchObject({ code: "operation_cancelled" });
-    expect(sandbox.requests).toHaveLength(0);
-  });
+  it(
+    "retains evidence when private stdin closes before write settlement",
+    ownedTest(async (scope) => {
+      const source = Buffer.alloc(1_048_576, 0x61);
+      const fixture = await createFixture(scope, {
+        holdoutCommand: nodeCommand("process.exit(0);"),
+        holdoutStdin: source,
+      });
+      const store = new MemoryPrivateStore(
+        fixture.planBlob,
+        undefined,
+        fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+      );
 
-  it("fails closed when a command mutates tracked verification-snapshot content", async () => {
-    const fixture = await createFixture({
-      verificationCommand: nodeCommand(
-        `require("node:fs").writeFileSync("feature.txt", "mutated\\n");`,
-      ),
-    });
+      await expect(
+        createVerifier(fixture, undefined, store).verify(request(fixture)),
+      ).rejects.toMatchObject({ code: "command_stdin_failed" });
 
-    await expect(createVerifier(fixture).verify(request(fixture))).rejects.toMatchObject({
-      code: "candidate_drift",
-    });
-    expect(await readFile(join(fixture.workspace.verificationRoot, "feature.txt"), "utf8")).toBe(
-      "mutated\n",
-    );
-    expect(await readFile(join(fixture.workspace.root, "feature.txt"), "utf8")).toBe("candidate\n");
-  });
+      const commandEvidence = store.blobs
+        .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
+        .map((blob) => JSON.parse(decode(blob)) as { readonly stdinHash?: string });
+      expect(commandEvidence).toHaveLength(1);
+      expect(commandEvidence[0]).not.toHaveProperty("stdinHash");
+    }),
+  );
 
-  it("allows ignored command output but removes it before the next check", async () => {
-    const fixture = await createFixture({
-      holdoutCommand: nodeCommand(
-        `require("node:fs").writeFileSync("cache.log", "discard me\\n"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);`,
-      ),
-      verificationCommand: nodeCommand(
-        `process.exit(require("node:fs").existsSync("cache.log") ? 9 : 0);`,
-      ),
-    });
+  it(
+    "preserves timeout precedence when private stdin remains unsettled",
+    ownedTest(async (scope) => {
+      const source = Buffer.alloc(1_048_576, 0x61);
+      const fixture = await createFixture(scope, {
+        holdoutCommand: nodeCommand("setInterval(() => undefined, 1000);", 30),
+        holdoutStdin: source,
+      });
+      const store = new MemoryPrivateStore(
+        fixture.planBlob,
+        undefined,
+        fixture.holdoutStdinBlob === undefined ? [] : [fixture.holdoutStdinBlob],
+      );
 
-    await expect(createVerifier(fixture).verify(request(fixture))).resolves.toMatchObject({
-      candidateDelta: { candidateHead: fixture.candidateHead },
-    });
-    await expect(
-      lstat(join(fixture.workspace.verificationRoot, "cache.log")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-  });
+      await expect(
+        createVerifier(fixture, undefined, store, {
+          terminationGraceMs: 5,
+          terminationConfirmationMs: 100,
+        }).verify(request(fixture)),
+      ).rejects.toMatchObject({ code: "command_timeout" });
 
-  it("does not execute against model-created ignored candidate state", async () => {
-    const fixture = await createFixture();
-    await writeFile(join(fixture.workspace.root, "cache.log"), "candidate-only state\n");
-    const sandbox = new RecordingProcessSandbox();
+      const commandEvidence = store.blobs
+        .filter((blob) => blob.mediaType === "application/vnd.flow.issue-command-evidence+json")
+        .map(
+          (blob) =>
+            JSON.parse(decode(blob)) as { readonly stdinHash?: string; readonly timedOut: boolean },
+        );
+      expect(commandEvidence).toHaveLength(1);
+      expect(commandEvidence[0]).toMatchObject({ timedOut: true });
+      expect(commandEvidence[0]).not.toHaveProperty("stdinHash");
+    }),
+  );
 
-    await expect(createVerifier(fixture, sandbox).verify(request(fixture))).resolves.toMatchObject({
-      candidateDelta: { candidateHead: fixture.candidateHead },
-    });
-    expect(sandbox.requests.every(({ cwd }) => cwd === fixture.workspace.verificationRoot)).toBe(
-      true,
-    );
-    expect(await readFile(join(fixture.workspace.root, "cache.log"), "utf8")).toBe(
-      "candidate-only state\n",
-    );
-  });
+  it(
+    "rejects a substituted frozen command before starting a process",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const sandbox = new RecordingProcessSandbox();
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const manifest = parseIssuePrivateManifest({
+        ...fixture.manifest,
+        holdout: { ...fixture.manifest.holdout, commandDigest: "0".repeat(64) },
+      });
 
-  it("recovers the exact remote candidate into a disposable snapshot on a fresh clone", async () => {
-    const fixture = await createFixture();
-    await fixture.effects.pushCandidate({
-      workspace: fixture.workspace,
-      branch: fixture.workspace.branch,
-      candidateHead: fixture.candidateHead,
-      expectedRemoteHead: null,
-    });
-    const restored = await restoreFixture(fixture);
-    const sandbox = new RecordingProcessSandbox();
+      await expect(
+        createVerifier(fixture, sandbox, store).verify(request(fixture, { manifest })),
+      ).rejects.toMatchObject({ code: "frozen_input_mismatch" });
+      expect(sandbox.requests).toHaveLength(0);
+    }),
+  );
 
-    await expect(
-      createVerifier(restored, sandbox).verify(request(restored)),
-    ).resolves.toMatchObject({
-      candidateDelta: { candidateHead: fixture.candidateHead, pathCount: 1 },
-    });
-    expect(await git(restored.workspace.root, "rev-parse", "HEAD")).toBe(restored.base);
-    expect(await git(restored.workspace.verificationRoot, "rev-parse", "HEAD")).toBe(
-      restored.candidateHead,
-    );
-    expect(sandbox.requests.every(({ cwd }) => cwd === restored.workspace.verificationRoot)).toBe(
-      true,
-    );
-  });
+  it(
+    "rejects a substituted frozen contract digest before starting a process",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const sandbox = new RecordingProcessSandbox();
 
-  it("contains a mutating base holdout outside the operator source checkout", async () => {
-    const fixture = await createFixture({
-      holdoutCommand: nodeCommand(
-        `require("node:fs").writeFileSync("base-mutation.txt", "must stay isolated\\n"); process.exit(7);`,
-      ),
-    });
+      await expect(
+        createVerifier(fixture, sandbox).verify(
+          request(fixture, { frozenContractDigest: "0".repeat(64) }),
+        ),
+      ).rejects.toMatchObject({ code: "frozen_input_mismatch" });
+      expect(sandbox.requests).toHaveLength(0);
+    }),
+  );
 
-    await expect(createVerifier(fixture).verify(request(fixture))).rejects.toMatchObject({
-      code: "base_drift",
-    });
-    await expect(
-      readFile(join(fixture.workspace.sourceRoot, "base-mutation.txt"), "utf8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    expect(
-      await readFile(join(fixture.workspace.verificationRoot, "base-mutation.txt"), "utf8"),
-    ).toBe("must stay isolated\n");
-  });
+  it(
+    "preserves cancellation while resolving the owned workspace",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const controller = new AbortController();
+      const sandbox = new RecordingProcessSandbox();
+      const verifier = new LocalIssueVerification({
+        git: fixture.effects,
+        workspaceProvider: {
+          readWorkspace: async () => {
+            controller.abort("operator cancelled");
+            throw new Error("cancelled workspace read");
+          },
+        },
+        privateStore: new MemoryPrivateStore(fixture.planBlob),
+        sandbox,
+      });
 
-  it("fails closed when a command moves the candidate branch ref", async () => {
-    const fixture = await createFixture();
-    const refPath = join(
-      fixture.workspace.commonGitDirectory,
-      "refs",
-      "heads",
-      ...fixture.workspace.branch.split("/"),
-    );
-    const drifted = await createFixture({
-      verificationCommand: nodeCommand(
-        `require("node:fs").writeFileSync(${JSON.stringify(refPath)}, ${JSON.stringify(
-          `${fixture.base}\n`,
-        )});`,
-      ),
-      fixture,
-    });
+      await expect(
+        verifier.verify(request(fixture, { signal: controller.signal })),
+      ).rejects.toMatchObject({ code: "operation_cancelled" });
+      expect(sandbox.requests).toHaveLength(0);
+    }),
+  );
 
-    await expect(createVerifier(drifted).verify(request(drifted))).rejects.toMatchObject({
-      code: "candidate_drift",
-    });
-  });
+  it(
+    "fails closed when a command mutates tracked verification-snapshot content",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope, {
+        verificationCommand: nodeCommand(
+          `require("node:fs").writeFileSync("feature.txt", "mutated\\n");`,
+        ),
+      });
 
-  it("rejects output truncation without disclosing output", async () => {
-    const fixture = await createFixture({
-      verificationCommand: nodeCommand(`process.stdout.write("private-output-".repeat(200));`),
-    });
-    const verifier = createVerifier(
-      fixture,
-      new RecordingProcessSandbox(),
-      new MemoryPrivateStore(fixture.planBlob),
-      { maxOutputBytes: 128 },
-    );
+      await expect(createVerifier(fixture).verify(request(fixture))).rejects.toMatchObject({
+        code: "candidate_drift",
+      });
+      expect(await readFile(join(fixture.workspace.verificationRoot, "feature.txt"), "utf8")).toBe(
+        "mutated\n",
+      );
+      expect(await readFile(join(fixture.workspace.root, "feature.txt"), "utf8")).toBe(
+        "candidate\n",
+      );
+    }),
+  );
 
-    const error = await rejected(verifier.verify(request(fixture)));
-    expect(error).toMatchObject({ code: "command_output_limit" });
-    expect(error.message).not.toContain("private-output");
-  });
+  it(
+    "allows ignored command output but removes it before the next check",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope, {
+        holdoutCommand: nodeCommand(
+          `require("node:fs").writeFileSync("cache.log", "discard me\\n"); process.exit(require("node:fs").existsSync("feature.txt") ? 0 : 7);`,
+        ),
+        verificationCommand: nodeCommand(
+          `process.exit(require("node:fs").existsSync("cache.log") ? 9 : 0);`,
+        ),
+      });
 
-  it("fails closed when a verification command times out", async () => {
-    const timeoutFixture = await createFixture({
-      verificationCommand: nodeCommand("setInterval(() => undefined, 1000);", 30),
-    });
-    await expect(
-      createVerifier(timeoutFixture, undefined, undefined, {
-        terminationGraceMs: 5,
-        terminationConfirmationMs: 100,
-      }).verify(request(timeoutFixture)),
-    ).rejects.toMatchObject({ code: "command_timeout" });
-  }, 30_000);
+      await expect(createVerifier(fixture).verify(request(fixture))).resolves.toMatchObject({
+        candidateDelta: { candidateHead: fixture.candidateHead },
+      });
+      await expect(
+        lstat(join(fixture.workspace.verificationRoot, "cache.log")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }),
+  );
 
-  it("fails closed when a verification command exits by signal", async () => {
-    const signalFixture = await createFixture({
-      verificationCommand: nodeCommand(`process.kill(process.pid, "SIGTERM");`),
-    });
-    await expect(
-      createVerifier(signalFixture).verify(request(signalFixture)),
-    ).rejects.toMatchObject({
-      code: "command_signaled",
-    });
-  }, 30_000);
+  it(
+    "does not execute against model-created ignored candidate state",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      await writeFile(join(fixture.workspace.root, "cache.log"), "candidate-only state\n");
+      const sandbox = new RecordingProcessSandbox();
 
-  it("fails closed when verification is cancelled", async () => {
-    const cancellationFixture = await createFixture();
-    const controller = new AbortController();
-    const sandbox = new RecordingProcessSandbox(() => controller.abort("operator cancelled"), 3);
-    await expect(
-      createVerifier(cancellationFixture, sandbox).verify(
-        request(cancellationFixture, { signal: controller.signal }),
-      ),
-    ).rejects.toMatchObject({ code: "operation_cancelled" });
-  }, 30_000);
+      await expect(
+        createVerifier(fixture, sandbox).verify(request(fixture)),
+      ).resolves.toMatchObject({
+        candidateDelta: { candidateHead: fixture.candidateHead },
+      });
+      expect(sandbox.requests.every(({ cwd }) => cwd === fixture.workspace.verificationRoot)).toBe(
+        true,
+      );
+      expect(await readFile(join(fixture.workspace.root, "cache.log"), "utf8")).toBe(
+        "candidate-only state\n",
+      );
+    }),
+  );
+
+  it(
+    "recovers the exact remote candidate into a disposable snapshot on a fresh clone",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      await fixture.effects.pushCandidate({
+        workspace: fixture.workspace,
+        branch: fixture.workspace.branch,
+        candidateHead: fixture.candidateHead,
+        expectedRemoteHead: null,
+      });
+      const restored = await restoreFixture(fixture);
+      const sandbox = new RecordingProcessSandbox();
+
+      await expect(
+        createVerifier(restored, sandbox).verify(request(restored)),
+      ).resolves.toMatchObject({
+        candidateDelta: { candidateHead: fixture.candidateHead, pathCount: 1 },
+      });
+      expect(await git(restored.workspace.root, "rev-parse", "HEAD")).toBe(restored.base);
+      expect(await git(restored.workspace.verificationRoot, "rev-parse", "HEAD")).toBe(
+        restored.candidateHead,
+      );
+      expect(sandbox.requests.every(({ cwd }) => cwd === restored.workspace.verificationRoot)).toBe(
+        true,
+      );
+    }),
+  );
+
+  it(
+    "contains a mutating base holdout outside the operator source checkout",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope, {
+        holdoutCommand: nodeCommand(
+          `require("node:fs").writeFileSync("base-mutation.txt", "must stay isolated\\n"); process.exit(7);`,
+        ),
+      });
+
+      await expect(createVerifier(fixture).verify(request(fixture))).rejects.toMatchObject({
+        code: "base_drift",
+      });
+      await expect(
+        readFile(join(fixture.workspace.sourceRoot, "base-mutation.txt"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await readFile(join(fixture.workspace.verificationRoot, "base-mutation.txt"), "utf8"),
+      ).toBe("must stay isolated\n");
+    }),
+  );
+
+  it(
+    "fails closed when a command moves the candidate branch ref",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const refPath = join(
+        fixture.workspace.commonGitDirectory,
+        "refs",
+        "heads",
+        ...fixture.workspace.branch.split("/"),
+      );
+      const drifted = await createFixture(scope, {
+        verificationCommand: nodeCommand(
+          `require("node:fs").writeFileSync(${JSON.stringify(refPath)}, ${JSON.stringify(
+            `${fixture.base}\n`,
+          )});`,
+        ),
+        fixture,
+      });
+
+      await expect(createVerifier(drifted).verify(request(drifted))).rejects.toMatchObject({
+        code: "candidate_drift",
+      });
+    }),
+  );
+
+  it(
+    "rejects output truncation without disclosing output",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope, {
+        verificationCommand: nodeCommand(`process.stdout.write("private-output-".repeat(200));`),
+      });
+      const verifier = createVerifier(
+        fixture,
+        new RecordingProcessSandbox(),
+        new MemoryPrivateStore(fixture.planBlob),
+        { maxOutputBytes: 128 },
+      );
+
+      const error = await rejected(verifier.verify(request(fixture)));
+      expect(error).toMatchObject({ code: "command_output_limit" });
+      expect(error.message).not.toContain("private-output");
+    }),
+  );
+
+  it(
+    "fails closed when a verification command times out",
+    ownedTest(async (scope) => {
+      const timeoutFixture = await createFixture(scope, {
+        verificationCommand: nodeCommand("setInterval(() => undefined, 1000);", 30),
+      });
+      await expect(
+        createVerifier(timeoutFixture, undefined, undefined, {
+          terminationGraceMs: 5,
+          terminationConfirmationMs: 100,
+        }).verify(request(timeoutFixture)),
+      ).rejects.toMatchObject({ code: "command_timeout" });
+    }),
+    30_000,
+  );
+
+  it(
+    "fails closed when a verification command exits by signal",
+    ownedTest(async (scope) => {
+      const signalFixture = await createFixture(scope, {
+        verificationCommand: nodeCommand(`process.kill(process.pid, "SIGTERM");`),
+      });
+      await expect(
+        createVerifier(signalFixture).verify(request(signalFixture)),
+      ).rejects.toMatchObject({
+        code: "command_signaled",
+      });
+    }),
+    30_000,
+  );
+
+  it(
+    "fails closed when verification is cancelled",
+    ownedTest(async (scope) => {
+      const cancellationFixture = await createFixture(scope);
+      const controller = new AbortController();
+      const sandbox = new RecordingProcessSandbox(() => controller.abort("operator cancelled"), 3);
+      await expect(
+        createVerifier(cancellationFixture, sandbox).verify(
+          request(cancellationFixture, { signal: controller.signal }),
+        ),
+      ).rejects.toMatchObject({ code: "operation_cancelled" });
+    }),
+    30_000,
+  );
 
   // The watchdog includes a failed verification attempt and its complete retry.
-  it("replays safely after private evidence publication loses its result", async () => {
-    const fixture = await createFixture();
-    const sandbox = new RecordingProcessSandbox();
-    const store = new MemoryPrivateStore(fixture.planBlob, 2);
-    const verifier = createVerifier(fixture, sandbox, store);
+  it(
+    "replays safely after private evidence publication loses its result",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const sandbox = new RecordingProcessSandbox();
+      const store = new MemoryPrivateStore(fixture.planBlob, 2);
+      const verifier = createVerifier(fixture, sandbox, store);
 
-    await expect(verifier.verify(request(fixture))).rejects.toMatchObject({
-      code: "evidence_store_failed",
-    });
-    store.failPutNumber = undefined;
-    const replay = await verifier.verify(request(fixture));
+      await expect(verifier.verify(request(fixture))).rejects.toMatchObject({
+        code: "evidence_store_failed",
+      });
+      store.failPutNumber = undefined;
+      const replay = await verifier.verify(request(fixture));
 
-    expect(replay.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(sandbox.requests).toHaveLength(4);
-    expect(await git(fixture.workspace.root, "rev-parse", "HEAD")).toBe(fixture.candidateHead);
-  });
+      expect(replay.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(sandbox.requests).toHaveLength(4);
+      expect(await git(fixture.workspace.root, "rev-parse", "HEAD")).toBe(fixture.candidateHead);
+    }),
+  );
 });
 
 // Complete verification and real Git diff capture share the suite's bounded watchdog.
 describe("LocalIssueReviewEvidence", { timeout: 30_000 }, () => {
-  it("captures one exact bounded private diff and returns content-free review evidence", async () => {
-    const fixture = await createFixture();
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
-    const logPath = join(fixture.root, "review-git.jsonl");
-    const executable = await writeGitWrapper(logPath);
-    const adapter = new LocalIssueReviewEvidence({
-      git: fixture.effects,
-      gitExecutable: await pinGitHubIssueHostExecutable(executable, fixture.root),
-      privateStore: store,
-      verification: provider(verification),
-    });
-    await writeFile(
-      join(fixture.workspace.verificationRoot, "review-cache.log"),
-      "must not reach reviewer\n",
-    );
+  it(
+    "captures one exact bounded private diff and returns content-free review evidence",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+      const logPath = join(fixture.root, "review-git.jsonl");
+      const executable = await writeGitWrapper(scope, logPath);
+      const adapter = new LocalIssueReviewEvidence({
+        git: fixture.effects,
+        gitExecutable: await pinGitHubIssueHostExecutable(executable, fixture.root),
+        privateStore: store,
+        verification: provider(verification),
+      });
+      await writeFile(
+        join(fixture.workspace.verificationRoot, "review-cache.log"),
+        "must not reach reviewer\n",
+      );
 
-    const evidence = await adapter.read({
-      runId: RUN_ID,
-      manifest: fixture.manifest,
-      candidateHead: fixture.candidateHead,
-      workspace: fixture.workspace,
-    });
+      const evidence = await adapter.read({
+        runId: RUN_ID,
+        manifest: fixture.manifest,
+        candidateHead: fixture.candidateHead,
+        workspace: fixture.workspace,
+      });
 
-    expect(evidence).toMatchObject({
-      version: 1,
-      baseCommit: fixture.base,
-      candidateHead: fixture.candidateHead,
-      workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
-      changedPaths: ["feature.txt"],
-      logicalBytes: Buffer.byteLength("candidate\n"),
-      verification,
-    });
-    expect(evidence.candidateTree).toBe(
-      await git(fixture.workspace.root, "rev-parse", `${fixture.candidateHead}^{tree}`),
-    );
-    expect(evidence.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
-    expect(evidence.diffBlob.mediaType).toBe("text/x-diff; charset=utf-8");
-    await expect(
-      lstat(join(fixture.workspace.verificationRoot, "review-cache.log")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    expect(
-      await git(fixture.workspace.verificationRoot, "status", "--porcelain", "--ignored"),
-    ).toBe("");
-    expect(JSON.stringify(evidence)).not.toContain("candidate fixture");
-    const diff = store.blobs.find(
-      (blob) => createIssuePrivateBlobReference(blob).digest === evidence.diffBlob.digest,
-    );
-    expect(diff === undefined ? "" : decode(diff)).toContain("+candidate");
-    const invocation = JSON.parse((await readFile(logPath, "utf8")).trim()) as {
-      readonly args: readonly string[];
-      readonly environmentNames: readonly string[];
-    };
-    expect(invocation.args).toEqual([
-      "--no-optional-locks",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.untrackedCache=false",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-c",
-      "commit.gpgSign=false",
-      "-c",
-      "tag.gpgSign=false",
-      "-c",
-      "diff.external=",
-      "-c",
-      "diff.noprefix=false",
-      "-c",
-      "diff.mnemonicPrefix=false",
-      "-c",
-      "diff.algorithm=myers",
-      "-c",
-      "diff.indentHeuristic=false",
-      "-c",
-      "core.attributesFile=/dev/null",
-      "diff",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--no-color",
-      "--full-index",
-      "--binary",
-      fixture.base,
-      fixture.candidateHead,
-      "--",
-    ]);
-    expect(invocation.args).not.toContain("--force");
-    expect(invocation.args.join(" ")).not.toContain("protocol.file");
-    expect(invocation.environmentNames).not.toContain("OPENAI_API_KEY");
-  });
+      expect(evidence).toMatchObject({
+        version: 1,
+        baseCommit: fixture.base,
+        candidateHead: fixture.candidateHead,
+        workspaceIdentityDigest: fixture.workspace.workspaceIdentityDigest,
+        changedPaths: ["feature.txt"],
+        logicalBytes: Buffer.byteLength("candidate\n"),
+        verification,
+      });
+      expect(evidence.candidateTree).toBe(
+        await git(fixture.workspace.root, "rev-parse", `${fixture.candidateHead}^{tree}`),
+      );
+      expect(evidence.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(evidence.diffBlob.mediaType).toBe("text/x-diff; charset=utf-8");
+      await expect(
+        lstat(join(fixture.workspace.verificationRoot, "review-cache.log")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await git(fixture.workspace.verificationRoot, "status", "--porcelain", "--ignored"),
+      ).toBe("");
+      expect(JSON.stringify(evidence)).not.toContain("candidate fixture");
+      const diff = store.blobs.find(
+        (blob) => createIssuePrivateBlobReference(blob).digest === evidence.diffBlob.digest,
+      );
+      expect(diff === undefined ? "" : decode(diff)).toContain("+candidate");
+      const invocation = JSON.parse((await readFile(logPath, "utf8")).trim()) as {
+        readonly args: readonly string[];
+        readonly environmentNames: readonly string[];
+      };
+      expect(invocation.args).toEqual([
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "tag.gpgSign=false",
+        "-c",
+        "diff.external=",
+        "-c",
+        "diff.noprefix=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
+        "-c",
+        "diff.algorithm=myers",
+        "-c",
+        "diff.indentHeuristic=false",
+        "-c",
+        "core.attributesFile=/dev/null",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--full-index",
+        "--binary",
+        fixture.base,
+        fixture.candidateHead,
+        "--",
+      ]);
+      expect(invocation.args).not.toContain("--force");
+      expect(invocation.args.join(" ")).not.toContain("protocol.file");
+      expect(invocation.environmentNames).not.toContain("OPENAI_API_KEY");
+    }),
+  );
 
-  it("captures an exact review diff above the legacy 32 KiB boundary", async () => {
-    const fixture = await createFixture({ candidateContent: "x".repeat(40_000) });
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
-    const adapter = new LocalIssueReviewEvidence({
-      git: fixture.effects,
-      gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), fixture.root),
-      privateStore: store,
-      verification: provider(verification),
-    });
+  it(
+    "captures an exact review diff above the legacy 32 KiB boundary",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope, { candidateContent: "x".repeat(40_000) });
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+      const adapter = new LocalIssueReviewEvidence({
+        git: fixture.effects,
+        gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), fixture.root),
+        privateStore: store,
+        verification: provider(verification),
+      });
 
-    const evidence = await adapter.read({
-      runId: RUN_ID,
-      manifest: fixture.manifest,
-      candidateHead: fixture.candidateHead,
-      workspace: fixture.workspace,
-    });
+      const evidence = await adapter.read({
+        runId: RUN_ID,
+        manifest: fixture.manifest,
+        candidateHead: fixture.candidateHead,
+        workspace: fixture.workspace,
+      });
 
-    expect(evidence.diffBlob.byteLength).toBeGreaterThan(32_768);
-    expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
-  });
+      expect(evidence.diffBlob.byteLength).toBeGreaterThan(32_768);
+      expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
+    }),
+  );
 
-  it("captures an exact review diff at the field-pilot scale above 128 KiB", async () => {
-    const fixture = await createFixture({ candidateContent: "x".repeat(190_000) });
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
-    const adapter = new LocalIssueReviewEvidence({
-      git: fixture.effects,
-      gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), fixture.root),
-      privateStore: store,
-      verification: provider(verification),
-    });
+  it(
+    "captures an exact review diff at the field-pilot scale above 128 KiB",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope, { candidateContent: "x".repeat(190_000) });
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+      const adapter = new LocalIssueReviewEvidence({
+        git: fixture.effects,
+        gitExecutable: await pinGitHubIssueHostExecutable(await gitPath(), fixture.root),
+        privateStore: store,
+        verification: provider(verification),
+      });
 
-    const evidence = await adapter.read({
-      runId: RUN_ID,
-      manifest: fixture.manifest,
-      candidateHead: fixture.candidateHead,
-      workspace: fixture.workspace,
-    });
+      const evidence = await adapter.read({
+        runId: RUN_ID,
+        manifest: fixture.manifest,
+        candidateHead: fixture.candidateHead,
+        workspace: fixture.workspace,
+      });
 
-    expect(evidence.diffBlob.byteLength).toBeGreaterThan(131_072);
-    expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
-  });
+      expect(evidence.diffBlob.byteLength).toBeGreaterThan(131_072);
+      expect(evidence.diffBlob.byteLength).toBeLessThanOrEqual(MAX_ISSUE_REVIEW_DIFF_BYTES);
+    }),
+  );
 
-  it("rejects a configured review diff boundary above the public maximum", async () => {
-    const fixture = await createFixture();
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
-    const executable = await pinGitHubIssueHostExecutable(await gitPath(), fixture.root);
+  it(
+    "rejects a configured review diff boundary above the public maximum",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+      const executable = await pinGitHubIssueHostExecutable(await gitPath(), fixture.root);
 
-    expect(
-      () =>
-        new LocalIssueReviewEvidence({
-          git: fixture.effects,
-          gitExecutable: executable,
-          privateStore: store,
-          verification: provider(verification),
-          maxDiffBytes: MAX_ISSUE_REVIEW_DIFF_BYTES + 1,
+      expect(
+        () =>
+          new LocalIssueReviewEvidence({
+            git: fixture.effects,
+            gitExecutable: executable,
+            privateStore: store,
+            verification: provider(verification),
+            maxDiffBytes: MAX_ISSUE_REVIEW_DIFF_BYTES + 1,
+          }),
+      ).toThrow(`maxDiffBytes must be between 1 and ${MAX_ISSUE_REVIEW_DIFF_BYTES}`);
+    }),
+  );
+
+  it(
+    "rejects bounded-output overflow and candidate mutation after diff capture",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+      const executable = await pinGitHubIssueHostExecutable(await gitPath(), fixture.root);
+      const bounded = new LocalIssueReviewEvidence({
+        git: fixture.effects,
+        gitExecutable: executable,
+        privateStore: store,
+        verification: provider(verification),
+        maxDiffBytes: 32,
+      });
+      await expect(
+        bounded.read({
+          runId: RUN_ID,
+          manifest: fixture.manifest,
+          candidateHead: fixture.candidateHead,
+          workspace: fixture.workspace,
         }),
-    ).toThrow(`maxDiffBytes must be between 1 and ${MAX_ISSUE_REVIEW_DIFF_BYTES}`);
-  });
+      ).rejects.toMatchObject({ code: "diff_output_limit" });
 
-  it("rejects bounded-output overflow and candidate mutation after diff capture", async () => {
-    const fixture = await createFixture();
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
-    const executable = await pinGitHubIssueHostExecutable(await gitPath(), fixture.root);
-    const bounded = new LocalIssueReviewEvidence({
-      git: fixture.effects,
-      gitExecutable: executable,
-      privateStore: store,
-      verification: provider(verification),
-      maxDiffBytes: 32,
-    });
-    await expect(
-      bounded.read({
-        runId: RUN_ID,
-        manifest: fixture.manifest,
-        candidateHead: fixture.candidateHead,
-        workspace: fixture.workspace,
-      }),
-    ).rejects.toMatchObject({ code: "diff_output_limit" });
+      const mutating = new LocalIssueReviewEvidence({
+        git: fixture.effects,
+        gitExecutable: executable,
+        privateStore: store,
+        verification: provider(verification),
+        testOnlyAfterDiffCapture: async () => {
+          await writeFile(
+            join(fixture.workspace.verificationRoot, "feature.txt"),
+            "review mutation\n",
+          );
+        },
+      });
+      await expect(
+        mutating.read({
+          runId: RUN_ID,
+          manifest: fixture.manifest,
+          candidateHead: fixture.candidateHead,
+          workspace: fixture.workspace,
+        }),
+      ).rejects.toMatchObject({ code: "candidate_drift" });
+    }),
+    60_000,
+  );
 
-    const mutating = new LocalIssueReviewEvidence({
-      git: fixture.effects,
-      gitExecutable: executable,
-      privateStore: store,
-      verification: provider(verification),
-      testOnlyAfterDiffCapture: async () => {
-        await writeFile(
-          join(fixture.workspace.verificationRoot, "feature.txt"),
-          "review mutation\n",
-        );
-      },
-    });
-    await expect(
-      mutating.read({
-        runId: RUN_ID,
-        manifest: fixture.manifest,
-        candidateHead: fixture.candidateHead,
-        workspace: fixture.workspace,
-      }),
-    ).rejects.toMatchObject({ code: "candidate_drift" });
-  }, 60_000);
+  it(
+    "rejects substituted verification evidence before diff capture",
+    ownedTest(async (scope) => {
+      const fixture = await createFixture(scope);
+      const store = new MemoryPrivateStore(fixture.planBlob);
+      const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
+      const substituted = {
+        ...verification,
+        deterministic: verification.deterministic.map((result) => ({
+          ...result,
+          headCommit: "0".repeat(40),
+        })),
+      } as IssueVerificationResult;
+      const logPath = join(fixture.root, "must-not-run.jsonl");
+      const adapter = new LocalIssueReviewEvidence({
+        git: fixture.effects,
+        gitExecutable: await pinGitHubIssueHostExecutable(
+          await writeGitWrapper(scope, logPath),
+          fixture.root,
+        ),
+        privateStore: store,
+        verification: provider(substituted),
+      });
 
-  it("rejects substituted verification evidence before diff capture", async () => {
-    const fixture = await createFixture();
-    const store = new MemoryPrivateStore(fixture.planBlob);
-    const verification = await createVerifier(fixture, undefined, store).verify(request(fixture));
-    const substituted = {
-      ...verification,
-      deterministic: verification.deterministic.map((result) => ({
-        ...result,
-        headCommit: "0".repeat(40),
-      })),
-    } as IssueVerificationResult;
-    const logPath = join(fixture.root, "must-not-run.jsonl");
-    const adapter = new LocalIssueReviewEvidence({
-      git: fixture.effects,
-      gitExecutable: await pinGitHubIssueHostExecutable(
-        await writeGitWrapper(logPath),
-        fixture.root,
-      ),
-      privateStore: store,
-      verification: provider(substituted),
-    });
-
-    const error = await rejectedReview(
-      adapter.read({
-        runId: RUN_ID,
-        manifest: fixture.manifest,
-        candidateHead: fixture.candidateHead,
-        workspace: fixture.workspace,
-      }),
-    );
-    expect(error).toMatchObject({ code: "verification_mismatch" });
-    await expect(readFile(logPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  });
+      const error = await rejectedReview(
+        adapter.read({
+          runId: RUN_ID,
+          manifest: fixture.manifest,
+          candidateHead: fixture.candidateHead,
+          workspace: fixture.workspace,
+        }),
+      );
+      expect(error).toMatchObject({ code: "verification_mismatch" });
+      await expect(readFile(logPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    }),
+  );
 });
 
 interface Fixture {
+  readonly scope: OwnedTestScope;
   readonly root: string;
   readonly remote: string;
   readonly source: string;
@@ -705,8 +788,12 @@ interface FixtureOptions {
   readonly fixture?: Fixture;
 }
 
-async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
+async function createFixture(
+  scope: OwnedTestScope,
+  options: FixtureOptions = {},
+): Promise<Fixture> {
   if (options.fixture !== undefined) {
+    if (options.fixture.scope !== scope) throw new Error("Fixture belongs to another test scope");
     return withPlan(
       options.fixture,
       options.verificationCommand,
@@ -714,7 +801,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
       options.holdoutStdin,
     );
   }
-  const root = await temporaryDirectory("flow-issue-verification-");
+  const root = await scope.temporaryDirectory("flow-issue-verification-");
   const seed = join(root, "seed");
   const remote = join(root, "remote.git");
   const source = join(root, "source");
@@ -768,6 +855,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   });
   return withPlan(
     {
+      scope,
       root,
       remote,
       source,
@@ -783,7 +871,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
 }
 
 async function restoreFixture(fixture: Fixture): Promise<Fixture> {
-  const root = await temporaryDirectory("flow-issue-verification-restored-");
+  const root = await fixture.scope.temporaryDirectory("flow-issue-verification-restored-");
   const source = join(root, "source");
   const privateRoot = join(root, "private");
   const candidate = join(root, "candidate");
@@ -950,13 +1038,22 @@ function request(
   fixture: Fixture,
   overrides: Partial<Parameters<LocalIssueVerification["verify"]>[0]> = {},
 ) {
+  const signal =
+    overrides.signal === undefined
+      ? fixture.scope.signal
+      : AbortSignal.any([fixture.scope.signal, overrides.signal]);
   return {
     runId: RUN_ID,
     manifest: fixture.manifest,
     frozenContractDigest: calculateIssuePrivateManifestDigest(fixture.manifest),
     candidateHead: fixture.candidateHead,
-    pollCancellation: async () => undefined,
     ...overrides,
+    signal,
+    pollCancellation: async () => {
+      signal.throwIfAborted();
+      await overrides.pollCancellation?.();
+      signal.throwIfAborted();
+    },
   };
 }
 
@@ -1096,8 +1193,8 @@ function provider(verification: IssueVerificationResult) {
   return { verify: async () => verification };
 }
 
-async function writeGitWrapper(logPath: string): Promise<string> {
-  const root = await temporaryDirectory("flow-review-git-wrapper-");
+async function writeGitWrapper(scope: OwnedTestScope, logPath: string): Promise<string> {
+  const root = await scope.temporaryDirectory("flow-review-git-wrapper-");
   const wrapper = join(root, "git");
   const source = `#!${process.execPath}
 const { appendFileSync } = require("node:fs");
@@ -1130,10 +1227,4 @@ let resolvedGitPath: string | undefined;
 async function gitPath(): Promise<string> {
   resolvedGitPath ??= (await execFile("/usr/bin/env", ["which", "git"])).stdout.trim();
   return resolvedGitPath;
-}
-
-async function temporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), prefix));
-  temporaryDirectories.push(directory);
-  return directory;
 }
