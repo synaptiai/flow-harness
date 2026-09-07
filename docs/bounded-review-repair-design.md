@@ -11,6 +11,10 @@ The [usable-checkpoint plan](usable-checkpoint-plan.md) owns delivery status. Th
 [issue lifecycle specification](specs/github-issue-lifecycle.md) describes current behavior.
 Do not use this document as evidence that a published package supports the new policy.
 
+Failures before independent review remain outside this approved contract. The separate
+[verification repair proposal](bounded-verification-repair-design.md) describes alternatives and
+additional gates. It does not change the behavior or authority documented here.
+
 ## Separate the two problems
 
 The [third hosted attempt](https://github.com/danielbentes/digital-twin/actions/runs/34036328861)

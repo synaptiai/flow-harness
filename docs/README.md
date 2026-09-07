@@ -70,6 +70,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |
 | [Usable-checkpoint execution plan](usable-checkpoint-plan.md) | You need qualification blockers, operator-burden priorities, owners, or deferral review triggers. |
 | [Bounded review repair design](bounded-review-repair-design.md) | You need the proposed same-host repair contract, shared accounting, safety stops, design decisions, or implementation phases. |
+| [Bounded verification repair proposal](bounded-verification-repair-design.md) | You need recovery alternatives for failures before review, verifier-isolation requirements, disclosure boundaries, or proposed implementation gates. |
 | [Bounded review repair experiment proposal](bounded-review-repair-experiment.md) | You need the proposed first experiment's resource limits, alternatives, evidence gaps, or preparation gates. |
 | [Flow plugin comparison](flow-plugin-parity.md) | You need the 23-command inventory, default versus optional behavior, source evidence, or remaining migration gaps. |
 | [Next-version capability research](next-version-research.md) | You need deferred-capability maturity, dependencies, research gaps, release-shaping alternatives, or the evidence required before implementation. |

@@ -250,6 +250,12 @@ Track these fifth-attempt follow-ups without changing the retained candidate:
 - [ ] Decide the verification-failure recovery contract, preserving private holdouts and all resource and authority boundaries.
 - [ ] Qualify any approved correction through a separately authorized experiment, retaining all five previous outcomes.
 
+The [verification repair proposal](bounded-verification-repair-design.md) develops three alternatives
+and recommends an explicitly bounded extension. Its VR-01 through VR-06 gates remain pending.
+In particular, generic error codes do not prove a behavioral defect, and the current shared
+command sandbox does not establish a trusted verifier-result channel. Approve the new scope and
+limited disclosure before implementation. Prove verifier isolation before enabling repair selection.
+
 The new archive is 2,870,110 bytes with SHA-256
 `0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.
 Both hosted package checks passed against that digest, and the retained local archive passes
