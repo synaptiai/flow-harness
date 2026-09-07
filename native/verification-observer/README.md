@@ -60,6 +60,11 @@ The recipe has not yet been built or compared on a Linux x64 host. Source checks
 artifact comparisons, and a pinned recipe do not prove native compilation, reproducibility,
 compatibility, or isolation. No artifact hash is supplied in advance.
 
+The existing hosted `proof-runtime` CI job runs this comparison after the proof acceptance tests.
+It reuses that job's native Linux x64 Docker host and prints `build-evidence.json` only after a
+successful comparison and cleanup. A failed comparison fails the job. This step does not load,
+publish, or qualify the baseline as an observer. The first hosted execution is pending.
+
 ## Preserve redistribution materials
 
 Keep the vendored Apache-2.0 license with the source and retain applicable notices. The build

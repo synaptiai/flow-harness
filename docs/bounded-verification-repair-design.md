@@ -322,8 +322,10 @@ only checks a restriction, and neither flag is exposed by the current integratio
 
 The selected correction applies additional restrictions after trusted setup but before candidate
 execution. It requires complete coverage of namespace creation and joining without breaking supported
-processes and threads. The unselected alternative provisions fixture ownership outside candidate-accessible
-identity mappings and requires new provisioning and mapping proofs. Neither replaces the application-result gate.
+processes and threads. An alternative puts fixture ownership outside candidate-accessible identity
+mappings. New privileged provisioning might not be necessary if the host already supplies a suitable
+supplementary group. That alternative still requires mapping and mount proofs and is not selected.
+Neither replaces the application-result gate.
 
 For A, keep the stricter profile specific to the closed behavioral observer. Do not silently change
 all native commands or require new host privileges. Apply restrictions only after trusted namespace
@@ -383,6 +385,32 @@ Treat `clone3` fallback separately. A constant `ENOSYS` response prevents namesp
 its pointer-based arguments, but does not prove application compatibility. Record fallback use and
 keep the observation unsupported until the frozen adapter and runtime have a qualified fallback contract.
 Do not inspect mutable pointed-to arguments and then authorize the syscall.
+
+#### Investigate existing supplementary groups without changing the selected policy
+
+Source review identified a narrower fixture alternative worth testing. An unprivileged owner can
+change a file's group to a group the owner already belongs to, according to
+[the Linux ownership contract](https://man7.org/linux/man-pages/man2/chown.2.html).
+Linux's `capable_wrt_inode_uidgid()` requires both the inode's user and group identities to be
+mapped before granting the relevant capability bypass. See the
+[kernel capability check](https://github.com/torvalds/linux/blob/v6.8/kernel/capability.c).
+
+The hypothesis is that a held supplementary group, distinct from the primary group, remains outside
+the sandbox's group mapping. Descendant mappings cannot introduce an identity absent from their
+parent mapping. Under that condition, nested capabilities cannot bypass a mode-zero fixture's
+permissions. Inherited supplementary membership alone does not establish an inode group mapping.
+Read-only mounts remain necessary because the candidate can retain the fixture's owner identity.
+
+Test this hypothesis under unchanged SRT with paired primary-group and supplementary-group fixtures.
+Require the primary-group control to reproduce the bypass and the supplementary-group arm to deny
+access. Record actual mappings and unchanged host inode, owner, group, mode, and content identities.
+Check credential changes and remapping attempts. An overflow group displayed by `stat` is not proof
+that the actual fixture group is unmapped.
+
+This is test-only research, not a production policy change. Suitable group availability, actual
+runner mappings, filesystem behavior, and mount-identity attack coverage remain unqualified.
+Hosts without a suitable existing group must not silently gain new privileges or skip qualification.
+Even a passing experiment would not establish private-result authenticity or qualify a complete observer.
 
 #### Private result framing
 

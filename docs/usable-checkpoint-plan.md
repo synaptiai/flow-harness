@@ -270,8 +270,9 @@ capture now have local tests and independent review. Their hosted qualification,
 behavioral observer, and proof of actual application launch and exit remain pending. An outer
 sandbox exit code alone cannot distinguish a deliberate exit from a signal.
 
-The focused Linux job now contains 19 tests across four suites. Two new notification-history
-counterexample cases await their first hosted execution. Mac skips do not qualify these tests.
+The focused Linux job now contains 23 tests across five suites. Two notification-history
+counterexample cases and four Node compatibility measurements await their first hosted execution.
+Mac skips do not qualify these tests.
 VR-06 requires separate live-experiment authorization.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
@@ -286,6 +287,14 @@ read-bypass capabilities. Reads succeeded before nested mutation attempts while 
 addresses fixture denial and protected application results together. The user approved revised Approach A
 on September 7, 2026, separately from the earlier Linux-first host choice. Implement and qualify the
 observer-specific native-supervisor extension in the design's tracked phases. Repairs remain disabled.
+
+[Run 34141891105](https://github.com/synaptiai/flow-harness/actions/runs/34141891105) is complete for
+source `565a89d`. The tested merge and source commit have identical file trees. The focused job
+passed 16 tests and failed the fixture-denial check. The quality job independently reproduced that
+failure: 98 runtime tests passed, one failed, and four proof tests were skipped. Its coverage suite
+passed 6,755 tests with one skip, and both browser tests passed. The separate proof job verified the
+appliance and passed all four proof tests. Dependency audit passed. These results preserve the
+fixture defect and do not qualify later observer changes or enable repair.
 
 Local validation also found test-lifetime cleanup failures. Complete this verification work before
 claiming a clean checkpoint:

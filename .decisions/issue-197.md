@@ -1306,3 +1306,44 @@ Final local validation passed 245 tests across five selected suites, complete fo
 (only the pre-existing constructor informational diagnostic), and all three documentation gates.
 The production build and public capability-reference check passed earlier in this same change.
 No model run, credential change, candidate modification, repair enablement, merge, or release occurred.
+
+### Terminal hosted checkpoint and compatibility qualification preparation
+
+Run 34141891105 is terminal for source 565a89d0889556e0932f8508843a4192c7b05fd4.
+The tested merge 7ed7e10122aa9433cd360676e8d94c7df708f81b has the same file tree,
+f7a2bb86d1dd8fa031b8b0cc517ad0cc808f110b. Isolation passed 16 cases and failed the
+nested fixture denial. Quality passed 6,755 coverage cases with one skip, both browser cases,
+and 98 runtime cases with one identical fixture failure and four proof skips. The separate
+proof job passed all four cases after appliance verification (total job duration 1h11m20s).
+Audit passed. Neither failed job is waived; later local changes are not covered by this run.
+
+Prepared four real Node 26.7.0 compatibility controls (timers, async filesystem, worker thread,
+subprocess) with untraced, full-strace, and forced clone3 ENOSYS arms. These controls do not
+qualify arbitrary candidate fallback behavior. Private bounded traces produce only version,
+count, digest, and single-sample timing summaries. No observed injected calls means unexercised
+coverage, never a compatibility pass by assumption. The four untraced fixed controls passed
+locally on Mac; the Linux measurement file collected four explicit skips. Native tracing and
+fault injection remain unexecuted.
+
+Parser extraction first produced seven failing assertions among 23 synthetic-contract cases.
+Corrections distinguish quoted unrelated data from syscall records and reject malformed or
+incomplete returns. All 24 final portable parser cases pass, including deliberate rejection of
+an ambiguous main-PID prefix transition. These synthetic inputs test parsing, not kernel behavior.
+Full type checking and focused formatting passed. Independent review found no remaining P1–P3
+issues in the measurement and CI integration scope.
+
+Both Linux runtime jobs now explicitly install gcc and strace. The focused job contains 23
+cases across five files before the separate supplementary-group experiment is added. The existing
+proof-runtime job will compare two clean native upstream builds after its four proof tests and
+print the completed build evidence. It does not load or publish the unmodified baseline as an
+observer. First native compilation and build comparison remain pending. Scaffold checks first
+failed for each missing CI dependency or build command, then all 35 scaffold cases passed.
+
+Independent kernel, ownership-contract, and SRT/bubblewrap source review challenged the assumption
+that every foreign fixture identity requires privileged provisioning. An existing supplementary
+group might remain outside every descendant group mapping while allowing unprivileged fixture
+preparation. This is a test-only hypothesis, not adoption. Mapping exclusion, group availability,
+read-only mounts, exact inode identities, and actual bypass controls remain required. Inherited
+supplementary membership is not equivalent to an inode GID mapping. A successful paired experiment
+would not establish private-result authenticity, mount-identity attack coverage, or complete
+observer safety. Production restrictions and repair enablement remain unchanged.

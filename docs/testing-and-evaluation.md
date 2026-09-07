@@ -525,8 +525,9 @@ Linux x64 job or a matching native Linux x64 host.
 The `verifier-isolation` CI job runs
 `test/runtime/verification-observer-isolation.runtime.test.ts`,
 `test/runtime/verification-observer-fixture.runtime.test.ts`,
-`test/runtime/linux-observer-command.runtime.test.ts`, and
-`test/runtime/observer-notification-history.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+`test/runtime/linux-observer-command.runtime.test.ts`,
+`test/runtime/observer-notification-history.runtime.test.ts`, and
+`test/runtime/observer-clone3-compatibility.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
 It checks the host and Node.js architecture before building the runtime. The job uses the
 production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
 Missing dependencies or sandbox admission failures fail the job.
@@ -539,6 +540,24 @@ receives both requests. Neither case permits the namespace syscall to execute.
 
 These controls test notification-history loss, not the safety of a replacement observer. A skipped
 Mac run does not verify compilation or kernel behavior. The first hosted execution remains pending.
+
+The clone3 compatibility suite measures four fixed Node.js 26.7.0 controls: timers, asynchronous
+file access, a worker thread, and a subprocess. Each control runs without tracing, under full
+`strace` tracing, and with `clone3` calls forced to return `ENOSYS`. A successful control with no
+observed injected calls reports unexercised coverage. The test records tool versions, syscall
+counts, trace hashes, and single-sample elapsed times.
+
+Private traces remain in owned temporary directories. Raw trace contents do not enter public diagnostics.
+These whole-invocation timings
+include tracing overhead and are not benchmarks. Passing fixed controls does not prove that a
+restriction preserves arbitrary candidate behavior or that a replacement observer is secure.
+Linux hosts require `strace`. A missing tool fails rather than skips these measurements.
+
+The separate `proof-runtime` job also compares two clean builds of the unchanged upstream native
+helper after its proof acceptance tests. In a source checkout,
+`native/verification-observer/README.md` documents the pinned inputs and retained evidence.
+Successful comparison proves byte equality for
+those inputs, not modified-observer safety. Its first hosted build remains pending.
 
 The probes check ordinary and new-session descendant termination before command settlement,
 private-file and descriptor isolation, host-process access, and forged candidate output.
@@ -558,7 +577,8 @@ npm run test:runtime -- \
   test/runtime/verification-observer-isolation.runtime.test.ts \
   test/runtime/verification-observer-fixture.runtime.test.ts \
   test/runtime/linux-observer-command.runtime.test.ts \
-  test/runtime/observer-notification-history.runtime.test.ts
+  test/runtime/observer-notification-history.runtime.test.ts \
+  test/runtime/observer-clone3-compatibility.runtime.test.ts
 ```
 
 Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS

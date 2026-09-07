@@ -349,11 +349,23 @@ describe("public repository contracts", () => {
     expect(commands).not.toContain("uname --system");
     expect(commands).toContain("npm run proof:prepare");
     expect(commands).toContain("FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify");
+    expect(commands).toContain(
+      'node native/verification-observer/build.mjs --build "$RUNNER_TEMP/flow-native-baseline"',
+    );
+    expect(commands).toContain(
+      'node -e \'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))\' "$RUNNER_TEMP/flow-native-baseline/build-evidence.json"',
+    );
     expect(commands).toContain("docker system df");
   });
 
   it("runs model-free verifier isolation prerequisites on hosted Linux x64", async () => {
     const workflow = parse(await readText(".github/workflows/ci.yml")) as WorkflowDefinition;
+    const quality = workflow.jobs.quality as { readonly steps: readonly Record<string, unknown>[] };
+    expect(
+      quality.steps.find((step) => step.name === "Install sandbox system dependencies")?.run,
+    ).toContain(
+      "sudo apt-get install --yes bubblewrap ca-certificates curl gcc ripgrep socat strace util-linux",
+    );
     const job = workflow.jobs["verifier-isolation"] as
       | { readonly steps: readonly Record<string, unknown>[]; readonly [key: string]: unknown }
       | undefined;
@@ -396,7 +408,7 @@ describe("public repository contracts", () => {
     );
     expect(steps[3]?.run).toBe(
       "sudo apt-get update\n" +
-        "sudo apt-get install --yes bubblewrap gcc ripgrep socat util-linux\n" +
+        "sudo apt-get install --yes bubblewrap gcc ripgrep socat strace util-linux\n" +
         "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
         "bwrap --version\n" +
         "unshare --version\n" +
@@ -408,7 +420,8 @@ describe("public repository contracts", () => {
       "npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts " +
         "test/runtime/verification-observer-fixture.runtime.test.ts " +
         "test/runtime/linux-observer-command.runtime.test.ts " +
-        "test/runtime/observer-notification-history.runtime.test.ts",
+        "test/runtime/observer-notification-history.runtime.test.ts " +
+        "test/runtime/observer-clone3-compatibility.runtime.test.ts",
     );
     for (const step of steps) {
       expect(step["continue-on-error"]).toBeUndefined();

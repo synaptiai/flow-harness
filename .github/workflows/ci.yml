@@ -59,7 +59,7 @@ jobs:
             'Acquire::https::Timeout "30";' | \
             sudo tee /etc/apt/apt.conf.d/99flow-ci-network > /dev/null
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
+          sudo apt-get install --yes bubblewrap ca-certificates curl gcc ripgrep socat strace util-linux
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -241,7 +241,7 @@ jobs:
       - name: Install sandbox system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap gcc ripgrep socat util-linux
+          sudo apt-get install --yes bubblewrap gcc ripgrep socat strace util-linux
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
           unshare --version
@@ -259,6 +259,7 @@ jobs:
           test/runtime/verification-observer-fixture.runtime.test.ts
           test/runtime/linux-observer-command.runtime.test.ts
           test/runtime/observer-notification-history.runtime.test.ts
+          test/runtime/observer-clone3-compatibility.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -351,6 +352,11 @@ jobs:
 
       - name: Verify proof identity, containment, checkers, recovery, and cleanup
         run: FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify
+
+      - name: Compare two clean native upstream builds
+        run: |
+          node native/verification-observer/build.mjs --build "$RUNNER_TEMP/flow-native-baseline"
+          node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' "$RUNNER_TEMP/flow-native-baseline/build-evidence.json"
 
       - name: Report proof runtime disk use
         if: always()
