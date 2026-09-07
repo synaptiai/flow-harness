@@ -246,7 +246,11 @@ export function createBridgeProbe(options: Options): BridgeProbe {
           }
           throw new AggregateError(failures, "Bridge probe cleanup failed");
         }
-        if (failure !== undefined) throw failure;
+        if (failure !== undefined)
+          throw new AggregateError(
+            [failure, new Error(`Bridge probe closure: ${JSON.stringify(exit)}`)],
+            "Bridge probe failed before normal closure",
+          );
         if (!inputFinished || exit?.code !== 0 || exit.signal !== null || output.length !== 0)
           throw new Error("Bridge probe did not close normally");
       })();

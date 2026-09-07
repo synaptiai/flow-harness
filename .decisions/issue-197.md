@@ -2675,3 +2675,10 @@ constructor suggestion. The new runtime case is skipped on macOS. The next hoste
 because the unchanged real C oracle rejects bridge mode after real forwarding; unrelated startup
 or test failures would not establish the intended RED. Later application-result cases will skip
 after this deliberate failure. No repair, model, credential, merge, or release action is authorized.
+
+Hosted run 34167558669 at exact f1bf2151bd71a79f1f2e36c4e29aedd3530f7b84 failed in the new
+active-descendant step after successful real forwarding and OWNED receipt. Both clean builds and
+the three existing owner tests passed; the later application-result step skipped. The wrapper's
+sticky control-stream failure hid the actual checker exit status, so this is not yet authenticated
+missing-mode RED. Preserve the actual joined checker exit alongside the first error and rerun
+before changing C. The test reported no additional guardian emergency-cleanup failure.

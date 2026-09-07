@@ -993,6 +993,12 @@ mode. A hosted failure must confirm that missing mode after real forwarding succ
 skip on macOS is not qualification. The hosted workflow runs this gate before the existing
 application-result tests, which remain skipped if it fails.
 
+The first attempt, [run 34167558669](https://github.com/synaptiai/flow-harness/actions/runs/34167558669)
+at `f1bf215`, reached real forwarding but reported only a checker control-stream failure.
+That diagnostic did not retain the checker's exit status, so it did not establish the intended
+missing-mode failure. The wrapper now retains both errors. The native checker remains unchanged
+pending another hosted control.
+
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
 Real forwarding passed, but the bridge did not finish after the proposed owner-release request.
