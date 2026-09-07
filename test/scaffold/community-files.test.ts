@@ -325,6 +325,7 @@ describe("public repository contracts", () => {
       "dependency-audit",
       "proof-runtime",
       "quality",
+      "verifier-isolation",
     ]);
   });
 
@@ -349,6 +350,67 @@ describe("public repository contracts", () => {
     expect(commands).toContain("npm run proof:prepare");
     expect(commands).toContain("FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify");
     expect(commands).toContain("docker system df");
+  });
+
+  it("runs model-free verifier isolation prerequisites on hosted Linux x64", async () => {
+    const workflow = parse(await readText(".github/workflows/ci.yml")) as WorkflowDefinition;
+    const job = workflow.jobs["verifier-isolation"] as
+      | { readonly steps: readonly Record<string, unknown>[]; readonly [key: string]: unknown }
+      | undefined;
+
+    expect(job).toBeDefined();
+    expect(job?.["runs-on"]).toBe("ubuntu-24.04");
+    expect(job?.["timeout-minutes"]).toBe(15);
+    expect(job?.permissions).toEqual({ contents: "read" });
+    expect(job?.["continue-on-error"]).toBeUndefined();
+    expect(job?.if).toBeUndefined();
+    expect(job?.environment).toBeUndefined();
+    expect(job?.env).toBeUndefined();
+    expect(job?.services).toBeUndefined();
+    expect(job?.container).toBeUndefined();
+    const steps = job?.steps ?? [];
+    expect(steps.map((step) => step.name)).toEqual([
+      "Check out repository",
+      "Set up Node.js",
+      "Verify hosted Linux x64",
+      "Install sandbox system dependencies",
+      "Install exact dependencies",
+      "Build the production runtime",
+      "Verify native isolation prerequisites",
+    ]);
+    expect(steps[0]).toEqual({
+      name: "Check out repository",
+      uses: "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+      with: { "persist-credentials": false },
+    });
+    expect(steps[1]).toEqual({
+      name: "Set up Node.js",
+      uses: "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+      with: { "node-version": "26.7.0", cache: "npm" },
+    });
+    expect(steps[2]?.run).toBe(
+      'test "$(uname -s)" = Linux\n' +
+        'test "$(uname -m)" = x86_64\n' +
+        'node -e \'if (process.platform !== "linux" || process.arch !== "x64") process.exit(1)\'\n' +
+        "uname -r\nnode --version\n",
+    );
+    expect(steps[3]?.run).toBe(
+      "sudo apt-get update\n" +
+        "sudo apt-get install --yes bubblewrap ripgrep socat util-linux\n" +
+        "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
+        "bwrap --version\n",
+    );
+    expect(steps[4]?.run).toBe("npm ci --ignore-scripts");
+    expect(steps[5]?.run).toBe("npm run build");
+    expect(steps[6]?.run).toBe(
+      "npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts",
+    );
+    for (const step of steps) {
+      expect(step["continue-on-error"]).toBeUndefined();
+      expect(step.if).toBeUndefined();
+      expect(step.env).toBeUndefined();
+    }
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|passWithNoTests|docker|proof:|OPENROUTER/i);
   });
 
   it("audits the repository and Prime runtime dependency locks", async () => {

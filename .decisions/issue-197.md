@@ -662,3 +662,28 @@ not silently skip. The native Mac prerequisite failures remain reproducible thro
 diagnostic mode. A default Mac skip for this Linux-targeted suite is not passing qualification.
 Existing required CI gates remain intact. No new pilot, model transmission, merge, or release is
 authorized by this host-strategy decision.
+
+### Dedicated Linux prerequisite qualification slice
+
+The new `verifier-isolation` job targets Ubuntu 24.04 x64, pins Node 26.7.0 and existing action
+digests, disables checkout credential persistence, and requests only repository read access.
+It builds the production runtime and executes the exact five-test isolation file. It has no
+model credentials, pilot state, conditional execution, or failure masking. The 15-minute job
+watchdog bounds this CI task; it is not a model budget or a universal qualification duration.
+
+Three scaffold contract tests failed before adding the job: missing job, job inventory, and
+Node-pin count. All 40 tests in the two scaffold files then passed. An independent review
+confirmed the job's platform guards, exact focused invocation, and absence of failure masking.
+
+Runtime-test review found and corrected two probe weaknesses before Linux execution. Environment
+and descriptor checks now test the owned host PID independently of command-line visibility,
+using token and device/inode identity controls. Unconfirmed host-process cleanup now retains
+the fixture directory. These changes improve the probe; they do not establish a passing runtime
+result. Hosted execution and complete observer qualification remain pending at this checkpoint.
+
+After the final probe corrections, full type checking, lint, formatting, documentation style,
+links, prose, and whitespace checks passed. Lint retains its pre-existing informational constructor
+suggestion. The production build and the manifest-declared `dist/cli/launcher.js --help` smoke test
+passed. An initial smoke invocation used a nonexistent `dist/cli/index.js`; this operator command
+was corrected from the package manifest without changing source. The default macOS runtime invocation
+reported all five Linux-targeted tests skipped, explicitly not qualification evidence.

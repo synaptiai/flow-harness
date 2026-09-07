@@ -514,6 +514,34 @@ go test ./...
 Don't run the full proof image build on macOS as substitute acceptance evidence. Use the hosted
 Linux x64 job or a matching native Linux x64 host.
 
+## Verify native Linux observer prerequisites
+
+The `verifier-isolation` CI job runs
+`test/runtime/verification-observer-isolation.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+It checks the host and Node.js architecture before building the runtime. The job uses the
+production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
+Missing dependencies or sandbox admission failures fail the job.
+
+The probes check ordinary and new-session descendant termination before command settlement,
+private-file and descriptor isolation, host-process access, and forged candidate output.
+Each relevant access check includes a positive control outside the sandbox. Passing these probes
+establishes prerequisites only. It does not qualify a behavioral observer, enable verification repair,
+or establish Mac support. The [verification repair design](bounded-verification-repair-design.md)
+owns the remaining qualification gates.
+
+On a prepared Linux x64 host, build the runtime and execute the focused suite:
+
+```sh
+npm run build
+npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts
+```
+
+Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS
+descendant-containment failure, set `FLOW_VERIFIER_ISOLATION_DIAGNOSTIC=1` for the same test command.
+That diagnostic is expected to fail its descendant checks. Neither its results nor a default Mac
+skip count as Linux qualification. If a probe cannot confirm cleanup, inspect its retained fixture
+path before removing evidence. Do not signal a process using a PID reported by candidate code.
+
 ## Live Pi test policy
 
 Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIVE_PI_PROVIDER` and
