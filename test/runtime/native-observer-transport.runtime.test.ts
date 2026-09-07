@@ -33,6 +33,8 @@ import {
 } from "../../src/infrastructure/sandbox/srt-command-sandbox.js";
 import { rewriteNativeObserverLaunch } from "../../src/infrastructure/verification/native-observer-launch.js";
 import { parseNativeObserverResult } from "../../src/infrastructure/verification/native-observer-result.js";
+import { type HostProbe, startHostProbe } from "./helpers/native-observer-host-probe.js";
+import { calibrateZombie } from "./helpers/native-observer-zombie-control.js";
 
 const execFile = promisify(callbackExecFile);
 const source = fileURLToPath(
@@ -40,6 +42,18 @@ const source = fileURLToPath(
 );
 const faultSource = fileURLToPath(
   new URL("../fixtures/native-observer-fault-launcher.c", import.meta.url),
+);
+const writerSource = fileURLToPath(
+  new URL("../fixtures/native-observer-writer-app.c", import.meta.url),
+);
+const descendantSource = fileURLToPath(
+  new URL("../fixtures/native-observer-descendant-app.c", import.meta.url),
+);
+const hostProcessSource = fileURLToPath(
+  new URL("../fixtures/native-observer-host-process.c", import.meta.url),
+);
+const zombieParentSource = fileURLToPath(
+  new URL("../fixtures/native-observer-zombie-parent.c", import.meta.url),
 );
 const marker = "flow-observer-fixed-application-exit-7\n";
 const resultMarker = "flow-observer-fixed-application-result\n";
@@ -61,16 +75,27 @@ type Fixture = {
   app: OwnedApplication;
   malformed: OwnedApplication;
   nonExecutable: OwnedApplication;
+  writer: OwnedApplication;
+  descendant: OwnedApplication;
+  hostProcess: string;
+  zombieParent: string;
+  handles: FileHandle[];
   helper: string;
   explicitHelper: boolean;
   faultLauncher: string;
   sandbox: SrtCommandSandbox;
   calibration?: Promise<void>;
   faultCalibration?: Promise<void>;
+  hostCalibration?: Promise<void>;
+  zombieCalibration?: Promise<void>;
+};
+type CaptureHooks = {
+  onStarted?: (signal: AbortSignal) => Promise<void>;
+  onPrivateFrame?: (signal: AbortSignal) => Promise<void>;
 };
 
-// Result/EOF qualification only, not policy-clean, private-writer, full relay
-// disposal or repair eligibility. Default upstream still fails the original
+// Result/EOF, writer-access and descendant qualification only, not policy-clean,
+// full relay disposal or repair eligibility. Default upstream still fails the original
 // missing-frame regression. The additional matrix requires an explicit artifact.
 // Non-Linux collection is not native evidence. Every owned root is retained,
 // even on success: manager reset/monitor close do not prove bridge settlement.
@@ -90,7 +115,7 @@ describe
     beforeAll(() => {
       const timer = setTimeout(
         () => setup.abort(new Error("Native fixture setup deadline")),
-        20_000,
+        42_000,
       );
       initialization = createFixture(setup.signal, handles, artifacts)
         .then((value) => {
@@ -98,7 +123,7 @@ describe
         })
         .finally(() => clearTimeout(timer));
       return initialization;
-    }, 30_000);
+    }, 47_000);
 
     afterAll(async () => {
       closing = true;
@@ -347,6 +372,203 @@ describe
           expectTransport(result, "", faultMarker(mode));
         }),
     );
+
+    it(
+      "rejects a valid ordinary-output forgery despite disclosed correlation",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const correlation = randomBytes(32).toString("hex");
+          const result = await observe(value, context.signal, {
+            application: value.writer,
+            args: ["forge-stdout", correlation],
+            correlation,
+          });
+          const forged = Buffer.alloc(64);
+          forged.write("FLOWOBS1", 0, "ascii");
+          Buffer.from(correlation, "hex").copy(forged, 8);
+          forged.writeUInt32LE(1, 40);
+          expect(parseNativeObserverResult(forged, correlation)).toEqual({
+            kind: "normal_exit",
+            exitCode: 0,
+            clone3FallbackUsed: false,
+          });
+          expect(result.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 7,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, forged, "");
+        }),
+      45_000,
+    );
+
+    it.for(["control-proc", "control-pidfd", "attack-proc", "attack-pidfd"] as const)(
+      "qualifies actual writer access with $0",
+      { timeout: 45_000 },
+      (mode, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const correlation = randomBytes(32).toString("hex");
+          const result = await observe(value, context.signal, {
+            application: value.writer,
+            args: [mode, correlation],
+            correlation,
+          });
+          expect(result.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 7,
+            clone3FallbackUsed: false,
+          });
+          const report = JSON.parse(result.stdout.toString("utf8"));
+          const control = mode.startsWith("control-");
+          expect(report).toEqual({
+            mechanism: mode.endsWith("proc") ? "proc" : "pidfd",
+            control,
+            worker: { errno: expect.any(Number), positiveRoundtrip: true },
+            ordinary: { errno: expect.any(Number), positiveRoundtrip: true },
+            newSession: { errno: expect.any(Number), positiveRoundtrip: true },
+            childrenReaped: true,
+          });
+          const errors: unknown[] = [
+            report.worker.errno,
+            report.ordinary.errno,
+            report.newSession.errno,
+          ];
+          // The same errno-only oracle must reject the real accessible controls.
+          // The `control` label must not manufacture the negative result.
+          expect(errors.every((error) => error === 1 || error === 13)).toBe(!control);
+          if (control) expect(errors).toEqual([0, 0, 0]);
+          expectTransport(result, Buffer.from(`${JSON.stringify(report)}\n`), "");
+        }),
+    );
+
+    it(
+      "calibrates live versus terminated and reaped host process observations",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateHostProcess(value, context.signal);
+        }),
+      45_000,
+    );
+
+    it(
+      "distinguishes a real unreaped zombie from a fully reaped process",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateHostZombie(value, context.signal);
+        }),
+      45_000,
+    );
+
+    it.for(["ordinary", "new-session"] as const)(
+      "settles a held %s descendant before private-result acceptance",
+      { timeout: 45_000 },
+      (mode, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateHostProcess(value, context.signal);
+          await calibrateHostZombie(value, context.signal);
+          const marker = randomBytes(32).toString("hex");
+          const releasePath = join(value.privateRoot, `release-${marker}`);
+          const readyPath = join(value.workspace, `ready-${marker}`);
+          const release = await open(releasePath, "wx+", 0o600);
+          value.handles.push(release);
+          expect((await release.write(Buffer.from([0]), 0, 1, 0)).bytesWritten).toBe(1);
+          await release.chmod(0o444);
+          const before = await release.stat({ bigint: true });
+          let probe: HostProbe | undefined;
+          let authorized = false;
+          let checked = false;
+          let observationClosed = false;
+          const start = performance.now();
+          const failures: unknown[] = [];
+          try {
+            const result = await observe(value, context.signal, {
+              application: value.descendant,
+              args: [mode, marker, releasePath, readyPath],
+              runtimeSupportPaths: [releasePath],
+              hooks: {
+                onStarted: async (hookSignal) => {
+                  await waitForReady(readyPath, hookSignal);
+                  probe = await startHostProbe({
+                    executable: value.hostProcess,
+                    mode: "discover",
+                    uid: ownUid(),
+                    marker,
+                    cwd: value.workspace,
+                    env: value.environment,
+                    signal: hookSignal,
+                  });
+                  if (observationClosed) {
+                    await probe.close();
+                    throw new Error("Late process oracle after observation settlement");
+                  }
+                  const ready = await probe.ready();
+                  expect(ready.pidfdTerminated).toBe(false);
+                  expect(ready.session === ready.pid).toBe(mode === "new-session");
+                  const live = await probe.check();
+                  expect(live.pidfdTerminated).toBe(false);
+                  expect(live.originalIdentityAbsent).toBe(false);
+                  hookSignal.throwIfAborted();
+                  // Authorize first; the application can observe the write before
+                  // the asynchronous host write callback is delivered.
+                  authorized = true;
+                  expect((await release.write(Buffer.from([1]), 0, 1, 0)).bytesWritten).toBe(1);
+                },
+                onPrivateFrame: async () => {
+                  expect(authorized).toBe(true);
+                  if (probe === undefined)
+                    throw new Error("Missing independent descendant identity");
+                  // No wait-for-death loop, output-drain wait, or candidate PID.
+                  const settlement = await probe.check();
+                  expect(settlement).toEqual({
+                    event: "check",
+                    pidfdTerminated: true,
+                    originalIdentityAbsent: true,
+                    procState: null,
+                  });
+                  expect(performance.now() - start).toBeLessThan(10_000);
+                  checked = true;
+                },
+              },
+            });
+            expect(checked).toBe(true);
+            expect(result.record).toEqual({
+              kind: "normal_exit",
+              exitCode: 7,
+              clone3FallbackUsed: false,
+            });
+            expectTransport(result, "flow-observer-descendant-parent:release-readonly\n", "");
+          } catch (error) {
+            failures.push(error);
+          } finally {
+            observationClosed = true;
+            try {
+              if (probe !== undefined) await probe.close();
+            } catch (error) {
+              failures.push(error);
+            }
+            try {
+              const after = await lstat(releasePath, { bigint: true });
+              expect(after).toMatchObject({
+                dev: before.dev,
+                ino: before.ino,
+                mode: before.mode,
+                uid: before.uid,
+                gid: before.gid,
+                size: 1n,
+              });
+            } catch (error) {
+              failures.push(error);
+            }
+          }
+          if (failures.length)
+            throw new AggregateError(failures, "Descendant qualification failed; root retained");
+        }),
+    );
   });
 
 async function createFixture(
@@ -365,9 +587,17 @@ async function createFixture(
   const environment = { PATH: "/usr/bin:/bin", HOME: home, LANG: "C", LC_ALL: "C", TMPDIR: root };
   const application = join(privateRoot, "fixed-application");
   const faultLauncher = join(privateRoot, "fault-launcher");
+  const writerPath = join(privateRoot, "writer-application");
+  const descendantPath = join(privateRoot, "descendant-application");
+  const hostProcess = join(privateRoot, "host-process");
+  const zombieParent = join(privateRoot, "zombie-parent");
   for (const [input, output] of [
     [source, application],
     [faultSource, faultLauncher],
+    [writerSource, writerPath],
+    [descendantSource, descendantPath],
+    [hostProcessSource, hostProcess],
+    [zombieParentSource, zombieParent],
   ] as const) {
     signal.throwIfAborted();
     const compiled = await bounded(
@@ -418,7 +648,17 @@ async function createFixture(
   const helper = await realpath(helperInput);
   if (helper !== helperInput)
     throw new Error("Observer helper input must be canonical and not a symlink");
-  for (const path of [application, malformed, nonExecutable, helper, faultLauncher])
+  for (const path of [
+    application,
+    malformed,
+    nonExecutable,
+    helper,
+    faultLauncher,
+    writerPath,
+    descendantPath,
+    hostProcess,
+    zombieParent,
+  ])
     artifacts.push({ path, before: await identity(path) });
   expect(
     JSON.parse(
@@ -440,6 +680,8 @@ async function createFixture(
   const app = await opened(application);
   const malformedApp = await opened(malformed);
   const nonExecutableApp = await opened(nonExecutable);
+  const writer = await opened(writerPath);
+  const descendant = await opened(descendantPath);
   signal.throwIfAborted();
   return {
     home,
@@ -449,6 +691,11 @@ async function createFixture(
     app,
     malformed: malformedApp,
     nonExecutable: nonExecutableApp,
+    writer,
+    descendant,
+    hostProcess,
+    zombieParent,
+    handles,
     helper,
     explicitHelper: selected !== undefined,
     faultLauncher,
@@ -548,10 +795,24 @@ function calibrateFaults(value: Fixture, signal: AbortSignal): Promise<void> {
 async function observe(
   value: Fixture,
   signal: AbortSignal,
-  options: { application?: OwnedApplication; args?: readonly string[]; fault?: FaultMode } = {},
+  options: {
+    application?: OwnedApplication;
+    args?: readonly string[];
+    fault?: FaultMode;
+    correlation?: string;
+    runtimeSupportPaths?: readonly string[];
+    hooks?: CaptureHooks;
+  } = {},
 ) {
   const application = options.application ?? value.app;
-  const request = requestFor(value, application, options.args);
+  const baseRequest = requestFor(value, application, options.args);
+  const request = {
+    ...baseRequest,
+    runtimeSupportPaths: [
+      ...baseRequest.runtimeSupportPaths,
+      ...(options.runtimeSupportPaths ?? []),
+    ],
+  };
   let observation:
     | (Awaited<ReturnType<typeof capture>> & {
         record: ReturnType<typeof parseNativeObserverResult>;
@@ -566,7 +827,7 @@ async function observe(
       expect(await realpath(path)).toBe(path);
       expect((await lstat(path)).isSocket()).toBe(true);
     }
-    const correlation = randomBytes(32).toString("hex");
+    const correlation = options.correlation ?? randomBytes(32).toString("hex");
     const launch = rewriteNativeObserverLaunch({
       launch: original.launch,
       originalCommand: { executable: request.executable, args: request.args },
@@ -614,6 +875,7 @@ async function observe(
       signal,
       application.handle.fd,
       application.handle.fd,
+      options.hooks,
     );
     expect(result.privateEof).toBe(true);
     observation = {
@@ -627,14 +889,138 @@ async function observe(
 
 function expectTransport(
   result: Awaited<ReturnType<typeof observe>>,
-  stdout: string,
+  stdout: string | Buffer,
   stderr: string,
 ) {
   expect(result.code).toBe(0); // Private transport, not application exit.
   expect(result.signal).toBeNull();
   expect(result.privateEof).toBe(true);
-  expect(result.stdout.toString("utf8")).toBe(stdout);
+  if (Buffer.isBuffer(stdout)) expect(result.stdout).toEqual(stdout);
+  else expect(result.stdout.toString("utf8")).toBe(stdout);
   expect(result.stderr.toString("utf8")).toBe(stderr);
+}
+
+function ownUid(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined || uid === 0)
+    throw new Error("Native controls require a non-root host UID");
+  return uid;
+}
+
+async function waitForReady(path: string, signal: AbortSignal): Promise<void> {
+  const deadline = performance.now() + 1000;
+  while (performance.now() < deadline) {
+    signal.throwIfAborted();
+    try {
+      expect((await readFile(path)).toString("utf8")).toBe("ready\n");
+      return;
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ENOENT"
+      )
+        throw error;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Held child did not publish bounded readiness");
+}
+
+function calibrateHostZombie(value: Fixture, signal: AbortSignal): Promise<void> {
+  value.zombieCalibration ??= calibrateZombie({
+    parentExecutable: value.zombieParent,
+    probeExecutable: value.hostProcess,
+    uid: ownUid(),
+    cwd: value.workspace,
+    env: value.environment,
+    signal,
+  });
+  return value.zombieCalibration;
+}
+
+function calibrateHostProcess(value: Fixture, signal: AbortSignal): Promise<void> {
+  value.hostCalibration ??= (async () => {
+    const marker = randomBytes(32).toString("hex");
+    const readyPath = join(value.workspace, `host-ready-${marker}`);
+    // This is an independently Node-spawned positive control. Only this owned
+    // ChildProcess may be signalled, never a PID discovered from /proc or output.
+    signal.throwIfAborted();
+    const child = spawn(value.descendant.path, ["held", "ordinary", readyPath], {
+      argv0: marker,
+      cwd: value.workspace,
+      env: value.environment,
+      stdio: "ignore",
+    });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      },
+    );
+    // Observe rejection even if readiness fails before awaiting closure.
+    void closed.catch(() => undefined);
+    const abort = () => {
+      child.kill("SIGKILL");
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    let probe: HostProbe | undefined;
+    let joined = false;
+    const failures: unknown[] = [];
+    try {
+      await waitForReady(readyPath, signal);
+      if (child.pid === undefined) throw new Error("Missing owned host control PID");
+      probe = await startHostProbe({
+        executable: value.hostProcess,
+        mode: "known",
+        uid: ownUid(),
+        marker,
+        ownedPid: child.pid,
+        cwd: value.workspace,
+        env: value.environment,
+        signal,
+      });
+      const ready = await probe.ready();
+      expect(ready.pid).toBe(child.pid);
+      expect(ready.pidfdTerminated).toBe(false);
+      const live = await probe.check();
+      expect(live.pidfdTerminated).toBe(false);
+      expect(live.originalIdentityAbsent).toBe(false);
+      expect(live.procState).not.toBeNull();
+      expect(child.kill("SIGTERM")).toBe(true);
+      const exit = await bounded(closed, 1000, "Owned host control did not settle");
+      joined = true;
+      expect(exit).toEqual({ code: null, signal: "SIGTERM" });
+      expect(await probe.check()).toEqual({
+        event: "check",
+        pidfdTerminated: true,
+        originalIdentityAbsent: true,
+        procState: null,
+      });
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      signal.removeEventListener("abort", abort);
+      if (!joined) {
+        child.kill("SIGKILL");
+        try {
+          await bounded(closed, 1000, "Owned host control cleanup did not settle");
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      try {
+        if (probe !== undefined) await probe.close();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(failures, "Host process calibration failed; root retained");
+  })();
+  return value.hostCalibration;
 }
 
 async function identity(path: string) {
@@ -719,6 +1105,7 @@ function capture(
   signal: AbortSignal,
   applicationFd?: number,
   canaryFd?: number,
+  hooks?: CaptureHooks,
 ): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -729,6 +1116,8 @@ function capture(
 }> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
+    const hookController = new AbortController();
+    const hookSignal = AbortSignal.any([signal, hookController.signal]);
     // Node's "pipe" can be a socketpair. FD 3 is a logical private channel, not
     // a promised S_IFIFO. No descriptor writer authenticity is claimed here.
     const stdio: ("ignore" | "pipe" | number)[] =
@@ -750,12 +1139,15 @@ function capture(
     const chunks: Buffer[][] = [[], [], []];
     const sizes = [0, 0, 0];
     let privateEof = applicationFd === undefined;
+    const hookPromises: Promise<void>[] = [];
+    let frameHookStarted = false;
     let failure: Error | undefined;
     let joined = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
     const finishFailure = (error: Error) => {
       if (failure !== undefined || joined) return;
       failure = error;
+      hookController.abort(error);
       if (child.pid !== undefined) {
         try {
           process.kill(-child.pid, "SIGKILL");
@@ -785,6 +1177,16 @@ function capture(
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     const streams = [child.stdout, child.stderr, child.stdio[3]];
+    const runHook = (hook: ((signal: AbortSignal) => Promise<void>) | undefined) => {
+      if (hook === undefined) return;
+      const operation = Promise.resolve().then(() => hook(hookSignal));
+      hookPromises.push(operation);
+      void operation.catch((error: unknown) =>
+        finishFailure(
+          error instanceof Error ? error : new Error("Native qualification hook failed"),
+        ),
+      );
+    };
     streams.forEach((value, index) => {
       if (value === null || value === undefined) return;
       const stream = value as Readable;
@@ -796,6 +1198,10 @@ function capture(
           return;
         }
         chunks[index]?.push(Buffer.from(value));
+        if (index === 2 && size === 64 && !frameHookStarted) {
+          frameHookStarted = true;
+          runHook(hooks?.onPrivateFrame);
+        }
       });
       stream.on("error", () => finishFailure(new Error("Native observer channel error")));
       if (index === 2)
@@ -809,15 +1215,28 @@ function capture(
       joined = true;
       cleanup();
       if (failure !== undefined) reject(failure);
-      else
-        resolve({
-          code,
-          signal: terminated,
-          stdout: Buffer.concat(chunks[0] ?? []),
-          stderr: Buffer.concat(chunks[1] ?? []),
-          privateBytes: Buffer.concat(chunks[2] ?? []),
-          privateEof,
-        });
+      else {
+        void bounded(
+          Promise.all(hookPromises),
+          1000,
+          "Native qualification hooks did not settle",
+        ).then(
+          () =>
+            resolve({
+              code,
+              signal: terminated,
+              stdout: Buffer.concat(chunks[0] ?? []),
+              stderr: Buffer.concat(chunks[1] ?? []),
+              privateBytes: Buffer.concat(chunks[2] ?? []),
+              privateEof,
+            }),
+          (error: unknown) => {
+            hookController.abort(error);
+            reject(error);
+          },
+        );
+      }
     });
+    runHook(hooks?.onStarted);
   });
 }

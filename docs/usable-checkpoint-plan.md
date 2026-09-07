@@ -341,6 +341,12 @@ It covered all normal exit codes, real SIGTERM, invalid inputs, and three kernel
 The two clean builds again matched all 23 artifacts. The observer binary remained unchanged.
 
 Next, qualify private-writer exclusion and descendant settlement with independent host observations.
+
+The implemented test expansion registers 275 cases. It adds accessible-writer counterexamples,
+forged-output rejection, and held descendants with independent live, zombie, and reaped controls.
+Source review and local static checks passed. Actual Linux execution remains pending. The Mac
+collection skips all 275 cases and is not native qualification evidence.
+
 Do not infer those properties from the passing result tests. Policy interference, fixture denial,
 ordinary-command descriptor hardening, and the remaining lifecycle gates still block repair readiness.
 

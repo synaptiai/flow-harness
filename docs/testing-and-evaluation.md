@@ -712,6 +712,42 @@ All 266 cases passed without skips in
 The runtime suite took 22.64 seconds on that host. This is one qualification run, not a performance
 benchmark. The job also reproduced all 23 build artifacts, including the previously tested observer binary.
 
+The next custody controls deliberately disclose the correlation to a fixed application. A valid
+normal-exit-zero frame on ordinary output must not replace the genuine private exit-seven record.
+Separate checks attempt to open the inner supervisor's report writer through `/proc` and
+`pidfd_getfd`. Each mechanism must first transfer real frame bytes through an owned accessible pipe.
+Repeat the checks in the worker, an ordinary child, and a new-session child.
+
+Permission denial must not mean a missing target or an unavailable syscall. These checks cover
+the deployed profile's tested access paths, not unique causal attribution to one protection mechanism.
+The report writer is descriptor 6 in the current inner supervisor. Requalify the controls if that
+topology changes. A live supervisor alone does not independently prove that the descriptor exists.
+
+For descendant checks, a fixed child closes inherited ordinary streams and publishes readiness.
+The host independently identifies that child by its unique argument marker, user ID, kernel start
+time, and session. It then holds a process descriptor, or *pidfd*, to avoid PID-reuse ambiguity.
+The host changes one byte in an existing read-only-mounted release file only after identity checks.
+The application must first prove that it can read but cannot open that release file for writing.
+
+The result test checks settlement when the complete private frame arrives, before waiting for
+ordinary output closure. It must not wait for the child to disappear after receiving the result.
+Host-observed elapsed time must exclude the child's safety timeout as an explanation for termination.
+The host tool never signals a discovered process. Cleanup can signal only separately spawned,
+owned test processes.
+
+Calibrate the host tool against all three process states before accepting descendant evidence:
+
+| State | Process descriptor reports termination | Original process identity absent | Accept as reaped |
+| --- | --- | --- | --- |
+| Live process | No | No | No |
+| Exited process waiting for its parent to reap it | Yes | No | No |
+| Reaped process | Yes | Yes | Yes |
+
+These new custody and settlement controls are under development. The 266-case run does not
+qualify them. Host visibility, the read-only release handoff, and the additional native fixtures
+still require actual Linux execution. They do not qualify all writer-access mechanisms, immutable
+runtime custody, outer proxy cleanup, namespace policy, cancellation races, or repairs.
+
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure
 and SRT reset do not yet establish complete relay and host-bridge disposal. A passing result-channel

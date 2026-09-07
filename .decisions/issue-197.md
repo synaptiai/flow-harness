@@ -1938,3 +1938,52 @@ checks to prevent PID-reuse confusion, and distinguish termination from reaping.
 at acceptance without a later wait-for-death loop or a natural-expiry explanation. Host visibility
 across the pinned namespaces needs its own positive calibration; do not assume ptrace-gated proc
 fields are readable. These are implementation constraints for the next tests, not completed evidence.
+
+### Qualify private-writer access and descendant settlement
+
+The previous goal turn made verified progress: 266 native cases passed and the evidence record
+was committed as 27c3729. This continuation keeps the full usable-checkpoint objective active;
+the new tests do not replace UC-01 or any later gate. No production observer code changes are
+planned unless these controls expose a defect.
+
+The fixed writer application receives the real correlation deliberately. Its valid normal-zero
+frame on stdout must not alter the actual private normal-seven result. Both proc-FD and pidfd_getfd
+controls prove successful acquisition and a real 64-byte roundtrip on a self-owned writable pipe.
+The same errno-only denial predicate must reject these accessible controls. Worker, ordinary child,
+and new-session child then attempt the real inner PID-1 report writer at descriptor 6 and require
+EPERM/EACCES, not generic failure. Exact child statuses and reaping precede the summary. These
+controls do not uniquely attribute denial to dumpability; self access does not establish that
+cross-process access would succeed under a different Yama or namespace policy.
+
+The host-only process oracle independently discovers a fixed child's unique argv[0] and kernel
+UID/PID/starttime/session, acquires a pidfd, and rechecks identity while the child is held. It never
+signals a discovered PID or assumes ptrace-gated executable/namespace-link visibility. Each check
+polls the pidfd with zero timeout before inspecting proc identity; it does not retry to turn a live
+result into settlement. The Node wrapper bounds launch, protocol, output, and cleanup, and closes
+its own process only. Quit-write completion and actual process closure are both required.
+
+The descendant application redirects all child standard streams to /dev/null before readiness.
+Its parent reads an existing one-byte file outside the writable workspace, exposed read-only by
+the original sandbox policy. It must prove read-zero plus denied write-open. The host retains a
+write handle to that same inode and changes zero to one only after the child's identity is bound.
+The private-frame event starts the settlement check before ordinary-output EOF or outer command
+closure. No wait-for-death loop or child-provided timestamp is used. Host elapsed time must be far
+shorter than the held child's 60-second safety alarm.
+
+Independent source review found two pre-effect cancellation guards missing in the first draft:
+before the host positive-control spawn and before release-byte authorization. Both were added.
+Review also called for an exited-but-unreaped control, because pidfd readiness alone is not reaping.
+A separate owned C parent will hold that state using waitid WNOWAIT, then reap only on a host
+command. Live, zombie, and reaped observations must be distinct. These new native controls remain
+unqualified until Linux compilation and real execution pass; no repair, model-run, merge, or release
+authority follows from writing them.
+
+The zombie control and its mandatory cached prerequisite are implemented. Independent final review
+found no remaining P1–P3 issues. Six fixed C sources each retain a five-second compiler timeout;
+the setup bound is now 42 seconds with a 47-second outer hook. Per-case and model budgets are
+unchanged. Type checking, lint, and formatting passed. Mac collection registered 275 skips, not
+native execution. Three existing producer tests encountered socket-listen EPERM in the restricted
+local runner; rerun those unchanged tests with normal local socket permissions before commitment.
+
+The unchanged focused suite passed all 307 tests with normal local socket permissions. The failed
+restricted invocation remains recorded as environment evidence, not a product regression.
