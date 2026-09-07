@@ -712,6 +712,31 @@ This proposal does not enable repairs, authorize another pilot, change network p
 immutable runtime custody. It does not replace namespace cleanup with host-bridge cleanup: both
 remain required. Executable bytes, loaders, and libraries need their own custody evidence.
 
+##### Descendant-ownership research gate
+
+RL-A still needs a concrete ownership mechanism. Source review narrows the investigation:
+
+| Mechanism | Evidence and remaining constraint |
+| --- | --- |
+| Process-group signaling | Linux 6.9 adds [pidfd-based group signaling](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html). Signaling still does not prove termination or cover descendants that leave the group. |
+| Dedicated subreaper | A [Linux subreaper](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html) adopts orphaned descendants. It must start before the bridges and retain ownership through cleanup. It adds a native lifecycle component. |
+| Bubblewrap PID namespace | Reuses an existing prerequisite, but its [default monitor returns on the initial workload's result](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L512-L525), before the namespace reaper necessarily finishes. Ordinary monitor closure is insufficient. |
+| Delegated cgroup v2 | The [kernel interface](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html) supports subtree termination and reports live-process population. Flow must first establish delegation, exclusive ownership, and prevention of new admission during cleanup. |
+
+Evaluate namespace reuse first because the Linux profile already requires bubblewrap and user
+namespaces. This is an investigation order, not a selected implementation. Keeping the host network
+namespace does not by itself preserve mount, identity, signal, or descriptor semantics.
+
+Bubblewrap's `--as-pid-1` variant avoids the default early workload-result event. It also makes the
+relay responsible for PID 1 behavior. Qualify signal handling, child reaping, and owner interruption
+before considering it compatible. Killing the outer monitor still does not establish a joined
+namespace teardown. Do not infer settlement from its parent-death signal configuration.
+
+Compare any viable mechanism with a dedicated subreaper before selection. Do not assume cgroup
+delegation from hosted CI's ability to install packages. No mechanism in this table is qualified.
+Keep this gate open until actual bridge connections, partial startup, and interrupted ownership
+pass real-process tests with independent termination evidence.
+
 #### Connect the native application-result path
 
 Implement this path in an observer-only patch to the pinned supervisor. Preserve the unchanged

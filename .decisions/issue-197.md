@@ -2483,3 +2483,30 @@ Independent review found no P1-P3 findings in the three-file proposal. All 41 do
 tests, docs:style, docs:links, docs:ste, and whitespace checks passed. Documentation-only change:
 no new native run is needed to validate unchanged native inputs. Save locally without pushing,
 updating the draft PR, or changing the qualified source identity.
+
+### Descendant mechanism research while RL-A is pending
+
+The preceding goal turn made progress by recording and reviewing the lifecycle decision at c9baed0.
+Revalidated that exact clean worktree. No RL-A approval or live process was inferred from the
+automatic goal continuation. Continued only the unresolved, read-only mechanism investigation.
+
+Primary Linux documentation distinguishes pidfd process-group signaling (Linux 6.9+) from tree
+settlement, subreaper adoption from discovery-based ownership, and delegated cgroup subtree control
+from ordinary user namespace access. The hosted workflow installs prerequisites with sudo but runs
+tests nonroot. It does not establish a delegated cgroup contract.
+
+Independent source inspection and root cross-check of bubblewrap v0.9.0 found monitor_child returns
+on workload eventfd (512-525), while do_init can still be waiting for descendants (587-614).
+--as-pid-1 suppresses that eventfd/init fork (2639,3080), but changes relay PID1 behavior and does
+not independently join namespace teardown when the outer monitor is killed. Keep normal completion,
+owner-death startup races, and host escalation distinct. No new native experiment ran.
+
+The canonical proposal now names the mechanisms, their proof obligations, and a namespace-first
+evaluation order using existing prerequisites. This does not select a production mechanism or
+authorize a new supervisor, cgroup provisioning, SRT patch, pilot, or repair enablement. Source
+review is not runtime qualification. The 306-case native result and full goal scope are unchanged.
+
+Independent final review found no P1-P3 findings. All 41 documentation/workflow tests and the three
+documentation gates passed. Both changed files are in scope and already belong to the issue branch.
+Save this research-only delta locally. No dependency, native artifact, CI job, or public capability
+changed, so no new native qualification or capability regeneration is claimed.
