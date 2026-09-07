@@ -168,13 +168,28 @@ describe.skipIf(!linuxTarget)("Linux x64 immutable verification fixture prerequi
       await mkdir(nestedAlias);
       const nestedSource = `${subprocessSource}
         ${namespaceIdentitySource}
+        ${namespaceDiagnosticSource}
         ${mountAttackSource(fixture.inputs, nestedAlias)}
         const mutation = operation => { try { operation(); return true; } catch { return false; } };
         const read = path => {
           try { return { code: null, value: fs.readFileSync(path, "utf8") }; }
           catch (error) { return { code: error.code || "UNKNOWN" }; }
         };
+        // Capture before any nested mount/chmod attempt. Diagnostics do not qualify behavior.
+        const beforeMutation = {
+          deniedFile: read(${JSON.stringify(fixture.deniedFile)}),
+          deniedParent: read(${JSON.stringify(fixture.childFile)}),
+          missing: read(${JSON.stringify(fixture.missing)}),
+          readable: read(${JSON.stringify(fixture.readable)}),
+        };
+        const diagnostics = namespaceDiagnostics({
+          deniedFile: ${JSON.stringify(fixture.deniedFile)},
+          deniedParent: ${JSON.stringify(fixture.deniedParent)},
+          readable: ${JSON.stringify(fixture.readable)},
+        });
         process.stdout.write(JSON.stringify({
+          beforeMutation,
+          diagnostics,
           mount: attack(),
           chmodFile: mutation(() => fs.chmodSync(${JSON.stringify(fixture.deniedFile)}, 0o600)),
           chmodParent: mutation(() => fs.chmodSync(${JSON.stringify(fixture.deniedParent)}, 0o700)),
@@ -205,12 +220,18 @@ describe.skipIf(!linuxTarget)("Linux x64 immutable verification fixture prerequi
           deniedFile: unknown;
           deniedParent: unknown;
           readable: unknown;
+          beforeMutation: unknown;
+          diagnostics: unknown;
         };
         assertMountDenied(nested.mount);
         expect(nested.chmodFile).toBe(false);
         expect(nested.chmodParent).toBe(false);
-        expect(nested.deniedFile).toEqual({ code: "EACCES" });
-        expect(nested.deniedParent).toEqual({ code: "EACCES" });
+        const diagnostic = JSON.stringify({
+          beforeMutation: nested.beforeMutation,
+          diagnostics: nested.diagnostics,
+        });
+        expect(nested.deniedFile, diagnostic).toEqual({ code: "EACCES" });
+        expect(nested.deniedParent, diagnostic).toEqual({ code: "EACCES" });
         expect(nested.readable).toEqual({ code: null, value: fixture.readableBytes });
       } else {
         // Host control proved these exact options/tools usable. Only an explicit permission
@@ -260,6 +281,50 @@ const namespaceIdentitySource = `
   if (process.getuid() !== 0 || currentNamespaces.some((value, index) => value === previousNamespaces[index])) {
     throw new Error("Fresh user and mount namespaces were not established");
   }
+`;
+
+// Synthetic fixture metadata and selected kernel fields only: never serialize full /proc files.
+// Each read is bounded and a missing diagnostic cannot replace the behavioral assertion.
+const namespaceDiagnosticSource = `
+  const namespaceDiagnostics = paths => {
+    const safely = operation => {
+      try { return operation(); } catch { return { unavailable: true }; }
+    };
+    const boundedRead = (path, limit) => {
+      const fd = fs.openSync(path, "r");
+      try {
+        const buffer = Buffer.alloc(limit + 1);
+        const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        if (length > limit) throw new Error("Diagnostic bound exceeded");
+        return buffer.subarray(0, length).toString("utf8");
+      } finally { fs.closeSync(fd); }
+    };
+    const mapping = path => {
+      const value = boundedRead(path, 1024).trim();
+      if (!/^[0-9\\s]+$/.test(value)) throw new Error("Invalid diagnostic mapping");
+      return value;
+    };
+    return {
+      uid: process.getuid(), euid: process.geteuid(),
+      gid: process.getgid(), egid: process.getegid(),
+      effectiveCapabilities: safely(() => {
+        const match = /^CapEff:\\s*([0-9a-f]{1,16})$/mi.exec(boundedRead("/proc/self/status", 4096));
+        if (!match) throw new Error("Missing diagnostic capabilities");
+        return match[1];
+      }),
+      uidMap: safely(() => mapping("/proc/self/uid_map")),
+      gidMap: safely(() => mapping("/proc/self/gid_map")),
+      namespaces: Object.fromEntries(["user", "mnt", "pid"].map(name => [name, safely(() => {
+        const value = fs.readlinkSync("/proc/self/ns/" + name);
+        if (value.length > 64 || !/^[a-z]+:\\[[0-9]+\\]$/.test(value)) throw new Error("Invalid diagnostic namespace");
+        return value;
+      })])),
+      fixtures: Object.fromEntries(Object.entries(paths).map(([name, path]) => [name, safely(() => {
+        const info = fs.lstatSync(path);
+        return { uid: info.uid, gid: info.gid, mode: info.mode };
+      })])),
+    };
+  };
 `;
 
 function mountAttackSource(source: string, target: string): string {

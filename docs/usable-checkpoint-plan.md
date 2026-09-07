@@ -270,8 +270,31 @@ capture now have local tests and independent review. Their hosted qualification,
 behavioral observer, and proof of actual application launch and exit remain pending. An outer
 sandbox exit code alone cannot distinguish a deliberate exit from a signal.
 
-The next focused Linux job contains 17 tests across three suites. Mac skips do not qualify those
+The focused Linux job contains 17 tests across three suites. Mac skips do not qualify those
 tests. VR-06 requires separate live-experiment authorization.
+
+The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
+The original five isolation probes and all nine internal command tests passed. Only two of three
+fixture tests passed, so the fixture profile remains unqualified. A candidate-side nested user
+namespace read the denied file without successful chmod or remount. Preserve this failed result and
+confirm the capability mechanism before selecting a correction. Repair remains disabled.
+
+Local validation also found test-lifetime cleanup failures. Complete this verification work before
+claiming a clean checkpoint:
+
+- [x] Correct the measured internal library inventory and its documentation expectations.
+- [x] Give each affected integration test ownership of its full asynchronous lifetime and temporary directories.
+- [x] Propagate test cancellation and retain directories when settlement cannot be confirmed. Preserve production postcondition checks.
+- [x] Verify timeout, late allocation, independent test ownership, and cleanup failure with focused regressions. Rerun affected cases and required gates.
+- [ ] Explain the Mac timing failures with measurements without silently increasing test deadlines.
+
+This test-only correction does not qualify Linux fixture permissions, enable verification repair,
+or replace the required installed issue-to-merge experiment.
+
+Local verification passed all 21 cleanup regressions and all 37 affected lifecycle tests without
+skips. Type checking, lint, formatting, build, capability-reference, and documentation checks passed.
+The two original timeout cases also passed separately with unchanged deadlines. These results do
+not explain the earlier timing failures or constitute a complete repository test run.
 
 In particular, generic error codes do not prove a behavioral defect, and the current shared
 command sandbox does not establish a trusted verifier-result channel. Prove verifier isolation before

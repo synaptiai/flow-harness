@@ -272,10 +272,45 @@ handling, bounded framing, cancellation, descendant settlement, and source-to-ar
 Candidate output must not substitute for these records. Missing or contradictory records must stop
 classification without repair selection.
 
-Research correlated the npm release attestation with source commit `44ab607c` and matched the
-installed x64 helper to the published tarball by SHA-256. It did not cryptographically verify the
-attestation or reproduce the native build. Those limits remain explicit qualification work, not
-evidence that a modified supervisor is trusted.
+Cryptographic verification authenticated the npm release attestation for source commit `44ab607c`
+against the exact GitHub release-workflow identity. The signed package digest matched the downloaded
+tarball, and the packaged x64 helper matched the installed binary by SHA-256. Wrong workflow identity
+and modified signed-payload controls were rejected. This establishes authenticated publication and
+artifact binding. It does not reproduce the native build, establish semantic safety, or qualify a
+modified supervisor.
+
+The expanded Linux qualification also found a separate fixture gap at `e826687`.
+A nested user namespace read a mode-000 input after the probe confirmed that chmod and mount-bypass
+attempts failed. Sixteen of 17 tests passed, but the fixture profile remains unqualified. A protected exit
+protocol alone cannot resolve that failed permission precondition.
+
+Linux documents that [namespaced capabilities](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)
+can bypass file-mode checks when the file's owner and group are mapped into that namespace.
+This is a source-supported hypothesis for the observed read, not a runtime-confirmed explanation.
+Capture bounded capability, identity, mapping, and pre-mutation read evidence before selecting a
+correction. Preserve the failing assertion. Any selected observer must qualify both application
+results and fixture access under nested execution, without treating read-only mounts as proof of
+unreadability.
+
+Do not add an outer `--disable-userns` flag as a shortcut. Bubblewrap applies that restriction
+[before launching its command](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L2988-L3034).
+The pinned SRT helper then needs another user namespace for its own trusted setup after capabilities
+are dropped. The flag would block that setup under the current profile. `--assert-userns-disabled`
+only checks a restriction, and neither flag is exposed by the current integration.
+
+Two fixture-correction directions remain unselected: apply additional restrictions after trusted
+setup but before candidate execution, or provision fixture ownership outside candidate-accessible
+identity mappings. The first requires complete coverage of namespace creation and joining without
+breaking ordinary processes and threads. The second requires new provisioning and mapping proofs.
+Neither replaces the independent application-result gate.
+
+Evaluate existing Flow code before introducing another supervisor. The
+[Prime process driver](../prime-container/internal/supervisor/driver_process_unix.go)
+checks kernel signal status and launches with explicit credentials. The
+[proof supervisor](../proof-container/cmd/flow-proof-supervisor/containment_linux.go)
+verifies its isolated identity, capabilities, and resource policy. These are reusable design patterns,
+not drop-in observer implementations. Their existing qualification does not prove private result
+transport or fixture denial in the native SRT profile.
 
 Real-process qualification must cover correct rejection, incorrect success, an always-failing CLI,
 forged output, damaged fixtures, stale identity, interruption, bounded output, and descendant cleanup.

@@ -878,3 +878,262 @@ merge checkout and equal source-tree identities are retained in the earlier evid
 The reviewed local commits can now be pushed without cancelling that run. They still require
 their own exact-head CI, including the expanded 17-test Linux isolation set. No observer, repair,
 installed-lifecycle, merge, or release gate is closed by this prerequisite result.
+
+### Expanded Linux fixture qualification failure
+
+Reviewed head `e826687141de40da13a2a4a6eb54cf1c08dd4cc1` was pushed only after the earlier workflow
+became terminal. In new run `34135220621`, dedicated isolation job `101784477466` passed 16 tests
+and failed one. The original isolation suite passed five, the internal Linux command suite passed
+nine, and the fixture suite passed two of three. The failed assertion at fixture test line 212
+expected EACCES but received the synthetic denied-file contents from a nested user namespace.
+The preceding checks rejected chmod and mount-bypass attempts. The profile is not qualified.
+
+The job checked out synthetic merge `3d934d6f03d259351d671fabfe93093fac5c469f`.
+Independent commit API inspection matched that checkout and the PR head to tree
+`12cb8436b4e575786df9f479aed0addfbc25545d`. The recorded host is Linux x64 with kernel
+`6.17.0-1022-azure` and Node 26.7.0. Quality and proof jobs remain running, without cancellation.
+
+Independent source review found no fixture mode-restoration defect. The test explicitly creates a
+new user namespace and maps the caller to root. Linux documents namespaced DAC-bypass capabilities
+over mapped inode ownership. That explains how read-only mounts can block modification without
+preserving EACCES, but the exact capability mechanism still requires runtime evidence. The next
+diagnostic retains every assertion and records bounded maps, capabilities, identities, and reads
+before attempted mutation. No production policy or supervisor mechanism changes. The pending
+supervisor decision must address this fixture invariant as well as the application-result gap.
+
+Diagnostic preparation now captures selected capabilities, numeric identity maps, namespace
+identities, synthetic fixture ownership/modes, and reads before mutation. Independent review found
+no P1–P3 findings. All original behavioral assertions, test counts, deadlines, and cleanup remain
+unchanged. Focused Biome validation passed. Pure AST expansion and `vm.Script` syntax compilation
+did not execute the candidate: representative 33-byte Linux and 85-byte Mac temporary roots produce
+6,909-byte and 7,949-byte outer arguments, below the unchanged 8,192-byte limit. Longer roots are
+not qualified by these measurements. Linux execution and final type checking remain pending.
+
+### Existing isolation control and supervisor reuse review
+
+Read-only source review rejected a drop-in outer bubblewrap flag. In version 0.9.0,
+`--disable-userns` applies its namespace-local limit and consumes another namespace before executing
+the child. The pinned SRT strict profile drops capabilities, then its native helper creates another
+user namespace for PID/mount setup. The outer restriction would block that trusted setup.
+`--assert-userns-disabled` is a check rather than an enforcement switch. SRT does not expose either
+flag, and Flow's current descriptor allowlist rejects them. No flag or capability was added.
+
+Post-setup restrictions and separately provisioned fixture ownership remain possible design
+directions, not qualified corrections. Namespace creation and joining, ordinary thread/process
+compatibility, and UID/GID mapping invariants need explicit proofs. Existing Prime supervisor
+code already inspects kernel signal status and launches with separate credentials. Existing proof
+supervisor code verifies isolated identity and containment. Those patterns inform reuse analysis,
+but neither is a native verifier adapter or proof of the new result channel. No supervisor or
+policy decision has been selected while the pending user decision and runtime diagnostic remain open.
+
+### Authenticated SRT publication provenance
+
+Read-only verification of the public SRT 0.0.70 package succeeded with the existing npm-bundled
+`@sigstore/verify` 3.1.1 and `@sigstore/tuf` 4.0.2. A fresh TUF cache supplied trust material;
+transparency-log, certificate-transparency-log, and timestamp thresholds were each one. The required
+issuer was `https://token.actions.githubusercontent.com`, and the exact required workflow identity
+was `https://github.com/anthropic-experimental/sandbox-runtime/.github/workflows/release.yml@refs/tags/v0.0.70`.
+
+The verified signed statement names source commit `44ab607c46f20381aeaf3e22ca0e0151d4c6b29c`.
+Its single package subject digest matched the independently hashed 3,784,812-byte tarball:
+SHA-512 `3ebd1ddc9dd4c89212c6f1714ce95d7215b76bc3ff9c0662215fa753dc081e85b9626d4f3345c33f3597f26309b175a99d447323ebb739d50b89ab9c619f5eda`.
+The extracted x64 helper matched the installed binary:
+SHA-256 `5c92b0f369a626f5d7cb27d7912cfa882dc26a3690f17cc0016480c5b8b01df7`.
+Explicit subject-to-tarball binding was checked after signed-envelope verification. A different
+workflow identity and a modified signed payload were both rejected. Agent session 84986 completed
+with exit zero; its raw JSON was returned in completion chunk `e518be`, not saved as a repository
+artifact. No installation, native build, model invocation, or secret access was required.
+
+This closes the previously unverified publication-signature check only. It does not independently
+reproduce native compilation, establish runtime safety, or qualify a future modified supervisor.
+The failed Linux fixture invariant and missing private application-result channel remain open.
+
+### Local full-suite timing and cleanup investigation
+
+The host-permitted one-worker full suite remains active in main session 12551. Its first integration
+file reported 10 passes and one failure: the two-repair-cycle case at 240,214 ms. The same selected
+case passed earlier in 227,260 ms. The second file reported 25 passes and one failure: the ignored
+command-output cleanup case at 30,189 ms. Final error stacks have not yet been emitted. These
+durations are close to existing watchdogs; they do not establish the failure classification or cause.
+
+Independent source inspection identified repeated real Git operations as a shared timing candidate.
+Verification removes and recreates its disposable worktree before base, candidate, and additional
+checks, then runs pre/post identity proofs around each command. The smaller test uses an in-memory
+private store, so durable evidence writes cannot directly explain both failures. The larger test
+also performs awaited durability barriers and 21 command executions. No phase-cost attribution has
+been measured, and no proof or durability check has been removed.
+
+The installed Vitest timeout wrapper does not join the original asynchronous test body before
+running teardown. Neither failing case passes its test-context signal into the operation; both files
+delete registered temporary roots in `afterEach`. A timeout can therefore overlap continued Git or
+proof operations with fixture cleanup. This is a source-supported test-infrastructure risk, not a
+demonstrated cause of the first failure. Cancellation alone is insufficient because verification
+postcondition proof intentionally runs independently of the request signal. Any correction must
+establish operation and owned-child settlement before deleting fixture state.
+
+After the current run settles, collect final error classifications and compare hosted results.
+Instrument fixture setup, lifecycle/verification, evidence checks, resume, and teardown separately
+if needed. Record only operation names, timings, and owned identifiers. Preserve the existing
+watchdogs and behavioral assertions while diagnosing; do not classify timing alone as a product
+defect or dismiss it as host performance.
+
+The previous completed hosted quality job `101763285584`, run `34128675526` at `fd8cf95`, provides
+a historical comparison. Its two-repair case passed in 40,256 ms and its ignored-output case passed
+in 2,879 ms. Their files passed all 11 tests in 240,538 ms and all 26 tests in 64,015 ms respectively.
+Git comparison confirms the two test files and their lifecycle/verification implementation paths
+are unchanged between that head and `e826687`; the intervening production additions are internal
+observer helpers. This comparison supports investigation of host-dependent costs, not causal
+attribution or a current-head pass. Hosted coverage and local non-coverage runs are also different
+execution conditions. The current hosted quality job and local full suite remain pending.
+
+### Current hosted quality result and inventory correction
+
+Current-head quality job `101784477438` completed with 6,733 passing tests, one failing test, and
+one skipped test; 469 files passed and one failed. The only failure is the library API assessment's
+exact inventory snapshot: production files increased from 378 to 380, infrastructure declarations
+from 1,088 to 1,098, and total declarations from 3,445 to 3,455. The unchanged audit independently
+reproduced these values locally. Direct inspection identifies seven exported declarations in the
+new immutable fixture helper and three in the new Linux command helper. Static reachability, CLI
+forms, and all other inventory fields remain unchanged. Internal exports do not create a public
+library API or qualify the observer.
+
+The public assessment's counts are corrected. The local baseline subsequently reported the same
+inventory test as failed in 2,297 ms. Only after that test completed were its three measured
+expectations corrected. The active full run retains its failed baseline result; a separate focused
+run and required static gates must verify the correction. The hosted and local failures are the
+red results; the exact inventory assertion is unchanged. Browser and runtime steps did not run in
+this quality job, so it does
+not independently reproduce the dedicated isolation failure. The proof job remains active.
+
+Both locally slow test files passed in this current hosted job. The two-repair case passed in
+40,858 ms; its 11-test file completed in 257,803 ms. The ignored-output case passed in 2,925 ms;
+its 26-test file completed in 64,507 ms. This strengthens the host-dependent timing comparison but
+does not replace the pending local failure stacks, prove their cause, or excuse the cleanup risk.
+
+The corrected inventory test passed independently: one test in one file, 4.42 seconds total
+(3.75 seconds in the test), session 9197 exit zero. This was a lightweight static source audit,
+not another lifecycle or sandbox run. Focused Biome checks passed for both changed test files.
+Full type checking remains queued behind the long-running baseline. The single hosted coverage
+skip is the Linux observer's actual-unsupported-host unit case, which intentionally skips on
+Linux x64. It is not a passed containment test or another unexplained failure.
+
+The ongoing local run then exposed a second inventory-dependent expectation in
+`test/integration/package/documentation-structure.test.ts`: it still required the old printed
+`3,445` total after the public assessment was corrected. The initial search had covered scaffold
+tests rather than the complete test tree. A repository-wide search found this remaining active
+reference. Its expectation now requires `3,455`; the heading, entry-point, and library-boundary
+assertions remain unchanged. Both inventory and documentation-structure files passed together:
+six tests, two files, 2.27 seconds total, session 16236 exit zero. Focused Biome checks passed.
+
+The long local run spans these documentation and already-executed test-metadata corrections. Its
+final result must not be presented as an exact-head full-suite pass. The two initial slow failures
+occurred before these changes; their production and test bodies remain unchanged. Preserve all
+reported failures and use separate post-correction verification for the changed tests.
+
+A read-only host check rejected the Apple Git launcher hypothesis: the tests' PATH lookup resolves
+`/opt/homebrew/bin/git`, a link to Homebrew Git 2.55.0. It does not resolve `/usr/bin/git` or the
+Xcode-selected Git path. No executable selection or host configuration was changed. This eliminates
+that proposed mechanism, not other process, filesystem, or durability costs.
+
+### Terminal local result and owned test-lifetime correction
+
+Main session 12551 is terminal with exit one after 2,858.39 seconds. It reported 6,727 passing,
+four failing, and four skipped tests across 470 files: 465 passed, four failed, and one skipped.
+Final stacks confirm the two original failures are Vitest timeouts at 30,000 and 240,000 ms.
+The larger case also reported ENOTEMPTY while teardown removed its owned Git temporary index
+directory. Four failed tests therefore produced five failure entries. The two inventory failures
+have separate six-test green evidence after correction. This mixed-state diagnostic run is not
+a clean full-suite result for the edited worktree.
+
+The queued full type check, lint, formatting check, build, and public capability-reference check
+then passed in session 80001. Lint retained one existing informational constructor diagnostic in
+an unchanged file. No public capability regeneration was needed. The hosted proof job remains
+active; no push has cancelled it.
+
+Implement a small test-only owned-lifetime scope. It must track the original callback from setup
+through assertions, own its temporary roots, preserve late allocation ownership, forward test
+cancellation, and retain roots after timeout or uncertain settlement. Teardown must be bounded;
+it must not schedule deletion after returning a retained outcome. Production postcondition proof
+and existing test deadlines stay unchanged. This prevents unsafe fixture deletion; it does not
+claim arbitrary descendants are settled or explain the original timing cost.
+
+Cancellation-only does not establish settlement. A shared retention flag still risks assigning
+late allocations to a subsequent test. A separate worker protocol adds an unnecessary boundary for
+this correction. The selected per-test scope uses existing bounded-wait and retention patterns.
+The actual timeout plus ENOTEMPTY result supplies the baseline failure; focused regressions must
+exercise retention, late work, root identity, and cleanup failures before the correction is accepted.
+
+The helper and its regressions are delegated separately from integration. Installed Vitest types
+confirm that `it.each` supplies case arguments only, while `it.for` supplies a separate test context.
+Convert the three affected parameterized groups using the supported API while retaining their
+case sets, generated names, and 240,000 ms deadlines. No global mutable current-test pointer or
+production interface expansion is permitted.
+
+### Owned test scope implementation and independent review
+
+The test-only scope now owns the original callback and its temporary-directory allocations.
+It forwards cancellation, waits a bounded settlement grace, and retains roots after an abort or
+uncertain settlement. Cleanup validates directory identity and observes late rejections. It does
+not prove arbitrary descendants quiescent. A filesystem removal already admitted before an abort
+can finish; an incomplete cleanup reports the owned inventory rather than promising all roots
+remain. The 1,000 ms default settlement grace, capped at 2,000 ms, is not a new test watchdog or
+a hard bound on filesystem calls.
+
+Both lifecycle test files now use the scope. A syntax-tree comparison found the same 164 and 256
+expectation-rooted expressions respectively. These 420 expression nodes are not 420 independent
+tests. All registration deadlines and parameterized cases remained unchanged. Normalized Vitest
+discovery produced exactly the same 37 unique file-and-test-name pairs before and after the
+integration; raw discovery order differed. Production code and its postcondition checks did not
+change.
+
+Independent review found a P2 scheduling race in two new cleanup regression tests. The correction
+uses a synchronous test-only observer after real root removal and before the cancellation check.
+It does not replace filesystem operations. The tests deterministically cover cancellation at that
+boundary, preservation of subsequent roots, and observer-error preservation. The reviewer confirmed
+the finding resolved with no new P1–P3 findings in this delta. Removing the post-removal cancellation
+check caused the intended regression assertion to fail; the restored implementation passed.
+
+Main session 82800 passed full type checking, all 21 owned-scope tests, and six inventory and
+documentation-structure tests. The 27-test run took 2.02 seconds across three files. Documentation
+style, local links, and changed-prose checks also passed. This does not replace the affected
+lifecycle rerun, the unresolved Mac timing diagnosis, or Linux fixture qualification. The two
+previously slow cases are being rerun serially with their unchanged deadlines and the required
+host permission for localhost ownership locks. Hosted proof preparation remains active.
+
+Main session 73592 then passed both previously failing lifecycle cases with their original
+30,000 and 240,000 ms deadlines. The selected run completed in 79.24 seconds, with 75.37 seconds
+reported in tests. Its 35 name-filtered cases were skipped, not qualified. This is regression
+evidence for the two edited cases, not proof that the scope caused the speed difference or that
+the earlier Mac timing failures are explained. All 37 affected cases and final static/build gates
+are queued serially next. Independent review of the remaining diagnostic and documentation diff
+found no P1–P3 findings; the Linux denial assertions remain unchanged.
+
+### Final hosted result at e826687
+
+Run 34135220621 completed with failure without cancellation. Its proof-runtime job 101784477327
+passed all four tests after appliance preparation, taking 1 hour 12 minutes 49 seconds overall.
+Dependency audit also passed. Quality retained its 6,733 passing, one failing, and one skipped
+tests; the inventory failure prevented its browser/runtime steps. Expanded verifier isolation
+retained 16 passing and one failing tests. The denied-read fixture profile remains unqualified.
+
+The run's head is e826687141de40da13a2a4a6eb54cf1c08dd4cc1. Its synthetic checkout
+3d934d6f03d259351d671fabfe93093fac5c469f has the same tree,
+12cb8436b4e575786df9f479aed0addfbc25545d. These results therefore bind that source tree,
+not the subsequent uncommitted test-scope and diagnostic changes. The proof pass does not override
+the independent fixture-read failure. All jobs are terminal, so a later reviewed push will not
+cancel this run.
+
+### Complete affected lifecycle regression result
+
+Main session 6431 passed lint, formatting, build, and the public capability-reference check, then
+all 37 affected lifecycle tests across two files with zero skips. The test run completed in
+513.11 seconds, reporting 508.34 seconds in tests. Original deadlines remained unchanged. The
+existing informational constructor lint diagnostic in an untouched file remained nonfatal.
+
+Together with session 82800, this verifies 21 scope regressions, six inventory/documentation tests,
+and 37 affected lifecycle cases, plus full type checking and required static/documentation gates.
+The separately selected two-case run is overlapping evidence, not two additional unique tests.
+Independent helper, integration, diagnostic, and documentation reviews found no remaining P1–P3
+findings after the timing-sensitive regression tests were corrected. This is not a full repository
+suite pass. Mac timing attribution and Linux fixture qualification remain unresolved, and no
+production repair capability has been enabled.
