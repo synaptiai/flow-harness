@@ -257,6 +257,7 @@ jobs:
         run: >-
           npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts
           test/runtime/verification-observer-fixture.runtime.test.ts
+          test/runtime/linux-observer-command.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest

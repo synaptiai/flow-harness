@@ -200,6 +200,13 @@ flowchart TB
         proofAppliance["Lean proof appliance<br/>Compiler · SafeVerify · Nanoda"]
     end
 
+    subgraph observerChecks["Verification-observer qualification — not connected to issue runs"]
+        observerTests["Model-free qualification tests"]
+        observerFixture["Private fixture owner<br/>Permissions · identities · safe disposal"]
+        observerCommand["Linux command observation<br/>Original output · namespace and cleanup evidence"]
+        observerInputs[("Temporary read-only test inputs")]
+    end
+
     subgraph state["4. Durable project state — survives restart"]
         direction LR
         ledgers[("Run and evidence ledgers")]
@@ -221,6 +228,12 @@ flowchart TB
         docker["Local Docker Engine<br/>Linux x64 · cgroup v2"]
         github["GitHub<br/>Issues · pull requests · hosted checks"]
     end
+
+    observerTests -->|"Exercises creation, drift, and disposal"| observerFixture
+    observerTests -->|"Exercises real bounded processes"| observerCommand
+    observerFixture -->|"Owns and checks"| observerInputs
+    observerCommand -->|"Uses the existing native boundary"| commands
+    observerInputs -.->|"Planned composition: admitted read-only inputs"| commands
 
     people -->|"Reviews one package version"| releaseIdentity
     releaseIdentity -->|"Derives every public name"| release
@@ -428,6 +441,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Public capability reference | `src/domain/capability/public-capability-reference.ts`, `src/application/public-capability-reference.ts`, `src/infrastructure/runtime/production-public-capability-reference.ts`, `src/infrastructure/fs/public-capability-reference-files.ts`, and `src/cli/public-capability-reference.ts` | Shares exact production descriptors with runtime composition, renders deterministic JSON and Markdown, and rejects stale checked-in or packaged references without reading host-specific capability state. |
 | Bounded review repair | `src/domain/issue-lifecycle/review-repair-state.ts`, `src/domain/issue-lifecycle/workflow-accounting.ts`, `src/application/issue-review-repair-controller.ts`, `src/application/issue-review-repair-projection.ts`, `src/infrastructure/issue-lifecycle/issue-workflow-settlement.ts`, and `src/infrastructure/issue-lifecycle/production-issue-review-repair-host.ts` | Freezes optional repair authority; retains separate implementation and review resource pools; records dispatch before execution and usage before outcome classification; verifies finding locations in committed Git objects; preserves the reviewed parent and candidate result across restart; rejects unchanged or repeated trees; and reruns existing verification and review before publication. Source implementation is undergoing qualification; see the [delivery plan](usable-checkpoint-plan.md#implement-bounded-review-repair). |
 | Frozen command admission | `src/domain/agent-command.ts`, `src/application/frozen-issue-command.ts`, `src/infrastructure/pi/workspace-agent-tools.ts`, `src/domain/run/model-session.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Validates a complete immutable catalog against exact authorized digests, shows copyable public command inputs, records host-proven pre-execution refusals privately, and stops the next model request when the frozen refusal policy is exhausted. |
+| Verification-observer components, qualification only | `src/infrastructure/verification/immutable-input-fixture.ts` and `src/infrastructure/verification/linux-observer-command.ts` | Separates private fixture ownership from bounded native Linux command observation. Preserves original command evidence and separately checks containment and release. These internal components are not connected to issue runs, do not classify behavioral failures, and cannot select repair. The [verification repair design](bounded-verification-repair-design.md) owns the remaining observer and lifecycle gates. |
 | Workspace tool broker | `src/infrastructure/pi/workspace-agent-tools.ts`, `src/infrastructure/pi/agent-effect-recorder.ts`, `src/infrastructure/fs/hash-anchored-edit.ts`, `src/infrastructure/fs/exclusive-directory-create.ts`, `src/infrastructure/runtime/production-effect-reconciler.ts`, and `src/domain/run/events.ts` | Authorizes exact workspace targets; performs exclusive file creation, hash-bound exact editing, version-bound complete replacement, and nonrecursive directory creation under one target-lock and effect-journal contract; and reconciles unresolved typed effects without guessing. |
 | Compatibility boundary | `src/domain/compatibility/check.ts`, `src/infrastructure/compatibility/local-corpus.ts`, `src/cli/main.ts`, `compatibility/`, `src/domain/release/package-release-evidence.ts`, `src/infrastructure/release/package-release-verifier.ts`, `scripts/verify-package.mjs`, and `scripts/analyze-library-boundary.mjs` | Keeps npm imports closed, reads one bounded no-follow package corpus, reuses the production compiler and run reducer, emits content-free per-artifact results, verifies the behavior from the packed archive, and reproduces the internal module-coupling audit without exporting it. |
 | Local ACP executor | `src/domain/capability/acp-agent.ts`, `src/application/acp-agent-sandbox.ts`, `src/infrastructure/fs/local-acp-agent.ts`, `src/infrastructure/acp/acp-agent-*.ts`, `src/infrastructure/sandbox/srt-command-sandbox.ts`, and `src/infrastructure/runtime/production-node-executor.ts` | Admits one exact local ACP v1 runtime, freezes it in the run capability snapshot, routes eligible attempts, starts and terminates one isolated process and session per attempt, rejects authority or identity drift, and records complete executor provenance. |

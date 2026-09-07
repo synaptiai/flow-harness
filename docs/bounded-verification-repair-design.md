@@ -208,6 +208,46 @@ Legacy plans and retained failures keep their original behavior. Only a newly fr
 configured adapter contract can produce new selection evidence in the prepublication verification
 phase. This design does not migrate a run, expand disclosure, or authorize another pilot.
 
+### Implement one protected observation attempt
+
+The next implementation unit is an internal observer, disconnected from repair selection and legacy
+verification. Split fixture ownership from command execution so each boundary has direct tests.
+The observer must combine both with exact Git scope and private evidence checks before classifying
+an attempt. Neither component alone is a behavioral verifier.
+
+The fixture owner creates bounded inputs outside the candidate workspace. It retains original
+file identities, verifies content and permission preconditions, and refuses cleanup of replaced or
+unaccounted-for paths. Its host checks do not establish access behavior inside the candidate sandbox.
+A separate fixed, controller-owned probe must establish that behavior under the same effective
+sandbox policy. Candidate-provided JSON, error names, or receipt claims cannot supply this proof.
+
+The command boundary preserves the original execution evidence. It separately records the admitted
+Linux process namespace and successful sandbox release. A normal nonzero exit currently produces
+`command_failed` with `sideEffectStatus: "uncertain"`. Ordinary native completion records
+`terminationStatus: "not-required"`. Those fields cannot alone classify the attempt or establish
+failed cleanup.
+
+Require private containment and release proof, a complete outer command result, and matching
+command and output hashes. Preserve fixture and scope integrity. Do not relabel the original fields.
+
+Outer completion is not proof that the inner application launched or exited normally. Bubblewrap
+`0.9.0` encodes fatal signals as numeric exit statuses, which can overlap deliberate application
+exits. Its [exit-status implementation](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c#L409)
+and the [Bash exit-status contract](https://www.gnu.org/s/bash/manual/html_node/Exit-Status.html)
+establish this ambiguity. Flow's pinned native sandbox also wraps the command through a shell
+and a seccomp launcher. A completed command record cannot replace application launch and exit proof.
+
+The internal command helper must label this shell encoding explicitly. It must not infer a signal
+cause from a numeric value or classify a behavior result. Qualify the actual application boundary
+before composing the observer, including setup failures and deliberate versus signal-encoded exits.
+No new status channel, numeric cutoff, or weaker behavioral acceptance rule is selected here.
+
+Real-process qualification must cover correct rejection, incorrect success, an always-failing CLI,
+forged output, damaged fixtures, stale identity, interruption, bounded output, and descendant cleanup.
+The separately qualified base control, durable attempt accounting, cross-stage privacy gate, and
+lifecycle integration remain required after this unit. There is no new public adapter interface
+or supported repair capability until those gates pass.
+
 ## Bound disclosure as well as execution
 
 Freeze a public feedback catalog before the first model invocation. Each allowed entry maps a
@@ -425,6 +465,11 @@ The probes established ordinary and new-session descendant termination. They als
 denial of private-file, inherited-descriptor, and host-process access. Forged candidate output
 remained untrusted command data. Independent review corrected two probe weaknesses before execution. Job metadata and
 the completed job log separately confirmed the exact-head result and test counts.
+
+GitHub checked out synthetic merge `55023ba6a29fda99f951473b0d6f57e9d9912d90`. The commit API
+independently confirmed that this merge and the PR head have the same tree,
+`79ef26b968d60d564ce8ee117be0c94a3a84e349`. Preserve both commit identities with the result.
+The workflow's head field alone does not establish the actual checkout.
 
 This is one passing prerequisite run, not complete observer qualification. The future adapter still
 needs immutable fixtures that preserve real permission errors, trusted typed outcomes, valid base

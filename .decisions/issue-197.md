@@ -762,3 +762,62 @@ verification root, particularly for projects outside home. The design now requir
 path protection, confirmed temporary-storage cleanup, and real cross-stage alias/residue probes.
 These are prospective qualification requirements, not a claim of an exploit in the current path.
 No production behavior, model authority, or retained target candidate changed during this review.
+
+### Current CI checkout and quality evidence
+
+Quality job `101763285584` passed in run `34128675526`: 468 files and 6,695 coverage tests,
+two browser tests, and 87 runtime tests passed. Four Lean tests were skipped in quality because
+they belong to the separate proof job. Coverage was 85.04% statements, 79.94% branches,
+92.53% functions, and 85.63% lines. The proof job remains in progress at this checkpoint.
+
+The quality and dedicated isolation logs identify checkout
+`55023ba6a29fda99f951473b0d6f57e9d9912d90`, GitHub's synthetic PR merge, rather than a direct
+checkout of workflow head `fd8cf95dd6af3d910f120308fa1ab97930f7c472`. Independent commit API
+reads show both commits have tree `79ef26b968d60d564ce8ee117be0c94a3a84e349`. The source-tree
+claim is therefore corroborated, while both commit identities remain recorded. New unpushed
+fixture and documentation commits are not qualified by this run.
+
+The next internal observer unit is split into real filesystem fixture ownership and a private
+Linux command boundary. Review identified that ordinary nonzero command evidence is conservative
+about side effects even after sandbox release. The new boundary must preserve that evidence and
+separately witness namespace containment and completed release. Neither helper can supply a
+behavioral receipt without the fixed protected probe, exact scope proof, and complete observation.
+
+### Internal observer components and review settlement
+
+The internal immutable-input fixture owns real host files and original descriptors. It checks
+permission controls, bytes, identities, and exact inventories without recursive cleanup. Execution
+and integrity checks have explicit lifecycle ordering. Concurrent or uncertain execution and
+persistent drift retain the fixture. Descriptor-close or cleanup failure prevents a successful-cleanup
+claim and preserves any remaining files.
+This component relies on its caller to protect the private parent and establish actual settlement.
+
+The internal Linux command helper detaches admitted arguments and path scopes before asynchronous
+work, bounds preparation, and uses the pinned production sandbox. It preserves raw command outcomes
+and separately records native containment and release. A failed release takes precedence over a
+qualification error. Outer capture is not application launch proof or a behavioral receipt. The
+helpers are not composed into issue runs, and no repair-selection path is enabled.
+
+Independent code review corrected a cleanup lifecycle gap, descriptor registration and close-error
+accounting, release-error precedence, and runtime cleanup after qualification uncertainty. A runtime
+watchdog review split deliberate exit 143 and self-SIGTERM into independent cases. Documentation
+review corrected an architecture edge that implied an unimplemented connection. No confirmed P1–P3
+findings remain in this slice. Release-failure precedence is source-reviewed, not a locally exercised
+production failure case.
+
+The two focused local suites passed 40 tests: 28 real filesystem cases and 12 admission/platform
+cases. Missing-entrypoint failures were discovery red tests, not behavioral proof. Semantic mutation
+controls independently showed that removing byte validation or the verified-reuse guard fails the
+fixture tests. The CI command contract failed before adding the third runtime suite, then both
+scaffold files passed all 40 tests.
+
+After final fixes, serial type checking, lint, formatting, build, and public capability reference
+validation passed. Lint reports one unchanged informational constructor suggestion. The local runtime
+invocation skipped all 17 Linux-only tests across three suites. Those skips provide no Linux
+qualification evidence. Documentation style, links, clarity, and whitespace remain commit gates.
+
+Bubblewrap 0.9.0 source encodes signal termination as 128 plus the signal number. Its exec-status
+channel refers to its immediate child boundary, which is not necessarily the candidate beyond the
+SRT shell and seccomp launcher. The design therefore leaves application launch and normal-exit proof
+open. No numeric cutoff, replacement launcher, weaker acceptance rule, or new status channel has
+been selected. The complete protected observer remains VR-02 work.

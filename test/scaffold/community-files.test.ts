@@ -406,7 +406,8 @@ describe("public repository contracts", () => {
     expect(steps[5]?.run).toBe("npm run build");
     expect(steps[6]?.run).toBe(
       "npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts " +
-        "test/runtime/verification-observer-fixture.runtime.test.ts",
+        "test/runtime/verification-observer-fixture.runtime.test.ts " +
+        "test/runtime/linux-observer-command.runtime.test.ts",
     );
     for (const step of steps) {
       expect(step["continue-on-error"]).toBeUndefined();

@@ -265,8 +265,13 @@ Linux qualification first, followed by the UC-03 Mac-local Linux usability deliv
 
 The [first hosted Linux prerequisite job](https://github.com/synaptiai/flow-harness/actions/runs/34128675526/job/101763285298)
 passed all five real-process probes without skips at `fd8cf95` on September 7, 2026. Incremental
-probe and CI review found no remaining P1–P3 findings. The behavioral observer, its immutable fixtures,
-and complete qualification remain pending. VR-06 requires separate live-experiment authorization.
+probe and CI review found no remaining P1–P3 findings. Internal fixture ownership and Linux command
+capture now have local tests and independent review. Their hosted qualification, the composed
+behavioral observer, and proof of actual application launch and exit remain pending. An outer
+sandbox exit code alone cannot distinguish a deliberate exit from a signal.
+
+The next focused Linux job contains 17 tests across three suites. Mac skips do not qualify those
+tests. VR-06 requires separate live-experiment authorization.
 
 In particular, generic error codes do not prove a behavioral defect, and the current shared
 command sandbox does not establish a trusted verifier-result channel. Prove verifier isolation before

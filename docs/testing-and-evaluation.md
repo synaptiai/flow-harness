@@ -517,8 +517,9 @@ Linux x64 job or a matching native Linux x64 host.
 ## Verify native Linux observer prerequisites
 
 The `verifier-isolation` CI job runs
-`test/runtime/verification-observer-isolation.runtime.test.ts` and
-`test/runtime/verification-observer-fixture.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+`test/runtime/verification-observer-isolation.runtime.test.ts`,
+`test/runtime/verification-observer-fixture.runtime.test.ts`, and
+`test/runtime/linux-observer-command.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
 It checks the host and Node.js architecture before building the runtime. The job uses the
 production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
 Missing dependencies or sandbox admission failures fail the job.
@@ -539,7 +540,8 @@ On a prepared Linux x64 host, build the runtime and execute the focused suite:
 npm run build
 npm run test:runtime -- \
   test/runtime/verification-observer-isolation.runtime.test.ts \
-  test/runtime/verification-observer-fixture.runtime.test.ts
+  test/runtime/verification-observer-fixture.runtime.test.ts \
+  test/runtime/linux-observer-command.runtime.test.ts
 ```
 
 Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS
@@ -549,6 +551,35 @@ Neither its results nor a default Mac skip count as Linux qualification.
 
 If a probe cannot confirm cleanup, inspect its retained fixture
 path before removing evidence. Do not signal a process using a PID reported by candidate code.
+
+### Test the internal observer components
+
+The fixture-owner tests use real local files. They cover byte and identity drift, denied file and
+directory access, invalid execution transitions, and conservative cleanup. The command-admission
+tests exercise bounded inputs, cancellation, unsupported hosts, and absence of command side effects.
+Execute both focused files without a model or provider credential:
+
+```sh
+npm test -- \
+  test/integration/verification/immutable-input-fixture.test.ts \
+  test/unit/verification/linux-observer-command.test.ts
+```
+
+On a prepared Linux x64 host, test command capture and cleanup with real sandboxed processes:
+
+```sh
+npm run build
+npm run test:runtime -- test/runtime/linux-observer-command.runtime.test.ts
+```
+
+This runtime file also checks protected-parent and read-only-child paths, input detachment, bounded
+output, timeout, and shell-encoded exit status. Its default Mac skips are not passing qualification.
+A completed command observation means the outer result and cleanup were recorded. It does not prove
+that the inner application launched or exited normally, establish a behavioral assertion, or select repair.
+
+These components remain disconnected from issue runs. The complete protected observer, application
+launch proof, private receipt, and lifecycle gates remain open in the
+[verification repair design](bounded-verification-repair-design.md).
 
 ## Live Pi test policy
 
