@@ -54,7 +54,7 @@ describe("package contract", () => {
     expect(manifest.files).toContain("npm-shrinkwrap.json");
     expect(manifest.files).toContain("SECURITY.md");
     expect(manifest.files).toContain("SUPPORT.md");
-    expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.0");
+    expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.4");
     expect(manifest.dependencies?.typebox).toBe("1.3.7");
     expect(manifest.scripts?.build).toContain("npm run clean");
     expect(manifest.scripts?.["analyze:library-api"]).toBe(
@@ -166,7 +166,7 @@ describe("package contract", () => {
 
     expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.devDependencies?.["@types/node"]).toBe("26.2.0");
-    expect(workflow.match(/node-version: 26\.7\.0/g)).toHaveLength(3);
+    expect(workflow.match(/node-version: 26\.7\.0/g)).toHaveLength(4);
     expect(readme).toContain("Node.js 26.7 or newer");
     expect(contributing).toContain("Node.js 26.7 or newer");
   });

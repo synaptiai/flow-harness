@@ -26,6 +26,7 @@ export class PolicyPackageAdmissionError extends Error {
 export function assertWorkflowSatisfiesPolicyPackages(
   workflow: CompiledWorkflow,
   capabilitySnapshot?: CapabilitySnapshot,
+  options: { readonly modelBinding?: "exact" | "deferred" } = {},
 ): void {
   const policies =
     capabilitySnapshot?.packages.filter(
@@ -40,7 +41,13 @@ export function assertWorkflowSatisfiesPolicyPackages(
       .filter((item): item is ToolPackageSnapshot => item.kind === "tool-package")
       .map((item) => [`${item.name}\0${item.version}`, item]),
   );
-  assertWorkflow(workflow, effective.constraints, toolPackages, "");
+  assertWorkflow(
+    workflow,
+    effective.constraints,
+    toolPackages,
+    "",
+    options.modelBinding ?? "exact",
+  );
 }
 
 function assertWorkflow(
@@ -48,17 +55,20 @@ function assertWorkflow(
   constraints: NonNullable<ReturnType<typeof composePolicyPackages>>["constraints"],
   toolPackages: ReadonlyMap<string, ToolPackageSnapshot>,
   prefix: string,
+  modelBinding: "exact" | "deferred",
 ): void {
   assertBudget(workflow.budget, constraints.budget, `${prefix}budget`);
   for (const node of workflow.nodes) {
     const path = `${prefix}nodes.${node.id}`;
     if (node.type === "agent") {
-      assertModel(
-        node.agent.model.provider,
-        node.agent.model.id,
-        constraints.models?.allowed,
-        `${path}.agent.model`,
-      );
+      if (modelBinding === "exact") {
+        assertModel(
+          node.agent.model.provider,
+          node.agent.model.id,
+          constraints.models?.allowed,
+          `${path}.agent.model`,
+        );
+      }
       const tools: string[] = [...node.agent.tools];
       const permissions: PolicyAction[] = node.agent.tools.map(builtInAgentToolPolicyAction);
       for (const reference of node.agent.toolPackages) {
@@ -101,12 +111,14 @@ function assertWorkflow(
       node.type === "verifier" &&
       (node.verifier.kind === "model" || node.verifier.kind === "packaged-model")
     ) {
-      assertModel(
-        node.verifier.model.provider,
-        node.verifier.model.id,
-        constraints.models?.allowed,
-        `${path}.verifier.model`,
-      );
+      if (modelBinding === "exact") {
+        assertModel(
+          node.verifier.model.provider,
+          node.verifier.model.id,
+          constraints.models?.allowed,
+          `${path}.verifier.model`,
+        );
+      }
       continue;
     }
     if (
@@ -120,7 +132,13 @@ function assertWorkflow(
       );
     }
     if (node.type === "child") {
-      assertWorkflow(node.child.workflow, constraints, toolPackages, `${path}.child.workflow.`);
+      assertWorkflow(
+        node.child.workflow,
+        constraints,
+        toolPackages,
+        `${path}.child.workflow.`,
+        modelBinding,
+      );
     }
   }
 }

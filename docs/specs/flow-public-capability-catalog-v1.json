@@ -225,8 +225,10 @@
         "exec-arguments-total-bytes",
         "exec-artifact-bytes-per-stream",
         "exec-executable-bytes",
+        "exec-frozen-catalog-bytes",
         "exec-output-bytes-per-stream",
         "exec-timeout-milliseconds",
+        "issue-command-refusals-per-session",
         "policy-decisions-per-attempt",
         "policy-target-bytes"
       ]
@@ -484,9 +486,10 @@
   "limits": [
     {
       "id": "agent-commands-per-attempt",
-      "value": 32,
+      "value": 128,
       "unit": "items",
-      "scope": "Maximum flow_exec and command-tool-package executions started in one agent attempt."
+      "scope": "Maximum configurable flow_exec and command-tool-package executions started in one agent attempt. The effective limit equals the node policy-decision limit because every command consumes one policy decision.",
+      "default": 64
     },
     {
       "id": "agent-effects-per-attempt",
@@ -598,6 +601,12 @@
       "scope": "Maximum UTF-8 bytes in one executable value."
     },
     {
+      "id": "exec-frozen-catalog-bytes",
+      "value": 65536,
+      "unit": "bytes",
+      "scope": "Maximum serialized UTF-8 bytes in a complete controller-frozen command catalog, including JSON escapes. Oversized catalogs fail admission without truncation."
+    },
+    {
       "id": "exec-output-bytes-per-stream",
       "value": 32768,
       "unit": "bytes",
@@ -609,6 +618,13 @@
       "unit": "milliseconds",
       "scope": "Maximum command deadline.",
       "default": 120000
+    },
+    {
+      "id": "issue-command-refusals-per-session",
+      "value": 3,
+      "unit": "items",
+      "scope": "Default cumulative frozen-command refusals per durable implementation model session in new GitHub issue runs. After the issued tool batch settles, the next model request is denied. This policy is not an empirical optimum or a generic command-execution budget.",
+      "default": 3
     },
     {
       "id": "ls-entries",
@@ -625,9 +641,10 @@
     },
     {
       "id": "policy-decisions-per-attempt",
-      "value": 64,
+      "value": 128,
       "unit": "items",
-      "scope": "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none."
+      "scope": "Maximum configurable authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none.",
+      "default": 64
     },
     {
       "id": "policy-target-bytes",

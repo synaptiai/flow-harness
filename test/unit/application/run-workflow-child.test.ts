@@ -609,6 +609,7 @@ describe("child workflow execution", () => {
         now: clock(),
       }),
     ).rejects.toThrow(/simulated second child start crash/i);
+    stripWorkspaceAuthorityDigests(store);
 
     const resumed = await resumeWorkflow(workflow, {
       runId: "parent-legacy-relocation",
@@ -677,6 +678,7 @@ describe("child workflow execution", () => {
         now: clock(),
       }),
     ).rejects.toThrow(/simulated grandchild start crash/i);
+    stripWorkspaceAuthorityDigests(store);
 
     const resumed = await resumeWorkflow(workflow, {
       runId: "parent-legacy-nested-relocation",
@@ -832,6 +834,60 @@ describe("child workflow execution", () => {
         executor,
         workspaceIsolator: isolator,
         workProfile: "long",
+        now: clock(20),
+      }),
+    ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["changed", "f".repeat(64)],
+    ["removed", undefined],
+  ])("rejects a %s settled child workspace authority digest", async (_case, forgedDigest) => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    const runId = "parent-forged-child-authority";
+    store.rejectNextParentSuccess = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        allowedWritePrefixes: ["src"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent success crash/i);
+
+    const childRunId = calculateChildRunId(runId, "delegate", 1);
+    const childEvents = store.events.get(childRunId);
+    if (childEvents === undefined) throw new Error("expected child events");
+    store.events.set(
+      childRunId,
+      childEvents.map((event) => {
+        if (event.type !== "run_started") return event;
+        if (forgedDigest !== undefined) {
+          return { ...event, workspaceAuthorityDigest: forgedDigest };
+        }
+        const { workspaceAuthorityDigest: _removed, ...withoutAuthorityDigest } = event;
+        return withoutAuthorityDigest;
+      }),
+    );
+
+    await expect(
+      resumeWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        allowedWritePrefixes: ["src"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
         now: clock(20),
       }),
     ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
@@ -1437,6 +1493,19 @@ class TreeMemoryStore implements RecoverableRunEventStore {
   }
 
   async release(_runId: string): Promise<void> {}
+}
+
+function stripWorkspaceAuthorityDigests(store: TreeMemoryStore): void {
+  for (const [runId, events] of store.events) {
+    store.events.set(
+      runId,
+      events.map((event) => {
+        if (event.type !== "run_started") return event;
+        const { workspaceAuthorityDigest: _legacyOmission, ...legacyEvent } = event;
+        return legacyEvent;
+      }),
+    );
+  }
 }
 
 class MemoryWorkspaceIsolator implements WorkspaceIsolator {

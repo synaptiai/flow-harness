@@ -8,9 +8,11 @@ import type {
   PolicyDecisionReason,
   PolicyOperation,
 } from "./types.js";
-
-export const MAX_POLICY_DECISIONS = 64;
-export const MAX_POLICY_TARGET_BYTES = 1024;
+import {
+  DEFAULT_POLICY_DECISION_LIMIT,
+  MAX_POLICY_DECISION_LIMIT,
+  MAX_POLICY_TARGET_BYTES,
+} from "./limits.js";
 
 const AUTHORITY_BY_ACTION: Readonly<Record<PolicyAction, PolicyAuthority>> = Object.freeze({
   "filesystem.read": "read",
@@ -25,6 +27,7 @@ const AUTHORITY_BY_ACTION: Readonly<Record<PolicyAction, PolicyAuthority>> = Obj
 
 export class PolicyBroker {
   readonly attribution: PolicyAttribution;
+  readonly decisionLimit: number;
   readonly #allowedActions: ReadonlySet<PolicyAction>;
   readonly #onAuditLimitReached: ((error: PolicyAuditLimitError) => void) | undefined;
   readonly #decisions: PolicyDecision[] = [];
@@ -35,8 +38,19 @@ export class PolicyBroker {
     attribution: PolicyAttribution,
     allowedActions: readonly PolicyAction[],
     onAuditLimitReached?: (error: PolicyAuditLimitError) => void,
+    decisionLimit = DEFAULT_POLICY_DECISION_LIMIT,
   ) {
+    if (
+      !Number.isSafeInteger(decisionLimit) ||
+      decisionLimit < 1 ||
+      decisionLimit > MAX_POLICY_DECISION_LIMIT
+    ) {
+      throw new RangeError(
+        `policy decision limit must be an integer between 1 and ${MAX_POLICY_DECISION_LIMIT}`,
+      );
+    }
     this.attribution = Object.freeze({ ...attribution });
+    this.decisionLimit = decisionLimit;
     this.#allowedActions = new Set(allowedActions);
     this.#onAuditLimitReached = onAuditLimitReached;
   }
@@ -47,8 +61,8 @@ export class PolicyBroker {
     }
     validateTarget(operation.target);
     validateOperationDigest(operation.action, operation.operationDigest);
-    if (this.#decisions.length >= MAX_POLICY_DECISIONS) {
-      const error = new PolicyAuditLimitError(MAX_POLICY_DECISIONS);
+    if (this.#decisions.length >= this.decisionLimit) {
+      const error = new PolicyAuditLimitError(this.decisionLimit);
       if (!this.#auditLimitReached) {
         this.#auditLimitReached = true;
         this.#onAuditLimitReached?.(error);

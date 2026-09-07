@@ -83,9 +83,9 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
     "@anthropic-ai/sandbox-runtime": "0.0.70",
-    "@earendil-works/pi-ai": "0.84.0",
-    "@earendil-works/pi-coding-agent": "0.84.0",
-    "@earendil-works/pi-tui": "0.84.0",
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
     "@sigstore/bundle": "5.0.0",
     "@sigstore/protobuf-specs": "0.5.1",
     "@sigstore/verify": "4.1.2",

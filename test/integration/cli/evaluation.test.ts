@@ -637,8 +637,8 @@ async function externalRegistry(project: string): Promise<NativePiHarnessRegistr
   await Promise.all([
     writeFile(driverPath, "export const driver = 1;\n"),
     writeFile(protocolPath, "export const protocol = 1;\n"),
-    writePackage(piCodingAgentRoot, "@earendil-works/pi-coding-agent", "0.84.0"),
-    writePackage(piAiRoot, "@earendil-works/pi-ai", "0.84.0"),
+    writePackage(piCodingAgentRoot, "@earendil-works/pi-coding-agent", "0.84.4"),
+    writePackage(piAiRoot, "@earendil-works/pi-ai", "0.84.4"),
     writePackage(sandboxRuntimeRoot, "@anthropic-ai/sandbox-runtime", "0.0.70"),
   ]);
   return new NativePiHarnessRegistry({

@@ -7,6 +7,10 @@ import {
   WorkflowCompilationError,
 } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import {
+  projectCompiledControlGraph,
+  workflowRequiresControlGraph,
+} from "../../../src/domain/workflow/control-graph.js";
 
 const validWorkflowUrl = new URL(
   "../../fixtures/workflows/valid-command.workflow.yaml",
@@ -969,6 +973,120 @@ nodes:
     expect(node?.type === "agent" ? node.agent.contextCompaction : undefined).toBeUndefined();
   });
 
+  it("normalizes and digest-binds an explicit policy decision limit", () => {
+    const explicitSource = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository with a bounded policy audit.
+      model: { provider: openai, id: gpt-5.6 }
+      tools: [read, ls]
+      policyDecisionLimit: 96
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+    const defaultSource = explicitSource.replace("      policyDecisionLimit: 96\n", "");
+
+    const explicit = compileWorkflowText(explicitSource, "policy-limit.workflow.yaml");
+    const defaulted = compileWorkflowText(defaultSource);
+
+    expect(explicit.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: { policyDecisionLimit: 96 },
+    });
+    expect(
+      defaulted.nodes[0]?.type === "agent"
+        ? defaulted.nodes[0].agent.policyDecisionLimit
+        : undefined,
+    ).toBeUndefined();
+    expect(workflowRequiresControlGraph(explicit)).toBe(true);
+    expect(projectCompiledControlGraph(explicit).nodes[0]).toMatchObject({
+      type: "agent",
+      policyDecisionLimit: 96,
+    });
+    expect(calculateWorkflowDigest(explicit)).not.toBe(calculateWorkflowDigest(defaulted));
+  });
+
+  it.each([0, 1.5, 129])("rejects policy decision limit %s", (limit) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository with a bounded policy audit.
+      model: { provider: openai, id: gpt-5.6 }
+      policyDecisionLimit: ${limit}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.policyDecisionLimit");
+  });
+
+  it("normalizes and digest-binds explicit model output-token limits", () => {
+    const explicitSource = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository within one bounded provider response.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      maxOutputTokens: 24576
+  - id: verify
+    type: verifier
+    dependsOn: [analyze]
+    verifier:
+      kind: model
+      prompt: Verify the agent report.
+      evidence: [{ nodeId: analyze, field: agent.text }]
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      maxOutputTokens: 8192
+`);
+    const omittedSource = explicitSource
+      .replace("      maxOutputTokens: 24576\n", "")
+      .replace("      maxOutputTokens: 8192\n", "");
+
+    const explicit = compileWorkflowText(explicitSource, "model-output-limit.workflow.yaml");
+    const omitted = compileWorkflowText(omittedSource);
+
+    expect(explicit.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: { maxOutputTokens: 24_576 },
+    });
+    expect(explicit.nodes[1]).toMatchObject({
+      type: "verifier",
+      verifier: { kind: "model", maxOutputTokens: 8_192 },
+    });
+    expect(workflowRequiresControlGraph(explicit)).toBe(true);
+    expect(projectCompiledControlGraph(explicit).nodes[0]).toMatchObject({
+      type: "agent",
+      maxOutputTokens: 24_576,
+    });
+    expect(
+      omitted.nodes[0]?.type === "agent" ? omitted.nodes[0].agent.maxOutputTokens : undefined,
+    ).toBeUndefined();
+    expect(calculateWorkflowDigest(explicit)).not.toBe(calculateWorkflowDigest(omitted));
+  });
+
+  it.each([0, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects model output-token limit %s", (limit) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze a repository within one bounded provider response.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      maxOutputTokens: ${limit}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.maxOutputTokens");
+  });
+
   it.each([
     ["unsupported mode", "{ mode: eager }", "nodes.0.agent.contextCompaction.mode"],
     [
@@ -1013,12 +1131,13 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", path);
   });
 
-  it("rejects fresh recovery for an agent with arbitrary command execution", () => {
-    const source = workflowWithNodes(`
+  it("compiles terminal recovery for an agent with durable command execution", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
   - id: analyze
     type: agent
     agent:
-      prompt: Run a command and recover if the session is interrupted.
+      prompt: Run a command and continue after a settled provider failure.
       model: { provider: anthropic, id: claude-sonnet-4-5 }
       tools: [exec]
       recovery: { mode: fresh, maxAttempts: 2 }
@@ -1026,15 +1145,89 @@ nodes:
     type: command
     dependsOn: [analyze]
     command: { executable: npm, args: [test] }
-`);
+`),
+    );
 
-    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.recovery");
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: {
+        tools: ["exec"],
+        recovery: { mode: "fresh", maxAttempts: 2 },
+      },
+    });
+  });
+
+  it("compiles bounded retry backoff for proof-safe fresh recovery", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash:nitro }
+      tools: [read]
+      recovery:
+        mode: fresh
+        maxAttempts: 3
+        backoff: { initialDelayMs: 30000, maxDelayMs: 120000 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`),
+    );
+
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: {
+        recovery: {
+          mode: "fresh",
+          maxAttempts: 3,
+          backoff: { initialDelayMs: 30_000, maxDelayMs: 120_000 },
+        },
+      },
+    });
+  });
+
+  it("compiles explicit fresh recovery for a zero-tool model verifier", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      tools: [read]
+  - id: verify
+    type: verifier
+    dependsOn: [analyze]
+    verifier:
+      kind: model
+      prompt: Verify the analysis report.
+      evidence: [{ nodeId: analyze, field: agent.text }]
+      model: { provider: openrouter, id: z-ai/glm-5.3-flash }
+      recovery: { mode: fresh, maxAttempts: 3 }
+`),
+    );
+
+    expect(workflow.nodes[1]).toMatchObject({
+      type: "verifier",
+      verifier: {
+        kind: "model",
+        recovery: { mode: "fresh", maxAttempts: 3 },
+      },
+    });
   });
 
   it.each([
     ["unsupported mode", "{ mode: resume, maxAttempts: 2 }", "nodes.0.agent.recovery.mode"],
     ["one attempt", "{ mode: fresh, maxAttempts: 1 }", "nodes.0.agent.recovery.maxAttempts"],
     ["too many attempts", "{ mode: fresh, maxAttempts: 17 }", "nodes.0.agent.recovery.maxAttempts"],
+    [
+      "inverted retry backoff",
+      "{ mode: fresh, maxAttempts: 2, backoff: { initialDelayMs: 2000, maxDelayMs: 1000 } }",
+      "nodes.0.agent.recovery.backoff.maxDelayMs",
+    ],
     ["unknown field", "{ mode: fresh, maxAttempts: 2, delayMs: 1000 }", "nodes.0.agent.recovery"],
   ])("rejects fresh recovery with %s", (_case, recovery, path) => {
     const source = workflowWithNodes(`

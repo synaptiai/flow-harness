@@ -59,7 +59,7 @@ jobs:
             'Acquire::https::Timeout "30";' | \
             sudo tee /etc/apt/apt.conf.d/99flow-ci-network > /dev/null
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
+          sudo apt-get install --yes bubblewrap ca-certificates curl gcc ripgrep socat strace util-linux
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -213,6 +213,55 @@ jobs:
             "$docker_socket_present" "$docker_version_query_succeeded" \
             "$docker_info_query_succeeded"
 
+  verifier-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
+          cache: npm
+
+      - name: Verify hosted Linux x64
+        run: |
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          node -e 'if (process.platform !== "linux" || process.arch !== "x64") process.exit(1)'
+          uname -r
+          node --version
+
+      - name: Install sandbox system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap gcc ripgrep socat strace util-linux
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
+          unshare --version
+          mount --version
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build the production runtime
+        run: npm run build
+
+      - name: Verify native isolation prerequisites
+        run: >-
+          npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts
+          test/runtime/verification-observer-fixture.runtime.test.ts
+          test/runtime/linux-observer-command.runtime.test.ts
+          test/runtime/observer-notification-history.runtime.test.ts
+          test/runtime/observer-clone3-compatibility.runtime.test.ts
+          test/runtime/observer-secondary-group.runtime.test.ts
+
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -304,6 +353,11 @@ jobs:
 
       - name: Verify proof identity, containment, checkers, recovery, and cleanup
         run: FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify
+
+      - name: Compare two clean native upstream builds
+        run: |
+          node native/verification-observer/build.mjs --build "$RUNNER_TEMP/flow-native-baseline"
+          node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' "$RUNNER_TEMP/flow-native-baseline/build-evidence.json"
 
       - name: Report proof runtime disk use
         if: always()

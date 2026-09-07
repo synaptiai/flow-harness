@@ -1,5 +1,5 @@
 import type { PhaseRoutingDecision } from "../domain/adaptation/phase-routing-candidate.js";
-import type { AgentCommandRequest } from "../domain/agent-command.js";
+import type { AgentCommandAuthority, AgentCommandRequest } from "../domain/agent-command.js";
 import type { AgentCommandApprovalRequest } from "../domain/approval/command-approval.js";
 import type { ArtifactProducer } from "../domain/artifact/reference.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
@@ -180,6 +180,10 @@ export interface NodeExecutionContext {
   readonly cwd: string;
   readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
+  /** Private, pre-frozen input streamed to the command without exposing its source path. */
+  readonly commandStdin?: Uint8Array;
+  readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;
   readonly agentCommandJournal?: NodeAgentCommandJournal;
@@ -368,10 +372,14 @@ export interface CommandExecutor {
   execute(node: CompiledCommandNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome>;
 }
 
+export type AgentCommandExecutionContext = Omit<NodeExecutionContext, "commandStdin"> & {
+  readonly commandStdin?: never;
+};
+
 export interface AgentCommandExecutor {
   executeAgentCommand(
     command: AgentCommandRequest,
-    context: NodeExecutionContext,
+    context: AgentCommandExecutionContext,
   ): Promise<AgentCommandSettlementOutcome>;
 }
 

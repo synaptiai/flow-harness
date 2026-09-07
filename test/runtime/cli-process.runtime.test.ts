@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliPath = join(projectRoot, "dist", "cli", "main.js");
 const temporaryDirectories: string[] = [];
+const projectCapacityTestTimeoutMs = 30_000;
 
 afterEach(async () => {
   await Promise.all(
@@ -635,7 +637,9 @@ describe("compiled Flow process", () => {
     }
   });
 
-  it("enforces project capacity with durable queue, rejection, and worker-free cancellation", async () => {
+  it("enforces project capacity with durable queue, rejection, and worker-free cancellation", {
+    timeout: projectCapacityTestTimeoutMs,
+  }, async () => {
     const directory = await createTemporaryDirectory();
     const runsDirectory = join(directory, ".flow", "runs");
     const workflowPath = join(directory, "bounded.workflow.yaml");
@@ -648,7 +652,12 @@ describe("compiled Flow process", () => {
     );
     await writeFile(
       workflowPath,
-      commandWorkflow("bounded-workflow", "setInterval(() => {}, 1000);"),
+      // This timer starts after the test timer, so a passing test cannot outlive its fixture.
+      commandWorkflow(
+        "bounded-workflow",
+        "setInterval(() => {}, 1000);",
+        projectCapacityTestTimeoutMs,
+      ),
       "utf8",
     );
     const submit = async (runId: string) =>
@@ -657,11 +666,25 @@ describe("compiled Flow process", () => {
         directory,
       ).completed;
 
+    const queuedCancellationId = randomUUID();
+    const activeCancellationId = randomUUID();
+    const cancel = async (runId: string, commandId: string) =>
+      await spawnFlow(
+        ["cancel", runId, "--actor", "runtime:test", "--command-id", commandId],
+        directory,
+      ).completed;
+    let queuedCancelled = false;
+    let activeCancelled = false;
+
     try {
       const accepted = await submit("bounded-active");
       const queued = await submit("bounded-queued");
       const rejected = await submit("bounded-rejected");
 
+      for (const response of [accepted, queued, rejected]) {
+        expect(response.code, response.stderr).toBe(0);
+        expect(response.signal).toBeNull();
+      }
       expect(JSON.parse(accepted.stdout)).toMatchObject({ type: "accepted" });
       expect(JSON.parse(queued.stdout)).toMatchObject({ type: "queued", queuePosition: 1 });
       expect(JSON.parse(rejected.stdout)).toMatchObject({
@@ -669,20 +692,20 @@ describe("compiled Flow process", () => {
         reason: "queue_full",
       });
       const status = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(status.code, status.stderr).toBe(0);
       expect(JSON.parse(status.stdout)).toMatchObject({
         limits: { maxActiveWorkers: 1, maxQueuedJobs: 1 },
         admission: { activeWorkers: 1, queuedJobs: 1 },
       });
 
-      const queuedCancellation = await spawnFlow(
-        ["cancel", "bounded-queued", "--actor", "runtime:test"],
-        directory,
-      ).completed;
+      const queuedCancellation = await cancel("bounded-queued", queuedCancellationId);
+      expect(queuedCancellation.code, queuedCancellation.stderr).toBe(0);
       expect(JSON.parse(queuedCancellation.stdout)).toMatchObject({
         type: "cancelled",
         phase: "queued",
         lastSequence: null,
       });
+      queuedCancelled = true;
       await expect(
         new Promise((resolvePromise, rejectPromise) => {
           stat(join(runsDirectory, "bounded-queued", "events.jsonl")).then(
@@ -692,15 +715,19 @@ describe("compiled Flow process", () => {
         }),
       ).rejects.toMatchObject({ code: "ENOENT" });
 
-      const activeCancellation = await spawnFlow(
-        ["cancel", "bounded-active", "--actor", "runtime:test"],
-        directory,
-      ).completed;
+      const activeCancellation = await cancel("bounded-active", activeCancellationId);
+      expect(activeCancellation.code, activeCancellation.stderr).toBe(0);
       expect(JSON.parse(activeCancellation.stdout)).toMatchObject({
         type: "cancelled",
         phase: "active",
       });
+      activeCancelled = true;
     } finally {
+      // Shutdown alone refuses active or queued work. Reuse exact cancellation IDs on failure.
+      if (!queuedCancelled)
+        await cancel("bounded-queued", queuedCancellationId).catch(() => undefined);
+      if (!activeCancelled)
+        await cancel("bounded-active", activeCancellationId).catch(() => undefined);
       await spawnFlow(["supervisor", "shutdown"], directory).completed.catch(() => undefined);
     }
   });
@@ -897,7 +924,7 @@ supervisor:
 ${supervisor.maxActiveWorkers === undefined ? "" : `  maxActiveWorkers: ${supervisor.maxActiveWorkers}\n`}${supervisor.maxQueuedJobs === undefined ? "" : `  maxQueuedJobs: ${supervisor.maxQueuedJobs}\n`}`;
 }
 
-function commandWorkflow(id: string, script: string): string {
+function commandWorkflow(id: string, script: string, timeoutMs = 10_000): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -910,7 +937,7 @@ nodes:
       args:
         - -e
         - ${JSON.stringify(script)}
-      timeoutMs: 10000
+      timeoutMs: ${timeoutMs}
 `;
 }
 

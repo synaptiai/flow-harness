@@ -43,14 +43,29 @@ the installed command in operator procedures. Do not require users to clone or l
 1. Start from an issue with observable acceptance criteria.
 2. Add or change a failing test before production behavior.
 3. Keep Flow domain modules free of Pi, provider, filesystem, process, or UI types.
-4. Keep commands as executable-plus-argument arrays; never add shell command strings.
+4. Keep commands as executable-plus-argument arrays. Never add shell command strings.
 5. Update the workflow specification when an executable contract changes.
 6. Record copied or substantially adapted upstream code in `THIRD_PARTY_NOTICES.md` with its commit and license.
 7. Run the complete local quality and package gates.
 8. When changing capability-bundle format, acquisition, or storage behavior, update the architecture,
-   security, recovery, sourcing, and workflow contracts together and add an adversarial regression.
+   security, recovery, sourcing, and workflow contracts together. Add an adversarial regression.
 
 Production modules may not contain mock executors, fake providers, fallback successes, placeholder results, or hidden network calls. Tests may use explicit test doubles at Flow-owned ports.
+
+For command-admission and model-session changes, test the complete boundary: frozen public
+verification commands, model-visible tool inputs, refused requests, durable results, and recovery.
+Prove that private holdouts stay private and that a failed verifier isn't classified as a refused
+command. Preserve historical authority identities when optional fields are absent. Do not infer
+safe non-execution from error prose or report local regression tests as hosted qualification.
+
+For bounded review repair, test the production accounting and recovery boundaries without live
+provider calls. Cover all five resource dimensions, failed-child usage, unknown usage, duplicate
+settlement, and reservation recovery. Prove that restart and repair do not reset totals.
+
+Use real Git regressions for candidate ancestry, incremental changes, original scope, and an
+ordinary index left unchanged by controller-owned commits. Preserve exact review-context and
+result bindings. Never treat a historical hosted archive as resumable live state.
+Update the [repair usage guide](docs/guides/github-issue-review-repair.md) when these contracts change.
 
 ## Live provider tests
 
@@ -61,7 +76,7 @@ FLOW_LIVE_PI_PROVIDER=<provider> FLOW_LIVE_PI_MODEL=<model> npm run test:live
 ```
 
 The caller is responsible for provider cost and credential scope. Never commit credentials, transcripts containing secrets, or `.flow` run data from a private repository.
-The command intentionally fails when either required variable is absent; it never reports a skipped live suite as success.
+The command intentionally fails when either required variable is absent. It never reports a skipped live suite as success.
 
 ## Pull requests
 
@@ -97,3 +112,8 @@ npm run docs:capabilities:check
 ```
 
 Review both generated artifacts with the implementation. Don't edit either file directly.
+
+If you change internal exports or module dependencies, run `npm run analyze:library-api`. Update the
+current [library assessment](docs/library-api-assessment.md), its scaffold test, and the packaging
+documentation-structure test from that output.
+Keep immutable release notes unchanged. Their counts describe historical source.

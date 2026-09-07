@@ -96,6 +96,31 @@ describe("guided quick start", () => {
     });
   });
 
+  it("admits OpenRouter to the provider-backed coding proof", async () => {
+    const phases: string[] = [];
+    const ports = createPorts(phases);
+
+    await runGuidedQuickstart(
+      {
+        directory: "/workspace/project",
+        mode: {
+          kind: "coding",
+          provider: "openrouter",
+          model: "z-ai/glm-5.3-flash:nitro",
+        },
+        runId: "quickstart-openrouter",
+      },
+      ports,
+    );
+
+    expect(phases).toEqual([
+      "prepare:coding",
+      "publish",
+      "provider:openrouter/z-ai/glm-5.3-flash:nitro",
+      "execute",
+    ]);
+  });
+
   it.each([
     { outcome: "already_exists" as const, code: "project_exists" },
     { outcome: "commit_uncertain" as const, code: "publication_uncertain" },

@@ -10,9 +10,24 @@ directory as security-sensitive.
 
 ## Availability
 
-The current published CLI does not register `flow issue`. This runbook documents the preview
-operating contract while its controller is under implementation. Don't perform an issue lifecycle
-until `flow --help` lists the `issue` command group in a later release.
+Current source registers `flow issue`. The published `0.1.0-alpha.4` package doesn't include it.
+Operate the lifecycle only from a release whose help and release notes identify it as qualified.
+Keep the release pinned for the complete run. Recovery rejects changed frozen identities.
+
+Keep the original binary for an active issue run created before command discovery was added.
+The updated runtime derives catalog-bearing authority for issue workflows that select `exec`.
+It refuses recovery when an existing nested run has the older digest-only identity. Reading old
+records remains supported, but this change does not migrate active issue runs between runtimes.
+
+The source-built controller completed its first external proof. The
+[issue 6 lifecycle field report](../field-reports/digital-twin-issue-6-alpha4.md) records the exact
+boundary, every full run, and remaining package qualification work. Don't treat that source result
+as evidence that the older alpha.4 package contains this command.
+
+The first installed hosted Linux x64 attempt failed before candidate acceptance and review. The
+[issue 106 field report](../field-reports/digital-twin-issue-106-installed.md) records the failure.
+Use the [usable-checkpoint plan](../usable-checkpoint-plan.md) to track corrections and remaining
+qualification. A source fix or successful local test does not qualify the installed lifecycle.
 
 ## Establish the operating boundary
 
@@ -28,6 +43,9 @@ Keep these responsibilities separate:
 - The GitHub CLI credential store holds GitHub credentials.
 - Flow holds private run evidence under `.flow/issue-runs/<run-id>/` and exposes only its bounded
   public projection.
+- Flow holds candidate and verification Git worktrees under the owner-only
+  `<checkout-parent>/.flow-issue-host-<uid>/<project-hash>/worktrees/` collection. Keep this
+  collection on the same persistent storage boundary as the checkout.
 - The model implementation and review runtimes receive no GitHub credential or delivery authority.
 
 Actor labels are append-only attribution, not authenticated identities. The operating-system
@@ -164,12 +182,18 @@ Treat the plan as trusted executable policy. Review every field before `run`:
 - Confirm `repository.expected` and `baseBranch` against GitHub and `origin`.
 - Reserve `branch.prefix` for Flow-owned branches.
 - Confirm that the complete Flow-owned branch derived from the prefix differs from `baseBranch`.
-- Inspect both workflows, their model tools, budgets, and timeouts.
+- Inspect both required workflows and any optional repair workflow, including tools, budgets, and timeouts.
+- If `reviewRepair` is present, review its explicit classes, cycle limit, and both complete aggregate pools.
+  Use [Configure bounded independent-review repair](../guides/github-issue-review-repair.md) for the policy contract.
+  This unreleased extension requires separate qualification from the earlier lifecycle path.
 - Confirm that the implementation workflow declares `goal`, and review every stable
   `goal.criteria[].id`. Treat those IDs as the complete review mapping authority.
 - Keep `candidate.allowedPathPrefixes` no broader than the issue requires.
 - Prove that the holdout fails on the exact base for the intended reason.
 - Execute every deterministic verification command manually from a trusted checkout.
+- Review the complete executable, ordered arguments, and timeout for every public verification
+  command. When the implementation selects `exec`, these values are disclosed to the model.
+  Never put credentials in them.
 - Copy each exact hosted-check name and source app ID and slug from an observed GitHub Actions run.
 - Require `[P1, P2, P3]` as the blocking review severities.
 - Confirm that the selected merge method is allowed and that `deleteBranch` matches retention
@@ -213,6 +237,32 @@ Set operational alerts for these conditions:
 
 ## Recover after interruption
 
+### Diagnose command refusals
+
+Current source records a terminal `pi_command_authority_rejections_exhausted` error when a nested
+agent exhausts its frozen refusal allowance. The parent lifecycle reports
+`implementation_workflow_failed`. Published alpha.4 does not include this behavior.
+
+1. Inspect the parent with `flow issue inspect <run-id>` and `flow issue events <run-id>`. Preserve
+   its failure code and evidence digest. Do not treat the parent as an ordinary workflow run.
+2. If diagnosis needs more detail, use the trusted host to inspect the nested run under
+   `.flow/issue-runs/nested-runs/<nested-run-id>/events.jsonl`. Its failed-node evidence carries the
+   nested error code and safe model-session summary. The private session record is under
+   `.flow/issue-runs/model-sessions/<nested-run-id>/model-sessions/<session-id>/events.jsonl`.
+3. Review the cumulative and latest-attempt refusal counts. Compare the requested executable,
+   ordered arguments, and timeout with the frozen public catalog. Raw session records can contain
+   private task content. Do not copy them into shared terminals, tickets, or chats.
+4. Preserve the failed run and worktrees. Correct guidance or the contract in a reviewed new run.
+   A terminal parent cannot resume. Do not use generic `flow resume`, hand-edit the ledger, or raise
+   the resource budget to bypass this stop.
+
+The parent inspection command does not expose nested refusal counts, and ordinary `flow inspect`
+does not discover these issue-owned stores. A unified public diagnosis surface remains an
+onboarding task in the [usable-checkpoint plan](../usable-checkpoint-plan.md). This private-host
+procedure is a current operating limitation, not a completed convenience feature.
+
+### Recover the parent lifecycle
+
 Never repeat a Git or GitHub mutation manually after a timeout, crash, network loss, or missing
 response. The operation might have succeeded even when the client did not receive confirmation.
 
@@ -236,9 +286,51 @@ response. The operation might have succeeded even when the client did not receiv
 Don't resume `merge_approval_required` or a terminal phase. The former requires an exact merge
 decision. The latter cannot accept another event.
 
+Restart from the same canonical checkout and operating-system account. Flow resolves the same
+owner-only sibling host collection from that checkout path. Don't move the checkout or its
+`.flow-issue-host-<uid>` sibling while a run is active. A missing candidate worktree, verification
+worktree, or ownership record makes recovery uncertain. Flow doesn't infer uncommitted edits from
+the branch or event ledger.
+
+Candidate inspection is read-only. Flow automatically retries the complete snapshot once when the
+pinned Git executable returns a malformed response. If both responses are malformed, the run fails
+with `git_response_invalid` before Flow prepares a commit effect. Preserve the terminal run and its
+worktree for investigation. Don't commit or publish that workspace manually as if the lifecycle had
+verified it. Correct the Git or host fault, confirm the source checkout is still clean and current,
+and start a new run with a new command ID.
+
 Resume checks prepared intent against exact local and remote identities. It can settle an effect
 that already occurred, retry an effect proved absent, or remain in `external_state_uncertain`. It
 must not adopt a similarly named branch, pull request, commit, or merge.
+
+### Recover bounded review repair
+
+This procedure applies only to a run frozen with `reviewRepair`. Repair remains unreleased source
+undergoing qualification. Omission keeps the earlier behavior and grants no repair authority.
+
+1. Inspect the parent with `flow issue inspect <run-id>` and `flow issue events <run-id>`.
+   Record `reviewRepair`, any pending dispatch, and the terminal or interruption code.
+2. Preserve the exact binary, operating-system account, canonical checkout, private run stores, and
+   both owned worktrees. Do not import a hosted failure archive as live state.
+3. Check the role's consumed resources and availability flags. Unknown usage blocks another child.
+   A pending dispatch reserves its complete child budget until an exact terminal receipt settles it.
+4. Resume an active run only through `flow issue resume <run-id> --command-id <uuid>` on the same host.
+   The controller reconciles the recorded child identity before admitting another child.
+5. If cancellation remains requested, preserve the reservation and investigate the missing evidence.
+   Do not edit events, fabricate zero usage, delete the worktree, or restart implementation manually.
+
+Independent-review context is persisted before dispatch. Recovery reads that exact context instead
+of rerunning candidate verification commands to reconstruct a review. Resource settlement records
+actual usage once, including failed-child usage. Resume, cancellation, and repair cycles do not
+reset the accumulated role totals.
+
+A reserved dispatch with no child ledger is a current recovery limitation. Missing evidence does
+not prove that execution never started. Cancellation can therefore remain requested instead of
+becoming `cancelled`. Repeating cancellation is not a remedy for that evidence gap.
+
+A terminal `failed` or `cancelled` run cannot resume. Preserve it for investigation and authorize
+a new frozen contract when you are ready to try again. Historical hosted archives are forensic
+evidence, not a transferable repair session.
 
 ### Recover specific effects
 
@@ -289,12 +381,18 @@ flow issue cancel <run-id> \
 Cancellation doesn't delete evidence or hide external state. If a branch or pull request already
 exists, inspect it in GitHub and apply the repository's normal close or deletion policy.
 Don't force-delete a branch while external state is uncertain.
+For a repair-enabled run, also confirm that its child dispatch is settled. See
+[Recover bounded review repair](#recover-bounded-review-repair) when cancellation remains requested.
 
 ## Retain and protect evidence
 
 Back up `.flow/issue-runs/<run-id>/` only to an access-controlled destination. Preserve file modes,
 event order, and bytes. A text archive, copied terminal output, or pull request comment isn't a
 replacement for the durable run root.
+
+For an active run that you might resume, also preserve its exact candidate and verification
+worktrees in the sibling `.flow-issue-host-<uid>` collection. The event ledger records identities
+and evidence, but it doesn't contain a reconstructable copy of every uncommitted workspace byte.
 
 Set a written retention period based on repository sensitivity, audit needs, incident-response
 requirements, and local storage. Keep at least:
@@ -303,14 +401,16 @@ requirements, and local storage. Keep at least:
 - every merged run through the repository's audit period.
 - the corresponding plan, workflow revision, issue and base identities, pull request, hosted-check
   identities, gate digest, merge result, and post-merge proof.
+- the exact installed package archive, its SHA-256 digest, source revision, and qualification
+  receipts when the run is package-qualification evidence. A digest alone cannot restore bytes.
 
 Private evidence can contain source, diffs, issue content, model content, and command output. It is
 not suitable for public artifacts without a separate disclosure review.
 
 ## Clean up a settled run
 
-Clean up only after the run is `merged`, `failed`, or `cancelled`, external effects are settled,
-required evidence is retained, and repository policy permits removal.
+Clean up only after the run is `merged`, `failed`, or `cancelled` and external effects are settled.
+Any child dispatch must also be settled. Retain required evidence and follow repository removal policy.
 
 1. Record the run ID, terminal status, pull request, exact head, gate digest when present, and
    retained evidence location.

@@ -1,15 +1,54 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
+import { createFrozenVerificationAgentCommandAuthority } from "../../../src/application/frozen-issue-command.js";
 
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
-import { parseRunEvent, type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
+import {
+  calculateWorkspaceAuthorityDigest,
+  parseRunEvent,
+  type RunEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
 
 describe("durable agent command replay", () => {
+  it("replays a complete immutable catalog and binds its refusal limit into recovery identity", () => {
+    const authority = createFrozenVerificationAgentCommandAuthority([commandRequest], {
+      rejectionLimit: 3,
+    });
+    const events = preparedEvents();
+    const state = reduceRunEvents([
+      parseRunEvent({ ...events[0], agentCommandAuthority: authority }),
+      events[1],
+      events[2],
+    ]);
+    expect(state.agentCommandAuthority).toEqual(authority);
+    expect(Object.isFrozen(state.agentCommandAuthority?.requests)).toBe(true);
+    const differentLimit = createFrozenVerificationAgentCommandAuthority([commandRequest], {
+      rejectionLimit: 5,
+    });
+    expect(
+      calculateWorkspaceAuthorityDigest({ protectedPaths: [], agentCommandAuthority: authority }),
+    ).not.toBe(
+      calculateWorkspaceAuthorityDigest({
+        protectedPaths: [],
+        agentCommandAuthority: differentLimit,
+      }),
+    );
+    expect(() =>
+      parseRunEvent({
+        ...events[0],
+        agentCommandAuthority: {
+          ...authority,
+          requests: [{ ...commandRequest, timeoutMs: commandRequest.timeoutMs + 1 }],
+        },
+      }),
+    ).toThrow(/catalog/i);
+  });
   it("replays exact preparation and settlement and charges retained output once", () => {
     const state = reduceRunEvents([
       ...preparedEvents(),
@@ -41,6 +80,85 @@ describe("durable agent command replay", () => {
     expect(state.resources.artifactBytes).toBe(6);
     expect(Object.isFrozen(state.nodes.implement?.commands)).toBe(true);
     expect(Object.isFrozen(state.nodes.implement?.commands[0]?.settlement)).toBe(true);
+  });
+
+  it("replays process-group evidence only for an exact frozen verification command", () => {
+    const events = preparedEvents();
+    const state = reduceRunEvents([
+      parseRunEvent({
+        ...events[0],
+        agentCommandAuthority: {
+          version: 1,
+          kind: "frozen-verification",
+          requestDigests: [commandDigest],
+        },
+      }),
+      events[1],
+      events[2],
+      parseRunEvent({
+        ...base(4),
+        type: "node_agent_command_settled",
+        nodeId: "implement",
+        attempt: 1,
+        commandId: "command-3",
+        outcome: {
+          status: "succeeded",
+          evidence: {
+            ...commandEvidence("ok", ""),
+            processContainment: "process-group",
+            selectionAuthority: "frozen-verification",
+          },
+        },
+      }),
+    ]);
+
+    expect(state.agentCommandAuthority).toEqual({
+      version: 1,
+      kind: "frozen-verification",
+      requestDigests: [commandDigest],
+    });
+  });
+
+  it("rejects a prepared command outside durable frozen verification authority", () => {
+    const events = preparedEvents();
+
+    expect(() =>
+      reduceRunEvents([
+        parseRunEvent({
+          ...events[0],
+          agentCommandAuthority: {
+            version: 1,
+            kind: "frozen-verification",
+            requestDigests: ["f".repeat(64)],
+          },
+        }),
+        events[1],
+        events[2],
+      ]),
+    ).toThrow(/frozen verification authority/i);
+  });
+
+  it("rejects process-group evidence without durable frozen verification authority", () => {
+    expect(() =>
+      reduceRunEvents([
+        ...preparedEvents(),
+        parseRunEvent({
+          ...base(4),
+          type: "node_agent_command_settled",
+          nodeId: "implement",
+          attempt: 1,
+          commandId: "command-3",
+          outcome: {
+            status: "succeeded",
+            evidence: {
+              ...commandEvidence("ok", ""),
+              processContainment: "process-group",
+              selectionAuthority: "frozen-verification",
+            },
+          },
+        }),
+      ]),
+    ).toThrow(/containment.*authority|authority.*containment/i);
   });
 
   it("rejects a prepared request whose operation digest was changed", () => {
@@ -358,6 +476,25 @@ describe("durable agent command replay", () => {
         }),
       ]),
     ).toThrow(/expected object|sandbox.*provenance/i);
+  });
+
+  it("rejects agent command evidence with an unbound stdin digest", () => {
+    expect(() =>
+      reduceRunEvents([
+        ...preparedEvents(),
+        parseRunEvent({
+          ...base(4),
+          type: "node_agent_command_settled",
+          nodeId: "implement",
+          attempt: 1,
+          commandId: "command-3",
+          outcome: {
+            status: "succeeded",
+            evidence: { ...commandEvidence("ok", ""), stdinHash: "a".repeat(64) },
+          },
+        }),
+      ]),
+    ).toThrow(/standard input|stdin/i);
   });
 
   it("rejects tampered retained output when the full stream was truncated", () => {

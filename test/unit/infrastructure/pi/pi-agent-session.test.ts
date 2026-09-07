@@ -7,10 +7,14 @@ import {
 } from "@earendil-works/pi-ai";
 import { streamSimple as anthropicMessagesStreamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { streamSimple as openAIResponsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
-import { createAgentSession } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
 import type { ModelSessionJournal } from "../../../../src/application/ports.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../../src/domain/agent-command.js";
 import { createArtifactReference } from "../../../../src/domain/artifact/reference.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import {
@@ -21,6 +25,7 @@ import {
   type ModelSessionEventInput,
   type ModelSessionIdentity,
   type ModelSessionState,
+  modelSessionSummary,
   reduceModelSessionEvents,
   renderRollingContextResumeBootstrap,
   selectContextCompactionRange,
@@ -40,6 +45,435 @@ const identity: ModelSessionIdentity = {
 };
 
 describe("Pi provider-neutral model session", () => {
+  it("keeps refusal counts across successful reads and a settled nonzero verifier", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 5_000,
+    });
+    let extraRequests = 0;
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall(
+          "flow_exec",
+          { executable: "npm", args: ["test"], timeoutMs: 6_000 },
+          { id: "refused-1" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "read" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage(
+        fauxToolCall(
+          "flow_exec",
+          { executable: "npm", args: ["test"], timeoutMs: 5_000 },
+          { id: "admitted" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        fauxToolCall(
+          "flow_exec",
+          { executable: "different", args: ["test"], timeoutMs: 5_000 },
+          { id: "refused-2" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      () => {
+        extraRequests += 1;
+        return fauxAssistantMessage("Must not reach this response.");
+      },
+    ]);
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      tools: ["exec", "ls"],
+      policyBroker: new PolicyBroker({ ...identity, attempt: 1 }, [
+        "process.execute",
+        "filesystem.list",
+      ]),
+      commandRecorder: failingVerifierRecorder(),
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 2,
+      },
+    });
+    expect(result.failureCode).toBe("pi_command_authority_rejections_exhausted");
+    expect(extraRequests).toBe(0);
+    expect(modelSessionSummary(journal.state)).toMatchObject({
+      commandAuthorityRejectionCount: 2,
+      requestCount: 4,
+    });
+    const admitted = journal.state.events.find(
+      (event) => event.type === "tool_result_committed" && event.toolCallId === "admitted",
+    );
+    expect(admitted).toMatchObject({
+      isError: false,
+      text: expect.stringContaining("exit code: 1"),
+    });
+    expect(admitted).not.toHaveProperty("commandAuthorityRejection");
+    expect(
+      selectContextCompactionRange(journal.state, { allowErrorToolResults: true }),
+    ).not.toBeNull();
+    await journal.append({
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+    await journal.append({ type: "attempt_started", attempt: 2 });
+    const recovered = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      tools: ["exec"],
+      commandRecorder: failingVerifierRecorder(),
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 2,
+      },
+      contextCompactionMode: "rolling",
+      rollingContext: { pressureThresholdPercent: 85, protectedConstraints: [] },
+    });
+    expect(recovered.failureCode).toBe("pi_command_authority_rejections_exhausted");
+    expect(extraRequests).toBe(0);
+    expect(modelSessionSummary(journal.state)).toMatchObject({
+      commandAuthorityRejectionCount: 2,
+      compactionCount: 0,
+      requestCount: 4,
+    });
+  });
+
+  it("checks recovered refusal exhaustion before an otherwise eligible context summary", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 5_000,
+    });
+    let extraRequests = 0;
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "read-1" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage(fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "read-2" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage(
+        fauxToolCall("flow_exec", { executable: "not-admitted" }, { id: "refused" }),
+        { stopReason: "toolUse" },
+      ),
+      () => {
+        extraRequests += 1;
+        return fauxAssistantMessage("Must not run a summary or task.");
+      },
+    ]);
+    const request: PiAgentRunRequest = {
+      ...agentRequest(model, journal),
+      tools: ["exec", "ls"],
+      commandRecorder: failingVerifierRecorder(),
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 1,
+      },
+    };
+    expect((await runnerFor(faux, model).run(request)).failureCode).toBe(
+      "pi_command_authority_rejections_exhausted",
+    );
+    expect(selectContextCompactionRange(journal.state)).not.toBeNull();
+    await journal.append({
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+    await journal.append({ type: "attempt_started", attempt: 2 });
+    const result = await runnerFor(faux, model).run({
+      ...request,
+      policyBroker: new PolicyBroker({ ...identity, attempt: 2 }, [
+        "filesystem.list",
+        "process.execute",
+      ]),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: [],
+        minimumReductionBytes: 1,
+        outputTokenLimits: [512, 256],
+      },
+    });
+    expect(result.failureCode).toBe("pi_command_authority_rejections_exhausted");
+    expect(extraRequests).toBe(0);
+    expect(modelSessionSummary(journal.state)).toMatchObject({
+      commandAuthorityRejectionCount: 1,
+      requestCount: 3,
+      compactionCount: 0,
+    });
+  });
+
+  it("does not request another model response when durable refusal recording fails", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const backingJournal = attemptOneJournal();
+    const journal: ModelSessionJournal = {
+      get state() {
+        return backingJournal.state;
+      },
+      async read() {
+        return await backingJournal.read();
+      },
+      async append(input) {
+        if (input.type === "tool_result_committed") throw new Error("durable refusal write failed");
+        return await backingJournal.append(input);
+      },
+    };
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 5_000,
+    });
+    let extraRequests = 0;
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("flow_exec", { executable: "not-admitted" }, { id: "refused" }),
+        { stopReason: "toolUse" },
+      ),
+      () => {
+        extraRequests += 1;
+        return fauxAssistantMessage("Must not reach another response.");
+      },
+    ]);
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      tools: ["exec"],
+      commandRecorder: failingVerifierRecorder(),
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 3,
+      },
+    });
+    expect(result.stopReason).toBe("error");
+    expect(extraRequests).toBe(0);
+    expect(journal.state.events.some((event) => event.type === "tool_result_committed")).toBe(
+      false,
+    );
+  });
+
+  it("refuses a bounded authority without a durable model session before runtime initialization", async () => {
+    const runner = new EmbeddedPiAgentRunner(async () => {
+      throw new Error("must not initialize runtime");
+    });
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 5_000,
+    });
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const { modelSession: _session, ...request } = agentRequest(
+      requireModel(faux.getModel()),
+      attemptOneJournal(),
+    );
+    const result = await runner.run({
+      ...request,
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 1,
+      },
+    });
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_command_authority_journal_unavailable",
+    });
+  });
+
+  it("does not classify a coerced admitted command's execution failure as a refusal", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["123"],
+      timeoutMs: 5_000,
+    });
+    let executions = 0;
+    const recorder = new AgentCommandRecorder(
+      {
+        async executeAgentCommand(request) {
+          executions += 1;
+          expect(request).toEqual(allowed);
+          throw new Error("execution failed after starting");
+        },
+      },
+      {
+        async prepare() {
+          return {
+            commandId: "command-1",
+            commandSequence: 1,
+            async settle() {
+              throw new Error("unreachable");
+            },
+          };
+        },
+      },
+      { ...identity, attempt: 1, cwd: process.cwd(), protectedPaths: [] },
+    );
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall(
+          "flow_exec",
+          { executable: "npm", args: [123], timeoutMs: "5000" },
+          { id: "coerced" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("The command failed; its effects are uncertain."),
+    ]);
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      tools: ["exec"],
+      commandRecorder: recorder,
+      policyBroker: new PolicyBroker({ ...identity, attempt: 1 }, ["process.execute"]),
+      agentCommandAuthority: {
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 1,
+      },
+    });
+    expect(executions).toBe(1);
+    expect(result.stopReason).toBe("stop");
+    expect(recorder.sideEffectStatus()).toBe("uncertain");
+    const outcome = journal.state.events.find((event) => event.type === "tool_result_committed");
+    expect(outcome).toMatchObject({ isError: true });
+    expect(outcome).not.toHaveProperty("commandAuthorityRejection");
+    expect(modelSessionSummary(journal.state)).not.toHaveProperty("commandAuthorityRejectionCount");
+  });
+
+  it.each([
+    { executable: "npm", args: ["test"], timeoutMs: 6_000 },
+    { executable: "npm", args: ["other"], timeoutMs: 5_000 },
+    { executable: "npm", args: ["test"], timeoutMs: "invalid" },
+    { executable: "npm", args: ["test"], timeoutMs: 5_000, version: 1 },
+  ])("durably stops an inadmissible command before another provider request: %j", async (input) => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const allowed = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 5_000,
+    });
+    let extraProviderCalls = 0;
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("flow_exec", input, { id: "refused" }),
+          fauxToolCall("flow_exec", { executable: "also-not-admitted" }, { id: "batch-refused" }),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "settled-read" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      () => {
+        extraProviderCalls += 1;
+        return fauxAssistantMessage("Must not request this.");
+      },
+    ]);
+    const request = {
+      ...agentRequest(model, journal),
+      tools: ["exec", "ls"] as const,
+      policyBroker: new PolicyBroker({ ...identity, attempt: 1 }, [
+        "process.execute",
+        "filesystem.list",
+      ]),
+      commandRecorder: new AgentCommandRecorder(undefined, undefined, {
+        ...identity,
+        attempt: 1,
+        cwd: process.cwd(),
+        protectedPaths: [],
+      }),
+      agentCommandAuthority: {
+        version: 1 as const,
+        kind: "frozen-verification" as const,
+        requestDigests: [calculateAgentCommandDigest(allowed)],
+        requests: [allowed],
+        rejectionLimit: 1,
+      },
+    };
+    const result = await runnerFor(faux, model).run(request);
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_command_authority_rejections_exhausted",
+    });
+    expect(extraProviderCalls).toBe(0);
+    const results = journal.state.events.filter((event) => event.type === "tool_result_committed");
+    expect(results).toHaveLength(3);
+    expect(results[0]).toMatchObject({
+      commandAuthorityRejection: "request_not_admitted",
+      isError: true,
+    });
+    expect(results[1]).toMatchObject({
+      commandAuthorityRejection: "request_not_admitted",
+      isError: true,
+    });
+    expect(results[2]).not.toHaveProperty("commandAuthorityRejection");
+    expect(modelSessionSummary(journal.state)).toMatchObject({
+      commandAuthorityRejectionCount: 2,
+      latestAttemptRawExecResultCount: 2,
+      latestAttemptCommandAuthorityRejectionCount: 2,
+    });
+    expect(journal.state.activeRequest).toBeNull();
+
+    await journal.append({
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+    await journal.append({ type: "attempt_started", attempt: 2 });
+    const recovered = await runnerFor(faux, model).run({
+      ...request,
+      policyBroker: new PolicyBroker({ ...identity, attempt: 2 }, [
+        "process.execute",
+        "filesystem.list",
+      ]),
+    });
+    expect(recovered.failureCode).toBe("pi_command_authority_rejections_exhausted");
+    expect(extraProviderCalls).toBe(0);
+  });
+
   it("protects the two most recent completed requests from rolling reference projection", () => {
     expect(
       rollingReferenceProjectionLimit([
@@ -663,6 +1097,47 @@ describe("Pi provider-neutral model session", () => {
     ).toEqual(["invalid_output", "accepted"]);
   });
 
+  it("stops rolling compaction after one exhausted-credit response", async () => {
+    const model = openAIModel();
+    const journal = rollingPressureJournal();
+    let countCalls = 0;
+    let inferenceCalls = 0;
+    const runner = openAIRunner(model, async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.endsWith("/responses/input_tokens")) {
+        countCalls += 1;
+        return openAIInputTokenCount(countCalls === 1 ? 108_474 : 42);
+      }
+      inferenceCalls += 1;
+      return Response.json(
+        {
+          error: {
+            type: "insufficient_quota",
+            code: "credit_balance_exhausted",
+            message:
+              "You have no credits. Add credits at https://platform.openai.com/settings/organization/billing.",
+          },
+        },
+        { status: 429 },
+      );
+    });
+
+    const result = await runner.run(rollingRequest(model, journal));
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_provider_quota_exhausted",
+    });
+    expect(countCalls).toBe(2);
+    expect(inferenceCalls).toBe(1);
+    expect(journal.state.activeRollingEpoch).toBeNull();
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "rolling_context_epoch_settled")
+        .map((event) => event.settlement),
+    ).toEqual([expect.objectContaining({ outcome: "rejected", reason: "provider_error" })]);
+  });
+
   it("charges rejected rolling summary usage to the failed node", async () => {
     const model = openAIModel();
     const journal = rollingPressureJournal();
@@ -857,7 +1332,7 @@ describe("Pi provider-neutral model session", () => {
         return Response.json({ input_tokens: countCalls === 1 ? 781_674 : 42 });
       }
       summaryPayloads.push(body);
-      return Response.json({ error: { message: "fixture summary rejection" } }, { status: 500 });
+      return anthropicTextStream("not canonical summary JSON");
     });
 
     const result = await runner.run({
@@ -1066,7 +1541,7 @@ describe("Pi provider-neutral model session", () => {
       model: "session-model",
       apiAdapter: model.api,
       thinking: "off",
-      runtimeVersion: "pi-0.84.0",
+      runtimeVersion: "pi-0.84.4",
       system: { bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
       toolCatalog: {
         bytes: expect.any(Number),
@@ -1435,6 +1910,73 @@ describe("Pi provider-neutral model session", () => {
     expect(result.usage).toEqual(summaryUsage.reduce(addUsage, mainUsage));
   });
 
+  it("stops references-and-summary compaction after one exhausted-credit response", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText(`OLD_CONTEXT:${"x".repeat(12_000)}`),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-1" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        [
+          fauxText("LATEST_CONTEXT"),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-2" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage:
+          'OpenAI API error (429): {"type":"insufficient_quota","code":"credit_balance_exhausted"}',
+      }),
+    ]);
+
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_000,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      failureCode: "pi_provider_quota_exhausted",
+    });
+    expect(faux.state.callCount).toBe(3);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "context_compaction_settled")
+        .map((event) => event.settlement),
+    ).toEqual([expect.objectContaining({ outcome: "rejected", reason: "provider_error" })]);
+    const mainUsage = journal.state.events
+      .filter((event) => event.type === "model_message_committed")
+      .flatMap((event) => (event.usage === undefined ? [] : [event.usage]))
+      .reduce(addUsage, emptyUsage());
+    const quotaSettlement = journal.state.events.find(
+      (event) => event.type === "context_compaction_settled",
+    );
+    if (
+      quotaSettlement?.type !== "context_compaction_settled" ||
+      quotaSettlement.settlement.outcome === "interrupted" ||
+      quotaSettlement.settlement.usage === undefined
+    ) {
+      throw new Error("quota compaction usage was not settled");
+    }
+    expect(quotaSettlement.settlement.usage.inputTokens).toBeGreaterThan(0);
+    expect(result.usage).toEqual(addUsage(mainUsage, quotaSettlement.settlement.usage));
+  });
+
   it("retries once with a smaller limit and retains the prior surface after rejection", async () => {
     const faux = createFauxCore({
       provider: "flow-session-test",
@@ -1692,7 +2234,7 @@ function openAIRunner(
   };
   return new EmbeddedPiAgentRunner(
     async () => modelRuntime as never,
-    createAgentSession,
+    createSessionWithoutTransportRetries,
     providerFetch,
   );
 }
@@ -1719,10 +2261,23 @@ function anthropicRunner(
   };
   return new EmbeddedPiAgentRunner(
     async () => modelRuntime as never,
-    createAgentSession,
+    createSessionWithoutTransportRetries,
     providerFetch,
   );
 }
+
+const createSessionWithoutTransportRetries: typeof createAgentSession = async (options) =>
+  await createAgentSession({
+    ...options,
+    settingsManager: SettingsManager.inMemory({
+      compaction: { enabled: false },
+      retry: {
+        enabled: false,
+        maxRetries: 0,
+        provider: { maxRetries: 0, maxRetryDelayMs: 60_000 },
+      },
+    }),
+  });
 
 function rollingRequest(
   model: ReturnType<typeof openAIModel>,
@@ -1766,6 +2321,45 @@ function openAITextStream(text: string, inputTokens = 100): Response {
     { type: "response.completed", response },
   ];
   const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function anthropicTextStream(text: string, inputTokens = 100): Response {
+  const events = [
+    {
+      type: "message_start",
+      message: {
+        id: "message-1",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: "claude-opus-4-6",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: inputTokens, output_tokens: 0 },
+      },
+    },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 10 },
+    },
+    { type: "message_stop" },
+  ];
+  const body = events
+    .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("");
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
@@ -1813,6 +2407,64 @@ function openAIToolCallStream(name: string, args: Readonly<Record<string, unknow
 
 function openAIInputTokenCount(inputTokens: number): Response {
   return Response.json({ object: "response.input_tokens", input_tokens: inputTokens });
+}
+
+function failingVerifierRecorder(): AgentCommandRecorder {
+  return new AgentCommandRecorder(
+    {
+      async executeAgentCommand(request) {
+        return {
+          status: "failed",
+          error: {
+            code: "command_failed",
+            message: "verifier exited with code 1",
+            retryable: false,
+            sideEffectStatus: "uncertain",
+          },
+          evidence: {
+            kind: "command",
+            executable: request.executable,
+            args: request.args,
+            exitCode: 1,
+            signal: null,
+            stdout: "1 test failed",
+            stderr: "",
+            stdoutHash: sha256("1 test failed"),
+            stderrHash: sha256(""),
+            stdoutRetainedHash: sha256("1 test failed"),
+            stderrRetainedHash: sha256(""),
+            stdoutRetainedBytes: 13,
+            stderrRetainedBytes: 0,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            aborted: false,
+            durationMs: 1,
+            processContainment: "linux-pid-namespace",
+            terminationStatus: "not-required",
+            sandbox: {
+              backend: "test-sandbox",
+              backendVersion: "1",
+              profile: "workspace-write-network-deny-v1",
+              policyDigest: "b".repeat(64),
+            },
+          },
+        };
+      },
+    },
+    {
+      async prepare() {
+        return {
+          commandId: "command-1",
+          commandSequence: 1,
+          async settle() {
+            return { artifactBudgetExhausted: false };
+          },
+        };
+      },
+    },
+    { ...identity, attempt: 1, cwd: process.cwd(), protectedPaths: [] },
+  );
 }
 
 function runnerFor(
@@ -1906,7 +2558,7 @@ function rollingPressureJournal(
           model: "gpt-5.6",
           apiAdapter: "openai-responses",
           thinking: "high",
-          runtimeVersion: "pi-0.84.0",
+          runtimeVersion: "pi-0.84.4",
           system: { sha256: "1".repeat(64), bytes: 1 },
           toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
           authority: { sha256: "3".repeat(64) },
@@ -2002,7 +2654,7 @@ function attemptTwoJournal(): InMemoryJournal {
         model: "session-model",
         apiAdapter: "faux",
         thinking: "off",
-        runtimeVersion: "pi-0.84.0",
+        runtimeVersion: "pi-0.84.4",
         system: { sha256: "1".repeat(64), bytes: 1 },
         toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
         authority: { sha256: "3".repeat(64) },
@@ -2066,7 +2718,7 @@ function attemptTwoAfterInterruptedCompactionJournal(): InMemoryJournal {
           model: "session-model",
           apiAdapter: "faux",
           thinking: "off",
-          runtimeVersion: "pi-0.84.0",
+          runtimeVersion: "pi-0.84.4",
           system: { sha256: "1".repeat(64), bytes: 1 },
           toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
           authority: { sha256: "3".repeat(64) },

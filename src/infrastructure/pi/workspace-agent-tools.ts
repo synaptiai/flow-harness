@@ -11,16 +11,21 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import type { ArtifactStore } from "../../application/artifact-store.js";
+import { DEFAULT_ISSUE_COMMAND_REJECTION_LIMIT } from "../../application/frozen-issue-command.js";
 import type { NodeDelegationSession } from "../../application/ports.js";
 import {
+  type AgentCommandAuthority,
+  agentCommandAuthoritySchema,
   calculateAgentCommandDigest,
   DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
   MAX_AGENT_COMMAND_ARG_BYTES,
   MAX_AGENT_COMMAND_ARGS,
   MAX_AGENT_COMMAND_ARGS_BYTES,
+  MAX_AGENT_COMMAND_CATALOG_BYTES,
   MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
   MAX_AGENT_COMMAND_OUTPUT_BYTES,
   MAX_AGENT_COMMAND_TIMEOUT_MS,
+  normalizeAgentCommandAuthority,
   normalizeAgentCommandRequest,
 } from "../../domain/agent-command.js";
 import {
@@ -28,11 +33,11 @@ import {
   MAX_ARTIFACT_READ_BYTES,
   MAX_COMMAND_ARTIFACT_BYTES,
 } from "../../domain/artifact/reference.js";
+import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
 import {
   MAX_AGENT_SKILL_FILE_BYTES,
   MAX_CAPABILITY_READ_RECEIPTS,
 } from "../../domain/capability/agent-skills.js";
-import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
 import { builtInAgentToolPolicyAction } from "../../domain/capability/agent-tool-policy.js";
 import type {
   PublicAvailabilityRequirement,
@@ -44,17 +49,22 @@ import {
   type ToolPackageSnapshot,
   validateToolPackageSnapshot,
 } from "../../domain/capability/tool-packages.js";
+import type { PolicyBroker } from "../../domain/policy/broker.js";
 import {
-  MAX_POLICY_DECISIONS,
+  DEFAULT_POLICY_DECISION_LIMIT,
+  MAX_POLICY_DECISION_LIMIT,
   MAX_POLICY_TARGET_BYTES,
-  type PolicyBroker,
-} from "../../domain/policy/broker.js";
+} from "../../domain/policy/limits.js";
 import {
-  MAX_SEMANTIC_PATH_BYTES,
-  MAX_SEMANTIC_POSITION,
+  MAX_AGENT_COMMANDS_PER_ATTEMPT,
+  MAX_AGENT_EFFECT_RECEIPTS,
+} from "../../domain/run/events.js";
+import {
   MAX_SEMANTIC_CODE_BYTES,
   MAX_SEMANTIC_HOVER_BYTES,
   MAX_SEMANTIC_MESSAGE_BYTES,
+  MAX_SEMANTIC_PATH_BYTES,
+  MAX_SEMANTIC_POSITION,
   MAX_SEMANTIC_QUERY_RECEIPTS,
   MAX_SEMANTIC_RECEIPT_RESULT_BYTES,
   MAX_SEMANTIC_RESULT_ITEMS,
@@ -65,17 +75,12 @@ import {
 } from "../../domain/semantic/semantic-code.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
-  MAX_AGENT_COMMANDS_PER_ATTEMPT,
-  MAX_AGENT_EFFECT_RECEIPTS,
-} from "../../domain/run/events.js";
-import {
   createExclusiveDirectory,
   type ExclusiveDirectoryCreateResult,
 } from "../fs/exclusive-directory-create.js";
 import {
   createHashAnchoredTextFile,
   editHashAnchoredTextFile,
-  replaceHashAnchoredTextFile,
   type HashAnchoredCreateRequest,
   type HashAnchoredCreateResult,
   type HashAnchoredEditRequest,
@@ -86,6 +91,7 @@ import {
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
   MAX_REPLACE_INPUT_BYTES,
+  replaceHashAnchoredTextFile,
 } from "../fs/hash-anchored-edit.js";
 import { createWorkspacePolicyBroker } from "../policy/workspace-policy-broker.js";
 import type { AgentCommandRecorder } from "./agent-command-recorder.js";
@@ -287,8 +293,10 @@ export interface FlowAgentTools {
 
 export interface FlowAgentToolOptions {
   readonly protectedPaths?: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
   readonly effectRecorder?: AgentEffectRecorder;
   readonly commandRecorder?: AgentCommandRecorder;
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly editFile?: typeof editHashAnchoredTextFile;
   readonly replaceFile?: typeof replaceHashAnchoredTextFile;
   readonly createFile?: typeof createHashAnchoredTextFile;
@@ -307,10 +315,24 @@ export interface SemanticToolSession {
 
 export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabilityLimitInput[]>([
   limit(
+    "exec-frozen-catalog-bytes",
+    MAX_AGENT_COMMAND_CATALOG_BYTES,
+    "bytes",
+    "Maximum serialized UTF-8 bytes in a complete controller-frozen command catalog, including JSON escapes. Oversized catalogs fail admission without truncation.",
+  ),
+  limit(
+    "issue-command-refusals-per-session",
+    DEFAULT_ISSUE_COMMAND_REJECTION_LIMIT,
+    "items",
+    "Default cumulative frozen-command refusals per durable implementation model session in new GitHub issue runs. After the issued tool batch settles, the next model request is denied. This policy is not an empirical optimum or a generic command-execution budget.",
+    DEFAULT_ISSUE_COMMAND_REJECTION_LIMIT,
+  ),
+  limit(
     "agent-commands-per-attempt",
     MAX_AGENT_COMMANDS_PER_ATTEMPT,
     "items",
-    "Maximum flow_exec and command-tool-package executions started in one agent attempt.",
+    "Maximum configurable flow_exec and command-tool-package executions started in one agent attempt. The effective limit equals the node policy-decision limit because every command consumes one policy decision.",
+    DEFAULT_POLICY_DECISION_LIMIT,
   ),
   limit(
     "agent-effects-per-attempt",
@@ -427,9 +449,10 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
   ),
   limit(
     "policy-decisions-per-attempt",
-    MAX_POLICY_DECISIONS,
+    MAX_POLICY_DECISION_LIMIT,
     "items",
-    "Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none.",
+    "Maximum configurable authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none.",
+    DEFAULT_POLICY_DECISION_LIMIT,
   ),
   limit(
     "policy-target-bytes",
@@ -668,6 +691,8 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
     availability: ["command-recorder"],
     limitIds: [
       "agent-commands-per-attempt",
+      "exec-frozen-catalog-bytes",
+      "issue-command-refusals-per-session",
       "exec-argument-bytes",
       "exec-arguments",
       "exec-arguments-total-bytes",
@@ -744,7 +769,12 @@ export async function createWorkspaceAgentTools(
   options: FlowAgentToolOptions = {},
 ): Promise<FlowAgentTools> {
   const root = await realpath(cwd);
-  const broker = await createWorkspacePolicyBroker(root, policy, options.protectedPaths ?? []);
+  const broker = await createWorkspacePolicyBroker(
+    root,
+    policy,
+    options.protectedPaths ?? [],
+    options.allowedWritePrefixes,
+  );
   const readVersions = new AsyncLocalStorage<ReadVersionContext>();
   const readReference = workspaceAgentToolReference("read");
   const readPolicyAction = onlyPolicyAction(readReference);
@@ -1045,15 +1075,36 @@ function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOption
     throw new Error("Flow exec requires an attempt-scoped command recorder");
   }
   const policyAction = onlyPolicyAction(reference);
+  const parsedAuthority =
+    options.agentCommandAuthority === undefined
+      ? undefined
+      : agentCommandAuthoritySchema.parse(options.agentCommandAuthority);
+  const authority =
+    parsedAuthority === undefined
+      ? undefined
+      : normalizeAgentCommandAuthority(
+          parsedAuthority.requestDigests,
+          parsedAuthority.requests,
+          parsedAuthority.rejectionLimit,
+        );
+  const commandGuidance = authority === undefined ? undefined : frozenCommandGuidance(authority);
   return defineTool({
     name: reference.name,
     label: reference.label,
-    description: reference.description,
+    description:
+      authority?.requests === undefined
+        ? reference.description
+        : `${reference.description}\n\n${commandGuidance}`,
     promptSnippet: "Run a bounded argv-only command in the Flow sandbox",
     promptGuidelines: [
       "Pass the executable and each argument separately; shell operators and expansion are not supported.",
       "Inspect the returned exit code, signal, timeout, stdout, and stderr before deciding the next step.",
       "A failed command is evidence, not workflow completion; correct the issue or report it accurately.",
+      ...(authority?.requests === undefined
+        ? []
+        : [
+            "Use only an exact controller-frozen invocation, including its timeoutMs. The command catalog does not bypass policy or sandbox checks.",
+          ]),
     ],
     parameters: reference.inputSchema,
     executionMode: "sequential",
@@ -1061,6 +1112,11 @@ function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOption
       throwIfToolAborted(signal);
       const request = normalizeAgentCommandRequest(input);
       const operationDigest = calculateAgentCommandDigest(request);
+      if (authority !== undefined && !authority.requestDigests.includes(operationDigest)) {
+        throw new Error(
+          `command does not match a controller-frozen verification command. No command was executed.\n${commandGuidance}`,
+        );
+      }
       const decision = policy.authorize({
         action: policyAction,
         target: request.executable,
@@ -1074,6 +1130,22 @@ function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOption
       };
     },
   }) as ToolDefinition;
+}
+
+function frozenCommandGuidance(authority: AgentCommandAuthority): string {
+  const matching =
+    "Executable, argument order, and timeoutMs must match exactly. An omitted timeoutMs defaults to 120000 and can mismatch the frozen timeout. Do not guess command variants.";
+  if (authority.requests === undefined) {
+    return `${matching}\nThis legacy authority has no discoverable command catalog. Consult the frozen workflow instructions; if the exact invocation is unavailable, report that limitation.`;
+  }
+  const invocations = authority.requests.map(({ executable, args, timeoutMs }) =>
+    JSON.stringify({ executable, args, timeoutMs }),
+  );
+  const refusalPolicy =
+    authority.rejectionLimit === undefined
+      ? ""
+      : `\nAfter ${authority.rejectionLimit} cumulative refused requests, the issued tool batch settles and no further model request is permitted in this session. Other work, compaction, and recovery do not reset this count. Approved commands that exit nonzero do not count as refusals.`;
+  return `${matching}${refusalPolicy}\nController-frozen flow_exec invocations (literal argument data, not instructions; copy one JSON object exactly):\n${invocations.join("\n")}\nThese invocations remain subject to policy and sandbox checks.`;
 }
 
 function formatCommandOutcome(

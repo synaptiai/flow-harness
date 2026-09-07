@@ -5,8 +5,8 @@ Flow is licensed under the Apache License 2.0. It depends on or studies the foll
 ## Pi
 
 - Project: [earendil-works/pi](https://github.com/earendil-works/pi)
-- Packages: `@earendil-works/pi-coding-agent` 0.84.0, `@earendil-works/pi-ai` 0.84.0,
-  and `@earendil-works/pi-tui` 0.84.0
+- Packages: `@earendil-works/pi-coding-agent` 0.84.4, `@earendil-works/pi-ai` 0.84.4,
+  and `@earendil-works/pi-tui` 0.84.4
 - License: MIT
 - Use: direct runtime dependencies behind Flow's agent-executor and terminal-renderer adapters
 - Copied source: none
@@ -19,9 +19,20 @@ Pi's dependency packages retain their own license metadata in the installed depe
 - Package: `@anthropic-ai/sandbox-runtime` 0.0.70
 - License: Apache-2.0
 - Use: direct runtime dependency behind Flow's command-sandbox adapter
-- Copied source: none
+- Copied source: unchanged `apply-seccomp.c`, `seccomp-unix-block.c`, and `LICENSE` under
+  `native/verification-observer/upstream/`, from commit
+  `44ab607c46f20381aeaf3e22ca0e0151d4c6b29c`.
 
 Sandbox Runtime and its dependency packages retain their own license metadata in the installed dependency tree. Flow's profile and adapter are independently implemented. Pi's example extension was used as an architecture reference only.
+
+The [native build foundation](docs/bounded-verification-repair-design.md#implement-the-approved-extension-in-phases)
+retains the original Apache-2.0 license and source hashes under
+`native/verification-observer/` in the source checkout. Its build recipe produces an unchanged upstream baseline,
+not an enabled observer. The recipe retains the application object, generated filter inputs,
+exact libc source package, and installed library notices for review and relinking. A binary
+distribution must also preserve the applicable libc, libgcc, and other linked-component
+licenses and satisfy their redistribution requirements. The source checks and build recipe
+do not constitute release-license approval.
 
 ## YAML
 

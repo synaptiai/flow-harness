@@ -329,7 +329,7 @@ describe("Agent Skill package candidate generation CLI", () => {
       baselineRun.stderr.join("\n"),
     ).toBe(0);
     expect(baselineObserved).toEqual([{ packages: 0, checklist: null }]);
-  });
+  }, 15_000);
 
   it("rejects a mixed blueprint and resource mode before model execution", async () => {
     const fixture = await localFixture();

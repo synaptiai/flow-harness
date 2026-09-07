@@ -114,7 +114,7 @@ For publication authority and recovery, read
 | Layer | Purpose | External effects |
 | --- | --- | --- |
 | Domain unit | Workflow/goal/budget/work-profile/concurrency/config compilation, closed work-profile context, closed typed-result schema and strict JSON/canonicalization bounds, exact condition/guard/join/approval and bounded-loop/optimization expansion validation, child depth/tree/result/wait/budget bounds, persisted result/loop/child/optimization topology, numeric direction and invariant evaluation, delta rehashing, concurrent capacity and dependency replay, declaration-ordered outcomes and failure projection, durable profile default and result/decision/check/promotion/completion/omission/child replay, fresh-recovery policy bounds, monotonic attempt replay, proof-safe interruption eligibility, monotonic capacity merge, admission state-machine exploration, checked resource and UTF-8 artifact aggregation, exhaustion, policy and command/graph approval digests, exact agent-command request/policy/approval/prepare/settlement replay, single-use grant consumption, pure criterion evaluation, and decision/effect/settlement/reconciliation/receipt/approval replay invariants | None |
-| Application unit | Typed-result publication and condition/approval/verifier/loop/child/optimization composition, post-admission work-profile context and non-authority, isolated candidate scheduling, accept/reject/stagnation/omission, tree-wide budget reservation/accounting including artifact ceilings and exact child roll-up, cancellation, sibling overlap, terminal and pre-ledger crash recovery, fail-closed missing-workspace recovery, promotion prepare/settlement/cleanup interruption, typed promotion reconciliation without reapply, unknown-state blocking, quiescent-wave admission and bounded artifact overshoot, overlap bounds, reverse completion with declaration order, selected-branch and loop-body concurrency, sequential iteration barriers, command and evidence-bound approval/control barriers, cancellation and failure quiescence, settlement-ceiling precedence, scheduler ordering, omission propagation, serialized write-ahead effect and agent-command publication, command-output settlement accounting, ordered multi-attempt recovery observation/disposition, crash boundaries around result/loop/approval transitions and the resume marker, partial reconciliation progress, recovery compatibility, budget stop boundaries and timeout clamping, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
+| Application unit | Typed-result publication and condition/approval/verifier/loop/child/optimization composition, post-admission work-profile context and non-authority, isolated candidate scheduling, accept/reject/stagnation/omission, tree-wide budget reservation/accounting including artifact ceilings and exact child roll-up, cancellation, sibling overlap, terminal and pre-ledger crash recovery, fail-closed missing-workspace recovery, promotion prepare/settlement/cleanup interruption, typed promotion reconciliation without reapply, unknown-state blocking, quiescent-wave admission and bounded artifact overshoot, overlap bounds, reverse completion with declaration order, selected-branch and loop-body concurrency, sequential iteration barriers, command and evidence-bound approval/control barriers, cancellation and failure quiescence, settlement-ceiling precedence, scheduler ordering, omission propagation, serialized write-ahead effect and agent-command publication, command-output settlement accounting, command-result continuation without replay after a provider failure, rejection of unconfirmed command termination, ordered multi-attempt recovery observation/disposition, crash boundaries around result/loop/approval transitions and the resume marker, partial reconciliation progress, recovery compatibility, budget stop boundaries and timeout clamping, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
 | Presentation unit | Strict document bounds, deterministic public projection, terminal-safe text, cursor replay, steering identity, renderer lifecycle, and primary/cleanup failure precedence | Injected event, control, and terminal ports; no process terminal |
 | Source dependency contract | Application modules import application ports and domain contracts but no infrastructure implementation | Repository source scan; no external effects |
 | Infrastructure integration | Same-policy concurrent SRT session reference counting, cancellable cross-workspace session serialization, portable reflink-or-copy child snapshots with protected-path exclusion and manifest-bound recovery, bounded candidate capture, additions/modifications/deletions/modes/directories/symlinks, stale affected-path and removed-directory-closure refusal, write-ahead promotion and rollback blobs, live compensation, durable-temporary/applied-step/local-commit crash reconciliation, hostile-divergence classification, mutually waiting production command branches, exclusive atomic file and directory creation, atomic hash-anchored edits and complete replacements, chunk-bounded no-follow file observation under target growth, empty-directory identity and mode observation, portable wrong-type and missing-ancestry classification, shared mutation/reconciliation target coordination, real JSONL effect-journal reopening and fresh-attempt continuation, same-host mutation-lock recovery, exact-byte versions, protected paths, process and approval-decision ownership, immutable atomic agent-command decision sidecars, attached/detached live grant consumption, attached live denial without preparation or spawn, strict project/operator config, owner-only supervisor records, typed detached recovery refusal/success, atomic claims and command journals, admission replay/compaction, torn-tail repair, and real child processes | Temporary directories and local processes |
@@ -127,7 +127,7 @@ For publication authority and recovery, read
 | Lean proof contract and qualification | Exact bounded request, human statement approval, runtime identity, compiler and checker agreement, content-free projection, one-trial-per-task denominator, ordinary tests, cost, latency, policy, cleanup, and explicit missingness | Pure TypeScript domain tests, application ports, temporary owner-private files, and no provider credentials |
 | Lean proof supervisor | Strict request and source policy, bounded artifacts and diagnostics, compiler and checker process setup, and effective Linux containment checks | Go unit tests on supported contributor hosts; no proof image or provider credential |
 | Hosted Lean proof appliance | Three clean builds, matching final image identities, exact image labels and probe, effective seccomp, capability, mount, cgroup, environment, network, accepted and negative proofs, checker authority, recovery, cancellation, and confirmed cleanup | Real Docker Engine and cgroup v2 on hosted Linux x64; separate required CI job |
-| Pi adapter contract | Exact model/tool request translation, fixed bounded work-profile rendering, explicit zero turn/provider retries, versioned workspace and immutable `skill://` reads, selected package/read receipts, exact-edit, complete-replacement, file-create, and directory-create effect receipts, argv-only command authorization/journaling and shared sandbox delegation, bounded approval-denial propagation, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
+| Pi adapter contract | Exact model/tool request translation, fixed bounded work-profile rendering, zero assistant-turn retries, exactly two provider transport retries with a 60-second server-delay cap, versioned workspace and immutable `skill://` reads, selected package/read receipts, exact-edit, complete-replacement, file-create, and directory-create effect receipts, argv-only command authorization/journaling and shared sandbox delegation, bounded approval-denial propagation, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession()` composition, `flow_read`/`flow_create`/`flow_mkdir`/`flow_edit`/`flow_replace` tool turns, production tool-error conversion back into the next model turn, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
 
@@ -426,6 +426,10 @@ oversized or non-regular sidecars, replay tampering, and owner loss are covered 
 
 The remaining examples use the real argv-only command executor through the production sandbox, accept declared goals from legacy command and first-class typed command-verifier evidence, publish strict canonical typed results, execute independently-ledgered isolated children, promote one bounded optimization candidate, exercise durable resource inspection and exact loop convergence, and require no model credentials. Focused child and optimization tests prove recursive contract bounds, deterministic linkage, typed composition, numeric direction and invariants, complete delta evidence, independent metadata/content/entry ceilings, idempotent capture reopening, stale-parent refusal, write-ahead promotion and compensation, tree-wide accounting, boundary cancellation without later evaluation or promotion, concurrency, crash recovery without reapply, protected-state exclusion, snapshot fidelity, replay mutation resistance, and cleanup. Focused result tests prove duplicate-key/I-JSON refusal, closed schema and complexity bounds, RFC 8785 canonicalization, resource neutrality, branch/approval/verifier/loop composition, recovery idempotence, and replay mutation resistance. Focused verifier tests use deterministic fake runners to prove exact durable input binding, zero-tool model invocation, strict verdict parsing, aggregate bounds, branch/approval/loop composition, cancellation precedence, budget narrowing, replay mutation resistance, and refusal to repeat an open attempt. Attached CLI and detached-worker integration preserve typed results, child histories, optimization evidence, promoted parent files, and verifier evidence through real JSONL stores. The bounded-loop example records one continue, one stop, unused-iteration omission, final verification, and cleanup; the optimization example records one accepted promotion, one equal rejection, stagnation, and cleanup. The ordinary concurrent CLI test makes two same-workspace SRT-contained commands wait for each other's workspace marker, so it fails under accidental same-session serialization; incompatible child-workspace SRT command phases are intentionally queued across session reset. Default integration tests also reopen interrupted agent attempts from real JSONL: applied edits remain blocked, while read-only or not-applied edit attempts with an explicit policy continue at the exact next attempt in both attached CLI and detached-worker paths. The tests prove repeated recovery cannot duplicate reconciliation, result publication, loop transitions, child import, candidate capture, candidate promotion, or interruption disposition. `npm run test:runtime` additionally spawns compiled children and exits writable workers at five deterministic edit boundaries—before rename, after rename, after a real directory sync, when settlement append rejects, and after settlement persistence—to verify ledger/file truth. It also delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, races separate processes for one run identifier, and attacks the real filesystem, environment, run-store, and loopback-network boundary. These tests do not simulate host reboot or power loss. The package supports ordinary command nodes on Linux and macOS. Agent-issued commands execute only on Linux after verified PID-namespace preparation; macOS refuses them before spawn. Windows command nodes fail before spawn because descendant containment is not yet implemented.
 
+The focused verifier suite also proves bounded strict-output recovery and exhaustion. It proves
+failed-attempt retention, complete resource accounting, and refusal to repeat an interrupted model
+verifier.
+
 Focused artifact-budget tests prove multibyte UTF-8 accounting for successful and failed command,
 agent, verifier, and child evidence; equality and bounded concurrency-wave overshoot; legacy child
 replay; recovery identity; fresh-retry neutrality before terminal evidence; attached inspection;
@@ -449,6 +453,12 @@ Protocol tests exercise v2 bounded framing and strict schemas; admission tests e
 states and FIFO invariants; store tests exercise owner-only permissions, no-follow reads, immutable
 snapshots, automatic replay-equivalent compaction, startup serialization, atomic claims, and durable
 cancellation records.
+
+Issue lifecycle integration tests also require ephemeral loopback listeners on `127.0.0.1` for
+ownership and liveness checks. An outer execution sandbox can reject those listeners with
+`listen EPERM`, wrapped as `IssueLifecycleStoreError("io")`. Permit local listeners for the test
+process, or use a prepared host or CI runner, then rerun the unchanged failing case. Do not remove
+the ownership check, skip the test, or grant candidate commands network access to bypass this failure.
 
 Runtime sandbox tests require the host capabilities listed in the README. A sandbox dependency warning is a test failure, not a skip. Running Flow's sandbox suite from inside another restrictive sandbox can prevent SRT from creating its internal Unix socket or namespace; run the suite directly on the host or in a CI runner configured for nested containment. This operational accommodation must not weaken the production profile.
 
@@ -509,6 +519,119 @@ go test ./...
 
 Don't run the full proof image build on macOS as substitute acceptance evidence. Use the hosted
 Linux x64 job or a matching native Linux x64 host.
+
+## Verify native Linux observer prerequisites
+
+The `verifier-isolation` CI job runs
+`test/runtime/verification-observer-isolation.runtime.test.ts`,
+`test/runtime/verification-observer-fixture.runtime.test.ts`,
+`test/runtime/linux-observer-command.runtime.test.ts`,
+`test/runtime/observer-notification-history.runtime.test.ts`,
+`test/runtime/observer-clone3-compatibility.runtime.test.ts`, and
+`test/runtime/observer-secondary-group.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+It checks the host and Node.js architecture before building the runtime. The job uses the
+production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
+Missing dependencies or sandbox admission failures fail the job.
+
+The notification-history suite is a separate unprivileged kernel counterexample test. It compiles
+a fixed C probe with the host compiler. A received notification provides a positive control before
+the probe interrupts a second queued notification without receiving it. The test requires the child
+to report `EINTR`, exit normally, and leave an empty listener. A separate receive-control case
+receives both requests. Neither case permits the namespace syscall to execute.
+
+These controls test notification-history loss, not the safety of a replacement observer. A skipped
+Mac run does not verify compilation or kernel behavior. The first hosted execution remains pending.
+
+The clone3 compatibility suite measures four fixed Node.js 26.7.0 controls: timers, asynchronous
+file access, a worker thread, and a subprocess. Each control runs without tracing, under full
+`strace` tracing, and with `clone3` calls forced to return `ENOSYS`. A successful control with no
+observed injected calls reports unexercised coverage. The test records tool versions, syscall
+counts, trace hashes, and single-sample elapsed times.
+
+Private traces remain in owned temporary directories. Raw trace contents do not enter public diagnostics.
+These whole-invocation timings
+include tracing overhead and are not benchmarks. Passing fixed controls does not prove that a
+restriction preserves arbitrary candidate behavior or that a replacement observer is secure.
+Linux hosts require `strace`. A missing tool fails rather than skips these measurements.
+
+The supplementary-group experiment compares two synthetic fixture sets under unchanged SRT.
+One uses the host's primary group and must reproduce the nested capability bypass. The other
+uses an already-held supplementary group and must preserve `EACCES` for denied inputs.
+Both sets include readable and missing controls. The test checks original and bind-mounted paths,
+credential and mapping changes, ancestor namespace entry, and unchanged host fixture identities.
+It reports only bounded synthetic results after the integrity checks pass.
+
+The experiment requires a non-root Linux x64 user with an existing supplementary group distinct
+from the primary group, zero, and the overflow display value. Missing prerequisites fail the test.
+It does not create groups or change host group membership. Mount identity remapping remains
+outside this experiment's qualification scope. The first hosted execution is pending, and a pass
+would not select a production fixture policy or qualify the observer.
+
+The separate `proof-runtime` job also compares two clean builds of the unchanged upstream native
+helper after its proof acceptance tests. In a source checkout,
+`native/verification-observer/README.md` documents the pinned inputs and retained evidence.
+Successful comparison proves byte equality for
+those inputs, not modified-observer safety. Its first hosted build remains pending.
+
+The probes check ordinary and new-session descendant termination before command settlement,
+private-file and descriptor isolation, host-process access, and forged candidate output.
+The fixture suite separately checks readable, missing, and inaccessible inputs, mutation resistance,
+and unchanged fixture identities. Unsupported fixture controls fail qualification.
+
+Each relevant access check includes a positive control outside the sandbox. Passing these probes
+establishes prerequisites only. It does not qualify a behavioral observer, enable verification repair,
+or establish Mac support. The [verification repair design](bounded-verification-repair-design.md)
+owns the remaining qualification gates.
+
+On a prepared Linux x64 host, build the runtime and execute the focused suite:
+
+```sh
+npm run build
+npm run test:runtime -- \
+  test/runtime/verification-observer-isolation.runtime.test.ts \
+  test/runtime/verification-observer-fixture.runtime.test.ts \
+  test/runtime/linux-observer-command.runtime.test.ts \
+  test/runtime/observer-notification-history.runtime.test.ts \
+  test/runtime/observer-clone3-compatibility.runtime.test.ts \
+  test/runtime/observer-secondary-group.runtime.test.ts
+```
+
+Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS
+descendant-containment failure, set `FLOW_VERIFIER_ISOLATION_DIAGNOSTIC=1` for the isolation suite.
+The fixture suite remains Linux-only. The Mac diagnostic is expected to fail its descendant checks.
+Neither its results nor a default Mac skip count as Linux qualification.
+
+If a probe cannot confirm cleanup, inspect its retained fixture
+path before removing evidence. Do not signal a process using a PID reported by candidate code.
+
+### Test the internal observer components
+
+The fixture-owner tests use real local files. They cover byte and identity drift, denied file and
+directory access, invalid execution transitions, and conservative cleanup. The command-admission
+tests exercise bounded inputs, cancellation, unsupported hosts, and absence of command side effects.
+Execute both focused files without a model or provider credential:
+
+```sh
+npm test -- \
+  test/integration/verification/immutable-input-fixture.test.ts \
+  test/unit/verification/linux-observer-command.test.ts
+```
+
+On a prepared Linux x64 host, test command capture and cleanup with real sandboxed processes:
+
+```sh
+npm run build
+npm run test:runtime -- test/runtime/linux-observer-command.runtime.test.ts
+```
+
+This runtime file also checks protected-parent and read-only-child paths, input detachment, bounded
+output, timeout, and shell-encoded exit status. Its default Mac skips are not passing qualification.
+A completed command observation means the outer result and cleanup were recorded. It does not prove
+that the inner application launched or exited normally, establish a behavioral assertion, or select repair.
+
+These components remain disconnected from issue runs. The complete protected observer, application
+launch proof, private receipt, and lifecycle gates remain open in the
+[verification repair design](bounded-verification-repair-design.md).
 
 ## Live Pi test policy
 

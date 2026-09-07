@@ -2,6 +2,7 @@ import { parseDocument } from "yaml";
 import { z } from "zod";
 
 import { canonicalGitHubRepositoryIdentity } from "./identity.js";
+import { issueReviewRepairPolicySchema } from "./review-repair-policy.js";
 
 export const MAX_GITHUB_ISSUE_PLAN_BYTES = 65_536;
 export const MAX_ISSUE_VERIFICATION_COMMANDS = 32;
@@ -45,6 +46,14 @@ const workflowPathSchema = z
   .min(1)
   .max(1_024)
   .refine(isSafeWorkflowPath, "must be a strict project-relative workflow path");
+const holdoutInputPathSchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .refine(
+    isSafeHoldoutInputPath,
+    "must be a strict project-relative path below .flow/verification",
+  );
 const candidatePathPrefixSchema = z
   .string()
   .min(1)
@@ -101,7 +110,12 @@ const githubIssuePlanSchema = z
       })
       .strict(),
     implementation: z.object({ workflow: workflowPathSchema }).strict(),
-    holdout: z.object({ command: commandSchema }).strict(),
+    holdout: z
+      .object({
+        command: commandSchema,
+        stdin: z.object({ path: holdoutInputPathSchema }).strict().optional(),
+      })
+      .strict(),
     verification: z
       .array(z.object({ id: identifierSchema, command: commandSchema }).strict())
       .min(1)
@@ -129,6 +143,10 @@ const githubIssuePlanSchema = z
         blockingSeverities: z.tuple([z.literal("P1"), z.literal("P2"), z.literal("P3")]),
       })
       .strict(),
+    reviewRepair: issueReviewRepairPolicySchema
+      .extend({ workflow: workflowPathSchema, resultNode: identifierSchema })
+      .strict()
+      .optional(),
     merge: z
       .object({
         method: z.enum(["squash", "merge", "rebase"]),
@@ -140,6 +158,13 @@ const githubIssuePlanSchema = z
   .refine(
     (plan) => plan.implementation.workflow !== plan.review.workflow,
     "implementation and review workflows must be distinct",
+  )
+  .refine(
+    (plan) =>
+      plan.reviewRepair === undefined ||
+      (plan.reviewRepair.workflow !== plan.implementation.workflow &&
+        plan.reviewRepair.workflow !== plan.review.workflow),
+    "repair workflow must differ from implementation and review workflows",
   );
 
 export type GitHubIssuePlan = Readonly<z.output<typeof githubIssuePlanSchema>>;
@@ -210,6 +235,12 @@ function isSafeWorkflowPath(value: string): boolean {
   if (isSafeProjectPath(value)) return true;
   if (!value.startsWith(".flow/workflows/")) return false;
   const remainder = value.slice(".flow/workflows/".length);
+  return isSafeProjectPathOrPrefix(remainder, false);
+}
+
+function isSafeHoldoutInputPath(value: string): boolean {
+  if (!value.startsWith(".flow/verification/")) return false;
+  const remainder = value.slice(".flow/verification/".length);
   return isSafeProjectPathOrPrefix(remainder, false);
 }
 

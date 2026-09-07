@@ -7,13 +7,18 @@ import {
   type ManagedCommandExecutionResult,
   type PreparedCommand,
 } from "../../application/command-sandbox.js";
+import { MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES } from "../../application/frozen-issue-command.js";
 import type {
+  AgentCommandExecutionContext,
   AgentCommandExecutor,
   CommandExecutor,
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
-import type { AgentCommandRequest } from "../../domain/agent-command.js";
+import {
+  calculateAgentCommandDigest,
+  type AgentCommandRequest,
+} from "../../domain/agent-command.js";
 import { MAX_AGENT_COMMAND_OUTPUT_BYTES } from "../../domain/command-envelope.js";
 import {
   type ArtifactReference,
@@ -93,6 +98,21 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     if (this.#platform === "win32") {
       return platformFailure();
     }
+
+    const commandStdin =
+      context.commandStdin === undefined ? undefined : Buffer.from(context.commandStdin);
+    if (
+      commandStdin !== undefined &&
+      commandStdin.byteLength > MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES
+    ) {
+      throw new RangeError(
+        `command stdin must not exceed ${MAX_FROZEN_ISSUE_HOLDOUT_STDIN_BYTES} bytes`,
+      );
+    }
+    const stdinHash =
+      commandStdin === undefined
+        ? undefined
+        : createHash("sha256").update(commandStdin).digest("hex");
 
     const startedAt = process.hrtime.bigint();
     const deadline = commandDeadline(node.command.timeoutMs, context.signal);
@@ -219,6 +239,8 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
         startedAt,
         stdout,
         stderr,
+        commandStdin,
+        stdinHash,
       );
     }
 
@@ -228,7 +250,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
         env: prepared.launch.env,
         shell: false,
         detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [commandStdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         windowsHide: true,
       });
     } catch (error) {
@@ -242,17 +264,21 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
 
     child.stdout?.on("data", (chunk: Buffer) => stdout.add(chunk));
     child.stderr?.on("data", (chunk: Buffer) => stderr.add(chunk));
+    const stdinSettlement = settleNativeCommandStdin(child, commandStdin);
 
     const remainingTimeoutMs = deadline.remainingMs();
     deadline.dispose();
-    const result = await waitForProcessTreeExit(
-      child,
-      remainingTimeoutMs,
-      this.#terminationGraceMs,
-      context.signal,
-      this.#platform,
-      this.#terminationConfirmationMs,
-    );
+    const [result, stdinSettled] = await Promise.all([
+      waitForProcessTreeExit(
+        child,
+        remainingTimeoutMs,
+        this.#terminationGraceMs,
+        context.signal,
+        this.#platform,
+        this.#terminationConfirmationMs,
+      ),
+      stdinSettlement,
+    ]);
     if (result.spawnError !== null) {
       const cleanupError = await release(prepared);
       if (cleanupError !== null) {
@@ -261,7 +287,9 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
       return spawnFailure(result.spawnError);
     }
 
-    const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+    const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr, {
+      stdinHash: stdinSettled ? stdinHash : undefined,
+    });
 
     const cleanupError = await release(prepared);
     if (result.terminationIncomplete) {
@@ -289,6 +317,13 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     if (result.signal !== null) {
       return failed("command_signaled", `command terminated by signal ${result.signal}`, evidence);
     }
+    if (commandStdin !== undefined && !stdinSettled) {
+      return failed(
+        "command_stdin_failed",
+        "command standard input closed before write settlement",
+        evidence,
+      );
+    }
     if (result.exitCode !== 0) {
       return failed("command_failed", `command exited with code ${result.exitCode}`, evidence);
     }
@@ -298,8 +333,16 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
 
   async executeAgentCommand(
     command: AgentCommandRequest,
-    context: NodeExecutionContext,
+    context: AgentCommandExecutionContext,
   ): Promise<AgentCommandSettlementOutcome> {
+    const authority = context.agentCommandAuthority;
+    if (
+      authority !== undefined &&
+      !authority.requestDigests.includes(calculateAgentCommandDigest(command))
+    ) {
+      return commandNotAllowedFailure();
+    }
+    const { commandStdin: _commandStdin, ...agentContext } = context as NodeExecutionContext;
     const outcome = await this.#execute(
       {
         id: "agent-command",
@@ -311,8 +354,8 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
           timeoutMs: command.timeoutMs,
         },
       },
-      context,
-      true,
+      agentContext,
+      authority === undefined,
     );
     const commandEvidence = outcome.evidence;
     if (commandEvidence !== null && commandEvidence.kind !== "command") {
@@ -330,6 +373,39 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
   }
 }
 
+function settleNativeCommandStdin(
+  child: ChildProcess,
+  stdin: Uint8Array | undefined,
+): Promise<boolean> {
+  if (stdin === undefined) return Promise.resolve(true);
+  const stream = child.stdin;
+  if (stream === null) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (delivered: boolean): void => {
+      if (settled) return;
+      settled = true;
+      stream.off("finish", onFinish);
+      stream.off("error", onError);
+      stream.off("close", onClose);
+      resolve(delivered);
+    };
+    const onFinish = (): void => settle(true);
+    const onError = (): void => settle(false);
+    const onClose = (): void => settle(stream.writableFinished && stream.errored === null);
+
+    stream.once("finish", onFinish);
+    stream.once("error", onError);
+    stream.once("close", onClose);
+    try {
+      stream.end(stdin);
+    } catch {
+      settle(false);
+    }
+  });
+}
+
 async function executeManagedCommand(
   node: CompiledCommandNode,
   prepared: PreparedCommand,
@@ -338,9 +414,12 @@ async function executeManagedCommand(
   startedAt: bigint,
   stdout: BoundedOutput,
   stderr: BoundedOutput,
+  stdin: Uint8Array | undefined,
+  stdinHash: string | undefined,
 ): Promise<NodeExecutionOutcome> {
   const execution = run({
     signal: deadline.signal,
+    ...(stdin === undefined ? {} : { stdin }),
     stdout: (chunk) => stdout.add(Buffer.from(chunk)),
     stderr: (chunk) => stderr.add(Buffer.from(chunk)),
   });
@@ -364,7 +443,9 @@ async function executeManagedCommand(
       spawnError: null,
       terminationIncomplete: cleanupError !== null,
     };
-    const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+    const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr, {
+      stdinHash,
+    });
     if (cleanupError !== null) {
       return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
     }
@@ -391,7 +472,9 @@ async function executeManagedCommand(
         spawnError: null,
         terminationIncomplete: cleanupError !== null,
       };
-      const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+      const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr, {
+        stdinHash,
+      });
       if (cleanupError !== null) {
         return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
       }
@@ -405,14 +488,14 @@ async function executeManagedCommand(
     }
     if (cleanupError !== null) {
       const evidence = executionMayHaveStarted
-        ? managedFailureEvidence(node, prepared, startedAt, stdout, stderr, true)
+        ? managedFailureEvidence(node, prepared, startedAt, stdout, stderr, true, stdinHash)
         : null;
       return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
     }
     if (executionMayHaveStarted) {
       return sandboxFailure(
         publicManagedExecutionError(settlement.error),
-        managedFailureEvidence(node, prepared, startedAt, stdout, stderr, false),
+        managedFailureEvidence(node, prepared, startedAt, stdout, stderr, false, stdinHash),
         "uncertain",
       );
     }
@@ -432,6 +515,7 @@ async function executeManagedCommand(
       stdout,
       stderr,
       cleanupError !== null,
+      stdinHash,
     );
     if (cleanupError !== null) {
       return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
@@ -451,7 +535,9 @@ async function executeManagedCommand(
     spawnError: null,
     terminationIncomplete: false,
   };
-  const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+  const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr, {
+    stdinHash,
+  });
   const cleanupError = await release(prepared);
   if (cleanupError !== null) {
     return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
@@ -498,6 +584,7 @@ function managedFailureEvidence(
   stdout: BoundedOutput,
   stderr: BoundedOutput,
   terminationIncomplete: boolean,
+  stdinHash: string | undefined,
 ): CommandEvidence {
   return commandEvidence(
     node,
@@ -513,7 +600,10 @@ function managedFailureEvidence(
     },
     stdout,
     stderr,
-    terminationIncomplete ? undefined : "confirmed",
+    {
+      terminationStatus: terminationIncomplete ? undefined : "confirmed",
+      stdinHash,
+    },
   );
 }
 
@@ -524,7 +614,10 @@ function commandEvidence(
   result: ProcessTreeExitResult,
   stdout: BoundedOutput,
   stderr: BoundedOutput,
-  terminationStatus?: CommandEvidence["terminationStatus"],
+  options: {
+    readonly terminationStatus?: CommandEvidence["terminationStatus"] | undefined;
+    readonly stdinHash?: string | undefined;
+  } = {},
 ): CommandEvidence {
   const stdoutEvidence = stdout.seal();
   const stderrEvidence = stderr.seal();
@@ -538,13 +631,14 @@ function commandEvidence(
     stderr: stderrEvidence.text,
     stdoutHash: stdoutEvidence.digest,
     stderrHash: stderrEvidence.digest,
+    ...(options.stdinHash === undefined ? {} : { stdinHash: options.stdinHash }),
     stdoutTruncated: stdoutEvidence.truncated,
     stderrTruncated: stderrEvidence.truncated,
     timedOut: result.timedOut,
     aborted: result.aborted,
     durationMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
     terminationStatus:
-      terminationStatus ??
+      options.terminationStatus ??
       (result.terminationIncomplete
         ? "unconfirmed"
         : result.timedOut || result.aborted
@@ -552,6 +646,7 @@ function commandEvidence(
           : "not-required"),
     sandbox: prepared.evidence,
   };
+  commandProcessContainment.set(evidence, prepared.processContainment);
   if (stdoutEvidence.artifactBytes !== undefined || stderrEvidence.artifactBytes !== undefined) {
     commandArtifactCandidates.set(evidence, {
       ...(stdoutEvidence.artifactBytes === undefined
@@ -575,13 +670,20 @@ async function toAgentCommandEvidence(
   const candidate = commandArtifactCandidates.get(evidence);
   const store = context.artifactStore;
   const producer = context.agentCommandArtifactProducer;
+  const processContainment = commandProcessContainment.get(evidence);
+  if (processContainment === undefined) {
+    throw new TypeError("agent command evidence is missing process containment");
+  }
   const baseEvidence: AgentCommandEvidence = {
     ...evidence,
     stdoutRetainedHash: hashText(evidence.stdout),
     stderrRetainedHash: hashText(evidence.stderr),
     stdoutRetainedBytes: Buffer.byteLength(evidence.stdout, "utf8"),
     stderrRetainedBytes: Buffer.byteLength(evidence.stderr, "utf8"),
-    processContainment: "linux-pid-namespace",
+    processContainment,
+    ...(context.agentCommandAuthority === undefined
+      ? {}
+      : { selectionAuthority: "frozen-verification" as const }),
     aborted: evidence.aborted ?? false,
     terminationStatus: requiredTerminationStatus(evidence),
     sandbox: evidence.sandbox,
@@ -982,6 +1084,19 @@ function insufficientContainmentFailure(): NodeExecutionOutcome {
   };
 }
 
+function commandNotAllowedFailure(): AgentCommandSettlementOutcome {
+  return {
+    status: "failed",
+    error: {
+      code: "command_not_allowed",
+      message: "command does not match controller-frozen verification authority",
+      retryable: false,
+      sideEffectStatus: "none",
+    },
+    evidence: null,
+  };
+}
+
 function sandboxCleanupFailure(
   error: unknown,
   evidence: CommandEvidence | null,
@@ -1076,6 +1191,10 @@ class BoundedOutput {
 const commandArtifactCandidates = new WeakMap<
   CommandEvidence,
   { readonly stdout?: Buffer; readonly stderr?: Buffer }
+>();
+const commandProcessContainment = new WeakMap<
+  CommandEvidence,
+  PreparedCommand["processContainment"]
 >();
 
 function decodeBoundedUtf8(buffer: Buffer, maxBytes: number): string {

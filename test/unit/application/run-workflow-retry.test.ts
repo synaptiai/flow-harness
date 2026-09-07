@@ -16,6 +16,7 @@ import {
   runWorkflow,
 } from "../../../src/application/run-workflow.js";
 import {
+  calculateRecoveryBackoffDelayMs,
   type FilesystemEditEffectDescriptor,
   parseRunEvent,
   type RunEvent,
@@ -111,6 +112,92 @@ describe("runWorkflow proof-safe fresh recovery", () => {
           ],
         },
       },
+    });
+  });
+
+  it("waits for the durable jittered backoff before a provider retry", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    let agentExecutions = 0;
+    let clockMs = Date.parse("2026-08-07T18:00:00.000Z");
+    const waits: number[] = [];
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") return successfulCommandOutcome(node.id);
+        agentExecutions += 1;
+        return agentExecutions === 1 ? retryableAgentFailure() : successfulAgentOutcome();
+      },
+    };
+    const runId = "run-terminal-backoff";
+    const backoff = { initialDelayMs: 30_000, maxDelayMs: 120_000 };
+
+    const state = await runWorkflow(workflow("read", true, undefined, 3, undefined, backoff), {
+      ...options(store, executor, runId),
+      now: () => new Date(clockMs),
+      async recoveryDelay(milliseconds) {
+        waits.push(milliseconds);
+        clockMs += milliseconds;
+      },
+    });
+
+    const expectedDelay = calculateRecoveryBackoffDelayMs(runId, "implement", 1, backoff);
+    expect(waits).toEqual([expectedDelay]);
+    expect(store.events.find((event) => event.type === "node_retry_scheduled")).toMatchObject({
+      notBefore: new Date(Date.parse("2026-08-07T18:00:00.000Z") + expectedDelay).toISOString(),
+    });
+    expect(
+      store.events.filter((event) => event.type === "node_started").map((event) => event.at),
+    ).toEqual([
+      "2026-08-07T18:00:00.000Z",
+      new Date(Date.parse("2026-08-07T18:00:00.000Z") + expectedDelay).toISOString(),
+      new Date(Date.parse("2026-08-07T18:00:00.000Z") + expectedDelay).toISOString(),
+    ]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      recoveryRequirements: { implement: { backoff } },
+      nodes: { implement: { retryNotBefore: null } },
+    });
+  });
+
+  it("resumes a retry by waiting for its persisted remaining backoff", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    let agentExecutions = 0;
+    let clockMs = Date.parse("2026-08-07T18:00:00.000Z");
+    const waits: number[] = [];
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "agent") return successfulCommandOutcome(node.id);
+        agentExecutions += 1;
+        return agentExecutions === 1 ? retryableAgentFailure() : successfulAgentOutcome();
+      },
+    };
+    const runId = "run-resumed-backoff";
+    const backoff = { initialDelayMs: 30_000, maxDelayMs: 120_000 };
+    const compiled = workflow("read", true, undefined, 3, undefined, backoff);
+
+    await expect(
+      runWorkflow(compiled, {
+        ...options(store, executor, runId),
+        now: () => new Date(clockMs),
+        async recoveryDelay() {
+          throw new Error("simulated process exit during retry backoff");
+        },
+      }),
+    ).rejects.toThrow(/simulated process exit/i);
+    expect(store.events.at(-1)?.type).toBe("node_retry_scheduled");
+
+    const state = await resumeWorkflow(compiled, {
+      ...resumeOptions(store, executor, runId),
+      now: () => new Date(clockMs),
+      async recoveryDelay(milliseconds) {
+        waits.push(milliseconds);
+        clockMs += milliseconds;
+      },
+    });
+
+    expect(waits).toEqual([calculateRecoveryBackoffDelayMs(runId, "implement", 1, backoff)]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: { implement: { attempt: 2, failedAttempts: [{ attempt: 1 }] } },
     });
   });
 
@@ -257,6 +344,47 @@ describe("runWorkflow proof-safe fresh recovery", () => {
     expect(calls).toBe(1);
     expect(state).toMatchObject({ status: "failed", failedNodeId: "implement" });
     expect(store.events.some((event) => event.type === "node_retry_scheduled")).toBe(false);
+  });
+
+  it("fresh-retries malformed model-verifier output with complete accounting", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    const attempts: number[] = [];
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        attempts.push(context.attempt);
+        if (node.type === "agent") return successfulAgentOutcome();
+        if (node.type !== "verifier") return successfulCommandOutcome(node.id);
+        return context.attempt === 1
+          ? invalidModelVerifierOutcome()
+          : successfulModelVerifierOutcome();
+      },
+    };
+
+    const state = await runWorkflow(
+      verifierRecoveryWorkflow(),
+      options(store, executor, "run-verifier-retry"),
+    );
+
+    expect(attempts).toEqual([1, 1, 2]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      resources: { nodeStarts: 3, modelTokens: 12, modelCostUsdMicros: 4 },
+      recoveryRequirements: {
+        verify: { mode: "fresh", maxAttempts: 2, effectProtocol: "none" },
+      },
+      nodes: {
+        verify: {
+          status: "succeeded",
+          attempt: 2,
+          failedAttempts: [
+            {
+              attempt: 1,
+              evidence: { kind: "verifier", driver: "model", result: "invalid_output" },
+            },
+          ],
+        },
+      },
+    });
   });
 
   it("does not select one retry from a concurrent wave with multiple failures", async () => {
@@ -780,6 +908,7 @@ function workflow(
   maxArtifactBytes?: number,
   maxAttempts = 3,
   maxModelTokens?: number,
+  backoff?: { readonly initialDelayMs: number; readonly maxDelayMs: number },
 ) {
   const budget = [
     maxArtifactBytes === undefined ? undefined : `maxArtifactBytes: ${maxArtifactBytes}`,
@@ -797,7 +926,15 @@ nodes:
       prompt: Implement the requested change.
       model: { provider: test, id: deterministic }
       tools: [${tool}]
-      ${recovery ? `recovery: { mode: fresh, maxAttempts: ${maxAttempts} }` : ""}
+      ${
+        recovery
+          ? `recovery: { mode: fresh, maxAttempts: ${maxAttempts}${
+              backoff === undefined
+                ? ""
+                : `, backoff: { initialDelayMs: ${backoff.initialDelayMs}, maxDelayMs: ${backoff.maxDelayMs} }`
+            } }`
+          : ""
+      }
   - id: verify
     type: command
     dependsOn: [implement]
@@ -827,6 +964,104 @@ function retryableAgentFailure(
       sideEffectStatus: "none",
     },
     evidence,
+  };
+}
+
+function verifierRecoveryWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: verifier-retry }
+budget: { maxModelTokens: 100, maxCostUsd: 0.0001 }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: verify
+    type: verifier
+    dependsOn: [analyze]
+    verifier:
+      kind: model
+      prompt: Verify the report.
+      evidence: [{ nodeId: analyze, field: agent.text }]
+      model: { provider: test, id: deterministic }
+      recovery: { mode: fresh, maxAttempts: 2 }
+`);
+}
+
+function invalidModelVerifierOutcome(): NodeExecutionOutcome {
+  const raw = '{"verdict":"accepted","reason":"verified","extra":null}';
+  return {
+    status: "failed",
+    error: {
+      code: "verifier_inconclusive",
+      message: "model verifier output violated the strict verdict contract",
+      retryable: true,
+      sideEffectStatus: "none",
+    },
+    evidence: {
+      kind: "verifier",
+      driver: "model",
+      result: "invalid_output",
+      verdict: "inconclusive",
+      reason: "model verifier output violated the strict verdict contract",
+      reasonHash: sha256("model verifier output violated the strict verdict contract"),
+      provider: "test",
+      model: "deterministic",
+      raw,
+      rawHash: sha256(raw),
+      rawTruncated: false,
+      durationMs: 2,
+      usage: {
+        inputTokens: 3,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 4,
+      },
+      sources: [modelVerifierSource()],
+    },
+  };
+}
+
+function successfulModelVerifierOutcome(): NodeExecutionOutcome {
+  const raw = '{"verdict":"accepted","reason":"verified"}';
+  return {
+    status: "succeeded",
+    evidence: {
+      kind: "verifier",
+      driver: "model",
+      result: "parsed",
+      verdict: "accepted",
+      reason: "verified",
+      reasonHash: sha256("verified"),
+      provider: "test",
+      model: "deterministic",
+      raw,
+      rawHash: sha256(raw),
+      rawTruncated: false,
+      durationMs: 2,
+      usage: {
+        inputTokens: 4,
+        outputTokens: 3,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsdMicros: 0,
+      },
+      sources: [modelVerifierSource()],
+    },
+  };
+}
+
+function modelVerifierSource() {
+  return {
+    sourceNodeId: "analyze",
+    sourceAttempt: 1,
+    sourceField: "agent.text" as const,
+    sourceHash: sha256("implemented"),
   };
 }
 

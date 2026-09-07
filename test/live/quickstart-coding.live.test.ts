@@ -20,8 +20,10 @@ describe.skipIf(provider === undefined || model === undefined)("coding quick sta
     if (provider === undefined || model === undefined) {
       throw new Error("live coding provider settings are unavailable after test admission");
     }
-    if (provider !== "anthropic" && provider !== "openai") {
-      throw new Error("live coding quick start requires the anthropic or openai provider");
+    if (provider !== "anthropic" && provider !== "openai" && provider !== "openrouter") {
+      throw new Error(
+        "live coding quick start requires the anthropic, openai, or openrouter provider",
+      );
     }
     if (!(await hasConfiguredLivePiModel(provider, model))) {
       skip(`live provider "${provider}" has no configured authentication`);

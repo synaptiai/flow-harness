@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calculateMergeApprovalDigest,
   calculateMergeGateDigest,
   type MergeGateInput,
 } from "../../../src/domain/issue-lifecycle/merge-gate.js";
@@ -26,6 +27,21 @@ describe("merge gate digest", () => {
 
     expect(calculateMergeGateDigest(gate)).toMatch(/^[a-f0-9]{64}$/);
     expect(calculateMergeGateDigest(reordered)).toBe(calculateMergeGateDigest(gate));
+  });
+
+  it("keeps operator approval stable across fresh command evidence receipts", () => {
+    const gate = mergeGate();
+    const rerun: MergeGateInput = {
+      ...structuredClone(gate),
+      negativeControl: { ...gate.negativeControl, evidenceDigest: "8".repeat(64) },
+      deterministicVerification: gate.deterministicVerification.map((verification) => ({
+        ...verification,
+        evidenceDigest: "9".repeat(64),
+      })),
+    };
+
+    expect(calculateMergeApprovalDigest(rerun)).toBe(calculateMergeApprovalDigest(gate));
+    expect(calculateMergeGateDigest(rerun)).not.toBe(calculateMergeGateDigest(gate));
   });
 
   it.each([

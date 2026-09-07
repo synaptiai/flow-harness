@@ -12,7 +12,12 @@ import {
   main,
   resolveDirectExitCode,
 } from "../../src/cli/main.js";
-import { resolveFlowConfig } from "../../src/domain/config/resolver.js";
+import { createCapabilitySnapshot } from "../../src/domain/capability/agent-skills.js";
+import {
+  FLOW_CONFIG_API_VERSION,
+  parseOperatorConfig,
+  resolveFlowConfig,
+} from "../../src/domain/config/resolver.js";
 
 describe("flow CLI", () => {
   it("captures supported evaluation environments from installed package metadata", async () => {
@@ -60,11 +65,119 @@ describe("flow CLI", () => {
     expect(output.join("\n")).toContain("flow eval export");
     expect(output.join("\n")).toContain("flow run");
     expect(output.join("\n")).toContain("flow resume");
+    expect(output.join("\n")).toContain("flow issue");
     expect(output.join("\n")).toContain("flow inspect");
     expect(output.join("\n")).toContain("flow cancel");
     expect(output.join("\n")).toContain("flow events");
     expect(output.join("\n")).toContain("flow supervisor status");
     expect(output.join("\n")).not.toContain("__worker");
+  });
+
+  it("routes issue help without loading configuration or resolving host tools", async () => {
+    const output: string[] = [];
+    let serviceCreated = false;
+
+    const exitCode = await main(
+      ["issue", "--help"],
+      {
+        stdout: (text) => output.push(text),
+        stderr: (text) => output.push(text),
+      },
+      {
+        loadConfig: async () => {
+          throw new Error("issue help must not load configuration");
+        },
+        createGitHubIssueCliService: () => {
+          serviceCreated = true;
+          throw new Error("issue help must not construct the production service");
+        },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(serviceCreated).toBe(false);
+    expect(output.join("\n")).toContain("flow issue run");
+    expect(output.join("\n")).toContain("flow issue merge");
+  });
+
+  it("routes issue commands through the configured project service", async () => {
+    const output: string[] = [];
+    const requests: unknown[] = [];
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          kind: "policy-package",
+          trust: "project-explicit",
+          provenance: ".flow/policies/issue-fixture",
+          manifest: {
+            content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata: { name: issue-fixture, version: 1.0.0, description: Issue fixture. }
+spec:
+  models:
+    allowed:
+      - { provider: controller, model: operator-selected }
+`),
+          },
+        },
+      ],
+    );
+    const selectedPolicy = capabilitySnapshot.packages[0];
+    if (selectedPolicy === undefined) throw new Error("policy fixture is missing");
+    const operator = parseOperatorConfig(
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowOperatorConfig",
+        policies: {
+          required: [
+            {
+              name: selectedPolicy.name,
+              version: selectedPolicy.version,
+              digest: selectedPolicy.digest,
+            },
+          ],
+        },
+      },
+      "/operator/config.yaml",
+    );
+
+    const exitCode = await main(
+      ["issue", "inspect", "issue-run-1"],
+      {
+        stdout: (text) => output.push(text),
+        stderr: (text) => output.push(text),
+      },
+      {
+        cwd: "/workspace/project",
+        loadConfig: async () =>
+          resolveFlowConfig({
+            projectRoot: "/workspace/project",
+            operator: { path: "/operator/config.yaml", config: operator },
+            policyPackages: capabilitySnapshot,
+          }),
+        createGitHubIssueCliService: (options) => {
+          expect(options).toMatchObject({
+            projectRoot: "/workspace/project",
+            sandboxProfile: "native",
+          });
+          expect(options.capabilitySnapshot?.digest).toBe(capabilitySnapshot.digest);
+          return {
+            async execute(request) {
+              requests.push(request);
+              return { phase: "waiting_for_ci" };
+            },
+          };
+        },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(requests).toEqual([{ kind: "inspect", runId: "issue-run-1" }]);
+    expect(JSON.parse(output.join("\n"))).toEqual({ phase: "waiting_for_ci" });
   });
 
   it("initializes an explicit directory with replacement only when requested", async () => {

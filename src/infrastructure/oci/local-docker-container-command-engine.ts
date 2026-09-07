@@ -524,6 +524,9 @@ async function runContainerCommand(
   containerId: string,
   input: ManagedCommandExecutionInput,
 ): Promise<ManagedCommandExecutionResult> {
+  if (input.stdin !== undefined) {
+    throw new CommandSandboxExecutionError("attach execution output");
+  }
   const operationController = new AbortController();
   const operationSignal = AbortSignal.any([input.signal, operationController.signal]);
   const attach = requiredExecutionOperation(api.attachCommandContainer, "attach execution output");

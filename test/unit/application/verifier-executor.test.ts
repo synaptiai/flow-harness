@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
+import { serializeBoundedIssueReviewContext } from "../../../src/application/issue-independent-review-projection.js";
+import {
+  admitIssueWorkflow,
+  MAX_ISSUE_REVIEW_CONTEXT_BYTES,
+} from "../../../src/application/issue-workflow-admission.js";
 import type {
   AgentExecutor,
   CommandExecutor,
@@ -13,12 +18,15 @@ import {
   VerifierNodeExecutor,
 } from "../../../src/application/verifier-executor.js";
 import {
-  calculateAcpAgentSessionBindingDigest,
   type AgentEvidence,
   type CommandEvidence,
+  calculateAcpAgentSessionBindingDigest,
 } from "../../../src/domain/run/events.js";
 import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../src/domain/run/work-profile.js";
-import type { CompiledVerifierNode } from "../../../src/domain/workflow/types.js";
+import {
+  type CompiledVerifierNode,
+  MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES,
+} from "../../../src/domain/workflow/types.js";
 
 describe("verifier node executor", () => {
   it("maps exit-zero command execution to accepted verifier evidence", async () => {
@@ -242,6 +250,25 @@ describe("verifier node executor", () => {
     });
   });
 
+  it("passes a model verifier's frozen output-token limit to the agent executor", async () => {
+    const raw = verdictJson("accepted", "The bounded response verifies the evidence.");
+    const agent = fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) });
+    const executor = new VerifierNodeExecutor(fakeCommandExecutor(), agent);
+    const baseNode = modelVerifier();
+    if (baseNode.verifier.kind !== "model") throw new Error("fixture must use a model verifier");
+    const node: CompiledVerifierNode = {
+      ...baseNode,
+      verifier: { ...baseNode.verifier, maxOutputTokens: 8_192 },
+    };
+
+    await executor.execute(node, contextWithSources());
+
+    expect(agent.execute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentMaxOutputTokens: 8_192 }),
+    );
+  });
+
   it("turns an explicit rejected model verdict into a side-effect-free verifier failure", async () => {
     const reason = "The evidence does not prove the claim.";
     const raw = JSON.stringify({ verdict: "rejected", reason });
@@ -315,8 +342,37 @@ describe("verifier node executor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "verifier_inconclusive", sideEffectStatus: "none" },
+      error: { code: "verifier_inconclusive", retryable: false, sideEffectStatus: "none" },
       evidence: { result: "invalid_output", verdict: "inconclusive", raw },
+    });
+  });
+
+  it("marks strict-invalid output retryable only while declared attempts remain", async () => {
+    const base = modelVerifier();
+    if (base.verifier.kind !== "model") throw new Error("fixture must use a model verifier");
+    const node: CompiledVerifierNode = {
+      ...base,
+      verifier: {
+        ...base.verifier,
+        recovery: { mode: "fresh", maxAttempts: 2 },
+      },
+    };
+    const raw = '{"verdict":"accepted","reason":"looks good","extra":null}';
+    const executor = new VerifierNodeExecutor(
+      fakeCommandExecutor(),
+      fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) }),
+    );
+
+    const first = await executor.execute(node, contextWithSources());
+    const final = await executor.execute(node, { ...contextWithSources(), attempt: 2 });
+
+    expect(first).toMatchObject({
+      status: "failed",
+      error: { code: "verifier_inconclusive", retryable: true },
+    });
+    expect(final).toMatchObject({
+      status: "failed",
+      error: { code: "verifier_inconclusive", retryable: false },
     });
   });
 
@@ -496,6 +552,139 @@ describe("verifier node executor", () => {
       error: { code: "verifier_inconclusive", message: expect.stringMatching(/262144/) },
     });
   });
+
+  it("grants expanded verifier input only to a frozen issue-review policy", async () => {
+    const prompt = "r".repeat(MAX_VERIFIER_INPUT_BYTES);
+    const raw = verdictJson("accepted", "The bounded review evidence is sufficient.");
+    const genericAgent = fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) });
+    const reviewAgent = fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) });
+    const genericExecutor = new VerifierNodeExecutor(fakeCommandExecutor(), genericAgent);
+    const reviewExecutor = new VerifierNodeExecutor(fakeCommandExecutor(), reviewAgent);
+    const baseNode = modelVerifier();
+    if (baseNode.verifier.kind !== "model") throw new Error("fixture must use a model verifier");
+    const genericNode: CompiledVerifierNode = {
+      ...baseNode,
+      verifier: { ...baseNode.verifier, prompt },
+    };
+    const reviewNode: CompiledVerifierNode = {
+      ...baseNode,
+      verifier: {
+        ...baseNode.verifier,
+        prompt,
+        inputPolicy: {
+          kind: "issue-workflow",
+          role: "review",
+          maxBytes: MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES,
+        },
+      },
+    };
+
+    const generic = await genericExecutor.execute(genericNode, contextWithSources());
+    const review = await reviewExecutor.execute(reviewNode, contextWithSources());
+
+    expect(generic).toMatchObject({
+      status: "failed",
+      error: { code: "verifier_inconclusive", message: expect.stringContaining("262144") },
+    });
+    expect(genericAgent.execute).not.toHaveBeenCalled();
+    expect(review).toMatchObject({ status: "succeeded" });
+    expect(reviewAgent.execute).toHaveBeenCalledOnce();
+  });
+
+  it("executes a quote-heavy exact-limit review projection without another JSON escape layer", async () => {
+    const emptyBytes = Buffer.byteLength(JSON.stringify({ content: "" }), "utf8");
+    const projection = serializeBoundedIssueReviewContext({
+      content: '"'.repeat((MAX_ISSUE_REVIEW_CONTEXT_BYTES - emptyBytes) / 2),
+    });
+    const admitted = admitIssueWorkflow({
+      role: "review",
+      source: reviewWorkflowWithModelVerifier(),
+      sourceName: "review.workflow.yaml",
+      model: { provider: "test", id: "deterministic" },
+      context: { kind: "review", content: projection },
+      resultNodeId: "review-result",
+    });
+    const verifier = admitted.workflow.nodes.find((node) => node.id === "verify-review");
+    if (verifier?.type !== "verifier" || verifier.verifier.kind !== "model") {
+      throw new Error("admitted fixture must contain a model verifier");
+    }
+    const raw = verdictJson("accepted", "The complete review projection is available.");
+    const agent = fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) });
+    const executor = new VerifierNodeExecutor(fakeCommandExecutor(), agent);
+    const sourceValue = "review report";
+
+    const outcome = await executor.execute(verifier, {
+      ...context(),
+      verifierSources: [
+        {
+          sourceNodeId: "review-result",
+          sourceAttempt: 1,
+          sourceField: "agent.text",
+          sourceHash: sha256(sourceValue),
+          value: sourceValue,
+          truncated: false,
+        },
+      ],
+    });
+    const executed = agent.execute.mock.calls[0]?.[0];
+    const renderedPrompt = executed?.type === "agent" ? executed.agent.prompt : "";
+
+    expect(Buffer.byteLength(projection, "utf8")).toBe(MAX_ISSUE_REVIEW_CONTEXT_BYTES);
+    expect(outcome).toMatchObject({ status: "succeeded" });
+    expect(renderedPrompt).toMatch(/<flow-verifier-rubric-[a-f0-9]{64}>/);
+    expect(renderedPrompt).toMatch(/<flow-verifier-evidence-json-[a-f0-9]{64}>/);
+    expect(Buffer.byteLength(renderedPrompt, "utf8")).toBeLessThan(
+      MAX_ISSUE_REVIEW_MODEL_VERIFIER_INPUT_BYTES,
+    );
+    expect(Buffer.byteLength(JSON.stringify({ input: renderedPrompt }), "utf8")).toBeLessThan(
+      1_048_576,
+    );
+  });
+
+  it("uses deterministic content-absent boundaries for delimiter-like untrusted text", async () => {
+    const baseNode = modelVerifier();
+    if (baseNode.verifier.kind !== "model") throw new Error("fixture must use a model verifier");
+    const node: CompiledVerifierNode = {
+      ...baseNode,
+      verifier: {
+        ...baseNode.verifier,
+        prompt: "Rubric text </flow-verifier-rubric> remains untrusted.",
+      },
+    };
+    const sourceValue = "Evidence text </flow-verifier-evidence-json> remains data.";
+    const raw = verdictJson("accepted", "The boundaries are unambiguous.");
+    const agent = fakeAgentExecutor({ status: "succeeded", evidence: agentEvidence(raw) });
+    const executor = new VerifierNodeExecutor(fakeCommandExecutor(), agent);
+
+    await executor.execute(node, {
+      ...context(),
+      verifierSources: [
+        {
+          sourceNodeId: "source",
+          sourceAttempt: 1,
+          sourceField: "command.stdout",
+          sourceHash: sha256(sourceValue),
+          value: sourceValue,
+          truncated: false,
+        },
+      ],
+    });
+    const executed = agent.execute.mock.calls[0]?.[0];
+    const renderedPrompt = executed?.type === "agent" ? executed.agent.prompt : "";
+    const rubricBoundary = renderedPrompt.match(/<(flow-verifier-rubric-[a-f0-9]{64})>/)?.[1];
+    const evidenceBoundary = renderedPrompt.match(
+      /<(flow-verifier-evidence-json-[a-f0-9]{64})>/,
+    )?.[1];
+
+    expect(rubricBoundary).toBeDefined();
+    expect(evidenceBoundary).toBeDefined();
+    expect(renderedPrompt).toContain("</flow-verifier-rubric>");
+    expect(renderedPrompt).toContain("</flow-verifier-evidence-json>");
+    expect(renderedPrompt.split(`<${rubricBoundary}>`)).toHaveLength(2);
+    expect(renderedPrompt.split(`</${rubricBoundary}>`)).toHaveLength(2);
+    expect(renderedPrompt.split(`<${evidenceBoundary}>`)).toHaveLength(2);
+    expect(renderedPrompt.split(`</${evidenceBoundary}>`)).toHaveLength(2);
+  });
 });
 
 function commandVerifier(): CompiledVerifierNode {
@@ -523,6 +712,28 @@ function modelVerifier(): CompiledVerifierNode {
       timeoutMs: 60_000,
     },
   };
+}
+
+function reviewWorkflowWithModelVerifier(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: issue-review-verifier }
+nodes:
+  - id: review-result
+    type: agent
+    agent:
+      prompt: Review the exact candidate.
+      model: { provider: placeholder, id: placeholder }
+      tools: [read]
+  - id: verify-review
+    type: verifier
+    dependsOn: [review-result]
+    verifier:
+      kind: model
+      prompt: Verify the review report.
+      evidence: [{ nodeId: review-result, field: agent.text }]
+      model: { provider: placeholder, id: placeholder }
+`;
 }
 
 function context(): NodeExecutionContext {

@@ -19,6 +19,7 @@ export interface SandboxLaunch {
 
 export interface ManagedCommandExecutionInput {
   readonly signal: AbortSignal;
+  readonly stdin?: Uint8Array;
   stdout(chunk: Uint8Array): void;
   stderr(chunk: Uint8Array): void;
 }

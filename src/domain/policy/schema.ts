@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { MAX_POLICY_DECISIONS, MAX_POLICY_TARGET_BYTES } from "./broker.js";
+import { MAX_POLICY_DECISION_LIMIT, MAX_POLICY_TARGET_BYTES } from "./limits.js";
 
 export const policyAuthoritySchema = z.enum([
   "read",
@@ -30,7 +30,7 @@ const identifierSchema = z
 export const policyDecisionSchema = z
   .object({
     version: z.literal(1),
-    sequence: z.number().int().positive().max(MAX_POLICY_DECISIONS),
+    sequence: z.number().int().positive().max(MAX_POLICY_DECISION_LIMIT),
     requestDigest: z.string().regex(/^[a-f0-9]{64}$/),
     runId: identifierSchema,
     workflowId: identifierSchema,

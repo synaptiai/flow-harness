@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   createPhaseRoutingDecision,
@@ -24,6 +25,8 @@ import {
   selectContextCompactionRange,
 } from "../../../src/domain/run/model-session.js";
 
+const RESUME_INLINE_READ_BYTES = 32 * 1024;
+
 const identity = {
   runId: "run-1",
   workflowId: "workflow-1",
@@ -31,6 +34,64 @@ const identity = {
 };
 
 describe("model session record", () => {
+  it("binds typed no-execution evidence into portable history without changing legacy projection", () => {
+    const history = sessionWithTwoSettledRequests(true);
+    const index = history.events.findIndex((event) => event.type === "tool_result_committed");
+    const before = reduceModelSessionEvents(history.events.slice(0, index));
+    const input = {
+      type: "tool_result_committed" as const,
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "call-1",
+      toolName: "flow_exec",
+      text: "tests passed",
+      isError: true,
+    };
+    const legacy = append(before, input);
+    const classified = append(before, {
+      ...input,
+      commandAuthorityRejection: "request_not_admitted",
+    });
+    expect(calculatePortableHistoryIdentity(classified)).not.toEqual(
+      calculatePortableHistoryIdentity(legacy),
+    );
+    expect(modelSessionSummary(classified)).toMatchObject({
+      commandAuthorityRejectionCount: 1,
+      latestAttemptCommandAuthorityRejectionCount: 1,
+    });
+  });
+
+  it.each([
+    { toolName: "flow_read", isError: true },
+    { toolName: "flow_exec", isError: false },
+  ])("rejects a false no-execution classification: %j", (invalid) => {
+    const history = sessionWithTwoSettledRequests(true);
+    const index = history.events.findIndex((event) => event.type === "tool_result_committed");
+    const state = reduceModelSessionEvents(history.events.slice(0, index));
+    expect(() =>
+      append(state, {
+        type: "tool_result_committed",
+        attempt: 1,
+        turn: 1,
+        request: 1,
+        toolCallId: "call-1",
+        text: "Not authority evidence.",
+        ...invalid,
+        commandAuthorityRejection: "request_not_admitted",
+      }),
+    ).toThrow(/command authority rejection/);
+  });
+
+  it("keeps legacy error results unclassified and preserves their raw execution count", () => {
+    const state = sessionWithTwoSettledRequests(true);
+    const summary = modelSessionSummary(state);
+    expect(summary.latestAttemptRawExecResultCount).toBe(1);
+    expect(summary).not.toHaveProperty("commandAuthorityRejectionCount");
+    expect(summary).not.toHaveProperty("latestAttemptCommandAuthorityRejectionCount");
+    expect(reduceModelSessionEvents(state.events)).toEqual(state);
+  });
+
   it("derives a deterministic opaque id from the complete node identity", () => {
     const first = modelSessionId(identity);
 
@@ -264,7 +325,7 @@ describe("model session record", () => {
     state = append(state, {
       type: "resume_surface_prepared",
       attempt: 2,
-      renderVersion: first.renderVersion,
+      renderVersion: 1,
       sourceHead: first.sourceHead,
       digest: first.digest,
       bytes: first.bytes,
@@ -278,6 +339,196 @@ describe("model session record", () => {
     expect(first.text).not.toContain("resume_surface_prepared");
     expect(first.bytes).toBe(Buffer.byteLength(first.text, "utf8"));
     expect(first.digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("renders a clean retry capsule after a provider request and attempt settle as failed", () => {
+    let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+    state = append(state, { type: "attempt_started", attempt: 1 });
+    state = append(state, {
+      type: "user_message_committed",
+      attempt: 1,
+      origin: "primary_prompt",
+      text: "Implement the bounded change.",
+    });
+    state = append(state, {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      identity: requestIdentity(state),
+    });
+    state = append(state, {
+      type: "model_message_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      text: "Stale failed-attempt analysis.",
+      stopReason: "tool_use",
+    });
+    state = append(state, {
+      type: "tool_call_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "read-stale",
+      toolName: "flow_read",
+      argumentsJson: JSON.stringify({ path: "stale.py" }),
+    });
+    state = append(state, {
+      type: "tool_result_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      toolCallId: "read-stale",
+      toolName: "flow_read",
+      text: "STALE_FAILED_READ_RESULT",
+      isError: false,
+    });
+    state = append(state, {
+      type: "model_request_settled",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      outcome: "failed",
+    });
+    state = append(state, { type: "attempt_settled", attempt: 1, outcome: "failed" });
+    state = append(state, { type: "attempt_started", attempt: 2 });
+
+    const capsule = renderModelSessionResumeCapsule(state);
+    const rendered = JSON.parse(capsule.text) as {
+      readonly retryProjection: Readonly<Record<string, unknown>>;
+      readonly events: readonly Record<string, unknown>[];
+    };
+
+    expect(capsule.text).toContain(MODEL_SESSION_RESUME_INSTRUCTION);
+    expect(capsule.text).toContain("Implement the bounded change.");
+    expect(capsule.text).not.toContain("Stale failed-attempt analysis.");
+    expect(capsule.text).not.toContain("STALE_FAILED_READ_RESULT");
+    expect(capsule.text).not.toContain("model_request_settled");
+    expect(rendered.retryProjection).toEqual({
+      kind: "settled-failure",
+      attempt: 1,
+      outcome: "failed",
+      omittedEventCount: 3,
+      recovery:
+        "Treat the current workspace as source of truth and reread only the bounded regions needed to complete the original objective.",
+    });
+    expect(rendered.events).toEqual([
+      expect.objectContaining({
+        type: "user_message_committed",
+        origin: "primary_prompt",
+        text: "Implement the bounded change.",
+      }),
+    ]);
+    expect(capsule.bytes).toBe(Buffer.byteLength(capsule.text, "utf8"));
+  });
+
+  it("projects only oversized successful read results from an interrupted recovery capsule", () => {
+    let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+    state = append(state, { type: "attempt_started", attempt: 1 });
+    state = append(state, {
+      type: "user_message_committed",
+      attempt: 1,
+      origin: "primary_prompt",
+      text: "Inspect only the required bounded ranges.",
+    });
+    state = append(state, {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      identity: requestIdentity(state),
+    });
+    state = append(state, {
+      type: "model_message_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      text: "Inspect the three declared ranges.",
+      stopReason: "tool_use",
+    });
+    const inlineText = "i".repeat(RESUME_INLINE_READ_BYTES);
+    const omittedText = `PRIVATE_OMITTED_${"o".repeat(RESUME_INLINE_READ_BYTES)}`;
+    const failedText = `PRIVATE_ERROR_${"e".repeat(RESUME_INLINE_READ_BYTES)}`;
+    for (const [toolCallId, path, text, isError] of [
+      ["inline", "targeted.txt", inlineText, false],
+      ["omitted", "whole-module.txt", omittedText, false],
+      ["failed", "diagnostic.txt", failedText, true],
+    ] as const) {
+      state = append(state, {
+        type: "tool_call_committed",
+        attempt: 1,
+        turn: 1,
+        request: 1,
+        toolCallId,
+        toolName: "flow_read",
+        argumentsJson: JSON.stringify({ path }),
+      });
+      state = append(state, {
+        type: "tool_result_committed",
+        attempt: 1,
+        turn: 1,
+        request: 1,
+        toolCallId,
+        toolName: "flow_read",
+        text,
+        isError,
+      });
+    }
+    state = append(state, {
+      type: "model_request_settled",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      outcome: "failed",
+    });
+    state = append(state, {
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+    state = append(state, { type: "attempt_started", attempt: 2 });
+
+    const capsule = renderModelSessionResumeCapsule(state);
+    const rendered = JSON.parse(capsule.text) as {
+      readonly readResultProjection: Readonly<Record<string, unknown>>;
+      readonly events: readonly Record<string, unknown>[];
+    };
+    const results = rendered.events.filter((event) => event.type === "tool_result_committed");
+
+    expect(capsule.renderVersion).toBe(3);
+    expect(rendered.readResultProjection).toEqual({
+      inlineLimitBytes: RESUME_INLINE_READ_BYTES,
+      omittedTextField: "textOmitted",
+      recovery: "Use the paired tool call to reread only the needed bounded range.",
+    });
+    expect(results).toHaveLength(3);
+    expect(results[0]).toMatchObject({ toolCallId: "inline", text: inlineText, isError: false });
+    expect(results[1]).toMatchObject({
+      toolCallId: "omitted",
+      isError: false,
+      textOmitted: {
+        reason: "oversized_successful_read_result",
+        sha256: createHash("sha256").update(omittedText, "utf8").digest("hex"),
+        bytes: Buffer.byteLength(omittedText, "utf8"),
+        inlineLimitBytes: RESUME_INLINE_READ_BYTES,
+      },
+    });
+    expect(results[1]).not.toHaveProperty("text");
+    expect(rendered.events).toContainEqual(
+      expect.objectContaining({
+        type: "tool_call_committed",
+        toolCallId: "omitted",
+        arguments: { path: "whole-module.txt" },
+      }),
+    );
+    expect(results[2]).toMatchObject({ toolCallId: "failed", text: failedText, isError: true });
+    expect(capsule.text).not.toContain("PRIVATE_OMITTED_");
+    expect(
+      state.primaryEvents.find(
+        (event) => event.type === "tool_result_committed" && event.toolCallId === "omitted",
+      ),
+    ).toMatchObject({ text: omittedText });
   });
 
   it("reports stable request mismatch categories without returning compared values", () => {

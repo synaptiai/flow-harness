@@ -28,6 +28,7 @@ describe("verifier package workflow compilation", () => {
             package: { name: "evidence-review", version: "1.2.0" },
             evidence: [{ nodeId: "prepare", field: "command.stdout" }],
             model: { provider: "test", id: "deterministic", thinking: "medium" },
+            maxOutputTokens: 8_192,
             timeoutMs: 120_000,
           },
         }),
@@ -161,6 +162,7 @@ nodes:
       package: { name: evidence-review, version: 1.2.0 }
       evidence: [{ nodeId: prepare, field: command.stdout }]
       model: { provider: test, id: deterministic }
+      maxOutputTokens: 8192
       timeoutMs: 120000
 `;
 }

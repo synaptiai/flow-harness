@@ -2,15 +2,25 @@
 
 Flow can resume an interrupted run when its durable ledger proves that execution stopped between
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
-attempt applied no effects. The same opt-in can retry a completed provider execution failure. The
-terminal evidence must prove that the attempt performed no effect. It must also account for every
+attempt applied no effects. The same opt-in can retry an eligible completed provider execution
+failure. A model verifier may opt into retrying a completed, nontruncated response that violates
+the strict verdict JSON contract. Terminal evidence must prove that the attempt performed no effect
+or reached one of Flow's durable continuation boundaries. Evidence must also account for every
 bounded resource. Recovery remains conservative: ambiguous work is reported to the operator and is
 never repeated automatically.
 
 An interrupted agent attempt that selects `exec` never qualifies for fresh recovery. A completed
-agent attempt that prepared a command, effect, or delegation also doesn't qualify. Command
-attempts, model verifier attempts, and Lean proof verifier attempts remain ineligible. An open
-verifier start is refused as uncertain.
+agent attempt with an open command or a delegation also doesn't qualify. A completed raw-`exec`
+attempt can qualify after a supported provider failure.
+
+Every command must be settled. Every started process must have confirmed termination. Sandbox
+cleanup must not have failed. The model session must be closed and matching. Its latest-attempt
+`flow_exec` result count must equal the command-ledger count. Every workspace edit must be committed.
+
+Flow continues from the recorded command result. It doesn't execute the prior command again.
+Command-node and Lean proof verifier attempts remain ineligible. An open model verifier start is
+refused as uncertain. This rule applies even when that verifier declares recovery. Only its fully
+settled strict-output failure qualifies.
 
 ## Lean proof appliance attempts
 
@@ -346,10 +356,18 @@ from that prefix without duplicating events.
 
 Agent command execution has its own `flow.agent-commands/v1` write-ahead ledger. A normalized
 executable/argv/deadline request and its exact allowed `process.execute` decision are committed
-before spawn; the bounded outcome is committed afterward. Resume never runs an open or settled
-agent command again and cannot reconcile arbitrary process side effects from filesystem
-observation. The compiler therefore rejects `recovery: { mode: fresh, ... }` whenever the node
-selects `exec`, and a command-capable open attempt is reported as `uncertain_operation`.
+before spawn. The bounded outcome is committed afterward. Resume never runs an open command or
+automatically replays a settled command. It also cannot reconcile arbitrary process side effects
+from filesystem observation. A command-capable open attempt is therefore reported as
+`uncertain_operation`.
+
+A raw-`exec` agent can declare `recovery: { mode: fresh, ... }` for an eligible completed provider
+failure. Flow requires a closed matching model-session record, a settled command outcome with
+process evidence, a termination status other than `unconfirmed`, and no sandbox-cleanup failure.
+The portable history already contains the command result, so the next attempt continues after that
+result. The model can request another command only as a new tool call with a new write-ahead
+preparation, authorization decision, and settlement. Command tool packages remain ineligible
+because their broader recovery contract is not yet defined.
 
 Child recovery uses the child ledger as the execution commit marker and the workspace manifest as
 its isolation proof. The parent derives the same child run and workspace identities from its own run,
@@ -424,7 +442,8 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | A result source succeeded but no result transition is durable | Append `run_resumed`, reparse the durable source with the persisted schema, and publish or fail the result without invoking an executor |
 | `node_result_published` is durable | Verify source, schema, canonical value, and hashes during replay; continue after the result without republishing it |
 | All nodes succeeded or were omitted but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
-| `node_failed` is durable, no limit is exhausted, and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
+| An eligible retryable `node_failed` is durable, no limit is exhausted, and its retry disposition is absent | Append `run_resumed`, append one `node_retry_scheduled`, honor its persisted backoff, and start only the next declared attempt |
+| A terminal or ineligible `node_failed` is durable and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and don't retry the failed node |
 | A completed node outcome reaches a model-token, reported-cost, active-time, or artifact limit but `run_budget_exhausted` is absent | Replay the exact retained payload bytes, append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | A start limit is exhausted and pending work remains | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | `command_approval_requested` is pending | Append `run_resumed`, retain `waiting_for_approval`, and execute nothing |
@@ -552,12 +571,23 @@ An agent node opts in through:
 recovery:
   mode: fresh
   maxAttempts: 3
+  backoff:
+    initialDelayMs: 30000
+    maxDelayMs: 120000
 ```
 
 `maxAttempts` counts the initial attempt. The compiler accepts 2 through 16 and inserts no default.
 At run start, Flow persists the node id, mode, cap, and required effect protocol so replay never
 consults a changed workflow file to decide safety. The compiled workflow digest and the explicit
 persisted requirements must both match during resume.
+
+`backoff` is optional. `initialDelayMs` must be positive and no more than 300,000 milliseconds.
+`maxDelayMs` must be at least the initial delay and no more than 900,000 milliseconds.
+
+Before each new attempt, Flow doubles the prior delay ceiling up to the declared maximum. It selects
+a deterministic delay from the upper half of that window. The run and node identities seed this
+equal-jitter selection. Independent runs spread their requests while replay reproduces the exact
+deadline. Omit `backoff` only when an immediate retry is intentional.
 
 The reducer permits `node_attempt_interrupted` only when all of these statements are true:
 
@@ -596,13 +626,23 @@ dangling tool call, interrupted provider stream, provider handle, hidden reasoni
 state. It stores only the resume surface's digest, byte count, source head, and render version, so a
 later recovery doesn't embed generated resume surfaces recursively.
 
+Version 2 resume rendering keeps successful `flow_read` results inline through 32 KiB. For a larger
+result, the retry surface keeps the paired read call and replaces the text with its digest, byte
+count, boundary, and omission reason. The private ledger retains the complete result. A recovering
+agent can reread the required bounded range without making every later retry carry the entire prior
+file. Failed reads and non-read tool results remain inline because their diagnostics or effect
+context can be essential to safe recovery.
+
 Before each provider call, Flow commits an exact request identity. It binds the model route,
 runtime, instructions, tools, authority, history, surface, attempt, turn, and request. A changed or
 oversized surface fails before provider I/O.
 
-Flow disables Pi assistant-turn retries and provider retries. One Flow attempt can't silently
-expand through those retry layers. Ordinary tool/model turns inside the live session remain bounded
-by the node timeout. Read
+Flow disables Pi assistant-turn retries. One provider request can make at most two transport
+retries for a network failure or retryable HTTP response. The pinned transport honors
+`Retry-After`, uses exponential backoff with jitter, and caps a server-requested wait at 60 seconds.
+Because these retries occur before a response stream yields a tool call, they can't repeat a Flow
+workspace effect. Ordinary tool/model turns inside the live session remain bounded by the node
+timeout. Read
 [Inspect and recover portable model sessions](guides/model-sessions.md) for the public inspection
 fields, limits, and remediation table.
 
@@ -615,18 +655,48 @@ silently changing this behavior.
 Fresh retry is also distinct from completion proof. The retried agent must still produce its own
 terminal evidence, and downstream deterministic verifier nodes still decide criterion acceptance.
 
-### Retry a completed provider failure
+### Retry or continue after a completed provider failure
 
-The embedded Pi adapter classifies only these completed, side-effect-free failures as retryable:
+The embedded Pi adapter classifies only these completed provider failures as retryable:
 
 - Pi returns a terminal provider `error` without a stable model-context failure code.
 - The provider runner throws an error that isn't a Flow capability-evidence or semantic-evidence
   validation failure.
 
-Flow keeps cancellation, timeout, output exhaustion, incomplete output, policy failure, stable
-model-context failure, validation failure, and operator denial non-retryable. A provider failure
-after any recorded command, effect, or delegation also remains ineligible. These rules prevent a
-generic provider error from overriding stronger durable evidence.
+Flow treats an `insufficient_quota`, `credit_balance_exhausted`, or
+`billing_hard_limit_reached` provider response as the stable, non-retryable
+`pi_provider_quota_exhausted` failure. This rule is distinct from an ordinary
+`rate_limit_exceeded` response, which remains a retryable provider error. Restore the provider
+credit balance or quota, then start a new run. Preserve and inspect the failed run because a
+terminal quota failure can't resume. Flow records only the stable failure code and safe message in
+node evidence. It doesn't persist the provider's raw error text.
+
+Flow keeps cancellation, timeout, retained-report byte exhaustion, policy failure, stable
+model-context failure, stable provider failure, validation failure, and operator denial
+non-retryable. A side-effect-free transient provider failure can start a fresh attempt. A settled
+provider `length` stop can also start a fresh attempt when the exact durable model-session record is
+available. Either failure after workspace edits can continue only when every edit settled as
+committed. Recorded commands, delegations, uncertain edits, and other failure classes remain
+ineligible. These rules prevent a generic provider error from overriding stronger durable
+evidence.
+
+Fresh recovery doesn't restore provider-private reasoning or a partial stream. It renders only the
+committed portable model-session history. A `length` response with no portable text, tool call,
+tool result, or effect can therefore use a charged attempt without adding useful progress. The
+shared `maxAttempts` ceiling still includes the initial attempt and every output-limited or
+transient-provider retry. This fail-closed ceiling prevents an unproductive response pattern from
+becoming an unbounded loop.
+
+A report that exceeds 64 KiB follows the same bounded fresh-attempt discipline when the model
+session is durable. Flow retains a truncated diagnostic projection and the complete stream hash,
+but that projection cannot satisfy the node or authorize downstream work. Recovery doesn't enlarge
+the report cap and doesn't continue the overflowing provider stream.
+
+Provider transport retry and Flow attempt recovery are separate bounded layers. Transport retry
+repeats only the current pre-stream provider request. It doesn't increment the Flow attempt or
+repeat completed tool work. Flow attempt recovery runs only after the transport layer is exhausted.
+It creates a new in-memory session from the durable portable history. This recovery charges a node
+start.
 
 After an eligible attempt completes, Flow first appends `node_failed`. This event closes the model
 session and charges the attempt's node start, duration, artifacts, model tokens, and reported cost.
@@ -634,24 +704,54 @@ Flow then appends `node_retry_scheduled` only when all of these statements are t
 
 - The node has a persisted `recovery: { mode: fresh, ... }` policy.
 - The failed attempt is below `maxAttempts`.
-- The failure is retryable and has `sideEffectStatus: none`.
-- The attempt has no effect, command, or delegation record.
+- The failure is retryable.
+- The attempt is side-effect-free or has only committed durable workspace edits.
+- A raw-`exec` attempt can instead have a fully settled command journal and no unknown workspace
+  edit.
+- A durable-continuation agent failed with `pi_agent_error`, `pi_agent_failed`,
+  `pi_agent_incomplete`, `pi_agent_output_limit`, `pi_provider_rate_limited`, or
+  `pi_provider_unavailable`.
+- A side-effecting attempt has a closed, matching model-session record for the failed attempt.
+- The attempt has no delegation record. Any edit history contains no open, unknown, uncertain,
+  reconciled, or not-applied effect.
+- Every prior command is settled with process evidence and has a termination status other than
+  `unconfirmed`. No command reports `command_sandbox_cleanup_failed`. The latest-attempt
+  `flow_exec` result count in the model-session summary equals the command-ledger count. The private
+  history contains those completed tool results.
 - No declared run budget is exhausted.
 - When model tokens or cost are bounded, terminal evidence contains a complete usage observation.
 - When execution time is bounded, terminal evidence is present.
 
+For a model verifier, retry eligibility is narrower than the general list. The retained response
+must be complete and classified as `invalid_output`. This classification means that the response
+violates the strict verdict JSON contract.
+
+A valid `rejected` or `inconclusive` verdict is a semantic result, not a transport or
+format failure. Flow also doesn't retry truncated model-verifier output or source and preflight
+failures. It never retries unexpected tool activity or model-provenance mismatch. An open verifier
+request is also nonretryable.
+
 `node_retry_scheduled` fixes the reason to `retryable_failure`, the disposition to `fresh_retry`,
-and resource accounting to `complete`. The reducer archives the terminal error, evidence,
-timestamps, protocols, effects, commands, delegations, and model-session summary under
-`failedAttempts`. It then returns only the current node projection to `pending`. The next
-`node_started` event must use the next attempt number.
+and resource accounting to `complete`. When `backoff` is declared, the event also records the
+derived `notBefore` deadline. The reducer verifies that deadline against the persisted policy and
+run identity.
+
+The reducer archives the terminal error, evidence, timestamps, protocols, effects, commands,
+delegations, and model-session summary under `failedAttempts`. It then returns only the current
+node projection to `pending`. The scheduler waits until `notBefore`, and replay rejects an early
+`node_started` event. The next start must use the next attempt number.
+
+For a committed-edit continuation or an eligible completed model-verifier failure, the next attempt
+receives a new in-memory Pi session. It also receives a digest-bound retry capsule. It doesn't
+repeat or continue the failed provider stream. A verifier retry retains the original frozen input
+and omits the strict-invalid response from the new conversation.
 
 If Flow stops after `node_failed` but before `node_retry_scheduled`, resume replays the charged
-failure and appends the missing retry disposition once. If Flow stops after the disposition, replay
-sees the archived attempt and continues from the pending next attempt. A run without the opt-in
-records the ordinary terminal outcome. The same rule applies when bounded-resource evidence is
-incomplete or a resource or attempt ceiling is reached. Flow performs no additional provider
-request in these cases.
+failure and appends the missing retry disposition once. If Flow stops during a declared backoff,
+resume waits only for the remaining time before it continues from the pending next attempt. A run
+without the opt-in records the ordinary terminal outcome. The same rule applies when
+bounded-resource evidence is incomplete or a resource or attempt ceiling is reached. Flow performs
+no additional provider request in these cases.
 
 This retry starts a new Flow attempt and a new in-memory Pi session. It doesn't continue the failed
 provider request, hide the failed attempt, or add an adapter-owned retry layer. Inspect
@@ -976,7 +1076,7 @@ diagnosis.
 | Code | Meaning | Operator action |
 | --- | --- | --- |
 | `uncertain_operation` | A node attempt started without a durable outcome, even if its edits were reconciled | Inspect the node and its settlement/reconciliation provenance; start a new reviewed run rather than editing the ledger |
-| `recovery_retry_ineligible` | The node opted into fresh recovery, but interruption, attempt, effect, protocol, or resource proof forbids the next start | Inspect `interruptedAttempts`, `failedAttempts`, effects, recovery requirement, and budget; don't hand-edit the ledger or rerun under a weakened workflow |
+| `recovery_retry_ineligible` | The node opted into fresh recovery, but interruption, attempt, effect, command, protocol, or resource proof forbids the next start | Inspect `interruptedAttempts`, `failedAttempts`, effects, commands, termination status, recovery requirement, and budget; don't hand-edit the ledger or rerun under a weakened workflow |
 | `reconciliation_unavailable` | An open typed effect was found but this embedding did not supply a reconciler | Use the production CLI/worker composition or configure a reviewed reconciler; do not retry the node |
 | `reconciliation_incomplete` | A reconciler returned no observation or attempted multiple publications | Preserve the ledger and diagnose the adapter contract before trying recovery again |
 | `terminal_run` | The run already has a terminal event | Use `flow inspect`; start a new run for new work |
