@@ -114,7 +114,12 @@ Protected writers, immutable runtime custody, full cleanup, policy interference,
 
 The later [275-case qualification](../../docs/testing-and-evaluation.md#develop-the-native-result-transport-independently)
 adds bounded writer-access and held-descendant evidence. The guide owns the current results and their
-limits. The implemented signal-state and false-normal expansion still requires native execution.
+limits. The signal-state and false-normal expansion passed all 289 cases without skips in
+[run 34159189998](https://github.com/synaptiai/flow-harness/actions/runs/34159189998) at `0255e9d`.
+All 29 artifacts matched across two clean builds. The genuine observer binary and object remained
+unchanged. The separate mutant binary SHA-256 was
+`6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b`.
+These results qualify the tested controls only, not remaining reporting, cancellation, or isolation gates.
 
 The explicit `--build-observer-failure-controls` mode preserves the genuine build and adds six files
 under `test-controls/false-normal/`. They retain the test executable, relinkable object, source,

@@ -412,7 +412,10 @@ retains the preceding fixture failure, diagnostic proof, correction, and exact e
 This closes those bounded controls only. The next test expansion implements inherited ignored and
 blocked signal-state checks and a separately identified false-normal executable. It inspects actual
 application dispositions and masks, then requires the genuine failure assertion to reject the mutant's
-complete false-normal result. Native qualification of this expansion is pending. Remaining reporting failures,
+complete false-normal result. All 289 cases passed without skips in
+[run 34159189998](https://github.com/synaptiai/flow-harness/actions/runs/34159189998) at `0255e9d`.
+Two clean builds matched all 29 artifacts without changing the genuine observer binary.
+Remaining reporting failures,
 cancellation, immutable custody, outer relays, and policy interference remain mandatory.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before

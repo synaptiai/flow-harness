@@ -774,8 +774,11 @@ These results qualify only the tested paths in this profile. Other writer-access
 arbitrary descendants, immutable runtime custody, outer proxy cleanup, namespace policy,
 cancellation races, and repairs remain unqualified.
 
-The next expansion adds inherited-signal controls and a false-normal negative control. These
-cases are implemented but still require native qualification. The suite now registers 289 cases.
+The next expansion adds inherited-signal controls and a false-normal negative control.
+All 289 cases passed without skips in
+[run 34159189998](https://github.com/synaptiai/flow-harness/actions/runs/34159189998) at `0255e9d`.
+The suite took 30.93 seconds on that host. This single run is not a performance benchmark.
+Two clean builds matched all 29 artifacts. The genuine observer binary and object remained unchanged.
 
 For each inherited state, the trusted launcher sets SIGTERM, SIGPIPE, and SIGILL to ignored or
 blocked immediately before execution. An independent post-execution control must observe that state
@@ -796,6 +799,11 @@ without application output. The same assertion that accepts the genuine signal-9
 that false-normal record. An unrelated launch or transport error cannot satisfy this test. A genuine
 application exit zero must remain accepted.
 
+The native run satisfied these controls under both inherited states. The mutant transported a real
+application exit zero, then exposed the exact false-normal failure that the genuine assertion rejected.
+The genuine observer still accepted real application exit zero afterward. This qualifies the tested
+signal-state and fail-stop controls, not every signal, active handler, or reporting and cancellation path.
+
 To reproduce this gate, use an admitted Linux x64 host. Create a new output directory with the explicit
 test-only build mode, then select both executable paths:
 
@@ -813,6 +821,11 @@ in-job builder to enforce the exact source mutation. It does not independently q
 
 Do not distribute the mutant
 or use it for issue execution. These controls do not enable repairs or qualify remaining failure paths.
+
+The successful run retained `/tmp/flow-observer-transport-bwPzTT` on its ephemeral host.
+That path is not a persistent uploaded evidence archive. A source audit identified a possible
+late-cancellation acceptance window while the test harness awaits hooks or release. Reproduce that
+schedule with real processes before claiming cancellation qualification or treating the hypothesis as confirmed.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure

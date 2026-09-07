@@ -2114,3 +2114,53 @@ published package identities, credentials, or model execution settings changed.
 Final independent source, test, workflow, build, and public-documentation review found no remaining
 P1–P3 issues. The reviewer explicitly retained native execution as a mandatory next gate and
 confirmed that historical 275-case evidence does not qualify the new 289-case expansion.
+
+### Inherited-signal and false-normal gate GREEN
+
+Run 34159189998, job 101857256616, completed successfully at exact reviewed source
+0255e9de2e26cd666a9ceff2dcf083dbe9cfdae2. The job took 2m29s, from 20:23:04Z to 20:25:33Z
+on 2026-09-07. All 289 cases passed with zero skips: 275 prior cases, two real signal calibrations,
+ten inherited-state cases, mutant exit-zero calibration, and the paired false-normal rejection.
+Suite duration was 30.93s, with 30.49s test bodies. These are single-run timings, not benchmarks.
+
+Two clean builds matched all 29 artifacts (prior 23 plus six separately identified control files).
+Genuine binary SHA-256 remains 67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d;
+genuine object remains 2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b.
+Mutant binary SHA-256 is 6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b;
+mutant object is 69d94801b9720c47e80f085f34f21b4623488c25c4d3b58eb84e04989113c376.
+Original header SHA-256 is 242e62ea86dac1f8392cf47158b2f046a6ab663a5e03cb98a3ed4978a7d0bf8c;
+mutant header is 3ff3907dbcc72bbcf2a7e841cd95214865fec15c5f7a63dbc1ff10734214d0cd.
+Build metadata keeps observerQualification:not-performed because behavioral qualification is separate.
+The native job retained /tmp/flow-observer-transport-bwPzTT on its ephemeral host, not an uploaded archive.
+
+The new checks prove real ignored/blocked state survives execution without the observer, selected
+dispositions and the entire mask are clean in the observer-launched application, and the existing
+results remain distinct in both states. The broken executable first transports real application exit 0,
+then actual denied execution/reporting produces complete false-normal 0 that the SAME genuine
+signal-9 predicate rejects. Original application exit 0 remains accepted after that test. This is evidence
+about these exact paths/profile and a sensitivity control, not universal fail-stop correctness.
+
+The next read-only audit identified a test-harness cancellation hypothesis: capture marks joined and
+removes its abort listener before awaiting hook promises, and prepared does not recheck cancellation
+after release. A late abort in those windows could leave a normal observation. Reproduce with actual
+owned child/hook and release schedules before claiming confirmed behavior, then fix confirmed gaps.
+This does not qualify or imply production cancellation: the observer is not connected to issue runs.
+Remaining native reporting and cancellation, fixture denial, immutable custody, outer-relay cleanup,
+policy history, and all broader UC-01/UC-05/VR-02 gates remain open. No model pilot, merge, release,
+credential mutation, or repair enablement occurred. This goal turn made verified progress.
+
+Independent authenticated GitHub verification corroborated the exact commit, run/job, timing,
+counts, and genuine/mutant identities. Final five-file evidence review found no P1–P3 issues.
+All 41 documentation/workflow contract tests and all three documentation gates passed after the
+evidence update. Commit that documentation locally without repeating the identical native build.
+
+Next-slice audit map (planned controls, not executed evidence): the existing calibrated launcher
+can deny write(3) for final delivery, write(6) for inner reporting, read(5) for outer reception,
+and read(7) for worker-error reception. Preserve actual application output and distinguish no frame
+with outer failure from a complete supervisor-failure record. Separate closed-FD3 admission from
+a real pipe whose reader was closed. Recheck descriptor topology before adding each mode.
+Global close(3) denial instead hits inner initialization; close(6) denial hits worker handoff.
+Neither proves post-report close handling. Seccomp ERRNO injection does not produce a genuine
+short write; malformed/extra inner-record controls need separately assessed test-artifact mutation
+or a stronger injection design. Graceful forwarding requires synchronized exact-owned-process
+signalling and cannot be inferred from the test runner's existing abort-to-SIGKILL path.

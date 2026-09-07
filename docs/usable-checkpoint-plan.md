@@ -358,13 +358,16 @@ at `e39737a` passed all 275 cases without skips. Both fixed descendant types pas
 host identity and settlement checks. The writer-access and live/zombie/reaped controls passed.
 All 23 clean-build artifacts matched, including the unchanged observer binary.
 
-The inherited-signal controls and separately identified false-normal test build are implemented.
-The expanded suite registers 289 cases. Native execution of this expansion is pending.
+The inherited-signal controls and separately identified false-normal test build passed native qualification.
+[Run 34159189998](https://github.com/synaptiai/flow-harness/actions/runs/34159189998) at `0255e9d`
+passed all 289 cases without skips. Both clean builds matched all 29 artifacts, including the unchanged
+genuine observer binary and a distinct mutant executable.
 The [testing guide](testing-and-evaluation.md#develop-the-native-result-transport-independently)
 defines the direct signal-state checks, real counterexamples, and genuine-versus-mutant assertion.
 
-Next, qualify this expansion, then remaining reporting
-and cancellation failures. Policy interference, fixture denial, immutable runtime custody,
+Next, qualify remaining reporting and cancellation failures. First reproduce the source-audited
+late-cancellation window while the test harness awaits hooks or release, then fix any confirmed gap.
+Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.
 
