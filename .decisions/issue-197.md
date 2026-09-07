@@ -687,3 +687,63 @@ suggestion. The production build and the manifest-declared `dist/cli/launcher.js
 passed. An initial smoke invocation used a nonexistent `dist/cli/index.js`; this operator command
 was corrected from the package manifest without changing source. The default macOS runtime invocation
 reported all five Linux-targeted tests skipped, explicitly not qualification evidence.
+
+### First hosted native Linux prerequisite result
+
+Run `34128675526`, job `101763285298`, passed at exact source
+`fd8cf95dd6af3d910f120308fa1ab97930f7c472`: one test file, five tests, no skips, 1.37 seconds of
+test execution and 3.75 seconds total test-runner duration. Environment: Ubuntu 24.04 x64,
+kernel `6.17.0-1022-azure`, Node 26.7.0, bubblewrap 0.9.0, SRT 0.0.70. The completed job API and
+its log independently confirmed the result. The ordinary and new-session descendant checks both
+passed, unlike the retained Darwin diagnostics. Private file, descriptor, host-process, and forged
+output prerequisites also passed. No model or target-project operation ran in this job.
+
+The overall workflow remains in progress at this checkpoint; dependency audit passed, while
+quality and Lean proof remain pending. The PR body was updated to remove stale new-head pass and
+approval claims. Complete protected-observer qualification remains open. The next model-free slice
+tests immutable fixtures with distinct EACCES, ENOENT, and accessible controls under the actual
+candidate sandbox. No repair-selection path is enabled by these prerequisite results.
+
+### Immutable fixture qualification preparation
+
+The next slice adds three Linux-only, real-process fixture probes behind a test-owned decorator
+of the existing `runtimeSupportPaths` seam. It does not change authored command authority or add a
+production observer. The probes distinguish accessible input, ENOENT, mode-000 files, and mode-000
+parent directories. They challenge mutation, aliases, direct remounts, and nested user/mount namespaces.
+
+Independent review required complete fixture-tree identity and inventory comparisons, real namespace
+and remount controls, and untruncated command evidence. Those corrections were implemented before
+execution. The host control first establishes new user and mount namespaces with private propagation;
+only disposable scratch paths are mounted. It proves a read-only write failure followed by a
+successful read-write remount. Candidate attempts must fail for actual permission or read-only
+reasons, not missing tools. Uncertain execution, cleanup, or fixture identity retains the fixture.
+
+Review also identified a watchdog mismatch: two seven-second version controls could make the total
+path exceed the 30-second test watchdog. Version controls now use one second, matching candidate
+version checks. The nested candidate probe uses four seconds within the unchanged ten-second command
+envelope. Production deadlines and model budgets are unchanged.
+
+The dedicated job now names both suites and reports unshare and mount versions. Its contract failed
+before each missing invocation/logging requirement was added, then both scaffold files passed all
+40 tests. Full type checking, lint, formatting, build, launcher smoke, documentation, and whitespace
+checks passed after the final changes. Focused import organization was corrected and passed.
+The local runtime command reported eight Linux-only skips, not qualification. The new fixture
+suite and strengthened five-probe evidence assertions still require exact-head hosted execution.
+
+### First closed observer design refinement
+
+Code inspection and adversarial review support a smaller fixed predicate than a general JSON CLI
+adapter: trusted EACCES plus complete normal exit zero contradicts `invalid-fails-closed`.
+Normal nonzero satisfies only that predicate, without identifying its cause or proving full
+acceptance. Unsupported fixture, timing, signal, output, identity, or cleanup evidence stops admission.
+Every original deterministic and holdout gate remains mandatory. The design records counterexamples
+and preserves legacy behavior, frozen disclosure, and prepublication-only selection.
+
+The baseline control remains separate. Two source inspections matched base
+`8dcdd755b22c1cbc04bc56e49c7bef5e9f72aa48` and installer digest
+`7a8084ad0e4ef00f12a02bc98b2172f62a6bac0943882b3c4a53035d610c24aa`.
+The base registers only install and uninstall. Read-only help probes and Python's argparse reference
+corroborate its existing help inventory, not a universal discovery protocol. The selected narrow
+qualification approach binds that inventory to audited frozen source. Alternatives are a closed
+structural source parser or a separately authorized target discovery interface. No target changes,
+new model calls, or new run authority result from this design refinement.

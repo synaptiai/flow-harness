@@ -316,7 +316,17 @@ describe.skipIf(!linuxTarget && !macosDiagnostic)(suiteLabel, () => {
       expect(outcome).toMatchObject({
         status: "failed",
         error: { code: "command_failed" },
-        evidence: { kind: "command", exitCode: 7, stdout: forged, timedOut: false },
+        evidence: {
+          kind: "command",
+          exitCode: 7,
+          stdout: forged,
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          signal: null,
+          timedOut: false,
+          aborted: false,
+        },
       });
     });
   }, 30_000);
@@ -423,7 +433,15 @@ function successfulEvidence(outcome: NodeExecutionOutcome) {
     backendVersion: "0.0.70",
     profile: "workspace-write-network-deny-v1",
   });
-  expect(outcome.evidence.exitCode).toBe(0);
+  expect(outcome.evidence).toMatchObject({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    aborted: false,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    stderr: "",
+  });
   return outcome.evidence;
 }
 

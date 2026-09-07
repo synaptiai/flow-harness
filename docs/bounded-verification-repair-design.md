@@ -159,6 +159,55 @@ Keep the existing candidate sandbox and add only the protected, qualified observ
 by this flow. Do not introduce a generic verifier-plugin system or silently require a new appliance.
 If qualification requires a different deployment profile, return with its measured tradeoffs before changing the supported host contract.
 
+### Qualify the first closed observation contract
+
+The first adapter targets one explicit requirement: an existing inaccessible input must not produce
+a successful CLI exit. It does not need a general JSON inventory protocol or a model-based error
+classifier. Its implementation remains gated on complete fixture and observer qualification.
+
+Keep fixture creation, precondition checks, classification, and receipt publication in compiled
+controller code. Execute repository CLI code only inside the qualified candidate sandbox. Freeze
+the exact argument vector and typed fixture-path slots. Do not interpolate a shell command, load
+repository verifier callbacks, or expose a general expression language.
+
+Require accessible-input CLI controls, genuine `EACCES` for the denied fixture, complete bounded
+output, unchanged identities, and confirmed cleanup. Then distinguish these outcomes:
+
+| Observation after all preconditions pass | Limited adapter result | Permitted consequence |
+| --- | --- | --- |
+| Normal exit zero for inaccessible existing input | Behavioral contradiction | May select the approved `invalid-fails-closed` feedback under the frozen repair policy. |
+| Normal nonzero exit | This predicate passed | Continue original acceptance gates without inferring the cause of the exit. |
+| Missing proof, timeout, signal, cancellation, truncation, drift, or uncertain cleanup | Unsupported | Stop without repair selection. |
+
+A passed predicate is not a successful `IssueVerificationResult`. For example, a crash restricted
+to the denied-input branch can satisfy this predicate while failing other requirements. Nonzero
+exit with success JSON can also fail the original output contract. Always returning nonzero fails
+the healthy control. Every original holdout and deterministic gate remains mandatory before review.
+
+The base control is separate. The audited issue-106 base
+[`8dcdd755`](https://github.com/danielbentes/digital-twin/blob/8dcdd755b22c1cbc04bc56e49c7bef5e9f72aa48/skills/digital-twin/scripts/install-hook.py#L375)
+registers only `install` and `uninstall`. Read-only probes observed successful root and existing-command
+help. Its root help advertises those two commands, not `status`. The source and installer digest
+corroborate that exact base's missing command. The `status --help` nonzero exit is not the classifier.
+
+Three approaches were considered for that control:
+
+| Approach | Benefit | Tradeoff |
+| --- | --- | --- |
+| Closed help-inventory profile with audited frozen source, selected for qualification | Uses the existing public interface without target changes. | Qualify exact grammar, runtime, and base identity. Help omission alone does not prove arbitrary functionality is absent. |
+| Closed structural source parser plus runtime help | Adds machine-checked registration evidence. | Requires language-specific handling and must reject dynamic or unsupported registration patterns. |
+| New machine-readable discovery interface in the target | Provides an explicit discovery protocol. | Changes the target's public interface and requires separate scope approval. |
+
+Python's [argparse documentation](https://docs.python.org/3/library/argparse.html#sub-commands)
+describes generated help and customization. It does not establish a universal machine-readable
+inventory format. Reject ambiguous, malformed, localized, or unqualified output instead of guessing.
+Keep the base observation separately typed as `required-subcommand-unadvertised`, with its exact
+source corroboration. Do not mislabel it as the candidate permission failure.
+
+Legacy plans and retained failures keep their original behavior. Only a newly frozen, explicitly
+configured adapter contract can produce new selection evidence in the prepublication verification
+phase. This design does not migrate a run, expand disclosure, or authorize another pilot.
+
 ## Bound disclosure as well as execution
 
 Freeze a public feedback catalog before the first model invocation. Each allowed entry maps a
@@ -311,7 +360,8 @@ The [command executor](../src/infrastructure/process/command-node-executor.ts) d
 process-group confirmation on ordinary command completion. Adding that confirmation alone cannot
 contain a child in another session. [Node.js documents detached process groups](https://nodejs.org/api/child_process.html#optionsdetached).
 Linux [process namespaces](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html) provide a
-different lifecycle boundary, but the new observer probes have not qualified Linux yet.
+different lifecycle boundary. The first hosted prerequisite result is recorded in the next section.
+The complete behavioral observer remains unqualified.
 
 The host-strategy decision considered these alternatives:
 
@@ -322,7 +372,7 @@ The host-strategy decision considered these alternatives:
 | Stronger native macOS boundary first | Preserve a native Mac experience for the new capability. | Requires further containment research and implementation before qualification; feasibility is not established. |
 
 The user selected native Linux first, using GitHub Actions for initial qualification. The Mac
-remains the operator's computer. No Linux probe result is yet qualified by that decision.
+remains the operator's computer. That decision itself supplied no runtime evidence.
 The existing container-command implementation also uses Linux process-owner records. Docker
 availability on a Mac does not establish a supported Mac controller.
 
@@ -334,6 +384,24 @@ qualification does not establish local Linux ARM64 qualification or native macOS
 
 This strategy authorizes model-free hosted qualification and implementation work, not another live
 pilot, retained-candidate modification, publication, or merge.
+
+### Record the first hosted Linux prerequisite result
+
+The [dedicated isolation job](https://github.com/synaptiai/flow-harness/actions/runs/34128675526/job/101763285298)
+passed all five real-process tests without skips at source
+`fd8cf95dd6af3d910f120308fa1ab97930f7c472` on September 7, 2026. The runner used Ubuntu 24.04 x64,
+kernel `6.17.0-1022-azure`, Node.js `26.7.0`, bubblewrap `0.9.0`, and SRT `0.0.70`.
+Test execution took 1.37 seconds, with 3.75 seconds total test-runner duration.
+
+The probes established ordinary and new-session descendant termination. They also established
+denial of private-file, inherited-descriptor, and host-process access. Forged candidate output
+remained untrusted command data. Independent review corrected two probe weaknesses before execution. Job metadata and
+the completed job log separately confirmed the exact-head result and test counts.
+
+This is one passing prerequisite run, not complete observer qualification. The future adapter still
+needs immutable fixtures that preserve real permission errors, trusted typed outcomes, valid base
+controls, and protected receipt publication. Native macOS, Linux ARM64, the Mac-local launcher,
+repair selection, and the installed end-to-end experiment remain unqualified by this result.
 
 The first slice does not provide cross-host transfer, post-publication repair, new provider selection,
 human adjudication, semantic convergence guarantees, or automatic merging. It does not remove the

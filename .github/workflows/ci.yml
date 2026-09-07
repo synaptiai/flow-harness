@@ -244,6 +244,8 @@ jobs:
           sudo apt-get install --yes bubblewrap ripgrep socat util-linux
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
+          unshare --version
+          mount --version
 
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
@@ -252,7 +254,9 @@ jobs:
         run: npm run build
 
       - name: Verify native isolation prerequisites
-        run: npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts
+        run: >-
+          npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts
+          test/runtime/verification-observer-fixture.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest
