@@ -374,10 +374,13 @@ All 296 cases passed without skips, and all 29 clean-build artifacts matched. Th
 binary remained unchanged.
 
 Seven additional [invocation controls](testing-and-evaluation.md#check-selected-native-invocation-rejections)
-are implemented but await native qualification. They test selected malformed arguments and environment
-entries against real accepted-invocation controls. They do not qualify the complete input envelope.
+passed native qualification in
+[run 34161291314](https://github.com/synaptiai/flow-harness/actions/runs/34161291314) at `0c3d6a9`.
+All 303 cases passed without skips, and all 29 clean-build artifacts matched. The controls test selected
+malformed arguments and environment entries against real accepted-invocation controls.
+They do not qualify the complete input envelope or immutable executable identity.
 
-Next, qualify these controls and address remaining reporting and native
+Next, address remaining reporting and native
 cancellation failures. The testing guide distinguishes these gates from test-helper cancellation checks.
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

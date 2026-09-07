@@ -873,7 +873,7 @@ Closed readers, partial records, graceful signal forwarding, and outer relay set
 
 #### Check selected native invocation rejections
 
-The next seven tests cover one accepted minimal environment and six rejected inputs. The trusted
+Seven tests cover one accepted minimal environment and six rejected inputs. The trusted
 launcher changes each input after shell startup and its descriptor checks. It preserves the real
 observer executable, held application descriptor, and host-side correlation.
 
@@ -894,8 +894,11 @@ Each rejection assertion must also reject a real, accepted exit-7 observation. B
 rejections also require successful execution with one valid environment entry immediately
 before the malformed case. This checks that removal of ambient variables does not explain rejection.
 
-The expanded suite contains 303 cases. Native execution of these seven new controls is pending.
-The earlier 296-case run does not qualify them. These controls do not cover all argument or environment
+[Run 34161291314](https://github.com/synaptiai/flow-harness/actions/runs/34161291314) at `0c3d6a9`
+passed all 303 cases without skips, including these seven controls. The suite took 32.62 seconds.
+Two clean builds matched all 29 artifacts, with unchanged genuine and mutant binaries.
+The run retained `/tmp/flow-observer-transport-cqUgnY` on its ephemeral host, not as an uploaded archive.
+This single run is not a performance benchmark. These controls do not cover all argument or environment
 limits, every blocked variable family, immutable executable identity, or the remaining isolation gates.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots

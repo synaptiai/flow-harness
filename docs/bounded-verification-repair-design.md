@@ -352,6 +352,8 @@ Completed implementation items describe source changes, not runtime qualificatio
 - [ ] Define and test bounded private result framing, exact invocation binding, and descriptor ownership.
   - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
   - [x] Implement the native frame encoder and cross-check its bytes with the decoder on macOS.
+  - [x] Qualify selected native argument and environment rejections with real accepted-invocation controls.
+    Complete envelope limits and immutable executable identity remain open.
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.
     - [x] Test stdout forgery and actual proc-FD/pidfd writer access with accessible controls.
     - [ ] Qualify remaining writer paths and immutable executable/runtime custody.
@@ -422,6 +424,13 @@ two reproduced late-cancellation acceptance gaps in the test helper. Both clean 
 29 artifacts without changing the genuine observer binary. This is not native graceful-cancellation
 qualification. Remaining reporting failures, native cancellation, immutable custody, outer relays,
 and policy interference remain mandatory.
+
+Selected argument and environment rejections passed in the
+[303-case run](https://github.com/synaptiai/flow-harness/actions/runs/34161291314) at `0c3d6a9`,
+without skips. Two clean builds matched all 29 artifacts. The
+[testing guide](testing-and-evaluation.md#check-selected-native-invocation-rejections) defines the six
+malformed inputs and real accepted-invocation counterexamples. This qualifies those existing validation
+paths, not the complete input envelope, immutable identity, or the remaining observer gates.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
 responding to a forbidden operation or stopping the observed namespace. Missing observation, listener

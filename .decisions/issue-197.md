@@ -2329,3 +2329,31 @@ All documentation gates and whitespace checks passed after replacing one prohibi
 Independent source, test, and documentation review found no P1–P3 issues. All five changed files
 belong to this slice. The qualification branch was revalidated at 2f9552b before a non-forced push;
 the ordinary draft PR and main remain unchanged. Native results are still pending.
+
+### Native invocation qualification result
+
+Run https://github.com/synaptiai/flow-harness/actions/runs/34161291314 completed successfully at exact
+commit 0c3d6a91c07682c3e98eb299eca684f6a3749f2d. Job 101863499854 ran from 20:56:41Z to 20:59:05Z
+on 2026-09-07 (2 minutes 24 seconds). All 303 cases passed with zero skips: prior 296 plus one valid
+minimal-environment control and six malformed-input cases. Suite duration was 32.62 seconds;
+test execution was 32.15 seconds. This single run is not a performance benchmark.
+
+Two clean builds matched all 29 artifacts. Genuine observer SHA-256 remained
+`67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d`;
+its object remained `2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b`.
+The separate false-normal control remained
+`6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b`.
+The diagnostic root `/tmp/flow-observer-transport-cqUgnY` was retained on the ephemeral runner,
+not uploaded as a persistent archive. Build evidence continues to report `observerQualified: false`.
+
+INV-1 and INV-2 pass for the selected inputs. This is native evidence of existing validation paths,
+not a production defect correction or complete envelope qualification. Immutable identity, other
+writer/reporting paths, native cancellation, policy interference, fixture denial, host integration,
+and relay cleanup remain open. No repair enablement, model pilot, merge, or release occurred.
+The full usable-checkpoint goal remains active. Record these results without rerunning identical
+native binaries for documentation-only changes.
+
+An independent authenticated evidence check corroborated the exact commit, run, job, test totals,
+timings, artifact equality, hashes, and ephemeral retention scope. Final four-document review found
+no P1–P3 issues. All 41 documentation/workflow tests, three documentation gates, and whitespace
+checks passed after the evidence update. Save this evidence as a local documentation-only commit.
