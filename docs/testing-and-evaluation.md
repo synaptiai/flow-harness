@@ -871,6 +871,33 @@ genuine and mutant binaries. This is one qualification run, not a performance be
 The run retained `/tmp/flow-observer-transport-yvKKVz` on its ephemeral host, not as an uploaded archive.
 Closed readers, partial records, graceful signal forwarding, and outer relay settlement remain separate gates.
 
+#### Check selected native invocation rejections
+
+The next seven tests cover one accepted minimal environment and six rejected inputs. The trusted
+launcher changes each input after shell startup and its descriptor checks. It preserves the real
+observer executable, held application descriptor, and host-side correlation.
+
+| Rejected input | Required change |
+| --- | --- |
+| Short correlation | Supply 63 hexadecimal characters |
+| Invalid correlation | Replace the first character with `g` |
+| Invalid separator | Replace the `--` argument |
+| Relative application name | Supply a relative name while retaining the valid application descriptor |
+| Invalid environment name | Supply one entry whose name starts with a digit |
+| Missing environment separator | Supply one entry without `=` |
+
+Every rejection must produce outer status 1, no terminating signal, zero private bytes, EOF, and no
+application output. Only the calibrated launcher diagnostic is permitted. A null decoded result is
+insufficient: a frame with a mismatched correlation must not count as rejection before execution.
+
+Each rejection assertion must also reject a real, accepted exit-7 observation. Both environment
+rejections also require successful execution with one valid environment entry immediately
+before the malformed case. This checks that removal of ambient variables does not explain rejection.
+
+The expanded suite contains 303 cases. Native execution of these seven new controls is pending.
+The earlier 296-case run does not qualify them. These controls do not cover all argument or environment
+limits, every blocked variable family, immutable executable identity, or the remaining isolation gates.
+
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure
 and SRT reset do not yet establish complete relay and host-bridge disposal. A passing result-channel

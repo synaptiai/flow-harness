@@ -18,6 +18,10 @@
  * and deny-worker-read target write(3), write(6), read(5), and read(7). These
  * filters apply to every inheriting process, not authenticated process roles.
  * The fixed static application must still complete with its exact marker.
+ * Invocation controls alter only a calibrated helper argument or provide one
+ * fixed environment entry after shell startup. They never change the helper
+ * executable or held application descriptor. invoke-valid-env is the matching
+ * positive control for the one-entry environment, not an invocation fault.
  *
  * FD 8 is deliberately coupled to observer-application.h's checked topology:
  * close_range(5..UINT_MAX), report pipe 5/6, then worker error pipe 7/8.
@@ -60,7 +64,10 @@ static int mode_number(const char *name) {
         "signal-ignored-control", "signal-blocked-passthrough",
         "signal-blocked-deny-exec", "signal-blocked-deny-exec-write",
         "signal-blocked-deny-exec-write-kill", "signal-blocked-control",
-        "deny-final-write", "deny-inner-write", "deny-outer-read", "deny-worker-read"
+        "deny-final-write", "deny-inner-write", "deny-outer-read", "deny-worker-read",
+        "invoke-short-correlation", "invoke-invalid-correlation",
+        "invoke-invalid-separator", "invoke-relative-application",
+        "invoke-invalid-env-name", "invoke-env-no-equals", "invoke-valid-env"
     };
     for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (strcmp(name, names[i]) == 0) return (int)i;
@@ -285,15 +292,37 @@ int main(int argc, char **argv) {
               (argv[4][i] >= 'a' && argv[4][i] <= 'f'))) return 120;
     const int signal_state = mode >= 5 && mode < 15 ? (mode < 10 ? 1 : 2) : 0;
     const int control = signal_state != 0 && (mode - 5) % 5 == 4;
-    const int filter_mode = signal_state == 0 ? mode : control ? 0 : (mode - 5) % 5;
+    const int filter_mode = mode >= 19 ? 0 : signal_state == 0 ? mode : control ? 0 : (mode - 5) % 5;
     if (topology() != 0 || install_filter(filter_mode) != 0 ||
         (signal_state != 0 && install_signals(signal_state) != 0)) return 121;
     if (mode == 4 && close(4) != 0) return 121;
     if (write_all("flow-observer-fault:") != 0 || write_all(argv[1]) != 0 ||
         write_all(":canary=live-regular-matches-app\n") != 0) return 121;
     if (control) return run_signal_control(signal_state) == 0 ? 0 : 121;
-    /* execve is intentionally permitted: only the actual helper's application
-     * execveat is denied. The original helper and its invocation are preserved. */
-    execve(argv[2], &argv[2], environ);
+    char *fixed_environment[] = {"FLOW_OBSERVER_QUALIFICATION=value", NULL};
+    char **helper_environment = environ;
+    /* argv strings and pointers belong to this fixed launcher. All mutation
+     * follows its original invocation/descriptor checks; the valid host-side
+     * correlation and the actual application FD remain unchanged. */
+    switch (mode) {
+        case 19: argv[4][63] = '\0'; break;
+        case 20: argv[4][0] = 'g'; break;
+        case 21: argv[5] = "invalid-separator"; break;
+        case 22: argv[6] = "flow-observer-relative-application"; break;
+        case 23:
+            fixed_environment[0] = "1FLOW_OBSERVER_QUALIFICATION=value";
+            helper_environment = fixed_environment;
+            break;
+        case 24:
+            fixed_environment[0] = "FLOW_OBSERVER_QUALIFICATION";
+            helper_environment = fixed_environment;
+            break;
+        case 25: helper_environment = fixed_environment; break;
+        default: break;
+    }
+    /* execve is permitted in every mode. Only selected execution-fault modes
+     * deny the helper's application execveat; invocation modes alter only the
+     * arguments/environment above. The helper executable remains unchanged. */
+    execve(argv[2], &argv[2], helper_environment);
     return 122;
 }

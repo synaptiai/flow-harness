@@ -68,6 +68,14 @@ type ReportingFault =
   | "deny-inner-write"
   | "deny-outer-read"
   | "deny-worker-read";
+type InvocationFault =
+  | "invoke-short-correlation"
+  | "invoke-invalid-correlation"
+  | "invoke-invalid-separator"
+  | "invoke-relative-application"
+  | "invoke-invalid-env-name"
+  | "invoke-env-no-equals"
+  | "invoke-valid-env";
 type FaultMode =
   | "passthrough"
   | "deny-exec"
@@ -75,6 +83,7 @@ type FaultMode =
   | "deny-exec-write-kill"
   | "close-app-fd"
   | ReportingFault
+  | InvocationFault
   | `signal-${SignalState}-${SignalFault | "control"}`;
 type OwnedApplication = { path: string; handle: FileHandle };
 type Fixture = {
@@ -451,6 +460,86 @@ describe
 
           const result = await observe(value, context.signal, { fault: mode });
           assertReportingOutcome(result);
+          expect(result.stderr.toString("utf8")).toBe(faultMarker(mode));
+        }),
+    );
+
+    it(
+      "accepts the real observer invocation with one valid qualification environment entry",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateFaults(value, context.signal);
+          const result = await observe(value, context.signal, { fault: "invoke-valid-env" });
+          expect(result.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 7,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, marker, faultMarker("invoke-valid-env"));
+        }),
+      45_000,
+    );
+
+    it.for([
+      "invoke-short-correlation",
+      "invoke-invalid-correlation",
+      "invoke-invalid-separator",
+      "invoke-relative-application",
+      "invoke-invalid-env-name",
+      "invoke-env-no-equals",
+    ] as const)(
+      "rejects actual %s helper input after real accepted-invocation counterexamples",
+      { timeout: 45_000 },
+      (mode, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateFaults(value, context.signal);
+          const assertInvocationRejected = (result: Awaited<ReturnType<typeof observe>>) => {
+            // Exclude the launcher's mode label from the sensitivity predicate.
+            // It must reject real successful application/result evidence itself.
+            expect({
+              code: result.code,
+              signal: result.signal,
+              privateBytes: result.privateBytes.length,
+              record: result.record,
+              privateEof: result.privateEof,
+              stdout: result.stdout.toString("utf8"),
+            }).toEqual({
+              code: 1,
+              signal: null,
+              privateBytes: 0,
+              record: null,
+              privateEof: true,
+              stdout: "",
+            });
+          };
+          const positive = await observe(value, context.signal, { fault: "passthrough" });
+          expect(positive.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 7,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(positive, marker, faultMarker("passthrough"));
+          expect(() => assertInvocationRejected(positive)).toThrowError();
+
+          if (mode === "invoke-invalid-env-name" || mode === "invoke-env-no-equals") {
+            // The trusted fixed launcher replaces env only after shell/bootstrap;
+            // never submit malformed/preload environment entries to Node or SRT.
+            const validEnvironment = await observe(value, context.signal, {
+              fault: "invoke-valid-env",
+            });
+            expect(validEnvironment.record).toEqual({
+              kind: "normal_exit",
+              exitCode: 7,
+              clone3FallbackUsed: false,
+            });
+            expectTransport(validEnvironment, marker, faultMarker("invoke-valid-env"));
+            expect(() => assertInvocationRejected(validEnvironment)).toThrowError();
+          }
+
+          const result = await observe(value, context.signal, { fault: mode });
+          assertInvocationRejected(result);
           expect(result.stderr.toString("utf8")).toBe(faultMarker(mode));
         }),
     );

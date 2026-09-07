@@ -2288,3 +2288,44 @@ Final four-file evidence review found no P1–P3 issues. All 41 documentation/wo
 all three documentation gates, and whitespace checks passed after the GREEN update. Save this
 evidence locally without rerunning an identical native build. Implementation remains on the dedicated
 qualification branch; the ordinary draft PR, main, and published release remain unchanged.
+
+### Native invocation rejection qualification
+
+The previous turn made verified progress: two real cancellation acceptance gaps were reproduced,
+fixed, and qualified alongside four reporting controls. Current tree was clean at e56465b. GitHub
+still reports run 34160441703 successful at 2f9552b. The full usable-checkpoint goal remains active.
+
+Continue with a separate open requirement: native invocation rejection before application execution.
+Do not retry the interrupted closed-reader audit or treat its partial notes as approved design.
+All closed-reader and broader observer gates remain open; selected invocation controls do not replace them.
+
+INV-1 covers selected argument rejections: 63-character correlation, nonhex correlation character,
+wrong separator, and relative application argv0. INV-2 covers a leading-digit environment name and
+an entry without an equals sign. Mutate only inside the trusted test launcher after its original
+invocation and descriptor calibration and after shell startup. Preserve the exact helper executable,
+valid held application FD, and host correlation. No scripts, preload configuration, user environment
+values, network, credentials, production observer changes, or policy changes are involved.
+
+Every malformed case must yield exact outer1, no signal, zero private bytes, null decoded record,
+actual EOF, empty application output, and only the calibrated launcher marker. A mismatched frame
+cannot satisfy zero-byte evidence. The same outcome assertion must reject a real validated
+passthrough normal7 result independently of its different launcher label. A one-entry valid
+environment must execute actual normal7 both as a separately registered control and immediately
+before each malformed environment. This excludes missing ambient environment as a false explanation.
+
+Seven runtime cases were written before launcher support (one valid-environment control and six
+invalid cases). Existing production validation is unchanged: these qualify selected existing paths,
+not a newly discovered production defect. Actual passthrough rejection provides live assertion
+sensitivity. The original 296 cases, final cancellation aggregate placement, two-build recipe,
+artifact identities, deadlines, and non-cancelling feedback branch remain unchanged. Expected native
+total is 303 with zero skips. Full envelope limits, blocked variable families, immutable identity,
+policy history, native cancellation, fixture denial, and relay custody remain separately unqualified.
+
+Local checks before native qualification passed: type checking, lint, formatting, production build,
+pinned-source integrity, all 375 focused verification tests, and all 41 documentation/workflow tests.
+Lint retained the existing informational unnecessary-constructor notice in the unchanged external
+adapter. macOS registered and skipped all 303 Linux-only cases; these are not native passes.
+All documentation gates and whitespace checks passed after replacing one prohibited prose word.
+Independent source, test, and documentation review found no P1–P3 issues. All five changed files
+belong to this slice. The qualification branch was revalidated at 2f9552b before a non-forced push;
+the ordinary draft PR and main remain unchanged. Native results are still pending.
