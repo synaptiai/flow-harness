@@ -788,10 +788,17 @@ discovered PID or treat emergency test cleanup as settlement evidence.
 The test-only active-connection gate reached its authenticated failing control in
 [run 34167826719](https://github.com/synaptiai/flow-harness/actions/runs/34167826719) at `bec765e`.
 After real forwarding, the unchanged checker rejected its missing `bridge` mode with exit status 2
-and no terminating signal. Checker implementation is now in progress. The test
+and no terminating signal. The implemented checker passed its first active-connection case in
+[run 34168249470](https://github.com/synaptiai/flow-harness/actions/runs/34168249470) at `6542ec6`.
+The three original owner cases and 306 application-result cases also passed without skips.
+Both clean builds matched 32 artifacts.
+
+The test
 waits independently for forwarding and ownership and joins both checker input completion and
 process closure during cleanup. These checks avoid assuming event ordering across independent
-streams. They do not qualify active descendants before the hosted implementation passes.
+streams. Exact-argument mismatch, multiple-connection rejection, and explicit two-process predicate
+calibration remain open. This initial pass does not complete stage 2 or permit manager integration
+before its remaining prerequisites are qualified.
 
 #### Connect the native application-result path
 

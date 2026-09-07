@@ -413,8 +413,14 @@ remain open.
 This is progress within RL-A, not completion of the usable checkpoint.
 The active-connection test and strict checker wrapper reached their authenticated failing control
 in [run 34167826719](https://github.com/synaptiai/flow-harness/actions/runs/34167826719) at `bec765e`.
-The unchanged checker rejected the missing mode after real forwarding. Checker implementation
-is in progress. A hosted pass and independent negative controls remain required.
+The unchanged checker rejected the missing mode after real forwarding. The implemented checker
+then passed its first active-connection case in
+[run 34168249470](https://github.com/synaptiai/flow-harness/actions/runs/34168249470) at `6542ec6`.
+All three original owner cases and 306 existing native cases passed without skips, and both builds
+matched 32 artifacts.
+
+Exact-argument mismatch, multiple-connection rejection, and explicit
+two-process predicate calibration remain required. Stage 2 and the usable checkpoint remain open.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

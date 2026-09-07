@@ -2711,3 +2711,33 @@ lint, formatting, build, all 21 focused documentation/workflow tests, and docume
 The reviewer independently authenticated the RED source and hosted log. Push this five-file
 implementation/evidence increment only to the dedicated qualification branch for actual native
 compilation and the initial active-descendant GREEN attempt. Keep all further qualifications open.
+
+### Initial active-connection GREEN
+
+Run 34168249470 succeeded at exact 6542ec64c92d2f7ec5223bc1da845bc2dce06912,
+job 101883466549, September 7 UTC 22:54:36-22:57:10 (154 seconds). Three owner cases passed,
+the one active-connection case passed, and all 306 original application-result cases passed,
+with no skips. Active suite duration was 3.03 seconds (2.88 seconds tests, including compilation);
+the existing suite took 21.41 seconds (21.09 seconds tests). These timings are not benchmarks.
+
+Both clean builds matched all 32 artifacts. Guardian binary
+1b5c57faf55976a30d8161bac667ec960b43279e22a3231abe0ae3698c729dff and object
+4cda7ac749e727c777484810004f3bea38d8b3a5195f9ac6a74e4c79274ce6f8 are unchanged.
+Genuine observer and deliberately false-normal binary hashes also match the previous qualified
+identities. The C test oracle was compiled separately in the test and is not one of those 32 artifacts.
+
+The real held connection established live leader/child identities, rejected the live settlement
+predicate, then observed both terminated and original identities absent from the receipt callback
+before test socket cleanup. Actual owner closure also passed. Existing real zombie controls passed
+through the shared observation primitive. This is not explicit zombie calibration of both roles in
+the new predicate, exhaustive ancestry enumeration, an atomic receipt sample, or immutable custody.
+
+Continue with authenticated argument-mismatch and ambiguity negatives plus explicit predicate
+calibration before the remaining stage-2 startup, cancellation, owner-loss, and custody gates.
+Stages 3/4, repair enablement, pilot, merge, release, and UC-01/UC-05/VR-02 remain uncompleted.
+
+Independent verification re-fetched the GREEN run and corroborated its exact source, counts,
+timings, and identities. Final review of the five-document evidence update found no P1-P3 findings.
+All three documentation gates and 21 focused documentation/workflow tests passed. Commit this
+evidence-only update locally without triggering another unchanged native build. The implementation
+is already on the dedicated qualification branch. Keep the goal active for the next negative controls.

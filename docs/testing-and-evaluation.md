@@ -975,7 +975,7 @@ without skips. The runner resolved `/usr/bin/socat` to `/usr/bin/socat1`, confir
 must resolve the installed alias before passing it to the owner. The guardian binary was unchanged
 from the preceding failed-input run.
 
-The active-connection gate is under development. It keeps a real connection open after an exact
+The active-connection gate has an initial hosted pass. It keeps a real connection open after an exact
 echo and waits independently for the ownership record. It then requires an independent checker
 to identify the relay leader and connection child. On the terminal receipt, it starts a check of
 both processes before closing test sockets. Acceptance also requires normal owner closure.
@@ -1001,14 +1001,25 @@ The repeat control, [run 34167826719](https://github.com/synaptiai/flow-harness/
 at `bec765e`, retained the actual checker exit: status 2, with no terminating signal. Real forwarding
 and the ownership acknowledgement passed before that failure. This confirms the missing `bridge`
 mode in the unchanged checker. Both clean builds and the three original owner tests passed.
-The later application-result tests skipped. The checker implementation can now proceed, but
-active-descendant qualification remains pending its hosted pass.
+The later application-result tests skipped. This failing control preceded checker implementation.
 
 The checker now implements `bridge` discovery. It matches exact arguments and live parentage,
 retains process descriptors for the guardian and both relay processes, and rechecks the identities
 after acquisition. Settlement uses the same termination and identity-observation functions as the
 existing live and unreaped-process controls. It samples both relay descriptors before reading either
 process identity. This preserves the distinction between termination and complete reaping.
+
+The first implemented active-connection case passed in
+[run 34168249470](https://github.com/synaptiai/flow-harness/actions/runs/34168249470) at `6542ec6`.
+The three original owner cases and 306 application-result cases also passed, with no skips.
+Both clean builds matched 32 artifacts. The unchanged guardian settled the observed leader and
+connection child before test socket cleanup. The run also passed the existing real live,
+unreaped, and reaped-process controls through the shared observation function.
+
+This result does not complete bridge qualification. Exact-argument mismatch and multiple-connection
+rejection controls remain open. The two-process acceptance predicate also needs explicit calibration
+with real unreaped observations. Do not infer an exhaustive ancestry proof, an atomic snapshot,
+immutable executable custody, or repair readiness from this single passing case.
 
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
