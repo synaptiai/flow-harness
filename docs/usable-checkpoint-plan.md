@@ -365,8 +365,13 @@ genuine observer binary and a distinct mutant executable.
 The [testing guide](testing-and-evaluation.md#develop-the-native-result-transport-independently)
 defines the direct signal-state checks, real counterexamples, and genuine-versus-mutant assertion.
 
-Next, qualify remaining reporting and cancellation failures. First reproduce the source-audited
-late-cancellation window while the test harness awaits hooks or release, then fix any confirmed gap.
+The [late-cancellation regression](https://github.com/synaptiai/flow-harness/actions/runs/34159934936)
+confirmed that the test harness accepted complete results after cancellation at two held completion
+boundaries. Both non-cancelled controls passed. The acceptance checks are corrected in source, and
+four terminal-reporting controls are added. The 296-case expansion still requires native qualification.
+
+Next, qualify this correction and the reporting controls, then address remaining reporting and native
+cancellation failures. The testing guide distinguishes these gates from test-helper cancellation checks.
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

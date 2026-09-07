@@ -823,17 +823,41 @@ Do not distribute the mutant
 or use it for issue execution. These controls do not enable repairs or qualify remaining failure paths.
 
 The successful run retained `/tmp/flow-observer-transport-bwPzTT` on its ephemeral host.
-That path is not a persistent uploaded evidence archive. A source audit identified a possible
-late-cancellation acceptance window while the test harness awaits hooks or release. Reproduce that
-schedule with real processes before claiming cancellation qualification or treating the hypothesis as confirmed.
+That path is not a persistent uploaded evidence archive.
 
 The next regression adds two non-cancelled controls and one final test of both cancellation windows.
-The suite now registers 292 cases. The new test must reject cancellation after proven child closure
+The regression must reject cancellation after proven child closure
 or successful sandbox release while the corresponding completion callback remains held. Each callback
 must then finish normally. A callback failure cannot substitute for cancellation rejection.
 
-Native execution of this regression is pending. Acceptance behavior is unchanged so the first run
-can confirm or disprove the suspected race before a correction.
+The [regression run](https://github.com/synaptiai/flow-harness/actions/runs/34159934936) at `d44c72d`
+passed 291 cases and failed the final cancellation test, without skips. Both non-cancelled controls
+passed. Both cancelled schedules incorrectly accepted complete exit-7 results with exact output and EOF.
+This confirms the two test-helper acceptance gaps, not a defect in a production-connected observer.
+
+The correction checks cancellation after evidence callbacks, after genuine sandbox release, and before
+returning the observation. Earlier operation and release errors retain precedence. These checks cannot
+revoke a result after its promise has fulfilled. Consumers must still check cancellation before classification.
+Native execution of the correction is pending.
+
+The new reporting controls keep the fixed application's normal execution intact while denying one
+private-channel operation. Each must also reject a real passthrough observation using the same outcome
+assertion. A different launcher diagnostic cannot satisfy that counterexample.
+
+The following mapping applies only to the current fixed descriptor topology:
+
+| Test mode | Denied operation | Required result |
+| --- | --- | --- |
+| `deny-final-write` | Write to descriptor 3 | Outer status 1, no private bytes, and EOF |
+| `deny-inner-write` | Write to descriptor 6 | Outer status 1, no private bytes, and EOF |
+| `deny-outer-read` | Read from descriptor 5 | Outer status 1, no private bytes, and EOF |
+| `deny-worker-read` | Read from descriptor 7 | Complete `supervisor_failed` record with `errno: 71`, `stage: descriptor_handoff`, outer status 0, and EOF |
+
+Every case requires exact application and launcher output and no outer terminating signal. These
+filters apply to all inheriting processes, not authenticated roles. Requalify them if descriptor
+allocation or the fixed static application changes. The expanded suite registers 296 cases.
+Their native qualification is pending. Closed readers, partial records, graceful signal forwarding,
+and outer relay settlement remain separate gates.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure

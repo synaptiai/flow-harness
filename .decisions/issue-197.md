@@ -2208,3 +2208,46 @@ that test compilation issue without configuration changes. This was not native R
 Mac collection skips all 292 cases. Commit the test-only schedule and pending-status documentation
 to obtain actual Linux RED before changing acceptance. The three new cases are two passing twins
 and one aggregate that collects only fully settled false successes at both named cancellation windows.
+
+### Late-cancellation regression RED
+
+Run 34159934936, job 101859408764, failed at exact source
+d44c72d9187022805da91d6d82b2822ece40e603. Job duration was 2m24s (20:34:42Z–20:37:06Z on
+2026-09-07). All 291 preceding cases passed, including both non-cancelled completion-barrier twins.
+The final aggregate failed with TWO exact false successes: child-closed-hook-held and
+released-observation-held each accepted normal_exit7, outer0, no signal, EOF, expected application
+marker, and empty stderr after the owned controller had been cancelled. No skip or setup error
+established this RED. The suite took 22.05s with 21.74s test bodies.
+
+Two clean builds still matched all 29 artifacts. The genuine observer binary remained
+67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d. The failed run retained
+/tmp/flow-observer-transport-527Jpp on its ephemeral host, not a persistent archive.
+
+Now correct acceptance after capture hooks and after genuine release, preserving the exact abort
+reason and earlier operation/release errors. A final observe check is also required before returning
+across its await continuation. The reproduced schedules qualify the first two windows; the final
+return check enforces the same source-audited invariant but does not prove every possible microtask
+interleaving. No check can revoke an already fulfilled promise; downstream classification must check
+its own current cancellation state. Keep the barriers and exact rejection regression unchanged.
+
+Primary-source cross-checks support the test design: Node documents child close after process
+termination and stdio closure at https://nodejs.org/api/child_process.html#event-close, and exact
+abort reason propagation at https://nodejs.org/api/globals.html#abortsignalthrowifaborted. These do
+not establish relay disposal. Linux pipe(7), https://man7.org/linux/man-pages/man7/pipe.7.html,
+also distinguishes small nonblocking atomic writes from genuine partial writes; seccomp errno
+denial is not a partial-record control. Exact pinned Node documentation URLs were unavailable
+through the web tool; current official API documentation corroborates these longstanding semantics.
+
+Four report-fault tests were written before their launcher implementation. Each validates actual
+passthrough normal7 and requires the same expected-failure assertion to reject it independently of
+the launcher label, then tests the targeted syscall denial. The new launcher modes map to fixed
+descriptors3/6/5/7 only, preserve all original mode indices and signal-state ranges, and do not deny
+application execution. No new production header, patch, artifact mode, or model setting changed.
+
+The correction passed independent source/test/documentation review with no P1–P3 findings. The
+reviewer independently authenticated the RED run and both false-success diagnostics. Full typecheck,
+production build, lint, formatting, pinned-source checks, all 375 focused regressions, all 41
+documentation/workflow contract tests, documentation gates, and whitespace checks pass. Native Mac
+collection skips 296 cases; it does not qualify the correction or report controls. The unchanged
+informational lint note remains. All five modified files are scoped to this test-helper correction,
+test-only syscall controls, and their evidence. Next action is the actual Linux GREEN gate.

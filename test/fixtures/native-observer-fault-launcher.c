@@ -14,6 +14,10 @@
  * Only blocked TERM is pending afterward. No control fabricates a result frame.
  * Caught-handler reset on exec is not qualified. In particular a synchronous
  * SIGILL outcome alone cannot prove that inherited signal state was reset.
+ * Terminal-reporting modes deny-final-write, deny-inner-write, deny-outer-read,
+ * and deny-worker-read target write(3), write(6), read(5), and read(7). These
+ * filters apply to every inheriting process, not authenticated process roles.
+ * The fixed static application must still complete with its exact marker.
  *
  * FD 8 is deliberately coupled to observer-application.h's checked topology:
  * close_range(5..UINT_MAX), report pipe 5/6, then worker error pipe 7/8.
@@ -55,7 +59,8 @@ static int mode_number(const char *name) {
         "signal-ignored-deny-exec-write", "signal-ignored-deny-exec-write-kill",
         "signal-ignored-control", "signal-blocked-passthrough",
         "signal-blocked-deny-exec", "signal-blocked-deny-exec-write",
-        "signal-blocked-deny-exec-write-kill", "signal-blocked-control"
+        "signal-blocked-deny-exec-write-kill", "signal-blocked-control",
+        "deny-final-write", "deny-inner-write", "deny-outer-read", "deny-worker-read"
     };
     for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (strcmp(name, names[i]) == 0) return (int)i;
@@ -127,6 +132,15 @@ static int install_filter(int mode) {
     if (mode == 3) {
         STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
         JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_kill, 0, 1);
+        STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
+    }
+    if (mode >= 15 && mode <= 18) {
+        const unsigned int descriptors[] = {3, 6, 5, 7};
+        const unsigned int operation = mode <= 16 ? SYS_write : SYS_read;
+        STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+        JUMP(BPF_JMP | BPF_JEQ | BPF_K, operation, 0, 3);
+        STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0]));
+        JUMP(BPF_JMP | BPF_JEQ | BPF_K, descriptors[mode - 15], 0, 1);
         STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM);
     }
     STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
@@ -269,9 +283,9 @@ int main(int argc, char **argv) {
     for (unsigned int i = 0; i < 64; ++i)
         if (!((argv[4][i] >= '0' && argv[4][i] <= '9') ||
               (argv[4][i] >= 'a' && argv[4][i] <= 'f'))) return 120;
-    const int signal_state = mode < 5 ? 0 : mode < 10 ? 1 : 2;
-    const int control = mode >= 5 && (mode - 5) % 5 == 4;
-    const int filter_mode = mode < 5 ? mode : control ? 0 : (mode - 5) % 5;
+    const int signal_state = mode >= 5 && mode < 15 ? (mode < 10 ? 1 : 2) : 0;
+    const int control = signal_state != 0 && (mode - 5) % 5 == 4;
+    const int filter_mode = signal_state == 0 ? mode : control ? 0 : (mode - 5) % 5;
     if (topology() != 0 || install_filter(filter_mode) != 0 ||
         (signal_state != 0 && install_signals(signal_state) != 0)) return 121;
     if (mode == 4 && close(4) != 0) return 121;

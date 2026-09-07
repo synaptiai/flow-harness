@@ -63,12 +63,18 @@ const canaryDiagnostic =
 const upstreamSha256 = "5c92b0f369a626f5d7cb27d7912cfa882dc26a3690f17cc0016480c5b8b01df7";
 type SignalState = "ignored" | "blocked";
 type SignalFault = "passthrough" | "deny-exec" | "deny-exec-write" | "deny-exec-write-kill";
+type ReportingFault =
+  | "deny-final-write"
+  | "deny-inner-write"
+  | "deny-outer-read"
+  | "deny-worker-read";
 type FaultMode =
   | "passthrough"
   | "deny-exec"
   | "deny-exec-write"
   | "deny-exec-write-kill"
   | "close-app-fd"
+  | ReportingFault
   | `signal-${SignalState}-${SignalFault | "control"}`;
 type OwnedApplication = { path: string; handle: FileHandle };
 type Fixture = {
@@ -391,6 +397,61 @@ describe
           if (mode === "deny-exec-write") expectDeniedReporting(result.record);
           else expect(result.record).toEqual(expected);
           expectTransport(result, "", faultMarker(mode));
+        }),
+    );
+
+    it.for([
+      "deny-final-write",
+      "deny-inner-write",
+      "deny-outer-read",
+      "deny-worker-read",
+    ] as const)(
+      "preserves the actual %s reporting failure with a real passthrough counterexample",
+      { timeout: 45_000 },
+      (mode, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateFaults(value, context.signal);
+          const expectedRecord =
+            mode === "deny-worker-read"
+              ? {
+                  kind: "supervisor_failed",
+                  errno: 71,
+                  stage: "descriptor_handoff",
+                  clone3FallbackUsed: false,
+                }
+              : null;
+          const assertReportingOutcome = (result: Awaited<ReturnType<typeof observe>>) => {
+            // Keep the launcher diagnostic separate: the live counterexample
+            // must fail on the actual result, not its different mode label.
+            expect({
+              code: result.code,
+              signal: result.signal,
+              record: result.record,
+              privateBytes: result.privateBytes.length,
+              privateEof: result.privateEof,
+              stdout: result.stdout.toString("utf8"),
+            }).toEqual({
+              code: mode === "deny-worker-read" ? 0 : 1,
+              signal: null,
+              record: expectedRecord,
+              privateBytes: mode === "deny-worker-read" ? 64 : 0,
+              privateEof: true,
+              stdout: marker,
+            });
+          };
+          const positive = await observe(value, context.signal, { fault: "passthrough" });
+          expect(positive.record).toEqual({
+            kind: "normal_exit",
+            exitCode: 7,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(positive, marker, faultMarker("passthrough"));
+          expect(() => assertReportingOutcome(positive)).toThrowError();
+
+          const result = await observe(value, context.signal, { fault: mode });
+          assertReportingOutcome(result);
+          expect(result.stderr.toString("utf8")).toBe(faultMarker(mode));
         }),
     );
 
@@ -1291,6 +1352,7 @@ async function observe(
     options.onReleased,
   );
   if (observation === undefined) throw new Error("Native observation missing");
+  signal.throwIfAborted();
   return observation;
 }
 
@@ -1468,7 +1530,6 @@ async function prepared(
     try {
       await bounded(command.release(), 5500, "Sandbox release did not settle");
       // Test-only completion barrier, after the genuine lease has released.
-      // Do not add cancellation enforcement here until native RED is observed.
       if (onReleased !== undefined)
         await bounded(onReleased(), 1000, "Native release completion hook did not settle");
     } catch (error) {
@@ -1477,6 +1538,9 @@ async function prepared(
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, "Observation or release failed");
+  // Cancellation cannot turn into acceptance while genuine release (or its
+  // qualification barrier) settles. Preserve prior body/release errors first.
+  signal.throwIfAborted();
 }
 
 function bounded<T>(operation: Promise<T>, milliseconds: number, message: string): Promise<T> {
@@ -1614,7 +1678,16 @@ function capture(
           1000,
           "Native qualification hooks did not settle",
         ).then(
-          () => resolve(result),
+          () => {
+            // Child close removes the process abort listener, but owned hooks
+            // can still be pending. Check at acceptance and observe any throw.
+            try {
+              signal.throwIfAborted();
+              resolve(result);
+            } catch (error) {
+              reject(error);
+            }
+          },
           (error: unknown) => {
             hookController.abort(error);
             reject(error);
