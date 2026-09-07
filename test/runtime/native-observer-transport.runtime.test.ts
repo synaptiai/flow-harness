@@ -144,10 +144,10 @@ describe.skipIf(process.platform !== "linux")("Native observer application trans
       // failure is not evidence that the missing observer protocol was detected.
       await prepared(sandbox, request, context.signal, async (original) => {
         const result = await capture(original.launch, workspace, home, context.signal);
+        expect(result.stderr.toString("utf8"), "Original-launch diagnostics").toBe("");
         expect(result.code).toBe(7);
         expect(result.signal).toBeNull();
         expect(result.stdout.toString("utf8")).toBe(marker);
-        expect(result.stderr.length).toBe(0);
       });
       console.info("Native observer original-launch positive control: exact marker, exit 7");
       await prepared(sandbox, request, context.signal, async (original) => {

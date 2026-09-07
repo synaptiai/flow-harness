@@ -1696,3 +1696,38 @@ warning mistook the literal GitHub concurrency expression for JavaScript interpo
 string assertion now has a targeted explanatory suppression. The pre-existing informational
 constructor diagnostic remains unrelated. Native execution is still pending, so this record does
 not claim the regression has reached its intended RED assertion.
+
+### Hosted results and descriptor diagnostic
+
+Run 34147986514 completed naturally. The proof job 101824043282 passed all four runtime tests
+without skips and compared two clean native builds: all 15 artifacts matched. Verified proof image
+sha256:73559bb7a6d90c71601661ff13e82e59e1efa7ba05db22b5fb3e619f7e146a73.
+The native receipt purpose remains unmodified-upstream-build-foundation; observerQualification is
+not-performed. Helper SHA-256: 9883ef93f808fec05f95cdf71cb43642ef3ef825d7d9d73cb85417f1b0376d5d.
+Generated header: 70606960f8ecabc770fda4ccbf838c27ef52dff09e2e3f085a181bc8f0aa5590.
+BPF: 9f5a4bdf5539a9cdacc93cdb1dd2778de21b773db3ca20170c46b571e9b9b207.
+Overall CI remains failed solely on the already recorded fixture assertion in focused and quality
+jobs. No live watch remains for this run and no run was cancelled.
+
+Isolated run 34152782641, source f5b417da9ec0c4c5baf3643d550499cbef8a6546, completed in 55 seconds.
+Its environment and build prerequisites passed on Ubuntu 24.04 x64. The native regression failed
+before its intended missing-frame assertion: the original unchanged-SRT application returned 96,
+meaning its descriptor inventory contained an unexpected entry. Test-owned root was retained as
+/tmp/flow-observer-transport-ds5PiT on the ephemeral runner; logs record the path but do not preserve
+that filesystem after runner disposal. This is a precondition failure, not intended behavioral RED.
+
+Three hypotheses were considered: an inherited real descriptor, a proc-view inventory discrepancy,
+or an upstream monitor-related descriptor. The monitor hypothesis is less likely: direct source
+inspection verified that initialize defaults enableLogMonitor to false, and our adapter does not
+override it. Known upstream observation descriptors also use close-on-exec. An initial delegated
+claim that the monitor defaults to true was corrected before commit. Source inspection does not
+establish the unexpected descriptor's origin.
+
+Added diagnostic-only fcntl/fstat checks for the first unexpected inventory entry. A bounded line
+contains descriptor number, inventory number, flags, errno values, and a fixed file-type label.
+It never reads file content or emits link targets. Exit 96 and every descriptor constraint remain
+unchanged. The original-launch stderr assertion now runs first so this evidence is visible.
+Independent review found no P1–P3 in this delta. Full type checking, lint, formatting, and Mac C
+syntax-only checking passed; the unrelated constructor information remains. Linux diagnosis is
+pending. No production observer implementation, fixture-policy adoption, model run, or repair
+enablement is included.

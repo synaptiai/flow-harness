@@ -281,8 +281,11 @@ adoption or observer qualification. Mount-identity attack coverage remains open.
 
 The quality job independently reproduced
 the same fixture failure: 105 runtime tests passed, one failed, and four were skipped. Its coverage
-suite passed 6,983 tests with one skip, and both browser tests passed. Proof and native build
-comparison results remain pending. Mac skips do not qualify Linux behavior.
+suite passed 6,983 tests with one skip, and both browser tests passed. The proof job passed all
+four tests without skips. Two clean native builds produced 15 identical artifacts. This establishes
+reproducibility of the unchanged upstream build, not observer qualification. Mac skips do not qualify
+Linux behavior.
+
 VR-06 requires separate live-experiment authorization.
 
 The shared result-transport work now includes an internal launch rewrite. It preserves admitted
@@ -302,7 +305,13 @@ The next focused Linux configuration also includes three native encoder tests an
 bootstrap test, for 28 tests across eight suites. The shell control passed on macOS using fixed
 inspection processes, including descriptor-leak controls and maximum-size argument preservation.
 Those results do not qualify real relay readiness or cleanup. The new configuration has not been
-dispatched while the existing proof build remains active.
+dispatched through full CI. The previous proof build has now completed.
+
+A separate native Linux feedback workflow preserves the full-CI requirements. Its
+[first transport run](https://github.com/synaptiai/flow-harness/actions/runs/34152782641)
+at `f5b417d` failed in the original-launch positive control: the fixed application detected an
+unexpected descriptor and returned 96. The observer assertion was not reached. Diagnose this
+precondition before claiming a missing-protocol regression or changing native production code.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three

@@ -3,7 +3,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Fixed static Linux application, not an observer or a descriptor custodian.
@@ -34,7 +36,28 @@ int main(void) {
         const long fd = strtol(entry->d_name, &end, 10);
         if (errno != 0 || end == entry->d_name || *end != '\0' || fd < 0 || fd > INT_MAX)
             return 95;
-        if (fd > 2 && fd != inventory_fd) return 96;
+        if (fd > 2 && fd != inventory_fd) {
+            errno = 0;
+            const int descriptor_flags = fcntl((int)fd, F_GETFD);
+            const int descriptor_errno = errno;
+            struct stat metadata;
+            errno = 0;
+            const int stat_result = fstat((int)fd, &metadata);
+            const int stat_errno = errno;
+            const char *kind = stat_result != 0 ? "unavailable"
+                : S_ISREG(metadata.st_mode) ? "regular"
+                : S_ISDIR(metadata.st_mode) ? "directory"
+                : S_ISFIFO(metadata.st_mode) ? "fifo"
+                : S_ISSOCK(metadata.st_mode) ? "socket"
+                : S_ISCHR(metadata.st_mode) ? "character" : "other";
+            char diagnostic[256];
+            const int length = snprintf(diagnostic, sizeof(diagnostic),
+                "unexpected-fd=%ld inventory-fd=%d flags=%d fd-errno=%d kind=%s stat-errno=%d\n",
+                fd, inventory_fd, descriptor_flags, descriptor_errno, kind, stat_errno);
+            if (length > 0 && (size_t)length < sizeof(diagnostic))
+                (void)!write(STDERR_FILENO, diagnostic, (size_t)length);
+            return 96;
+        }
     }
     if (closedir(directory) != 0) return 97;
     static const char marker[] = "flow-observer-fixed-application-exit-7\n";
