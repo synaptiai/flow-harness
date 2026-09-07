@@ -651,8 +651,10 @@ path while a full CI run is active. It runs only
 `Native observer development (not full CI)`, cannot replace the full CI or release gates.
 It uses the existing sandbox prerequisites, read-only repository permissions, no model credentials,
 and a separate non-cancelling concurrency group. It builds and compares the observer artifact through
-the explicit `--build-observer` mode before passing that artifact to the runtime test. Its 30-minute
-job limit covers two 10-minute build limits, preparation, checks, and cleanup attempts.
+the explicit `--build-observer` mode before passing that artifact to the runtime test.
+
+The job has a 30-minute limit. Each build has a separate 10-minute limit, and native process
+checks have bounded deadlines. Job expiry is a failed run, not proof of completed cleanup.
 
 The first trigger is a push of reviewed source to the exact branch
 `codex/issue-197-native-qualification`. Check that the branch is absent or has the expected prior
@@ -680,11 +682,30 @@ passed in [run 34153761937](https://github.com/synaptiai/flow-harness/actions/ru
 The explicit observer artifact must now pass the same result assertion.
 A platform skip or failure before that control is not the required failing-test evidence.
 
+The adversarial transport gate must also distinguish every normal exit code from signals and
+failures before execution. Register exit codes 0 through 255 as separate cases with fresh sandbox
+leases. Compare ordinary exit 143 with termination by signal 15. Check missing application
+descriptors, malformed executable headers, and valid executable files without execute permission.
+
+A trusted test-only launcher installs real syscall restrictions immediately before the observer,
+inside the admitted sandbox. Its passthrough control must first return the expected application
+result. Three additional controls deny execution, then also deny worker error reporting, then also
+deny self-termination. Require an execution-failure record, a launch-unproven signal 9 record, and
+a launch-unproven signal 4 record, respectively. None can produce a normal-exit record.
+
+The reporting-denial control targets descriptor 8. The observer allocates its report pipe as
+descriptors 5 and 6, then its worker error pipe as 7 and 8. This is a test dependency,
+not a public interface. Requalify the control if that allocation changes. Do not add production
+fault flags, replace the real observer, or install these restrictions outside its sandbox.
+
 The test deliberately passes an owned extra descriptor after runner isolation. Its direct-host and
 unchanged-sandbox negative controls must detect that descriptor. The observer path must prevent it
 from reaching the application. Descriptor 19 is a test canary, not a supported-descriptor limit or
-an approved leak. This checks end-to-end application entry. Native helper-entry attribution remains
-a separate qualification requirement.
+an approved leak. This checks end-to-end application entry.
+
+The test-only launcher must confirm the live canary immediately before helper execution.
+It must also confirm that the canary refers to the admitted application inode.
+Its marker is test calibration, not production writer authentication.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after a future result-channel pass. Process closure

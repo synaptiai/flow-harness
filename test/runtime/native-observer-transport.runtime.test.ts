@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
+  copyFile,
   type FileHandle,
   lstat,
   mkdir,
@@ -10,6 +11,7 @@ import {
   open,
   readFile,
   realpath,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -18,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
 
 import type { PreparedCommand, SandboxLaunch } from "../../src/application/command-sandbox.js";
 import {
@@ -36,248 +38,604 @@ const execFile = promisify(callbackExecFile);
 const source = fileURLToPath(
   new URL("../fixtures/native-observer-transport-app.c", import.meta.url),
 );
+const faultSource = fileURLToPath(
+  new URL("../fixtures/native-observer-fault-launcher.c", import.meta.url),
+);
 const marker = "flow-observer-fixed-application-exit-7\n";
+const resultMarker = "flow-observer-fixed-application-result\n";
+const canaryDiagnostic =
+  "unexpected-fd=19 inventory-fd=3 flags=0 fd-errno=0 kind=regular stat-errno=0\n";
 const upstreamSha256 = "5c92b0f369a626f5d7cb27d7912cfa882dc26a3690f17cc0016480c5b8b01df7";
+type FaultMode =
+  | "passthrough"
+  | "deny-exec"
+  | "deny-exec-write"
+  | "deny-exec-write-kill"
+  | "close-app-fd";
+type OwnedApplication = { path: string; handle: FileHandle };
+type Fixture = {
+  home: string;
+  workspace: string;
+  privateRoot: string;
+  environment: Record<string, string>;
+  app: OwnedApplication;
+  malformed: OwnedApplication;
+  nonExecutable: OwnedApplication;
+  helper: string;
+  explicitHelper: boolean;
+  faultLauncher: string;
+  sandbox: SrtCommandSandbox;
+  calibration?: Promise<void>;
+  faultCalibration?: Promise<void>;
+};
 
-// Application record + ordinary output + private-channel EOF only. This is not
-// policy-clean, protected-writer, relay/bridge-disposal or repair qualification.
-// Default selection is the exact installed upstream helper: after the genuine
-// original-launch positive control, its absent observer frame MUST fail here.
-// FLOW_TEST_NATIVE_OBSERVER_HELPER is an explicit future artifact input; invalid
-// inputs fail, never silently fall back. Non-Linux collection is not a RED run.
-// Every owned root is deliberately retained, even on a future record pass:
-// manager release and bwrap monitor close do not prove all bridges/relays reaped.
-describe.skipIf(process.platform !== "linux")("Native observer application transport", () => {
-  it("reports the fixed ELF's normal exit 7 on the private channel", async (context) => {
-    expect(process.arch, "Only the Linux x64 profile is supported").toBe("x64");
-    context.signal.throwIfAborted();
-    const root = await mkdtemp(join(await realpath(tmpdir()), "flow-observer-transport-"));
-    // No deletion is scheduled, including after a Vitest timeout or late settlement.
-    console.info(`Native observer diagnostic evidence retained: ${root}`);
+// Result/EOF qualification only, not policy-clean, private-writer, full relay
+// disposal or repair eligibility. Default upstream still fails the original
+// missing-frame regression. The additional matrix requires an explicit artifact.
+// Non-Linux collection is not native evidence. Every owned root is retained,
+// even on success: manager reset/monitor close do not prove bridge settlement.
+// Shared compilation does not share prepared leases; every launch prepares anew.
+describe
+  .skipIf(process.platform !== "linux")
+  .sequential("Native observer application transport", () => {
     const handles: FileHandle[] = [];
     const artifacts: { path: string; before: Awaited<ReturnType<typeof identity>> }[] = [];
-    const failures: unknown[] = [];
-    const home = join(root, "home");
-    const workspace = join(root, "workspace");
-    const privateRoot = join(root, "private");
-    try {
-      await Promise.all([mkdir(home), mkdir(workspace), mkdir(privateRoot)]);
-      const environment = {
-        PATH: "/usr/bin:/bin",
-        HOME: home,
-        LANG: "C",
-        LC_ALL: "C",
-        TMPDIR: root,
-      };
-      const application = join(privateRoot, "fixed-application");
-      context.signal.throwIfAborted();
-      const compiled = await bounded(
-        execFile(
-          "/usr/bin/cc",
-          [
-            "-static",
-            "-std=c11",
-            "-O2",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-pedantic",
-            source,
-            "-o",
-            application,
-          ],
-          {
-            cwd: root,
-            env: environment,
-            encoding: "utf8",
-            timeout: 5000,
-            killSignal: "SIGKILL",
-            maxBuffer: 8192,
-            signal: context.signal,
-          },
-        ),
-        6000,
-        "Static compiler did not settle",
+    const active = new Set<Promise<void>>();
+    let initialization: Promise<void> | undefined;
+    let fixture: Fixture | undefined;
+    let closing = false;
+    let unavailable = false;
+    const setup = new AbortController();
+
+    beforeAll(() => {
+      const timer = setTimeout(
+        () => setup.abort(new Error("Native fixture setup deadline")),
+        20_000,
       );
-      expect(compiled.stdout).toBe("");
-      expect(compiled.stderr).toBe("");
-      await chmod(application, 0o555);
-      const appIdentity = await identity(application);
-      artifacts.push({ path: application, before: appIdentity });
-      const app = await open(application, constants.O_RDONLY | constants.O_NOFOLLOW);
-      handles.push(app);
-      expect(await app.stat({ bigint: true })).toMatchObject({
-        dev: appIdentity.dev,
-        ino: appIdentity.ino,
-      });
-      // This trusted fixed ELF has no external inputs or effects beyond its
-      // descriptor inventory and marker. Run it before manager initialization
-      // to distinguish ambient host inheritance from sandbox-created handles.
-      const hostControl = await capture(
-        { executable: application, args: [], env: environment },
-        workspace,
-        home,
-        context.signal,
+      initialization = createFixture(setup.signal, handles, artifacts)
+        .then((value) => {
+          fixture = value;
+        })
+        .finally(() => clearTimeout(timer));
+      return initialization;
+    }, 30_000);
+
+    afterAll(async () => {
+      closing = true;
+      setup.abort();
+      // Join original callbacks, not Vitest's timeout wrappers. An uncertain join
+      // leaves even the owned handles open; no delayed close or root deletion runs.
+      await bounded(
+        Promise.allSettled([initialization, ...active]),
+        1000,
+        "Native fixture users did not settle; handles and root retained",
       );
-      expect(hostControl.stderr.toString("utf8"), "Direct-host diagnostics").toBe("");
-      expect(hostControl.code).toBe(7);
-      expect(hostControl.signal).toBeNull();
-      expect(hostControl.stdout.toString("utf8")).toBe(marker);
-      console.info("Native observer direct-host positive control: exact marker, exit 7");
-      // FD 19 is a test canary, not a production inventory limit. Deliberately
-      // pass only the owned, read-only fixed ELF; descriptors 3 and 4 stay absent.
-      // A clean test startup must not conceal this explicit inheritance control.
-      const hostCanary = await capture(
-        { executable: application, args: [], env: environment },
-        workspace,
-        home,
-        context.signal,
-        undefined,
-        app.fd,
-      );
-      expect(hostCanary.code).toBe(96);
-      expect(hostCanary.signal).toBeNull();
-      expect(hostCanary.stdout.length).toBe(0);
-      expect(hostCanary.stderr.toString("utf8")).toBe(
-        "unexpected-fd=19 inventory-fd=3 flags=0 fd-errno=0 kind=regular stat-errno=0\n",
-      );
-      console.info(
-        "Native observer direct-host negative control: explicit FD 19 detected, exit 96",
-      );
-      const selected = process.env.FLOW_TEST_NATIVE_OBSERVER_HELPER;
-      const helperInput = selected ?? resolveAnthropicSandboxRuntimeSeccompPath();
-      if (helperInput === undefined || !isAbsolute(helperInput))
-        throw new Error("Missing absolute observer helper input");
-      const helper = await realpath(helperInput);
-      if (helper !== helperInput)
-        throw new Error("Observer helper input must be canonical and not a symlink");
-      const helperIdentity = await identity(helper);
-      artifacts.push({ path: helper, before: helperIdentity });
-      expect(
-        JSON.parse(
-          await readFile(
-            new URL(import.meta.resolve("@anthropic-ai/sandbox-runtime/package.json")),
-            "utf8",
-          ),
-        ).version,
-      ).toBe("0.0.70");
-      if (selected === undefined) expect(helperIdentity.sha256).toBe(upstreamSha256);
-      const sandbox = new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
-        backendVersion: "0.0.70",
-        environment,
-        seccompApplyPath: helper,
-      });
-      const command = { executable: application, args: [] as string[] };
-      const request = {
-        ...command,
-        cwd: workspace,
-        protectedPaths: [privateRoot],
-        runtimeSupportPaths: [application, helper],
-      };
-      // The original path MUST really execute this same ELF. A sandbox/setup
-      // failure is not evidence that the missing observer protocol was detected.
-      await prepared(sandbox, request, context.signal, async (original) => {
-        const result = await capture(original.launch, workspace, home, context.signal);
-        expect(result.stderr.toString("utf8"), "Original-launch diagnostics").toBe("");
-        expect(result.code).toBe(7);
-        expect(result.signal).toBeNull();
-        expect(result.stdout.toString("utf8")).toBe(marker);
-      });
-      console.info("Native observer original-launch positive control: exact marker, exit 7");
-      // Pair the direct-host canary with the real unchanged SRT path. This
-      // establishes traversal through that path, not entry custody in the later
-      // rewritten helper; composed observer-path absence is the measured claim.
-      await prepared(sandbox, request, context.signal, async (original) => {
-        const result = await capture(
-          original.launch,
-          workspace,
-          home,
-          context.signal,
-          undefined,
-          app.fd,
-        );
-        expect(result.code).toBe(96);
-        expect(result.signal).toBeNull();
-        expect(result.stdout.length).toBe(0);
-        expect(result.stderr.toString("utf8")).toBe(
-          "unexpected-fd=19 inventory-fd=3 flags=0 fd-errno=0 kind=regular stat-errno=0\n",
-        );
-      });
-      console.info(
-        "Native observer original-launch negative control: explicit FD 19 detected, exit 96",
-      );
-      await prepared(sandbox, request, context.signal, async (original) => {
-        const httpSocketPath = SandboxManager.getLinuxHttpSocketPath();
-        const socksSocketPath = SandboxManager.getLinuxSocksSocketPath();
-        if (httpSocketPath === undefined || socksSocketPath === undefined)
-          throw new Error("Missing real manager proxy sockets");
-        for (const path of new Set([httpSocketPath, socksSocketPath])) {
-          expect(await realpath(path)).toBe(path);
-          expect((await lstat(path)).isSocket()).toBe(true);
-        }
-        const correlation = randomBytes(32).toString("hex");
-        const launch = rewriteNativeObserverLaunch({
-          launch: original.launch,
-          originalCommand: command,
-          trustedBwrapPath: await realpath("/usr/bin/bwrap"),
-          trustedHelperPath: helper,
-          correlation,
-          proxyBridge: {
-            httpSocketPath,
-            socksSocketPath,
-            originalRelayExecutable: "socat",
-            trustedRelayExecutable: await realpath("/usr/bin/socat"),
-          },
-        });
-        if (launch === null)
-          throw new Error("Real manager launch is unsupported by observer rewrite");
-        // The composed observer path must remove this explicitly mapped FD.
-        // This does not independently prove its arrival at the helper entry.
-        const result = await capture(launch, workspace, home, context.signal, app.fd, app.fd);
-        expect(result.privateEof).toBe(true);
-        if (selected === undefined) {
-          // The pinned helper treats the unsupported observer flag as its
-          // executable. Require this exact failure, not any namespace/setup error.
-          expect(result.code).toBe(1);
-          expect(result.signal).toBeNull();
-          expect(result.stdout.length).toBe(0);
-          expect(result.stderr.toString("utf8")).toBe(
-            "apply-seccomp: execvp: No such file or directory\n",
-          );
-          console.info(
-            "Native observer upstream unsupported-exec control: exact ENOENT diagnostic; private-frame feature assertion follows",
-          );
-        }
-        // Assert the missing feature only after the real baseline above succeeded.
-        expect(
-          parseNativeObserverResult(result.privateBytes, correlation),
-          "Expected one complete private normal-exit frame from the selected helper",
-        ).toEqual({ kind: "normal_exit", exitCode: 7, clone3FallbackUsed: false });
-        expect(result.code).toBe(0); // Transport success, not application exit status.
-        expect(result.signal).toBeNull();
-        expect(result.stdout.toString("utf8")).toBe(marker);
-        expect(result.stderr.length).toBe(0);
-      });
-    } catch (error) {
-      failures.push(error);
-    } finally {
-      // Retain and compare evidence even when the expected baseline frame check
-      // fails. These comparisons do not establish immutability during execution.
-      for (const artifact of artifacts) {
-        try {
-          expect(await identity(artifact.path)).toEqual(artifact.before);
-        } catch (error) {
-          failures.push(error);
-        }
+      const failures: unknown[] = [];
+      try {
+        await checkArtifacts();
+      } catch (error) {
+        failures.push(error);
       }
       const closed = await Promise.allSettled(handles.map((handle) => handle.close()));
       for (const close of closed) if (close.status === "rejected") failures.push(close.reason);
+      if (failures.length > 0)
+        throw new AggregateError(
+          failures,
+          "Native fixture final comparison or close failed; root retained",
+        );
+    });
+
+    async function checkArtifacts() {
+      for (const artifact of artifacts)
+        expect(await identity(artifact.path)).toEqual(artifact.before);
     }
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1)
-      throw new AggregateError(failures, "Native observer diagnostic failed; evidence retained");
-  }, 45_000);
-});
+
+    function runCase(context: TestContext, body: (value: Fixture) => Promise<void>) {
+      // A timed-out callback may still own the global manager. A rejected bounded
+      // preparation/release/capture can also leave work alive after its callback
+      // settles. Never admit another case after either condition.
+      if (closing || unavailable || active.size !== 0) {
+        unavailable = true;
+        return Promise.reject(new Error("Native fixture unavailable after prior uncertainty"));
+      }
+      const operation = Promise.resolve().then(async () => {
+        const failures: unknown[] = [];
+        try {
+          context.signal.throwIfAborted();
+          if (closing || fixture === undefined) throw new Error("Native fixture is unavailable");
+          await body(fixture);
+        } catch (error) {
+          unavailable = true;
+          failures.push(error);
+        }
+        // Preserve comparisons on failed assertions as well as successful records.
+        try {
+          await checkArtifacts();
+        } catch (error) {
+          unavailable = true;
+          failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1)
+          throw new AggregateError(failures, "Native observation or artifact comparison failed");
+      });
+      active.add(operation);
+      void operation.then(
+        () => active.delete(operation),
+        () => active.delete(operation),
+      );
+      return operation;
+    }
+
+    it(
+      "reports the fixed ELF's normal exit 7 on the private channel",
+      (context) =>
+        runCase(context, async (value) => {
+          await calibrate(value, context.signal);
+          const result = await observe(value, context.signal);
+          if (!value.explicitHelper) {
+            expect(result.code).toBe(1);
+            expect(result.signal).toBeNull();
+            expect(result.stdout.length).toBe(0);
+            expect(result.stderr.toString("utf8")).toBe(
+              "apply-seccomp: execvp: No such file or directory\n",
+            );
+            console.info(
+              "Native observer upstream unsupported-exec control: exact ENOENT diagnostic; private-frame feature assertion follows",
+            );
+          }
+          expect(
+            result.record,
+            "Expected one complete private normal-exit frame from the selected helper",
+          ).toEqual({ kind: "normal_exit", exitCode: 7, clone3FallbackUsed: false });
+          expectTransport(result, marker, "");
+        }),
+      45_000,
+    );
+
+    it.for(Array.from({ length: 256 }, (_, value) => value))(
+      "preserves separately registered normal application exit %i",
+      { timeout: 45_000 },
+      (exitCode, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const result = await observe(value, context.signal, {
+            args: ["--exit", String(exitCode)],
+          });
+          expect(result.record).toEqual({
+            kind: "normal_exit",
+            exitCode,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, resultMarker, "");
+        }),
+    );
+
+    it(
+      "distinguishes real SIGTERM 15 from the separately tested normal exit 143",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const result = await observe(value, context.signal, { args: ["--signal-term"] });
+          expect(result.record).toEqual({
+            kind: "signalled",
+            signal: 15,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, resultMarker, "");
+          // This record does not independently prove exec for arbitrary signalled
+          // workers; the fixed control marker is calibration, not a production witness.
+        }),
+      45_000,
+    );
+
+    it(
+      "calibrates the real fault launcher immediately before the helper",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateFaults(value, context.signal);
+        }),
+      45_000,
+    );
+
+    it(
+      "rejects the trusted fault launcher outside the admitted bwrap",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const result = await capture(
+            {
+              executable: value.faultLauncher,
+              args: [
+                "passthrough",
+                value.helper,
+                "--flow-observer-v1",
+                randomBytes(32).toString("hex"),
+                "--",
+                value.app.path,
+              ],
+              env: value.environment,
+            },
+            value.workspace,
+            value.home,
+            context.signal,
+            value.app.handle.fd,
+            value.app.handle.fd,
+          );
+          expect(result.code).toBe(121);
+          expect(result.signal).toBeNull();
+          expect(result.stdout.length).toBe(0);
+          expect(result.stderr.length).toBe(0);
+          expect(result.privateBytes.length).toBe(0);
+          expect(result.privateEof).toBe(true);
+        }),
+      45_000,
+    );
+
+    it(
+      "rejects an actually closed FD 4 without an application result",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateFaults(value, context.signal);
+          const result = await observe(value, context.signal, { fault: "close-app-fd" });
+          expect(result.record).toEqual({
+            kind: "setup_failed",
+            errno: 9,
+            stage: "descriptor_handoff",
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, "", faultMarker("close-app-fd"));
+        }),
+      45_000,
+    );
+
+    it(
+      "rejects a malformed ELF without executing an application",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const result = await observe(value, context.signal, { application: value.malformed });
+          expect(result.record).toEqual({
+            kind: "setup_failed",
+            errno: 8,
+            stage: "descriptor_handoff",
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, "", "");
+        }),
+      45_000,
+    );
+
+    it(
+      "reports real execution denial for a valid non-executable ELF",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const result = await observe(value, context.signal, { application: value.nonExecutable });
+          expect(result.record).toEqual({
+            kind: "exec_failed",
+            errno: 13,
+            clone3FallbackUsed: false,
+          });
+          expectTransport(result, "", "");
+        }),
+      45_000,
+    );
+
+    const faults = [
+      { mode: "deny-exec", expected: { kind: "exec_failed", errno: 1, clone3FallbackUsed: false } },
+      {
+        mode: "deny-exec-write",
+        expected: { kind: "signalled", signal: 9, clone3FallbackUsed: false },
+      },
+      {
+        mode: "deny-exec-write-kill",
+        expected: { kind: "signalled", signal: 4, clone3FallbackUsed: false },
+      },
+    ] as const;
+    it.for(faults)(
+      "keeps real $mode failure out of normal application results",
+      { timeout: 45_000 },
+      ({ mode, expected }, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          await calibrateFaults(value, context.signal);
+          const result = await observe(value, context.signal, { fault: mode });
+          expect(result.record).toEqual(expected);
+          expectTransport(result, "", faultMarker(mode));
+        }),
+    );
+  });
+
+async function createFixture(
+  signal: AbortSignal,
+  handles: FileHandle[],
+  artifacts: { path: string; before: Awaited<ReturnType<typeof identity>> }[],
+): Promise<Fixture> {
+  expect(process.arch, "Only the Linux x64 profile is supported").toBe("x64");
+  signal.throwIfAborted();
+  const root = await mkdtemp(join(await realpath(tmpdir()), "flow-observer-transport-"));
+  console.info(`Native observer diagnostic evidence retained: ${root}`);
+  const home = join(root, "home");
+  const workspace = join(root, "workspace");
+  const privateRoot = join(root, "private");
+  await Promise.all([mkdir(home), mkdir(workspace), mkdir(privateRoot)]);
+  const environment = { PATH: "/usr/bin:/bin", HOME: home, LANG: "C", LC_ALL: "C", TMPDIR: root };
+  const application = join(privateRoot, "fixed-application");
+  const faultLauncher = join(privateRoot, "fault-launcher");
+  for (const [input, output] of [
+    [source, application],
+    [faultSource, faultLauncher],
+  ] as const) {
+    signal.throwIfAborted();
+    const compiled = await bounded(
+      execFile(
+        "/usr/bin/cc",
+        [
+          "-static",
+          "-std=c11",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pedantic",
+          input,
+          "-o",
+          output,
+        ],
+        {
+          cwd: root,
+          env: environment,
+          encoding: "utf8",
+          timeout: 5000,
+          killSignal: "SIGKILL",
+          maxBuffer: 8192,
+          signal,
+        },
+      ),
+      6000,
+      "Static compiler did not settle",
+    );
+    expect(compiled.stdout).toBe("");
+    expect(compiled.stderr).toBe("");
+    await chmod(output, 0o555);
+  }
+  const malformed = join(privateRoot, "malformed-elf");
+  const nonExecutable = join(privateRoot, "non-executable-elf");
+  const malformedHeader = Buffer.from((await readFile(application)).subarray(0, 64));
+  expect(malformedHeader.length).toBe(64);
+  expect(malformedHeader.subarray(0, 4)).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+  malformedHeader[0] = 0; // Full-sized header rejection, not a short-read failure.
+  await writeFile(malformed, malformedHeader, { flag: "wx", mode: 0o444 });
+  await copyFile(application, nonExecutable, constants.COPYFILE_EXCL);
+  await chmod(nonExecutable, 0o444);
+  const selected = process.env.FLOW_TEST_NATIVE_OBSERVER_HELPER;
+  const helperInput = selected ?? resolveAnthropicSandboxRuntimeSeccompPath();
+  if (helperInput === undefined || !isAbsolute(helperInput))
+    throw new Error("Missing absolute observer helper input");
+  const helper = await realpath(helperInput);
+  if (helper !== helperInput)
+    throw new Error("Observer helper input must be canonical and not a symlink");
+  for (const path of [application, malformed, nonExecutable, helper, faultLauncher])
+    artifacts.push({ path, before: await identity(path) });
+  expect(
+    JSON.parse(
+      await readFile(
+        new URL(import.meta.resolve("@anthropic-ai/sandbox-runtime/package.json")),
+        "utf8",
+      ),
+    ).version,
+  ).toBe("0.0.70");
+  if (selected === undefined) expect((await identity(helper)).sha256).toBe(upstreamSha256);
+  async function opened(path: string): Promise<OwnedApplication> {
+    signal.throwIfAborted();
+    const before = await identity(path);
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handles.push(handle);
+    expect(await handle.stat({ bigint: true })).toMatchObject({ dev: before.dev, ino: before.ino });
+    return { path, handle };
+  }
+  const app = await opened(application);
+  const malformedApp = await opened(malformed);
+  const nonExecutableApp = await opened(nonExecutable);
+  signal.throwIfAborted();
+  return {
+    home,
+    workspace,
+    privateRoot,
+    environment,
+    app,
+    malformed: malformedApp,
+    nonExecutable: nonExecutableApp,
+    helper,
+    explicitHelper: selected !== undefined,
+    faultLauncher,
+    sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
+      backendVersion: "0.0.70",
+      environment,
+      seccompApplyPath: helper,
+    }),
+  };
+}
+
+function requestFor(value: Fixture, application: OwnedApplication, args: readonly string[] = []) {
+  return {
+    executable: application.path,
+    args,
+    cwd: value.workspace,
+    protectedPaths: [value.privateRoot],
+    runtimeSupportPaths: [application.path, value.helper, value.faultLauncher],
+  };
+}
+
+function calibrate(value: Fixture, signal: AbortSignal): Promise<void> {
+  value.calibration ??= (async () => {
+    const host = { executable: value.app.path, args: [], env: value.environment };
+    const positive = await capture(host, value.workspace, value.home, signal);
+    expect(positive.stderr.toString("utf8"), "Direct-host diagnostics").toBe("");
+    expect(positive.code).toBe(7);
+    expect(positive.signal).toBeNull();
+    expect(positive.stdout.toString("utf8")).toBe(marker);
+    console.info("Native observer direct-host positive control: exact marker, exit 7");
+    // FD 19 is an explicit test canary, not a production FD-number ceiling.
+    const negative = await capture(
+      host,
+      value.workspace,
+      value.home,
+      signal,
+      undefined,
+      value.app.handle.fd,
+    );
+    expectCanary(negative);
+    console.info("Native observer direct-host negative control: explicit FD 19 detected, exit 96");
+    await prepared(value.sandbox, requestFor(value, value.app), signal, async (original) => {
+      const result = await capture(original.launch, value.workspace, value.home, signal);
+      expect(result.stderr.toString("utf8"), "Original-launch diagnostics").toBe("");
+      expect(result.code).toBe(7);
+      expect(result.signal).toBeNull();
+      expect(result.stdout.toString("utf8")).toBe(marker);
+    });
+    console.info("Native observer original-launch positive control: exact marker, exit 7");
+    await prepared(value.sandbox, requestFor(value, value.app), signal, async (original) => {
+      expectCanary(
+        await capture(
+          original.launch,
+          value.workspace,
+          value.home,
+          signal,
+          undefined,
+          value.app.handle.fd,
+        ),
+      );
+    });
+    console.info(
+      "Native observer original-launch negative control: explicit FD 19 detected, exit 96",
+    );
+  })();
+  return value.calibration;
+}
+
+function expectCanary(result: Awaited<ReturnType<typeof capture>>) {
+  expect(result.code).toBe(96);
+  expect(result.signal).toBeNull();
+  expect(result.stdout.length).toBe(0);
+  expect(result.stderr.toString("utf8")).toBe(canaryDiagnostic);
+}
+
+async function requireArtifact(value: Fixture, signal: AbortSignal) {
+  await calibrate(value, signal);
+  expect(
+    value.explicitHelper,
+    "The extended native matrix requires FLOW_TEST_NATIVE_OBSERVER_HELPER",
+  ).toBe(true);
+}
+
+function faultMarker(mode: FaultMode) {
+  return `flow-observer-fault:${mode}:canary=live-regular-matches-app\n`;
+}
+
+function calibrateFaults(value: Fixture, signal: AbortSignal): Promise<void> {
+  value.faultCalibration ??= (async () => {
+    const result = await observe(value, signal, { fault: "passthrough" });
+    expect(result.record).toEqual({ kind: "normal_exit", exitCode: 7, clone3FallbackUsed: false });
+    expectTransport(result, marker, faultMarker("passthrough"));
+  })();
+  return value.faultCalibration;
+}
+
+async function observe(
+  value: Fixture,
+  signal: AbortSignal,
+  options: { application?: OwnedApplication; args?: readonly string[]; fault?: FaultMode } = {},
+) {
+  const application = options.application ?? value.app;
+  const request = requestFor(value, application, options.args);
+  let observation:
+    | (Awaited<ReturnType<typeof capture>> & {
+        record: ReturnType<typeof parseNativeObserverResult>;
+      })
+    | undefined;
+  await prepared(value.sandbox, request, signal, async (original) => {
+    const httpSocketPath = SandboxManager.getLinuxHttpSocketPath();
+    const socksSocketPath = SandboxManager.getLinuxSocksSocketPath();
+    if (httpSocketPath === undefined || socksSocketPath === undefined)
+      throw new Error("Missing real manager proxy sockets");
+    for (const path of new Set([httpSocketPath, socksSocketPath])) {
+      expect(await realpath(path)).toBe(path);
+      expect((await lstat(path)).isSocket()).toBe(true);
+    }
+    const correlation = randomBytes(32).toString("hex");
+    const launch = rewriteNativeObserverLaunch({
+      launch: original.launch,
+      originalCommand: { executable: request.executable, args: request.args },
+      trustedBwrapPath: await realpath("/usr/bin/bwrap"),
+      trustedHelperPath: value.helper,
+      correlation,
+      proxyBridge: {
+        httpSocketPath,
+        socksSocketPath,
+        originalRelayExecutable: "socat",
+        trustedRelayExecutable: await realpath("/usr/bin/socat"),
+      },
+    });
+    if (launch === null) throw new Error("Real manager launch is unsupported by observer rewrite");
+    let actual = launch;
+    if (options.fault !== undefined) {
+      const tail = [
+        "flow-observer-bootstrap",
+        value.helper,
+        "--flow-observer-v1",
+        correlation,
+        "--",
+        application.path,
+        ...request.args,
+      ];
+      const index = launch.args.length - tail.length;
+      if (index < 0 || !tail.every((part, i) => launch.args[index + i] === part))
+        throw new Error("Missing exact observer helper positional tail");
+      const args = [
+        ...launch.args.slice(0, index + 1),
+        value.faultLauncher,
+        options.fault,
+        ...launch.args.slice(index + 1),
+      ];
+      // Only the positional helper command is prefixed. No bwrap option,
+      // shell script, proxy process or original application argument is changed.
+      expect(args.slice(0, index + 1)).toEqual(launch.args.slice(0, index + 1));
+      expect(args.slice(index + 3)).toEqual(launch.args.slice(index + 1));
+      actual = { ...launch, args };
+    }
+    const result = await capture(
+      actual,
+      value.workspace,
+      value.home,
+      signal,
+      application.handle.fd,
+      application.handle.fd,
+    );
+    expect(result.privateEof).toBe(true);
+    observation = {
+      ...result,
+      record: parseNativeObserverResult(result.privateBytes, correlation),
+    };
+  });
+  if (observation === undefined) throw new Error("Native observation missing");
+  return observation;
+}
+
+function expectTransport(
+  result: Awaited<ReturnType<typeof observe>>,
+  stdout: string,
+  stderr: string,
+) {
+  expect(result.code).toBe(0); // Private transport, not application exit.
+  expect(result.signal).toBeNull();
+  expect(result.privateEof).toBe(true);
+  expect(result.stdout.toString("utf8")).toBe(stdout);
+  expect(result.stderr.toString("utf8")).toBe(stderr);
+}
 
 async function identity(path: string) {
   const stat = await lstat(path, { bigint: true });

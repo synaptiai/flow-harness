@@ -3,15 +3,17 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 /* Fixed static Linux application, not an observer or a descriptor custodian.
  * Enumerate the real entry descriptors, excluding only our inventory directory.
  * No candidate code, startup file, network or external command is loaded. */
-int main(void) {
+int main(int argc, char **argv) {
     alarm(2);
     for (int fd = 3; fd <= 4; ++fd) {
         errno = 0;
@@ -60,8 +62,30 @@ int main(void) {
         }
     }
     if (closedir(directory) != 0) return 97;
+    int exit_code = 7;
+    int terminate = 0;
+    if (argc == 3 && strcmp(argv[1], "--exit") == 0) {
+        if (argv[2][0] == '\0' || (argv[2][0] == '0' && argv[2][1] != '\0')) return 99;
+        unsigned int value = 0;
+        for (const char *p = argv[2]; *p != '\0'; ++p) {
+            if (*p < '0' || *p > '9' || value > 25) return 99;
+            value = value * 10 + (unsigned int)(*p - '0');
+        }
+        if (value > 255) return 99;
+        exit_code = (int)value;
+    } else if (argc == 2 && strcmp(argv[1], "--signal-term") == 0) {
+        terminate = 1;
+    } else if (argc != 1) return 99;
     static const char marker[] = "flow-observer-fixed-application-exit-7\n";
-    if (write(STDOUT_FILENO, marker, sizeof(marker) - 1) != (ssize_t)(sizeof(marker) - 1))
+    static const char parameterized_marker[] = "flow-observer-fixed-application-result\n";
+    const char *output = argc == 1 ? marker : parameterized_marker;
+    const size_t output_length = argc == 1 ? sizeof(marker) - 1 : sizeof(parameterized_marker) - 1;
+    if (write(STDOUT_FILENO, output, output_length) != (ssize_t)output_length)
         return 98;
-    return 7;
+    if (terminate) {
+        /* Actual signal delivery, not exit(128 + SIGTERM). */
+        if (kill(getpid(), SIGTERM) != 0) return 99;
+        return 99; /* Ignored/blocked signals must fail the signal qualification. */
+    }
+    return exit_code;
 }

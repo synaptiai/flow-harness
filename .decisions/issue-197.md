@@ -1859,3 +1859,47 @@ All 256 normal exits, signalled launch-unproven outcomes, invalid/execution-deni
 failed reporting/self-killing/trap fallback, forged writers, helper-entry canary attribution,
 descendant teardown and policy interference remain mandatory controls. No behavioral classification,
 fixture-policy adoption, model run, repair enablement, merge, or release follows from this pass.
+
+### Expand the actual-artifact adversarial result gate
+
+The next bounded milestone targets false normal-exit records, not policy qualification. Reuse the
+real SRT launch, exact built helper, private framing, retained roots, artifact comparisons, and
+bounded cleanup attempts. Compile fixed applications once, but register each normal exit from 0
+through 255 independently and acquire a fresh sandbox lease for each case. Every exit assertion
+also requires the fixed application marker; fixture failures use some of the same numeric statuses.
+Distinguish actual SIGTERM from normal exit 143 and preserve the generic signal record's
+launch-unproven interpretation.
+
+A separate trusted C test launcher goes at the exact helper position after the existing launch
+rewrite, inside bubblewrap. Preserve the admitted options, proxy bootstrap, helper identity, and
+application arguments. Require a passthrough calibration and a live non-CLOEXEC descriptor-19
+canary matching the descriptor-4 inode immediately before helper execution. A closed mode closes
+descriptor 4 after that check to establish real EBADF admission failure.
+
+Use real inherited seccomp filters, not production fault flags: deny execveat with EPERM; then
+also deny write to worker error descriptor 8; then also deny kill. The expected records are
+exec_failed/EPERM, launch-unproven SIGKILL, and launch-unproven SIGILL. The current native
+allocation makes report descriptors 5/6 and worker-error descriptors 7/8, leaving temporary
+namespace-map writes on descriptor 9. This topology is an explicit test dependency, not a stable
+production API. The host-placement and inside-bubblewrap controls must qualify the test launcher.
+
+Root review, independent source review, exact private decoding, native kernel execution, and clean
+artifact reproduction are separate evidence methods. Local decoder/rewriter/build tests passed
+302 cases. The modified application passed a Mac syntax check. Portable encoder tests initially
+stopped on restricted Xcode cache/event-stream diagnostics; the unchanged tests passed all three
+cases with normal compiler access. These local checks do not compile or qualify the Linux-only
+fault launcher. Actual-artifact adversarial runtime results remain pending.
+
+Pre-commit review identified a shared-manager test hazard: a timeout wrapper can settle before the
+underlying prepare, release, or process join is confirmed. Sequential test registration alone does
+not prevent the next case from entering that uncertain state. Require exclusive case admission and
+make any failed case permanently unavailable to later launches in the same suite. Keep diagnostic
+roots retained. Also exercise malformed-header rejection with a full-sized derived ELF header whose
+magic is corrupted, not only a short file that stops at the earlier read-length check.
+
+Both review corrections are implemented. Independent final source review found no remaining
+P1–P3 findings. Full type checking, lint, formatting, and whitespace checks passed; lint retained
+the existing informational constructor diagnostic in the untouched external harness adapter.
+Mac collection registered all 266 cases as skipped, which is registration evidence only. The
+documentation checks and 40 focused documentation/workflow tests passed. The next source push
+is solely for hosted native qualification, not production activation or a full-CI claim.
