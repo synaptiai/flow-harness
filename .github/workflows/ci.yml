@@ -261,6 +261,8 @@ jobs:
           test/runtime/observer-notification-history.runtime.test.ts
           test/runtime/observer-clone3-compatibility.runtime.test.ts
           test/runtime/observer-secondary-group.runtime.test.ts
+          test/runtime/native-observer-encoder.runtime.test.ts
+          test/runtime/observer-shell-bootstrap.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest

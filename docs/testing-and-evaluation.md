@@ -539,11 +539,25 @@ The `verifier-isolation` CI job runs
 `test/runtime/verification-observer-fixture.runtime.test.ts`,
 `test/runtime/linux-observer-command.runtime.test.ts`,
 `test/runtime/observer-notification-history.runtime.test.ts`,
-`test/runtime/observer-clone3-compatibility.runtime.test.ts`, and
-`test/runtime/observer-secondary-group.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+`test/runtime/observer-clone3-compatibility.runtime.test.ts`,
+`test/runtime/observer-secondary-group.runtime.test.ts`,
+`test/runtime/native-observer-encoder.runtime.test.ts`, and
+`test/runtime/observer-shell-bootstrap.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
 It checks the host and Node.js architecture before building the runtime. The job uses the
-production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
+production native sandbox for isolation probes and separate fixed controls for framing and bootstrap
+mechanics. It uses synthetic fixtures, no model credentials, and no pilot repository.
 Missing dependencies or sandbox admission failures fail the job.
+
+The shell-bootstrap control compiles a fixed C inspection program and executes the generated
+bootstrap with synthetic relay and helper controls. It does not execute bubblewrap, a real proxy,
+or an application. It checks descriptor exclusion, retained executable arguments, and startup-file
+suppression. Negative controls remove descriptor closures, retain a higher-numbered duplicate,
+and inject an owned startup file. A maximum-size argument control validates all 32,768 bytes after
+actual execution. Each helper control reaps its two children before test cleanup.
+
+This portable control passed on macOS. Its fixed child-disposal logic is test infrastructure, not
+production relay settlement. Linux execution of this new control remains pending. A passing control
+does not qualify protected-result transport, real proxy readiness, or the native observer.
 
 The notification-history suite is a separate unprivileged kernel counterexample test. It compiles
 a fixed C probe with the host compiler. A received notification provides a positive control before
@@ -616,10 +630,13 @@ npm run test:runtime -- \
   test/runtime/linux-observer-command.runtime.test.ts \
   test/runtime/observer-notification-history.runtime.test.ts \
   test/runtime/observer-clone3-compatibility.runtime.test.ts \
-  test/runtime/observer-secondary-group.runtime.test.ts
+  test/runtime/observer-secondary-group.runtime.test.ts \
+  test/runtime/native-observer-encoder.runtime.test.ts \
+  test/runtime/observer-shell-bootstrap.runtime.test.ts
 ```
 
-Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS
+Other hosts skip the Linux-specific cases by default. The portable encoder and shell controls also
+run on macOS with a working host C compiler. To reproduce the known native macOS
 descendant-containment failure, set `FLOW_VERIFIER_ISOLATION_DIAGNOSTIC=1` for the isolation suite.
 The fixture suite remains Linux-only. The Mac diagnostic is expected to fail its descendant checks.
 Neither its results nor a default Mac skip count as Linux qualification.

@@ -270,7 +270,7 @@ capture now have local tests and independent review. Their hosted qualification,
 behavioral observer, and proof of actual application launch and exit remain pending. An outer
 sandbox exit code alone cannot distinguish a deliberate exit from a signal.
 
-The focused Linux job now contains 24 tests across six suites. Two notification-history
+The recorded focused Linux job contained 24 tests across six suites. Two notification-history
 counterexample cases, four Node compatibility measurements, and one paired supplementary-group
 experiment passed in [run 34147986514](https://github.com/synaptiai/flow-harness/actions/runs/34147986514).
 The focused job passed 23 cases and failed the unchanged original fixture case, with no skips.
@@ -292,9 +292,17 @@ or transfer private descriptors. The source check corrected an unsupported bubbl
 integration.
 
 Independent review also found that the production manager emits a proxy wrapper even
-with an empty domain allowlist. The rewrite rejects that form. Producer adaptation remains open.
+with an empty domain allowlist. The rewrite now matches its exact template using independently
+admitted relay and socket metadata. It preserves proxy settings, suppresses shell startup files,
+and closes private descriptors on relay launches. Host-side identity admission and integration remain open.
 Real Linux descriptor inheritance, the modified supervisor, and full protected-result
 qualification remain open. Ordinary command execution and repair enablement are unchanged.
+
+The next focused Linux configuration also includes three native encoder tests and one shell
+bootstrap test, for 28 tests across eight suites. The shell control passed on macOS using fixed
+inspection processes, including descriptor-leak controls and maximum-size argument preservation.
+Those results do not qualify real relay readiness or cleanup. The new configuration has not been
+dispatched while the existing proof build remains active.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three

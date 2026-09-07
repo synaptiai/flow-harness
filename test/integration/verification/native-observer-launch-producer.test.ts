@@ -25,9 +25,10 @@ const bwrap = "/usr/bin/bwrap";
 describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
   "Native observer producer compatibility",
   () => {
-    it.for([false, true])(
-      "checks actual generator output with proxy bridge=%s",
-      async (bridge, context) => {
+    it.for(["none", "separate", "shared", "absolute-relay"])(
+      "checks actual generator output with proxy mode=%s",
+      async (mode, context) => {
+        const bridge = mode !== "none";
         const retention = new AbortController();
         await runOwnedTest(
           {
@@ -44,10 +45,10 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
             try {
               const sockets = {
                 httpSocketPath: join(directory, "http.sock"),
-                socksSocketPath: join(directory, "socks.sock"),
+                socksSocketPath: join(directory, mode === "shared" ? "http.sock" : "socks.sock"),
               };
               if (bridge) {
-                for (const path of Object.values(sockets)) {
+                for (const path of new Set(Object.values(sockets))) {
                   scope.signal.throwIfAborted();
                   const server = createServer((socket) => socket.destroy());
                   servers.push(server);
@@ -73,6 +74,7 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
                 seccompConfig: { applyPath: helper },
                 abortSignal: scope.signal,
                 ...(bridge ? sockets : {}),
+                ...(mode === "absolute-relay" ? { socatPath: "/usr/bin/socat" } : {}),
               });
               generated = true;
               const launch = {
@@ -92,6 +94,65 @@ describe.skipIf(process.platform !== "darwin" && process.platform !== "linux")(
                 expect(wrapped).toContain("TCP-LISTEN:3128");
                 expect(wrapped).toContain("trap");
                 expect(result).toBeNull();
+                const proxyBridge = {
+                  ...sockets,
+                  originalRelayExecutable: mode === "absolute-relay" ? "/usr/bin/socat" : "socat",
+                  trustedRelayExecutable: "/usr/bin/socat",
+                };
+                const request = {
+                  launch,
+                  originalCommand,
+                  trustedBwrapPath: bwrap,
+                  trustedHelperPath: helper,
+                  correlation: "ab".repeat(32),
+                  proxyBridge,
+                };
+                const adapted = rewriteNativeObserverLaunch(request);
+                const descriptor = parseSrtLinuxLaunchDescriptor(
+                  [launch.executable, ...launch.args],
+                  bwrap,
+                );
+                expect(descriptor).not.toBeNull();
+                expect(adapted).toEqual({
+                  executable: bwrap,
+                  args: [
+                    ...(descriptor?.options.flatMap((option) => [
+                      option.name,
+                      ...option.operands,
+                    ]) ?? []),
+                    "--",
+                    "/bin/bash",
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    [
+                      `${encodePosixCommand("/usr/bin/socat", ["TCP-LISTEN:3128,fork,reuseaddr", `UNIX-CONNECT:${sockets.httpSocketPath}`])} 3>&- 4>&- >/dev/null 2>&1 &`,
+                      `${encodePosixCommand("/usr/bin/socat", ["TCP-LISTEN:1080,fork,reuseaddr", `UNIX-CONNECT:${sockets.socksSocketPath}`])} 3>&- 4>&- >/dev/null 2>&1 &`,
+                      'trap "kill %1 %2 2>/dev/null; exit" EXIT',
+                      'exec "$@"',
+                    ].join("\n"),
+                    "flow-observer-bootstrap",
+                    helper,
+                    "--flow-observer-v1",
+                    "ab".repeat(32),
+                    "--",
+                    originalCommand.executable,
+                    ...originalCommand.args,
+                  ],
+                  env: launch.env,
+                });
+                expect(
+                  rewriteNativeObserverLaunch({
+                    ...request,
+                    proxyBridge: { ...proxyBridge, httpSocketPath: join(directory, "wrong.sock") },
+                  }),
+                ).toBeNull();
+                expect(
+                  rewriteNativeObserverLaunch({
+                    ...request,
+                    proxyBridge: { ...proxyBridge, originalRelayExecutable: "/other/socat" },
+                  }),
+                ).toBeNull();
               } else {
                 const descriptor = parseSrtLinuxLaunchDescriptor(
                   [launch.executable, ...launch.args],

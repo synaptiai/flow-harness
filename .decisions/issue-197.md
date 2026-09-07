@@ -1517,3 +1517,72 @@ The secondary-group experiment again retained the same UID/GID maps, denied read
 outcomes, and unchanged fixture identities; all four clone3 controls passed with the prior counts.
 The proof job remains active in appliance preparation. Its native baseline comparison has not
 reported a result. No job was cancelled, no local changes were pushed, and repair remains disabled.
+
+### Proxy-compatible observer launch preparation and real shell controls
+
+Extended the pure observer rewrite to match the pinned dependency's complete proxy bootstrap.
+It preserves the admitted bubblewrap options and environment, requires explicit relay/socket
+metadata and matching socket mounts, and rejects unsafe path syntax or startup/loader injection.
+The original relay spelling may be PATH-resolved socat or a canonical absolute path; independently
+binding that spelling to the trusted relay identity remains a host-admission obligation. Template
+matching authenticates no executable, socket inode, mount, loader, or helper bytes. The generic
+SRT validator, ordinary command path, command budgets, and repair enablement are unchanged.
+
+Compared exact template reconstruction, a proxy-free producer, and a native relay bootstrap.
+Selected the first for qualification within revised Approach A. Removing proxies changes the
+dependency's network-failure and dynamic-policy semantics; native relay ownership adds startup,
+readiness, signal, and reaping responsibilities. Both alternatives remain documented rather than
+silently substituted. The selected shell closes FD3/FD4 before relay execution and uses explicit
+--noprofile/--norc flags. It replaces itself with the helper; successful exec does not run the old
+EXIT trap. Relay readiness, namespace/host-bridge settlement, and protected descriptor transport
+remain open integration gates. SRT reset resolution alone is insufficient: its timeout branch
+sends SIGKILL without awaiting the bridge's resulting exit.
+
+A maximum-envelope review found a concrete Linux argument limit defect in the initial adaptation.
+64 arguments of 512 apostrophes fit the 32,768-byte application budget, but their single-quoted
+encoding occupies 164,031 bytes before helper/bootstrap text. Linux MAX_ARG_STRLEN is 32 pages,
+or 131,072 bytes on a 4-KiB-page host. Three expected-shape/maximum-envelope tests failed before
+replacing command interpolation with separate Bash positional arguments and fixed exec "$@".
+The corrected implementation preserves the existing budget; it does not enlarge it.
+
+A local controlled Bash launch with only PATH in its explicit environment unexpectedly loaded the
+real user's startup file. --norc suppressed the behavior; --noprofile alone did not. No further
+bare-shell probes used the real home. GNU Bash documents noninteractive startup when stdin looks
+network-connected; Node's pipe implementation is a plausible explanation, not a traced mechanism.
+The committed controls use an owned synthetic HOME and startup files. Sources:
+https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files,
+https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html,
+https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/binfmts.h#L8-L14.
+
+Added a fixed C inspection program and a portable runtime control, not a proxy or production
+observer. Actual Bash executes the generated bootstrap with mapped real file descriptors. Five
+executions check correct closure, removed-closure detection with exact device/inode identity,
+a higher-numbered duplicate, all 32,768 argument bytes, and owned BASH_ENV startup detection.
+The helper controls reap exactly two children before success; this test-only handshake does not
+prove real relay settlement. The probe inventories all open descriptors through /dev/fd rather
+than checking only FD3/FD4. Process groups, alarms, bounded joins, explicit environments, and
+sticky retention limit test failures without treating uncertain cleanup as success.
+
+The first C compile failed because the POSIX feature macro hid O_NOFOLLOW on macOS. This was
+not behavioral RED evidence. The Apple-specific feature macro corrected the compile. Its failed
+scope remains retained at
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/flow-bootstrap-control-DGSecV.
+Deliberately removing closures from the expected-good runtime run then failed on actual leaked
+FD3/FD4, after the helper reaped both children. Restored runs passed. Separate unit mutations
+detected removed closures (two failures) and removed exact-template equality (11 failures).
+All mutations were restored; successful scopes were cleaned by their lifetime owner.
+
+Main independently passed 347 focused tests across seven suites, including 84 pure rewrite cases,
+four actual dependency-generator cases, 190 result-parser cases, existing sandbox controls, and
+scaffold/documentation checks. Main also compiled and passed four runtime tests across the encoder
+and shell-control suites. Full type checking, production build, capability-reference check,
+formatting, lint, documentation style, links, and prose gates passed. Lint retained only the
+pre-existing informational constructor diagnostic. The CI scaffold first failed when the two
+new suite entries were absent, then passed after adding them to the existing focused Linux job.
+The next configuration contains 28 tests across eight suites; it has not been dispatched while
+run 34147986514 remains in progress. These macOS results do not qualify native Linux containment,
+the real proxy, modified supervisor, application launch evidence, or final channel EOF.
+
+Independent final reviews of the production rewrite and of the compiled shell-control files found
+no remaining concrete P1–P3 findings within their bounded scopes. Both reviewers explicitly kept
+host admission, real bubblewrap/proxy behavior, native result custody, and Linux qualification open.

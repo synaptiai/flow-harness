@@ -359,8 +359,8 @@ Track the native boundary separately from its host integration and behavioral qu
 - [ ] Integrate private descriptors through the existing managed command boundary. Preserve ordinary
   command evidence and require stream completion, process settlement, and successful sandbox release.
   - [ ] Adapt and review the observer-specific launch producer. The current production SRT manager
-    emits a proxy wrapper even when its domain allowlist is empty. The internal rewrite rejects it.
-    Review the authority contract before changing proxy configuration or shell parsing.
+    emits a proxy wrapper even when its domain allowlist is empty. Exact template matching requires
+    independently admitted relay and socket identities. Host-side admission and integration remain open.
 - [ ] Qualify namespace restrictions, application results, and fixture denial on native Linux x64.
   Test ordinary processes and threads, cancellation, forged records, and descendant cleanup.
 - [ ] Compose the behavioral observer and complete the remaining verification-repair gates.
@@ -487,13 +487,67 @@ The proposed fixed mapping reserves child descriptor
 3 for the final-result writer and descriptor 4 for the admitted executable. Neither descriptor can
 remain available to application code. Reject unsupported launch shapes without running a fallback.
 
-The current rewrite accepts only the dependency's proxy-free helper form. The production SRT
-manager does not emit that form for Flow's network-denied configuration. It supplies proxy sockets
-even for an empty domain allowlist. The Linux generator adds proxy environment variables and
-a shell wrapper that starts relay processes. Those launches remain rejected.
+The production SRT manager supplies proxy sockets even for an empty domain allowlist. Its Linux
+generator adds proxy environment variables and a shell wrapper that starts relay processes.
+The rewrite checks either the exact proxy-free helper form or the pinned proxy-bootstrap template.
+The latter requires independently admitted relay and socket metadata. Missing metadata, unsafe
+paths, startup-injection variables, and template mismatches remain unsupported.
 
-An observer-specific producer adaptation is still required. The pure rewrite alone is not production
-compatibility proof.
+Host-side identity admission and integration are still required. Template compatibility alone is not
+proof of executable custody, protected transport, or production observer readiness.
+
+#### Preserve the production proxy bootstrap
+
+The selected adaptation preserves the existing proxy policy. Its alternatives are:
+
+| Mechanism | Benefit | Cost and remaining proof |
+| --- | --- | --- |
+| Exact pinned bootstrap reconstruction, selected for qualification | Preserves the admitted mounts, proxy settings, and relay topology. | Requires closed template matching, startup suppression, descriptor exclusion, and explicit relay settlement. |
+| Proxy-free observer producer | Simplifies process and descriptor ownership. | Changes observable network failures, proxy settings, and dynamic policy behavior. Requires a separate policy decision. |
+| Native relay bootstrap | Avoids shell startup and permits explicit relay execution-error reporting. | Adds relay startup, signal, readiness, and reaping responsibilities to the native implementation. |
+
+Treat the original shell text as data. Match the complete pinned template against independently
+admitted helper, relay, socket, and application identities. Reject unknown clauses and unsafe socket
+paths. The upstream template interpolates socket paths without quoting, so matching its output is
+not sufficient for arbitrary paths. Exclude shell syntax and relay-address delimiters from those paths.
+
+Preserve every admitted sandbox option and environment entry. Start bubblewrap directly, with an
+observer-only `/bin/bash --noprofile --norc -c` bootstrap inside it. Reject shell-startup variables,
+imported shell functions and options, and dynamic-loader injection instead of silently dropping them.
+Close descriptors 3 and 4 on each relay before its executable starts. Replace the final workload
+with `exec` of the exact trusted observer helper and application arguments.
+
+Keep application arguments separate from the bootstrap script. Use fixed `exec "$@"` syntax with
+an explicit shell argument zero, followed by the helper and its exact ordered arguments.
+For example, 64 arguments containing 512 single quotes each consume Flow's 32,768-byte aggregate
+budget. Single-quoting them produces 164,031 bytes before adding the helper or bootstrap text.
+
+That exceeds Linux's
+[per-string execution limit](https://github.com/torvalds/linux/blob/v6.17/include/uapi/linux/binfmts.h#L8-L14)
+of 32 pages on a 4-KiB-page host. Positional arguments avoid this expansion without changing the
+approved command budget. Host admission must still check complete platform execution limits.
+
+Bash can read startup files in some noninteractive executions, including when standard input
+appears to be a network connection. An environment without `HOME` does not prevent that behavior.
+The [Bash startup rules](https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files)
+therefore matter before private descriptors reach the helper. A local macOS control observed startup
+execution with an explicit environment containing only `PATH`. `--norc` suppressed it, while
+`--noprofile` alone did not. This observation does not qualify Linux behavior.
+
+Successful `exec` replaces the shell. Its previous exit trap no longer performs relay cleanup.
+The host must therefore prove outer namespace settlement and relay termination separately from
+receiving the inner application's result. An outer monitor's exit alone is insufficient.
+Background relay launch also does not prove successful execution or listener readiness.
+Missing relay, helper, namespace, or release evidence remains unsupported.
+
+The pinned SRT host-bridge cleanup also resolves after sending its timeout kill signal without
+waiting for the resulting exit. Do not treat manager reset completion as independent proof that
+every host bridge process settled. The observer's private descriptors must never enter those bridges.
+
+This mechanism is not enabled by its argument tests. Require real-process controls for private
+descriptor exclusion, startup suppression, failed relay execution, interrupted bootstrap, blocked
+relay teardown, descendant cleanup, and final result EOF. Do not connect this transformation to
+production execution until those gates pass. Keep ordinary command execution unchanged.
 
 An empty close-on-exec error channel does not independently prove successful execution. For an
 initial normal-exit-only classifier, audit every trusted pre-execution path. A failed or partial
