@@ -844,3 +844,37 @@ supervisor, or retain unsupported terminal outcomes. The recommendation is a nar
 the existing kernel-result boundary, with exact application launch and a protected result protocol.
 The user decision is pending. No new protocol, custom binary, dependency version, or sandbox policy
 is implemented or selected. Existing approved tests and CI work can proceed independently.
+
+### Local full-suite environment diagnostic
+
+At clean source `1ac5188`, a single-worker non-live full-suite run under the outer execution
+sandbox reported 11 failures in `production-github-issue-service.test.ts`. One unchanged selected
+case reproduced `IssueLifecycleStoreError("io")` caused by `listen EPERM` on `127.0.0.1`.
+Independent source tracing located the ownership witness's ephemeral exclusive loopback listener,
+before lifecycle publication. A direct listener control failed with EPERM in the outer sandbox
+and succeeded with host permission. Git, model behavior, and the new observer helpers did not
+cause that selected failure.
+
+The invalid full run was interrupted with SIGINT after verifying its exact owned process group.
+It exited 130 without a complete suite result. The selected diagnostic exited 1 with one failed
+case and ten filtered skips. Both failures are retained. The same selected case passed with
+local-listener permission and unchanged source: one pass, ten filtered skips, 227.26 seconds of
+tests, and 239.99 seconds overall. This confirms the selected environment failure, not a complete
+suite pass. The full single-worker non-live suite will rerun with that permission.
+No assertions, production limits, ownership checks, or candidate network policy changed.
+The testing guide now documents the prerequisite
+and safe recovery. Independent documentation review found no P1–P3 findings, and all documentation
+gates passed.
+
+The existing PR body was corrected to record the completed hosted quality job and its synthetic
+merge checkout. The original Linux workflow was kept active while local commits were prepared.
+
+### Hosted prerequisite workflow completion
+
+Run `34128675526` completed successfully at workflow head
+`fd8cf95dd6af3d910f120308fa1ab97930f7c472`. All four proof-runtime tests and appliance verification
+passed. Quality, dependency audit, and the five-test isolation job also passed. The actual synthetic
+merge checkout and equal source-tree identities are retained in the earlier evidence entry.
+The reviewed local commits can now be pushed without cancelling that run. They still require
+their own exact-head CI, including the expanded 17-test Linux isolation set. No observer, repair,
+installed-lifecycle, merge, or release gate is closed by this prerequisite result.

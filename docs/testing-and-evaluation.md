@@ -454,6 +454,12 @@ states and FIFO invariants; store tests exercise owner-only permissions, no-foll
 snapshots, automatic replay-equivalent compaction, startup serialization, atomic claims, and durable
 cancellation records.
 
+Issue lifecycle integration tests also require ephemeral loopback listeners on `127.0.0.1` for
+ownership and liveness checks. An outer execution sandbox can reject those listeners with
+`listen EPERM`, wrapped as `IssueLifecycleStoreError("io")`. Permit local listeners for the test
+process, or use a prepared host or CI runner, then rerun the unchanged failing case. Do not remove
+the ownership check, skip the test, or grant candidate commands network access to bypass this failure.
+
 Runtime sandbox tests require the host capabilities listed in the README. A sandbox dependency warning is a test failure, not a skip. Running Flow's sandbox suite from inside another restrictive sandbox can prevent SRT from creating its internal Unix socket or namespace; run the suite directly on the host or in a CI runner configured for nested containment. This operational accommodation must not weaken the production profile.
 
 The container command profile has separate unit, integration, and real-engine evidence. Unit tests
