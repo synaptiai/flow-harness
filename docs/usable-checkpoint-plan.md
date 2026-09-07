@@ -431,6 +431,11 @@ Next, qualify cancellation and controller disconnection with a held connection. 
 [remaining lifecycle gates](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
 for startup failure, escalation, owner loss, and runtime custody before manager integration.
 
+The held-connection cancellation and disconnection cases are prepared. Their first hosted run
+substitutes normal stop to confirm that successful cleanup cannot count as an interrupted outcome.
+After that failure is verified, run the actual signal and empty-input cases. Both must prove
+independent descendant settlement after failed owner closure, before test socket cleanup.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

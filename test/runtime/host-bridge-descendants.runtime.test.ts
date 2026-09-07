@@ -22,6 +22,7 @@ import {
 
 const guardian = process.env.FLOW_TEST_HOST_BRIDGE_GUARDIAN;
 const enabled = process.platform === "linux" && process.arch === "x64" && guardian !== undefined;
+const interruptionBaseline = process.env.FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE === "1";
 const execFile = promisify(callbackExecFile);
 const ownedRecord = "FLOW_HOST_BRIDGE_V1 OWNED\n";
 const completeRecords = `${ownedRecord}FLOW_HOST_BRIDGE_V1 SETTLED\n`;
@@ -60,7 +61,7 @@ describe.skipIf(!enabled)("host bridge active-descendant settlement", () => {
     expect(compiled.stderr).toBe("");
   });
 
-  it.for(["settlement", "argument-mismatch", "ambiguous"] as const)(
+  it.for(["settlement", "argument-mismatch", "ambiguous", "interrupt", "disconnect"] as const)(
     "checks real bridge %s before test socket cleanup",
     async (mode, context) => {
       if (guardian === undefined || !guardian.startsWith("/"))
@@ -89,6 +90,7 @@ describe.skipIf(!enabled)("host bridge active-descendant settlement", () => {
       let overflow = false;
       let processError: Error | undefined;
       let releaseIssued = false;
+      let unsuccessfulReleaseIssued = false;
       let receiptSeen = false;
       const ownedReceipt = deferred<void>();
       const receiptCheck = deferred<BridgeCheck>();
@@ -203,7 +205,7 @@ describe.skipIf(!enabled)("host bridge active-descendant settlement", () => {
               : args,
           signal,
         });
-        if (mode !== "settlement") {
+        if (mode === "argument-mismatch" || mode === "ambiguous") {
           // A generic error, timeout, or forced process closure must not pass.
           const rejected = probe.ready();
           await expect(rejected).rejects.toBeInstanceOf(BridgeDiscoveryRejection);
@@ -231,19 +233,48 @@ describe.skipIf(!enabled)("host bridge active-descendant settlement", () => {
           expect(connections.size).toBe(1);
           signal.throwIfAborted();
           releaseIssued = true;
-          child.stdin.end("stop\n");
-          const observed = await requiredWithin(
-            receiptCheck.promise,
-            4000,
-            "No receipt-time process observation",
-          );
-          signal.throwIfAborted();
-          expect(settled(observed)).toBe(true);
-          expect(await requiredWithin(ownerClose, 1000, "Owner closure unconfirmed")).toEqual({
-            code: 0,
-            signal: null,
-          });
-          expect(output).toBe(completeRecords);
+          if (mode === "interrupt" || mode === "disconnect") {
+            if (interruptionBaseline) {
+              // Real normal-stop counterexample: cleanup must pass, but the
+              // unsuccessful-outcome assertions below must reject this result.
+              child.stdin.end("stop\n");
+            } else if (mode === "interrupt") {
+              expect(child.kill("SIGTERM"), "Signal only the test-owned guardian").toBe(true);
+              unsuccessfulReleaseIssued = true;
+            } else {
+              child.stdin.end();
+              unsuccessfulReleaseIssued = true;
+            }
+            const closed = await requiredWithin(
+              ownerClose,
+              4000,
+              "Interrupted owner closure unconfirmed",
+            );
+            signal.throwIfAborted();
+            // Observe after actual owner closure, before any emergency cleanup
+            // or test socket destruction. This is not receipt-time evidence.
+            const observed = await probe.check();
+            expect(settled(observed), "Interrupted descendants must be terminated and reaped").toBe(
+              true,
+            );
+            signal.throwIfAborted();
+            expect(closed).toEqual({ code: 1, signal: null });
+            expect(output).toBe(ownedRecord);
+          } else {
+            child.stdin.end("stop\n");
+            const observed = await requiredWithin(
+              receiptCheck.promise,
+              4000,
+              "No receipt-time process observation",
+            );
+            signal.throwIfAborted();
+            expect(settled(observed)).toBe(true);
+            expect(await requiredWithin(ownerClose, 1000, "Owner closure unconfirmed")).toEqual({
+              code: 0,
+              signal: null,
+            });
+            expect(output).toBe(completeRecords);
+          }
         }
         expect(stderr).toBe("");
         expect(overflow).toBe(false);
@@ -276,8 +307,12 @@ describe.skipIf(!enabled)("host bridge active-descendant settlement", () => {
               child.kill("SIGKILL");
               recordFailure(new Error("Guardian custody lost during emergency cleanup"));
               await requiredWithin(ownerClose, 1000, "Emergency owner join unconfirmed");
-            } else if (result.code !== 0 || result.signal !== null || output !== completeRecords)
-              recordFailure(new Error("Guardian cleanup did not confirm explicit release"));
+            } else if (
+              result.code !== (unsuccessfulReleaseIssued ? 1 : 0) ||
+              result.signal !== null ||
+              output !== (unsuccessfulReleaseIssued ? ownedRecord : completeRecords)
+            )
+              recordFailure(new Error("Guardian cleanup did not match the actual release request"));
           } catch (error) {
             recordFailure(error);
           }

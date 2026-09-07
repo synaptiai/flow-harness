@@ -1050,6 +1050,20 @@ disconnection, startup failure, escalation, owner loss, and runtime custody rema
 [lifecycle implementation plan](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
 defines their next evidence gates.
 
+The held-connection suite now includes cancellation and controller-disconnection cases under
+qualification. Each keeps the independent checker active, sends `SIGTERM` only to the owned
+guardian or closes its control input without a command, then waits for owner closure. Before
+closing test sockets, it checks that both observed descendants are terminated and reaped. It also
+requires owner exit status 1 and only the `OWNED` record, without `SETTLED`.
+
+For the initial failing control only, set `FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE=1` with the
+guardian path. This substitutes a real normal stop in those two cases. Independent process
+settlement must pass, but the interrupted-outcome assertions must fail on exit status 0. This is
+not an interruption test pass. Remove that variable before qualification of actual interruption.
+
+The dedicated hosted workflow currently selects this intentional failing control. These observations
+occur after owner closure, not at the instant of a terminal receipt.
+
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
 Real forwarding passed, but the bridge did not finish after the proposed owner-release request.

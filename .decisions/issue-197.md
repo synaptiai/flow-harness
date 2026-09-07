@@ -2805,3 +2805,29 @@ Final review of the five-document update found no P1-P3 findings. All three docu
 and 21 focused documentation/workflow tests passed. Commit this evidence-only update locally;
 the implementation is already pushed to the qualification branch. No unchanged native rerun,
 merge, release, model transmission, or credential operation is needed. The full goal remains active.
+
+### Prepare held cancellation and disconnection controls
+
+Previous turn was verified progress. Current tree was clean at ff59c3c. Reviewed the approved
+stage-2 matrix against native owner source and existing real tests. SIGTERM sets interrupted;
+empty control EOF fails the exact stop command. Both call settle_owned before returning1 and
+cannot emit SETTLED. No native source change is predicted or made.
+
+Extend the actual held-connection test with interrupt and disconnect modes. Keep the test/probe
+AbortSignal active. Send SIGTERM only to the Node-owned guardian, requiring accepted signal
+submission and leaving its input open; or end its input without command bytes. Join owner close,
+then issue one independent probe check before any socket/probe emergency cleanup. Require both
+original live identities terminated/reaped, actual code1/null signal, and exact OWNED-only output.
+Track the actual issued action for cleanup, preserving every primary observation failure.
+
+The test-only FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE=1 substitutes a real normal stop for the
+two new actions. Check and assert independent process settlement BEFORE the code1 assertion, so
+the intended RED proves successful cleanup is still not an interrupted outcome. The dedicated
+workflow temporarily selects this baseline. Expected: original three active cases pass; two new
+cases fail on actual code0 versus required code1; later predicate/native steps skip. Remove the
+baseline only after authenticating that failure. Runtime custody and remaining stage2 gates stay open.
+
+Local typecheck, lint, format check, and production build passed. The five runtime cases skipped
+on macOS as expected, without Linux qualification credit. All three documentation gates and 21
+focused documentation/workflow tests passed. Independent test/workflow and documentation reviews
+found no P1-P3 findings. All five changed files belong to the approved cancellation control.
