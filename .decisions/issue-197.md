@@ -2682,3 +2682,32 @@ the three existing owner tests passed; the later application-result step skipped
 sticky control-stream failure hid the actual checker exit status, so this is not yet authenticated
 missing-mode RED. Preserve the actual joined checker exit alongside the first error and rerun
 before changing C. The test reported no additional guardian emergency-cleanup failure.
+
+Run 34167826719 at exact bec765ec8ade46df90249a31d794180e2bab8693, job 101882280445,
+completed September 7 UTC 22:46:53-22:49:04. The failing log's serialized AggregateError retains
+both control failure and actual joined checker closure {code:2,signal:null}. Source argc7 bridge
+rejection and the preceding forwarding/OWNED assertions establish the intended missing-mode RED.
+There was no reported additional guardian cleanup failure; this does not prove independent
+descendant settlement. Both clean builds and three owner cases passed; downstream native tests
+skipped. Only after this evidence was read was the C-only implementer authorized to proceed.
+
+Post-GREEN controls remain required: exact-argv mismatch with an authenticated discovery rejection
+and correct positive twin; two independently forwarded connections with explicit ambiguity
+rejection and a fresh one-connection positive twin; real zombie/reaped calibration through shared
+observation semantics and the acceptance predicate. Do not infer reaping from socket closure,
+accept arbitrary wrapper errors as negative success, or signal discovered PIDs.
+
+The C-only implementation adds bridge discovery with exact bounded three-argument cmdline matching,
+canonical relay input, live UID/parent/group/session checks, fresh proc directory scans, and three
+retained pidfds. A full topology rescan follows acquisition. Both child pidfds are sampled before
+either settlement proc read. Existing known/discover output is unchanged and shares the extracted
+observation primitive, including real zombie-versus-reaped semantics. Post-release reparenting is
+not an identity change. No discovered process is signalled. Native compilation and active runtime
+success still require the hosted run; local TypeScript checks do not substitute for them.
+
+Independent full C review found no P1-P3 findings in argument bounds, fresh scan offsets,
+identity acquisition/recheck, protocol bounds, cleanup, or existing-mode compatibility. Typecheck,
+lint, formatting, build, all 21 focused documentation/workflow tests, and documentation gates passed.
+The reviewer independently authenticated the RED source and hosted log. Push this five-file
+implementation/evidence increment only to the dedicated qualification branch for actual native
+compilation and the initial active-descendant GREEN attempt. Keep all further qualifications open.

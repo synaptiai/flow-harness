@@ -785,8 +785,10 @@ Also require normal owner closure. Do not infer an atomic receipt-time observati
 asynchronous check. Calibrate the checker against live and unreaped processes. Never signal a
 discovered PID or treat emergency test cleanup as settlement evidence.
 
-The test-only active-connection gate is now prepared for its hosted failing control. The native
-checker's new `bridge` mode remains unimplemented until that failure is authenticated. The test
+The test-only active-connection gate reached its authenticated failing control in
+[run 34167826719](https://github.com/synaptiai/flow-harness/actions/runs/34167826719) at `bec765e`.
+After real forwarding, the unchanged checker rejected its missing `bridge` mode with exit status 2
+and no terminating signal. Checker implementation is now in progress. The test
 waits independently for forwarding and ownership and joins both checker input completion and
 process closure during cleanup. These checks avoid assuming event ordering across independent
 streams. They do not qualify active descendants before the hosted implementation passes.

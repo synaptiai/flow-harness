@@ -2,6 +2,7 @@
  * signals a discovered process. Run outside the candidate sandbox:
  *   probe discover UID MARKER
  *   probe known HOST_OWNED_PID UID MARKER
+ *   probe bridge HOST_OWNED_GUARDIAN_PID UID RELAY UNIX_ARG TCP_ARG
  * MARKER is exactly 64 lowercase hex bytes and must be the child's argv[0].
  * The known mode is ONLY for a separately Node-spawned positive control.
  *
@@ -17,6 +18,9 @@
  * child's successful ready is a REQUIRED visibility calibration, independently
  * of the known host-child live/terminated/reaped controls. Cmdline is mutable:
  * this is evidence about a fixed, owned test child, not arbitrary-process trust.
+ * Bridge mode checks exact relay argv and the held leader/connection ancestry.
+ * Its guardian PID comes ONLY from the host's actual Node ChildProcess. It holds
+ * three pidfds but never signals through them or through discovered numeric PIDs.
  */
 #define _GNU_SOURCE
 #if !defined(__linux__) || !defined(__x86_64__) || defined(__ILP32__)
@@ -48,6 +52,8 @@ struct identity {
     unsigned int uid;
     uint64_t start;
     int session;
+    int parent;
+    int group;
     char state;
 };
 
@@ -114,7 +120,7 @@ static int stat_identity(int proc, int pid, struct identity *result) {
     const char state = close[2];
     if (strchr("RSDZTtXxKWPIN", state) == NULL) { errno = EPROTO; return -1; }
     const char *cursor = close + 4;
-    int session = 0;
+    int session = 0, parent = 0, group = 0;
     uint64_t start = 0;
     for (int field = 4; field <= 22; ++field) {
         char token[32];
@@ -125,18 +131,21 @@ static int stat_identity(int proc, int pid, struct identity *result) {
         }
         token[count] = '\0';
         if (count == 0) { errno = EPROTO; return -1; }
-        if (field == 6 || field == 22) {
+        if (field == 4 || field == 5 || field == 6 || field == 22) {
             uint64_t value;
-            if (decimal(token, field == 6 ? INT_MAX : UINT64_MAX, &value) != 0) {
+            if (decimal(token, field == 22 ? UINT64_MAX : INT_MAX, &value) != 0) {
                 errno = EPROTO; return -1;
             }
-            if (field == 6) session = (int)value;
+            if (field == 4) parent = (int)value;
+            else if (field == 5) group = (int)value;
+            else if (field == 6) session = (int)value;
             else start = value;
         }
         if (field < 22 && *cursor != ' ') { errno = EPROTO; return -1; }
         while (*cursor == ' ') ++cursor;
     }
-    *result = (struct identity){ .pid = pid, .start = start, .session = session, .state = state };
+    *result = (struct identity){ .pid = pid, .start = start, .session = session,
+        .parent = parent, .group = group, .state = state };
     return 0;
 }
 
@@ -228,28 +237,261 @@ static int terminated(int pidfd) {
     return (descriptor.revents & (POLLIN | POLLHUP)) != 0;
 }
 
-static int check(int proc, int pidfd, const struct identity *original) {
-    /* Poll FIRST: do not upgrade an initially live result after reading proc. */
-    const int dead = terminated(pidfd);
-    if (dead < 0) return fail("pidfd-poll");
+struct observation {
+    int dead;
+    int absent;
+    char state;
+};
+
+/* Shared by the old live/zombie controls and bridge mode. The caller polls its
+ * pidfds FIRST, so proc reads cannot upgrade an initially live sample. PPID is
+ * deliberately not an identity invariant here: guardian adoption is expected. */
+static const char *observe(int proc, int dead, const struct identity *original,
+                           struct observation *result) {
     struct identity current;
     int absent = 0;
     if (stat_identity(proc, original->pid, &current) != 0) {
-        if (!gone(errno)) return fail("check-proc-visibility");
+        if (!gone(errno)) return "check-proc-visibility";
         absent = 1;
     } else if (current.start != original->start) {
         absent = 1; /* Reused PID is not the pinned process. No signal is sent. */
     } else {
-        if (!same_process(original, &current)) { errno = ESTALE; return fail("check-identity-drift"); }
+        if (!same_process(original, &current)) { errno = ESTALE; return "check-identity-drift"; }
         const int owner = uid_matches(proc, original->pid, original->uid);
         if (owner < 0 && gone(errno)) absent = 1;
-        else if (owner != 1) { if (owner == 0) errno = ESTALE; return fail("check-uid-visibility"); }
+        else if (owner != 1) { if (owner == 0) errno = ESTALE; return "check-uid-visibility"; }
     }
+    *result = (struct observation){ .dead = dead, .absent = absent,
+        .state = absent ? '\0' : current.state };
+    return NULL;
+}
+
+static int check(int proc, int pidfd, const struct identity *original) {
+    const int dead = terminated(pidfd);
+    if (dead < 0) return fail("pidfd-poll");
+    struct observation result;
+    const char *error = observe(proc, dead, original, &result);
+    if (error != NULL) return fail(error);
     if (printf("{\"event\":\"check\",\"pidfdTerminated\":%s,\"originalIdentityAbsent\":%s,\"procState\":",
-               dead ? "true" : "false", absent ? "true" : "false") < 0) return 1;
-    if (absent) { if (printf("null}\n") < 0) return 1; }
-    else if (printf("\"%c\"}\n", current.state) < 0) return 1;
+               dead ? "true" : "false", result.absent ? "true" : "false") < 0) return 1;
+    if (result.absent) { if (printf("null}\n") < 0) return 1; }
+    else if (printf("\"%c\"}\n", result.state) < 0) return 1;
     return fflush(stdout) == 0 ? 0 : 1;
+}
+
+struct bridge_command {
+    char bytes[PROC_BYTES];
+    size_t length;
+};
+
+struct bridge_identity {
+    struct identity guardian;
+    struct identity leader;
+    struct identity connection;
+};
+
+static int same_held_process(const struct identity *a, const struct identity *b) {
+    return same_process(a, b) && a->parent == b->parent && a->group == b->group;
+}
+
+static int live_owned(int proc, int pid, unsigned int uid, struct identity *result) {
+    struct identity before, after;
+    if (stat_identity(proc, pid, &before) != 0) return -1;
+    const int owner = uid_matches(proc, pid, uid);
+    if (owner != 1) { if (owner == 0) errno = EPERM; return -1; }
+    if (stat_identity(proc, pid, &after) != 0) return -1;
+    if (!same_held_process(&before, &after)) { errno = ESTALE; return -1; }
+    const int owner_after = uid_matches(proc, pid, uid);
+    if (owner_after != 1) { if (owner_after == 0) errno = ESTALE; return -1; }
+    if (after.state == 'Z' || after.state == 'X' || after.state == 'x') {
+        errno = ESRCH; return -1;
+    }
+    after.uid = uid;
+    *result = after;
+    return 0;
+}
+
+/* Opaque arguments are matched byte-for-byte, including all three final NULs.
+ * The trusted caller owns their socat grammar; this oracle does not execute it.
+ * Canonical pathname equality is not executable-content authentication. */
+static int bridge_command(int argc, char **argv, struct bridge_command *result) {
+    if (argc != 7 || argv[4][0] != '/' || strnlen(argv[4], PATH_MAX) >= PATH_MAX) return -1;
+    char canonical[PATH_MAX];
+    if (realpath(argv[4], canonical) == NULL || strcmp(canonical, argv[4]) != 0) return -1;
+    result->length = 0;
+    for (int i = 4; i < 7; ++i) {
+        const size_t length = strnlen(argv[i], PROC_BYTES);
+        if (length == 0 || length >= PROC_BYTES || length + 1 > PROC_BYTES - result->length)
+            return -1;
+        memcpy(result->bytes + result->length, argv[i], length + 1);
+        result->length += length + 1;
+    }
+    return 0;
+}
+
+static int relay_identity(int proc, int pid, unsigned int uid, int parent, int group,
+                          const struct bridge_command *command, struct identity *result) {
+    struct identity before, after;
+    if (live_owned(proc, pid, uid, &before) != 0) return -1;
+    if (before.parent != parent || before.group != group || before.session != group) {
+        errno = ESTALE; return -1;
+    }
+    char bytes[PROC_BYTES + 1];
+    const ssize_t length = proc_bytes(proc, pid, "cmdline", bytes);
+    if (length < 0) return -1;
+    if ((size_t)length != command->length || memcmp(bytes, command->bytes, command->length) != 0) {
+        errno = EPROTO; return -1;
+    }
+    if (live_owned(proc, pid, uid, &after) != 0) return -1;
+    if (!same_held_process(&before, &after)) { errno = ESTALE; return -1; }
+    *result = after;
+    return 0;
+}
+
+/* Open a fresh directory description for EACH scan. F_DUPFD would share its
+ * directory offset with the pinned proc fd and could hide later matches.
+ * Any direct child that is not the exact expected live relay fails closed. */
+static int relay_child(int proc, int parent, unsigned int uid, int leader,
+                       const struct bridge_command *command, struct identity *result) {
+    const int fresh = openat(proc, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (fresh < 0) return -1;
+    DIR *directory = fdopendir(fresh);
+    if (directory == NULL) { const int saved = errno; close(fresh); errno = saved; return -1; }
+    unsigned int entries = 0, matches = 0;
+    int error = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (entry == NULL) { error = errno; break; }
+        if (++entries > MAX_ENTRIES) { error = EOVERFLOW; break; }
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+        uint64_t pid;
+        if (decimal(entry->d_name, INT_MAX, &pid) != 0 || pid == 0) { error = EPROTO; break; }
+        struct identity candidate;
+        if (stat_identity(proc, (int)pid, &candidate) != 0) {
+            if (gone(errno)) continue; /* An unrelated process can disappear. */
+            error = errno; break;
+        }
+        if (candidate.parent != parent) continue;
+        const int group = leader == 0 ? (int)pid : leader;
+        struct identity matched;
+        if (relay_identity(proc, (int)pid, uid, parent, group, command, &matched) != 0) {
+            error = errno; break;
+        }
+        if (!same_held_process(&candidate, &matched)) { error = ESTALE; break; }
+        if (++matches > 1) { error = EEXIST; break; }
+        *result = matched;
+    }
+    if (closedir(directory) != 0 && error == 0) error = errno;
+    if (error == 0 && matches != 1) error = ESRCH;
+    if (error != 0) { errno = error; return -1; }
+    return 0;
+}
+
+static int bridge_topology(int proc, int guardian, unsigned int uid,
+                           const struct bridge_command *command, struct bridge_identity *result) {
+    struct bridge_identity before, after;
+    if (live_owned(proc, guardian, uid, &before.guardian) != 0 ||
+        relay_child(proc, guardian, uid, 0, command, &before.leader) != 0 ||
+        relay_child(proc, before.leader.pid, uid, before.leader.pid, command,
+                    &before.connection) != 0) return -1;
+    if (before.leader.pid == guardian || before.connection.pid == guardian ||
+        before.connection.pid == before.leader.pid) { errno = ESTALE; return -1; }
+    if (live_owned(proc, guardian, uid, &after.guardian) != 0 ||
+        relay_identity(proc, before.leader.pid, uid, guardian, before.leader.pid,
+                       command, &after.leader) != 0 ||
+        relay_identity(proc, before.connection.pid, uid, before.leader.pid, before.leader.pid,
+                       command, &after.connection) != 0) return -1;
+    if (!same_held_process(&before.guardian, &after.guardian) ||
+        !same_held_process(&before.leader, &after.leader) ||
+        !same_held_process(&before.connection, &after.connection)) { errno = ESTALE; return -1; }
+    *result = after;
+    return 0;
+}
+
+static int print_bridge_identity(const struct identity *identity) {
+    return printf("{\"pid\":%d,\"uid\":%u,\"startTime\":\"%" PRIu64
+                  "\",\"session\":%d,\"state\":\"%c\",\"pidfdTerminated\":false,\"parent\":%d,\"group\":%d}",
+                  identity->pid, identity->uid, identity->start, identity->session,
+                  identity->state, identity->parent, identity->group) < 0 ? -1 : 0;
+}
+
+static int print_observation(const struct observation *result) {
+    if (printf("{\"pidfdTerminated\":%s,\"originalIdentityAbsent\":%s,\"procState\":",
+               result->dead ? "true" : "false", result->absent ? "true" : "false") < 0) return -1;
+    if (result->absent) return printf("null}") < 0 ? -1 : 0;
+    return printf("\"%c\"}", result->state) < 0 ? -1 : 0;
+}
+
+static int bridge_check(int proc, const int pidfds[3], const struct bridge_identity *original) {
+    /* Both zero-time pidfd samples precede either proc read. There is no wait for
+     * death and no later poll that could manufacture an improved observation. */
+    const int leader_dead = terminated(pidfds[1]);
+    const int connection_dead = terminated(pidfds[2]);
+    if (leader_dead < 0 || connection_dead < 0) return fail("pidfd-poll");
+    struct observation leader, connection;
+    const char *error = observe(proc, leader_dead, &original->leader, &leader);
+    if (error == NULL) error = observe(proc, connection_dead, &original->connection, &connection);
+    if (error != NULL) return fail(error);
+    if (printf("{\"event\":\"bridge-check\",\"leader\":") < 0 || print_observation(&leader) != 0 ||
+        printf(",\"connection\":") < 0 || print_observation(&connection) != 0 ||
+        printf("}\n") < 0 || fflush(stdout) != 0) return 1;
+    return 0;
+}
+
+static int bridge_loop(int proc, int guardian, unsigned int uid, const struct bridge_command *command) {
+    int pidfds[3] = {-1, -1, -1}, result = 0, ready = 0;
+    struct bridge_identity original;
+    for (unsigned int commands = 0; commands < 16; ++commands) {
+        char line[16];
+        size_t count = 0;
+        int byte;
+        while ((byte = fgetc(stdin)) != EOF && byte != '\n') {
+            if (byte == 0 || count + 2 >= sizeof(line)) { errno = EPROTO; result = fail("stdin-command"); break; }
+            line[count++] = (char)byte;
+        }
+        if (result != 0) break;
+        if (byte == EOF) {
+            if (ferror(stdin)) result = fail("stdin-read");
+            else if (count != 0) { errno = EPROTO; result = fail("stdin-command"); }
+            break;
+        }
+        line[count++] = '\n';
+        line[count] = '\0';
+        if (strcmp(line, "quit\n") == 0) break;
+        if (strcmp(line, "ready\n") == 0 && !ready) {
+            if (bridge_topology(proc, guardian, uid, command, &original) != 0) {
+                result = fail("bridge-discovery"); break;
+            }
+            const int pids[3] = {guardian, original.leader.pid, original.connection.pid};
+            for (int i = 0; i < 3; ++i) {
+                pidfds[i] = (int)syscall(SYS_pidfd_open, pids[i], 0);
+                if (pidfds[i] < 0) { result = fail("pidfd-open"); break; }
+            }
+            if (result != 0) break;
+            struct bridge_identity after;
+            if (bridge_topology(proc, guardian, uid, command, &after) != 0 ||
+                !same_held_process(&original.guardian, &after.guardian) ||
+                !same_held_process(&original.leader, &after.leader) ||
+                !same_held_process(&original.connection, &after.connection) ||
+                terminated(pidfds[0]) != 0 || terminated(pidfds[1]) != 0 || terminated(pidfds[2]) != 0) {
+                result = fail("ready-acquisition-race"); break;
+            }
+            original = after;
+            ready = 1;
+            if (printf("{\"event\":\"bridge-ready\",\"leader\":") < 0 ||
+                print_bridge_identity(&original.leader) != 0 || printf(",\"connection\":") < 0 ||
+                print_bridge_identity(&original.connection) != 0 || printf("}\n") < 0 ||
+                fflush(stdout) != 0) { result = 1; break; }
+        } else if (strcmp(line, "check\n") == 0 && ready) {
+            result = bridge_check(proc, pidfds, &original);
+            if (result != 0) break;
+        } else { errno = EPROTO; result = fail("stdin-command"); break; }
+        if (commands == 15) { errno = EOVERFLOW; result = fail("command-limit"); }
+    }
+    for (int i = 0; i < 3; ++i)
+        if (pidfds[i] >= 0 && close(pidfds[i]) != 0) result = 1;
+    return result;
 }
 
 int main(int argc, char **argv) {
@@ -261,24 +503,37 @@ int main(int argc, char **argv) {
         sigemptyset(&timeout_mask) != 0 || sigaddset(&timeout_mask, SIGALRM) != 0 ||
         sigprocmask(SIG_UNBLOCK, &timeout_mask, NULL) != 0) return 1;
     alarm(10);
-    int known = 0;
+    int known = 0, bridge = 0;
     uint64_t pid = 0, uid;
-    const char *uid_text, *marker;
+    const char *uid_text, *marker = NULL;
+    struct bridge_command command;
     if (argc == 4 && strcmp(argv[1], "discover") == 0) {
         uid_text = argv[2]; marker = argv[3];
     } else if (argc == 5 && strcmp(argv[1], "known") == 0) {
         known = 1;
         if (decimal(argv[2], INT_MAX, &pid) != 0 || pid == 0) return 2;
         uid_text = argv[3]; marker = argv[4];
+    } else if (argc == 7 && strcmp(argv[1], "bridge") == 0) {
+        bridge = 1;
+        if (decimal(argv[2], INT_MAX, &pid) != 0 || pid == 0 || bridge_command(argc, argv, &command) != 0)
+            return 2;
+        uid_text = argv[3];
     } else return 2;
-    if (decimal(uid_text, UINT_MAX, &uid) != 0 || strlen(marker) != 64) return 2;
-    for (unsigned int i = 0; i < 64; ++i)
-        if (!((marker[i] >= '0' && marker[i] <= '9') || (marker[i] >= 'a' && marker[i] <= 'f'))) return 2;
+    if (decimal(uid_text, UINT_MAX, &uid) != 0) return 2;
+    if (!bridge) {
+        if (strlen(marker) != 64) return 2;
+        for (unsigned int i = 0; i < 64; ++i)
+            if (!((marker[i] >= '0' && marker[i] <= '9') || (marker[i] >= 'a' && marker[i] <= 'f'))) return 2;
+    }
     const int proc = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (proc < 0) return fail("proc-open");
     struct statfs filesystem;
     if (fstatfs(proc, &filesystem) != 0 || filesystem.f_type != PROC_SUPER_MAGIC)
         return fail("proc-filesystem");
+    if (bridge) {
+        const int result = bridge_loop(proc, (int)pid, (unsigned int)uid, &command);
+        return close(proc) == 0 ? result : 1;
+    }
     int pidfd = -1, result = 0;
     struct identity original = {0};
     for (unsigned int commands = 0; commands < 16; ++commands) {

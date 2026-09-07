@@ -411,9 +411,10 @@ scope. Active descendants, startup and owner-loss controls, custody, and isolate
 remain open.
 
 This is progress within RL-A, not completion of the usable checkpoint.
-The active-connection test and strict checker wrapper are prepared. Their next gate is a hosted
-failure that confirms the missing native checker mode after real forwarding. Only then can the
-checker implementation begin. The macOS runtime skip does not satisfy this gate.
+The active-connection test and strict checker wrapper reached their authenticated failing control
+in [run 34167826719](https://github.com/synaptiai/flow-harness/actions/runs/34167826719) at `bec765e`.
+The unchanged checker rejected the missing mode after real forwarding. Checker implementation
+is in progress. A hosted pass and independent negative controls remain required.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

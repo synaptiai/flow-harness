@@ -988,16 +988,27 @@ FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
   npm run test:runtime -- test/runtime/host-bridge-descendants.runtime.test.ts
 ```
 
-The current test-only increment deliberately precedes implementation of the checker's `bridge`
-mode. A hosted failure must confirm that missing mode after real forwarding succeeds. A local
-skip on macOS is not qualification. The hosted workflow runs this gate before the existing
+The test-only increment preceded implementation of the checker's `bridge` mode. A local skip on
+macOS is not qualification. The hosted workflow runs this gate before the existing
 application-result tests, which remain skipped if it fails.
 
 The first attempt, [run 34167558669](https://github.com/synaptiai/flow-harness/actions/runs/34167558669)
 at `f1bf215`, reached real forwarding but reported only a checker control-stream failure.
 That diagnostic did not retain the checker's exit status, so it did not establish the intended
-missing-mode failure. The wrapper now retains both errors. The native checker remains unchanged
-pending another hosted control.
+missing-mode failure. The wrapper now retains both errors.
+
+The repeat control, [run 34167826719](https://github.com/synaptiai/flow-harness/actions/runs/34167826719)
+at `bec765e`, retained the actual checker exit: status 2, with no terminating signal. Real forwarding
+and the ownership acknowledgement passed before that failure. This confirms the missing `bridge`
+mode in the unchanged checker. Both clean builds and the three original owner tests passed.
+The later application-result tests skipped. The checker implementation can now proceed, but
+active-descendant qualification remains pending its hosted pass.
+
+The checker now implements `bridge` discovery. It matches exact arguments and live parentage,
+retains process descriptors for the guardian and both relay processes, and rechecks the identities
+after acquisition. Settlement uses the same termination and identity-observation functions as the
+existing live and unreaped-process controls. It samples both relay descriptors before reading either
+process identity. This preserves the distinction between termination and complete reaping.
 
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
