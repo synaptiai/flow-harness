@@ -313,6 +313,13 @@ at `f5b417d` failed in the original-launch positive control: the fixed applicati
 unexpected descriptor and returned 96. The observer assertion was not reached. Diagnose this
 precondition before claiming a missing-protocol regression or changing native production code.
 
+The follow-up direct-host control reproduced an inherited pipe before sandbox initialization in
+[run 34153365218](https://github.com/synaptiai/flow-harness/actions/runs/34153365218).
+The qualification runner now isolates its child descriptors. Native qualification must separately
+inject an owned extra descriptor and prove that the observer closes it. Track ordinary-command
+descriptor inheritance as an unresolved release hardening item. This test-environment correction
+does not fix or qualify production command isolation.
+
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three
 fixture tests passed, so the fixture profile remains unqualified. A candidate-side nested user

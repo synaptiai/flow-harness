@@ -662,11 +662,23 @@ GitHub supports this initial
 before the new workflow reaches the default branch. Manual dispatch is also configured for later
 use after the workflow is available there.
 
-The black-box test first requires the unchanged SRT launch to execute a fixed application with
+The workflow starts the test runner through isolated system Python with `close_fds=True`. This
+closes inherited descriptors above 2 in the test child without changing the parent runner's handles.
+Hosted diagnostics found an inherited pipe in a direct application launch before sandbox setup.
+The system Python version is logged. A missing interpreter fails the job. This test-only prerequisite
+does not change production launches or prove the observer's descriptor custody.
+
+The black-box test requires a direct host launch and the unchanged SRT launch to execute a fixed application with
 exact output and exit code 7. It then requires the observer launch to deliver a private normal-exit
 record for 7, exact channel EOF, and outer transport status 0. The upstream helper does not implement
 that protocol, so the initial native regression is expected to fail after the positive control.
 A platform skip or failure before that control is not the required failing-test evidence.
+
+The test deliberately passes an owned extra descriptor after runner isolation. Its direct-host and
+unchanged-sandbox negative controls must detect that descriptor. The observer path must prevent it
+from reaching the application. Descriptor 19 is a test canary, not a supported-descriptor limit or
+an approved leak. This checks end-to-end application entry. Native helper-entry attribution remains
+a separate qualification requirement.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after a future result-channel pass. Process closure

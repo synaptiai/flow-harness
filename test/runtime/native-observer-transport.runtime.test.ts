@@ -124,6 +124,26 @@ describe.skipIf(process.platform !== "linux")("Native observer application trans
       expect(hostControl.signal).toBeNull();
       expect(hostControl.stdout.toString("utf8")).toBe(marker);
       console.info("Native observer direct-host positive control: exact marker, exit 7");
+      // FD 19 is a test canary, not a production inventory limit. Deliberately
+      // pass only the owned, read-only fixed ELF; descriptors 3 and 4 stay absent.
+      // A clean test startup must not conceal this explicit inheritance control.
+      const hostCanary = await capture(
+        { executable: application, args: [], env: environment },
+        workspace,
+        home,
+        context.signal,
+        undefined,
+        app.fd,
+      );
+      expect(hostCanary.code).toBe(96);
+      expect(hostCanary.signal).toBeNull();
+      expect(hostCanary.stdout.length).toBe(0);
+      expect(hostCanary.stderr.toString("utf8")).toBe(
+        "unexpected-fd=19 inventory-fd=3 flags=0 fd-errno=0 kind=regular stat-errno=0\n",
+      );
+      console.info(
+        "Native observer direct-host negative control: explicit FD 19 detected, exit 96",
+      );
       const selected = process.env.FLOW_TEST_NATIVE_OBSERVER_HELPER;
       const helperInput = selected ?? resolveAnthropicSandboxRuntimeSeccompPath();
       if (helperInput === undefined || !isAbsolute(helperInput))
@@ -164,6 +184,28 @@ describe.skipIf(process.platform !== "linux")("Native observer application trans
         expect(result.stdout.toString("utf8")).toBe(marker);
       });
       console.info("Native observer original-launch positive control: exact marker, exit 7");
+      // Pair the direct-host canary with the real unchanged SRT path. This
+      // establishes traversal through that path, not entry custody in the later
+      // rewritten helper; composed observer-path absence is the measured claim.
+      await prepared(sandbox, request, context.signal, async (original) => {
+        const result = await capture(
+          original.launch,
+          workspace,
+          home,
+          context.signal,
+          undefined,
+          app.fd,
+        );
+        expect(result.code).toBe(96);
+        expect(result.signal).toBeNull();
+        expect(result.stdout.length).toBe(0);
+        expect(result.stderr.toString("utf8")).toBe(
+          "unexpected-fd=19 inventory-fd=3 flags=0 fd-errno=0 kind=regular stat-errno=0\n",
+        );
+      });
+      console.info(
+        "Native observer original-launch negative control: explicit FD 19 detected, exit 96",
+      );
       await prepared(sandbox, request, context.signal, async (original) => {
         const httpSocketPath = SandboxManager.getLinuxHttpSocketPath();
         const socksSocketPath = SandboxManager.getLinuxSocksSocketPath();
@@ -189,7 +231,9 @@ describe.skipIf(process.platform !== "linux")("Native observer application trans
         });
         if (launch === null)
           throw new Error("Real manager launch is unsupported by observer rewrite");
-        const result = await capture(launch, workspace, home, context.signal, app.fd);
+        // The composed observer path must remove this explicitly mapped FD.
+        // This does not independently prove its arrival at the helper entry.
+        const result = await capture(launch, workspace, home, context.signal, app.fd, app.fd);
         expect(result.privateEof).toBe(true);
         if (selected === undefined) {
           // The pinned helper treats the unsupported observer flag as its
@@ -316,6 +360,7 @@ function capture(
   home: string,
   signal: AbortSignal,
   applicationFd?: number,
+  canaryFd?: number,
 ): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -328,14 +373,21 @@ function capture(
   return new Promise((resolve, reject) => {
     // Node's "pipe" can be a socketpair. FD 3 is a logical private channel, not
     // a promised S_IFIFO. No descriptor writer authenticity is claimed here.
+    const stdio: ("ignore" | "pipe" | number)[] =
+      applicationFd === undefined
+        ? ["ignore", "pipe", "pipe"]
+        : ["ignore", "pipe", "pipe", "pipe", applicationFd];
+    if (canaryFd !== undefined) {
+      // These ignored slots are not an ambient-FD sanitizer. The explicit
+      // mapping at 19 is the canary; the application still inventories all FDs.
+      while (stdio.length < 19) stdio.push("ignore");
+      stdio[19] = canaryFd;
+    }
     const child = spawn(launch.executable, [...launch.args], {
       cwd,
       env: { ...launch.env, HOME: home },
       detached: true,
-      stdio:
-        applicationFd === undefined
-          ? ["ignore", "pipe", "pipe"]
-          : ["ignore", "pipe", "pipe", "pipe", applicationFd],
+      stdio,
     });
     const chunks: Buffer[][] = [[], [], []];
     const sizes = [0, 0, 0];

@@ -42,6 +42,9 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain("npm ci --ignore-scripts");
     expect(commands).toContain("npm run build");
     expect(commands).toContain(
+      "/usr/bin/python3 -I -S -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))'",
+    );
+    expect(commands).toContain(
       "npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts",
     );
     expect(commands).not.toMatch(/proof:prepare|gh\s|git push|npm publish|curl|wget/);

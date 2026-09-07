@@ -647,6 +647,11 @@ Run these controls through the actual patched artifact and SRT launch on Linux x
 - Test ignored and blocked signals. Mutate the worker failure path to `_exit(0)` and require
   the negative control to detect false normal classification.
 - Applications and descendants must not retain private endpoints or forge a valid final report.
+- Inject owned non-private descriptors after test-runner isolation. Require the observer to close
+  all unadmitted handles, not just its known channel endpoints. Clean test startup is not proof of
+  that native boundary. Qualification found a non-close-on-exec pipe inherited through Node's
+  Linux launch path before sandbox initialization. Ordinary command hardening remains a separate
+  release follow-up. The observer-specific patch does not implement it.
 - Long-lived descendants must be gone before accepting inner settlement. Early proxy exits must
   not replace the application's result. Outer relay and host-bridge settlement remain separate gates.
 - Cancellation, missing or extra frames, unsupported setup, and unconfirmed release must prevent

@@ -1745,3 +1745,37 @@ Next control runs the same fixed static ELF directly before manager initializati
 clean environment and bounded capture. It has no candidate input, child command, network activity,
 or filesystem mutation. This separates ambient host descriptor inheritance from handles introduced
 by SRT. Every original assertion remains. The native patch still waits for valid baseline evidence.
+
+Run 34153365218 at 1d1a9374c57a2e6acb30fd23f7c51b125054fe75 reproduced live FIFO142 flags0 in the
+direct-host control before manager initialization. Root /tmp/flow-observer-transport-wXmrtb was
+retained until ephemeral runner disposal. This rules out SRT setup as necessary to introduce this
+observed pipe. Its original creator is not identified and its contents were never read.
+
+Pinned Node26.7.0 Linux libuv source maps the supplied stdio descriptors without a universal close
+of ambient descriptors. Its Apple spawn path instead uses POSIX_SPAWN_CLOEXEC_DEFAULT. Increasing
+the stdio array with ignore entries is not a sanitizer: entries above2 with no supplied descriptor
+are skipped. Source: https://github.com/nodejs/node/blob/v26.7.0/deps/uv/src/unix/process.c.
+
+Compared closing unknown descriptors in the live parent (unsafe ownership), writing another native
+test launcher (duplicate boundary), and an isolated system-Python child launcher. Selected the last
+for qualification only. Python -I -S excludes cwd/user environment imports and site startup hooks;
+subprocess.call uses an argument list, close_fds=True, no pass_fds, and no shell. Parent runner
+descriptors remain untouched. Python's default signal restoration is retained, so this is not a
+strictly single-variable signal experiment. Test and job deadlines remain; this wrapper does not
+prove descendant cleanup. The interpreter version is recorded, and missing support fails the job.
+Source: https://docs.python.org/3.12/library/subprocess.html#subprocess.Popen.
+
+The strict application inventory checks remain. Add an owned FD19 after test-runner isolation to
+the direct-host negative control and future observer capture. The direct-host negative must detect
+it, while a future observer success must close it. This avoids crediting test-environment isolation
+as native descriptor closure. FD19 is a fixed canary, not a runtime limit. Arbitrary inherited-FD
+hardening for ordinary commands is an unresolved release follow-up; production semantics remain
+unchanged in this qualification correction. The workflow assertion failed before adding the isolated
+launcher and passed afterward. Independent review endorsed child-only isolation and added -S to
+exclude startup hooks. Real Linux positive calibration and intended protocol RED remain pending.
+
+Final independent review identified a canary-attribution P3: direct-host inheritance alone does
+not prove the extra descriptor reaches the native boundary through the sandbox. Added a separate
+unchanged-SRT FD19 negative control and narrowed documentation to end-to-end application-entry
+closure. The observer-specific bootstrap differs from the original, so native helper-entry
+attribution remains a mandatory later qualification rather than an inferred pass.

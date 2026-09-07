@@ -40,6 +40,7 @@ jobs:
           test "$(id -u)" -ne 0
           uname -r
           node --version
+          /usr/bin/python3 -I -S --version
 
       - name: Install the existing sandbox prerequisites
         run: |
@@ -56,4 +57,9 @@ jobs:
         run: npm run build
 
       - name: Test the native application-result path
-        run: npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts
+        # The hosted parent can have inherited non-CLOEXEC pipes. Isolate only
+        # the test child; never close or change the parent runner's descriptors.
+        # This is not evidence of the native observer's own descriptor custody.
+        run: >-
+          /usr/bin/python3 -I -S -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))'
+          npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts
