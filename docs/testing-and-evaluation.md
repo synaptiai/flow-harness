@@ -827,6 +827,14 @@ That path is not a persistent uploaded evidence archive. A source audit identifi
 late-cancellation acceptance window while the test harness awaits hooks or release. Reproduce that
 schedule with real processes before claiming cancellation qualification or treating the hypothesis as confirmed.
 
+The next regression adds two non-cancelled controls and one final test of both cancellation windows.
+The suite now registers 292 cases. The new test must reject cancellation after proven child closure
+or successful sandbox release while the corresponding completion callback remains held. Each callback
+must then finish normally. A callback failure cannot substitute for cancellation rejection.
+
+Native execution of this regression is pending. Acceptance behavior is unchanged so the first run
+can confirm or disprove the suspected race before a correction.
+
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure
 and SRT reset do not yet establish complete relay and host-bridge disposal. A passing result-channel

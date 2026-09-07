@@ -98,6 +98,17 @@ type Fixture = {
 type CaptureHooks = {
   onStarted?: (signal: AbortSignal) => Promise<void>;
   onPrivateFrame?: (signal: AbortSignal) => Promise<void>;
+  // Notification only: the event comes from the owned ChildProcess's close,
+  // not a timer, synthetic process result, or replacement for actual capture.
+  onChildClosed?: (result: CaptureResult) => void;
+};
+type CaptureResult = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: Buffer;
+  stderr: Buffer;
+  privateBytes: Buffer;
+  privateEof: boolean;
 };
 
 // Result/EOF, writer-access and descendant qualification only, not policy-clean,
@@ -673,7 +684,189 @@ describe
             throw new AggregateError(failures, "Descendant qualification failed; root retained");
         }),
     );
+
+    it.for(["child-closed-hook-held", "released-observation-held"] as const)(
+      "accepts the noncancelled real %s completion-barrier twin",
+      { timeout: 45_000 },
+      (schedule, context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const outcome = await lateCancellationSchedule(value, context.signal, schedule, false);
+          expect(outcome.status).toBe("fulfilled");
+        }),
+    );
+
+    // Keep this aggregate last. Both schedules may expose a fully joined but
+    // incorrectly accepted cancellation. Collect those assertion failures only;
+    // any setup, output, or cleanup uncertainty immediately stops the matrix.
+    it(
+      "rejects cancellation at both real late-observation settlement windows",
+      (context) =>
+        runCase(context, async (value) => {
+          await requireArtifact(value, context.signal);
+          const failures: Error[] = [];
+          for (const schedule of ["child-closed-hook-held", "released-observation-held"] as const) {
+            const outcome = await lateCancellationSchedule(value, context.signal, schedule, true);
+            if (outcome.status === "fulfilled") {
+              const result = outcome.value;
+              failures.push(
+                new Error(
+                  `Late cancellation accepted at ${schedule}: ${JSON.stringify({
+                    code: result.code,
+                    signal: result.signal,
+                    privateEof: result.privateEof,
+                    record: result.record,
+                    stdout: result.stdout.toString("utf8"),
+                    stderr: result.stderr.toString("utf8"),
+                  })}`,
+                ),
+              );
+            }
+          }
+          if (failures.length)
+            throw new AggregateError(
+              failures,
+              "Late cancellation must reject at every observed settlement window",
+            );
+        }),
+      45_000,
+    );
   });
+
+function completionLatch<T>() {
+  let release: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    release = resolve;
+  });
+  if (release === undefined) throw new Error("Completion latch was not initialized");
+  return { promise, resolve: release };
+}
+
+async function lateCancellationSchedule(
+  value: Fixture,
+  signal: AbortSignal,
+  schedule: "child-closed-hook-held" | "released-observation-held",
+  cancel: boolean,
+) {
+  const controller = new AbortController();
+  const cancellation = new Error(`Owned late-cancellation control: ${schedule}`);
+  const combined = AbortSignal.any([signal, controller.signal]);
+  const entered = completionLatch<void>();
+  const closed = completionLatch<CaptureResult>();
+  const gate = completionLatch<void>();
+  const correlation = randomBytes(32).toString("hex");
+  const events: string[] = [];
+  let settled = false;
+  let frameCalls = 0;
+  let closeCalls = 0;
+  let releaseCalls = 0;
+  const operation = observe(value, combined, {
+    correlation,
+    hooks: {
+      onPrivateFrame: async () => {
+        frameCalls++;
+        events.push("private-frame");
+        if (schedule === "child-closed-hook-held") {
+          entered.resolve();
+          // Deliberately fulfill after abort. A throwing hook must not stand in
+          // for the missing cancellation check in the acceptance path.
+          await gate.promise;
+          events.push("private-hook-completed");
+        }
+      },
+      onChildClosed: (result) => {
+        closeCalls++;
+        events.push("child-closed");
+        closed.resolve(result);
+      },
+    },
+    onReleased: async () => {
+      releaseCalls++;
+      events.push("sandbox-released");
+      if (schedule === "released-observation-held") {
+        entered.resolve();
+        await gate.promise;
+        events.push("release-hook-completed");
+      }
+    },
+  }).then(
+    (result) => {
+      settled = true;
+      events.push("observation-settled");
+      return { status: "fulfilled" as const, value: result };
+    },
+    (error: unknown) => {
+      settled = true;
+      events.push("observation-settled");
+      return { status: "rejected" as const, reason: error };
+    },
+  );
+  try {
+    const snapshot = await bounded(
+      Promise.race([
+        Promise.all([entered.promise, closed.promise]).then(([, result]) => result),
+        operation.then(() => {
+          throw new Error(`Observation settled before ${schedule} barrier`);
+        }),
+      ]),
+      10_000,
+      `Real ${schedule} boundary was not reached`,
+    );
+    expect(settled).toBe(false);
+    expect(frameCalls).toBe(1);
+    expect(closeCalls).toBe(1);
+    expect(releaseCalls).toBe(schedule === "released-observation-held" ? 1 : 0);
+    expectTransport(
+      { ...snapshot, record: parseNativeObserverResult(snapshot.privateBytes, correlation) },
+      marker,
+      "",
+    );
+    expect(parseNativeObserverResult(snapshot.privateBytes, correlation)).toEqual({
+      kind: "normal_exit",
+      exitCode: 7,
+      clone3FallbackUsed: false,
+    });
+    signal.throwIfAborted();
+    if (cancel) {
+      events.push("cancelled");
+      controller.abort(cancellation);
+    }
+    events.push("barrier-opened");
+    gate.resolve();
+    const outcome = await bounded(operation, 7000, `Real ${schedule} observation did not join`);
+    expect(frameCalls).toBe(1);
+    expect(closeCalls).toBe(1);
+    expect(releaseCalls).toBe(1);
+    expect(events).toEqual([
+      "private-frame",
+      "child-closed",
+      ...(schedule === "released-observation-held" ? ["sandbox-released"] : []),
+      ...(cancel ? ["cancelled"] : []),
+      "barrier-opened",
+      ...(schedule === "child-closed-hook-held"
+        ? ["private-hook-completed", "sandbox-released"]
+        : ["release-hook-completed"]),
+      "observation-settled",
+    ]);
+    if (outcome.status === "rejected") {
+      if (!cancel || outcome.reason !== cancellation) throw outcome.reason;
+    } else {
+      expectTransport(outcome.value, marker, "");
+      expect(outcome.value.record).toEqual({
+        kind: "normal_exit",
+        exitCode: 7,
+        clone3FallbackUsed: false,
+      });
+    }
+    return outcome;
+  } finally {
+    // Release owned hooks even on failed instrumentation, then join the original
+    // observation/release promise. Never remove the fixture's retained root.
+    if (!settled) controller.abort(new Error(`Cleanup of ${schedule} control`));
+    gate.resolve();
+    await bounded(operation, 12_000, `Cleanup of ${schedule} observation did not join`);
+  }
+}
 
 async function createFixture(
   signal: AbortSignal,
@@ -1008,6 +1201,7 @@ async function observe(
     correlation?: string;
     runtimeSupportPaths?: readonly string[];
     hooks?: CaptureHooks;
+    onReleased?: () => Promise<void>;
   } = {},
 ) {
   const application = options.application ?? value.app;
@@ -1024,71 +1218,78 @@ async function observe(
         record: ReturnType<typeof parseNativeObserverResult>;
       })
     | undefined;
-  await prepared(value.sandbox, request, signal, async (original) => {
-    const httpSocketPath = SandboxManager.getLinuxHttpSocketPath();
-    const socksSocketPath = SandboxManager.getLinuxSocksSocketPath();
-    if (httpSocketPath === undefined || socksSocketPath === undefined)
-      throw new Error("Missing real manager proxy sockets");
-    for (const path of new Set([httpSocketPath, socksSocketPath])) {
-      expect(await realpath(path)).toBe(path);
-      expect((await lstat(path)).isSocket()).toBe(true);
-    }
-    const correlation = options.correlation ?? randomBytes(32).toString("hex");
-    const launch = rewriteNativeObserverLaunch({
-      launch: original.launch,
-      originalCommand: { executable: request.executable, args: request.args },
-      trustedBwrapPath: await realpath("/usr/bin/bwrap"),
-      trustedHelperPath: value.helper,
-      correlation,
-      proxyBridge: {
-        httpSocketPath,
-        socksSocketPath,
-        originalRelayExecutable: "socat",
-        trustedRelayExecutable: await realpath("/usr/bin/socat"),
-      },
-    });
-    if (launch === null) throw new Error("Real manager launch is unsupported by observer rewrite");
-    let actual = launch;
-    if (options.fault !== undefined) {
-      const tail = [
-        "flow-observer-bootstrap",
-        value.helper,
-        "--flow-observer-v1",
+  await prepared(
+    value.sandbox,
+    request,
+    signal,
+    async (original) => {
+      const httpSocketPath = SandboxManager.getLinuxHttpSocketPath();
+      const socksSocketPath = SandboxManager.getLinuxSocksSocketPath();
+      if (httpSocketPath === undefined || socksSocketPath === undefined)
+        throw new Error("Missing real manager proxy sockets");
+      for (const path of new Set([httpSocketPath, socksSocketPath])) {
+        expect(await realpath(path)).toBe(path);
+        expect((await lstat(path)).isSocket()).toBe(true);
+      }
+      const correlation = options.correlation ?? randomBytes(32).toString("hex");
+      const launch = rewriteNativeObserverLaunch({
+        launch: original.launch,
+        originalCommand: { executable: request.executable, args: request.args },
+        trustedBwrapPath: await realpath("/usr/bin/bwrap"),
+        trustedHelperPath: value.helper,
         correlation,
-        "--",
-        application.path,
-        ...request.args,
-      ];
-      const index = launch.args.length - tail.length;
-      if (index < 0 || !tail.every((part, i) => launch.args[index + i] === part))
-        throw new Error("Missing exact observer helper positional tail");
-      const args = [
-        ...launch.args.slice(0, index + 1),
-        value.faultLauncher,
-        options.fault,
-        ...launch.args.slice(index + 1),
-      ];
-      // Only the positional helper command is prefixed. No bwrap option,
-      // shell script, proxy process or original application argument is changed.
-      expect(args.slice(0, index + 1)).toEqual(launch.args.slice(0, index + 1));
-      expect(args.slice(index + 3)).toEqual(launch.args.slice(index + 1));
-      actual = { ...launch, args };
-    }
-    const result = await capture(
-      actual,
-      value.workspace,
-      value.home,
-      signal,
-      application.handle.fd,
-      application.handle.fd,
-      options.hooks,
-    );
-    expect(result.privateEof).toBe(true);
-    observation = {
-      ...result,
-      record: parseNativeObserverResult(result.privateBytes, correlation),
-    };
-  });
+        proxyBridge: {
+          httpSocketPath,
+          socksSocketPath,
+          originalRelayExecutable: "socat",
+          trustedRelayExecutable: await realpath("/usr/bin/socat"),
+        },
+      });
+      if (launch === null)
+        throw new Error("Real manager launch is unsupported by observer rewrite");
+      let actual = launch;
+      if (options.fault !== undefined) {
+        const tail = [
+          "flow-observer-bootstrap",
+          value.helper,
+          "--flow-observer-v1",
+          correlation,
+          "--",
+          application.path,
+          ...request.args,
+        ];
+        const index = launch.args.length - tail.length;
+        if (index < 0 || !tail.every((part, i) => launch.args[index + i] === part))
+          throw new Error("Missing exact observer helper positional tail");
+        const args = [
+          ...launch.args.slice(0, index + 1),
+          value.faultLauncher,
+          options.fault,
+          ...launch.args.slice(index + 1),
+        ];
+        // Only the positional helper command is prefixed. No bwrap option,
+        // shell script, proxy process or original application argument is changed.
+        expect(args.slice(0, index + 1)).toEqual(launch.args.slice(0, index + 1));
+        expect(args.slice(index + 3)).toEqual(launch.args.slice(index + 1));
+        actual = { ...launch, args };
+      }
+      const result = await capture(
+        actual,
+        value.workspace,
+        value.home,
+        signal,
+        application.handle.fd,
+        application.handle.fd,
+        options.hooks,
+      );
+      expect(result.privateEof).toBe(true);
+      observation = {
+        ...result,
+        record: parseNativeObserverResult(result.privateBytes, correlation),
+      };
+    },
+    options.onReleased,
+  );
   if (observation === undefined) throw new Error("Native observation missing");
   return observation;
 }
@@ -1229,6 +1430,7 @@ async function prepared(
   request: Parameters<SrtCommandSandbox["prepare"]>[0],
   signal: AbortSignal,
   body: (command: PreparedCommand) => Promise<void>,
+  onReleased?: () => Promise<void>,
 ): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("Preparation deadline")), 5000);
@@ -1265,6 +1467,10 @@ async function prepared(
   } finally {
     try {
       await bounded(command.release(), 5500, "Sandbox release did not settle");
+      // Test-only completion barrier, after the genuine lease has released.
+      // Do not add cancellation enforcement here until native RED is observed.
+      if (onReleased !== undefined)
+        await bounded(onReleased(), 1000, "Native release completion hook did not settle");
     } catch (error) {
       failures.push(error);
     }
@@ -1291,14 +1497,7 @@ function capture(
   applicationFd?: number,
   canaryFd?: number,
   hooks?: CaptureHooks,
-): Promise<{
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: Buffer;
-  stderr: Buffer;
-  privateBytes: Buffer;
-  privateEof: boolean;
-}> {
+): Promise<CaptureResult> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const hookController = new AbortController();
@@ -1399,6 +1598,15 @@ function capture(
       if (joined) return;
       joined = true;
       cleanup();
+      const result = {
+        code,
+        signal: terminated,
+        stdout: Buffer.concat(chunks[0] ?? []),
+        stderr: Buffer.concat(chunks[1] ?? []),
+        privateBytes: Buffer.concat(chunks[2] ?? []),
+        privateEof,
+      };
+      if (hooks?.onChildClosed !== undefined) runHook(async () => hooks.onChildClosed?.(result));
       if (failure !== undefined) reject(failure);
       else {
         void bounded(
@@ -1406,15 +1614,7 @@ function capture(
           1000,
           "Native qualification hooks did not settle",
         ).then(
-          () =>
-            resolve({
-              code,
-              signal: terminated,
-              stdout: Buffer.concat(chunks[0] ?? []),
-              stderr: Buffer.concat(chunks[1] ?? []),
-              privateBytes: Buffer.concat(chunks[2] ?? []),
-              privateEof,
-            }),
+          () => resolve(result),
           (error: unknown) => {
             hookController.abort(error);
             reject(error);

@@ -2164,3 +2164,47 @@ Neither proves post-report close handling. Seccomp ERRNO injection does not prod
 short write; malformed/extra inner-record controls need separately assessed test-artifact mutation
 or a stronger injection design. Graceful forwarding requires synchronized exact-owned-process
 signalling and cannot be inferred from the test runner's existing abort-to-SIGKILL path.
+
+### Terminal reporting and late-cancellation qualification plan
+
+The preceding goal turn made verified progress, not a wait: 289 actual Linux cases passed, both
+builds matched 29 artifacts, and reviewed evidence was committed as d7ee5ff. This turn verified
+that local tree is clean and run 34159189998 remains terminal success at 0255e9d. The dedicated
+remote qualification branch also remains at that exact source. The full goal is still active.
+
+Criterion LC-1: after the real child close event, while an actual evidence callback remains held,
+cancel the invocation before releasing and joining that callback. Require rejection, not normal-result
+acceptance. A non-cancelled twin must accept the same application's exact normal-7 record and EOF.
+Criterion LC-2: after genuine SRT release completes, hold an explicit test-only completion barrier,
+cancel before returning the observation, then release/join it. Require rejection. Its non-cancelled
+twin must accept normal 7. Neither schedule proves native graceful cancellation or outer-relay disposal.
+
+First add the real schedule instrumentation and regression without changing acceptance behavior.
+Use exact events and owned promises, not sleeps, mock processes, or replacement SRT operations.
+Always open barriers and join original callbacks in finally. Setup/cleanup uncertainty must stop the
+suite. Both named cancellation windows can be collected in one final regression only after each
+operation actually settled; never aggregate through uncertain cleanup to obtain more failing tests.
+Observe native RED before fixing capture/prepared. Do not infer RED from a skipped Mac suite.
+
+Criterion RP-1: fixed application executes normally but final write(3) is denied; require outer1,
+no signal, exact application/fault markers, empty private bytes, and real EOF.
+Criterion RP-2: inner write(6) denial and outer read(5) denial must independently satisfy the same
+transport-failure assertion. Criterion RP-3: worker-error read(7) denial must instead yield a complete
+supervisor_failed record, errno71/EPROTO, stage descriptor_handoff, outer0, and exact markers/EOF.
+These are fixed-descriptor filters across inherited processes, not role-authenticated policies.
+The static application and helper do not reuse those descriptors for successful application I/O;
+namespace mapping uses the next free descriptor9. Revalidate this coupling if topology changes.
+
+Order: native cancellation RED, targeted cancellation correction and real reporting controls,
+local checks and independent source/test review, then native GREEN. Use the existing two-clean-build
+workflow and separate artifact identities unchanged. Preserve all 289 existing cases and normal
+SRT behavior. No production observer mutation, model run, credential change, merge, release, or
+repair enablement is part of this slice. Remaining full observer and usable-checkpoint gates stay open.
+
+Cancellation regression source passed independent review with no P1–P3 findings. Full typecheck,
+lint, formatting, documentation gates, and whitespace checks pass. An initial typecheck rejected
+Promise.withResolvers under the repository's current library target; a local completion latch fixed
+that test compilation issue without configuration changes. This was not native RED.
+Mac collection skips all 292 cases. Commit the test-only schedule and pending-status documentation
+to obtain actual Linux RED before changing acceptance. The three new cases are two passing twins
+and one aggregate that collects only fully settled false successes at both named cancellation windows.
