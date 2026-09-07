@@ -743,10 +743,15 @@ Calibrate the host tool against all three process states before accepting descen
 | Exited process waiting for its parent to reap it | Yes | No | No |
 | Reaped process | Yes | Yes | Yes |
 
-These new custody and settlement controls are under development. The 266-case run does not
-qualify them. Host visibility, the read-only release handoff, and the additional native fixtures
-still require actual Linux execution. They do not qualify all writer-access mechanisms, immutable
-runtime custody, outer proxy cleanup, namespace policy, cancellation races, or repairs.
+The expanded [run 34157090197](https://github.com/synaptiai/flow-harness/actions/runs/34157090197)
+at `e22a936` passed 273 cases and reported two failures, without skips. The writer and host
+calibration controls passed. The ordinary descendant did not publish readiness within its bound.
+The suite then refused to start the new-session case. Diagnose that precondition before claiming
+descendant settlement or changing the fixture.
+
+Host visibility for sandbox descendants and the read-only release handoff remain unqualified.
+These results do not qualify all writer-access mechanisms, immutable runtime custody, outer proxy
+cleanup, namespace policy, cancellation races, or repairs.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure

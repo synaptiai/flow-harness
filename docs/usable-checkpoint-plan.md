@@ -344,8 +344,12 @@ Next, qualify private-writer exclusion and descendant settlement with independen
 
 The implemented test expansion registers 275 cases. It adds accessible-writer counterexamples,
 forged-output rejection, and held descendants with independent live, zombie, and reaped controls.
-Source review and local static checks passed. Actual Linux execution remains pending. The Mac
-collection skips all 275 cases and is not native qualification evidence.
+Source review and local static checks passed.
+
+Linux
+[run 34157090197](https://github.com/synaptiai/flow-harness/actions/runs/34157090197) passed 273 cases.
+The ordinary descendant failed its readiness precondition, so the next case could not start.
+Descendant settlement remains unqualified. Diagnose the readiness failure before changing the fixture.
 
 Do not infer those properties from the passing result tests. Policy interference, fixture denial,
 ordinary-command descriptor hardening, and the remaining lifecycle gates still block repair readiness.

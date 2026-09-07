@@ -47,12 +47,27 @@ static int marker_valid(const char *marker) {
     return 1;
 }
 
+static int publish_notice(const char *path, const char *notice) {
+    const int ready = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (ready < 0) return 113;
+    const size_t length = strlen(notice);
+    const ssize_t written = write(ready, notice, length);
+    const int closed = close(ready);
+    return written == (ssize_t)length && closed == 0 ? 0 : 114;
+}
+
 static int held(int argc, char **argv) {
     if (argc != 4 || !marker_valid(argv[0]) || argv[3][0] != '/' ||
         (strcmp(argv[2], "ordinary") != 0 && strcmp(argv[2], "new-session") != 0)) return 110;
     alarm(60); /* Host acceptance must occur well before this safety expiry. */
     const pid_t own = getpid();
     const pid_t session = getsid(0);
+    /* Diagnostic only: preserve the existing rejection until native execution
+     * proves whether this child inherits an out-of-namespace session leader. */
+    if (session == 0) {
+        (void)publish_notice(argv[3], "session-zero\n");
+        return 111;
+    }
     if (own <= 1 || getppid() <= 1 || session <= 0 ||
         ((strcmp(argv[2], "new-session") == 0) != (session == own))) return 111;
     for (int fd = 0; fd <= 2; ++fd) {
@@ -60,12 +75,8 @@ static int held(int argc, char **argv) {
         if (fstat(fd, &actual) != 0 || stat("/dev/null", &expected) != 0 ||
             !S_ISCHR(actual.st_mode) || actual.st_rdev != expected.st_rdev) return 112;
     }
-    const int ready = open(argv[3], O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (ready < 0) return 113;
-    static const char notice[] = "ready\n";
-    const ssize_t written = write(ready, notice, sizeof(notice) - 1);
-    const int closed = close(ready);
-    if (written != (ssize_t)(sizeof(notice) - 1) || closed != 0) return 114;
+    const int published = publish_notice(argv[3], "ready\n");
+    if (published != 0) return published;
     for (;;) pause();
 }
 

@@ -1987,3 +1987,18 @@ local runner; rerun those unchanged tests with normal local socket permissions b
 
 The unchanged focused suite passed all 307 tests with normal local socket permissions. The failed
 restricted invocation remains recorded as environment evidence, not a product regression.
+
+### Writer controls pass; descendant readiness requires diagnosis
+
+Native run 34157090197 at e22a936b4dd595187d6864a5f046a76768557645 completed in 3m9s.
+Two clean builds matched. The suite passed 273 of 275 cases with no skips. Both writer mechanisms,
+forged stdout, and real live/zombie/reaped host controls passed. The ordinary descendant failed
+its one-second readiness precondition. Sticky uncertainty correctly prevented the new-session
+case from starting. Neither descendant settlement is qualified by this run.
+
+Highest-confidence hypothesis: getsid(0) returns zero for the ordinary child's inherited session
+leader outside the inner PID namespace, and held() rejects session <= 0 before publishing readiness.
+Kernel v6.8 sys.c routes getsid through pid_vnr, and pid.c returns zero for an unmapped namespace.
+Other hypotheses remain child execution failure or readiness-file access failure. Add a fixed
+session-zero diagnostic to the existing readiness file without changing rejection or any deadline.
+Require the actual Linux failure to identify that payload before correcting the fixture predicate.
