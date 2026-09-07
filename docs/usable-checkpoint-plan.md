@@ -391,6 +391,15 @@ Next, qualify the remaining runtime custody and relay-settlement prerequisites b
 the observer to the managed command boundary. Remaining reporting failures, startup races, and
 cancellation interleavings remain open, separately from the passed controls.
 
+Source review identified an additional host-integration decision. SRT's public manager hides bridge
+ownership on some startup failures. Its escalation path can finish reset before termination.
+The [host-bridge lifecycle proposal](bounded-verification-repair-design.md#resolve-host-bridge-ownership-before-integration)
+compares three options and recommends an observer-only extension to the pinned manager (RL-A).
+
+This extension is proposed, not implemented or approved. Descendant ownership remains a design
+gate. Exposing parent handles alone does not close it. Preserve the approved native extension and
+proxy policy while resolving this decision. The 306 passing controls do not authorize repair enablement.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

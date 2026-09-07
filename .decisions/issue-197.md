@@ -2452,3 +2452,34 @@ Final four-document evidence review found no P1–P3 findings. All 41 documentat
 all three documentation gates, and whitespace checks passed after this update. Save the evidence
 in a local documentation-only commit without rebuilding identical native inputs. The dedicated
 qualification branch contains a234415; the ordinary draft PR, main, and release remain unchanged.
+
+### Host-bridge lifecycle integration decision
+
+Read-only source review after the 306-case native result identified a distinct integration gap.
+Installed @anthropic-ai/sandbox-runtime 0.0.70 linux-sandbox-utils.js:433-556 creates bridge
+ChildProcess handles but can signal children and throw before returning the context. The public
+manager API does not expose those handles. sandbox-manager.js:1475-1528 resolves timeout cleanup
+after sending SIGKILL without joining the resulting termination. Reset at 1608-1642 then proceeds
+with socket removal. The socat fork option creates another descendant-settlement obligation.
+These are source-derived gaps in the evidence contract, not a reproduced runtime leak.
+
+Flow's current adapter delegates reset; wrapping that return value cannot establish missing
+ownership. External proxy ports still create Linux bridges. Reimplementing the lower-level
+manager would duplicate mux/authentication/filtering/TLS behavior. A dedicated manager process
+adds isolation but still needs authenticated descendant ownership and bounded IPC. Neither
+parent closure nor PID discovery is complete descendant proof. Node's official child-process
+documentation independently confirms signal-request versus termination semantics.
+
+The canonical design now compares RL-A (recommended narrow observer-only lifecycle patch), RL-B
+(dedicated manager process), and RL-C (lower-level reimplementation). RL-A is a proposal distinct
+from the already approved native-supervisor extension. Its descendant-ownership mechanism must be
+designed before implementation; no privileged provisioning is assumed. This turn does not patch
+SRT, change production execution, close custody gates, or claim new Linux runtime passes.
+Keep goal active and repair disabled. Obtain the substantive architecture decision before changing
+the JavaScript dependency lifecycle boundary. The prior closed-reader audit remains incomplete;
+this separate ownership review does not repeat or resolve it.
+
+Independent review found no P1-P3 findings in the three-file proposal. All 41 documentation/workflow
+tests, docs:style, docs:links, docs:ste, and whitespace checks passed. Documentation-only change:
+no new native run is needed to validate unchanged native inputs. Save locally without pushing,
+updating the draft PR, or changing the qualified source identity.

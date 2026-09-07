@@ -641,6 +641,77 @@ An open descriptor pins an inode, not immutable contents. Artifact custody must 
 executable bytes, dynamic loader, and libraries. Do not replace existing command evidence with the
 application result or treat ordinary command status as the private transport's success witness.
 
+#### Resolve host-bridge ownership before integration
+
+Status: proposed lifecycle extension, not implemented or qualified. This decision is separate from
+the approved native-supervisor extension. The existing 306 passing native cases do not qualify it.
+
+The required user flow is unchanged: verify the candidate, stop every process owned by verification,
+and then classify the evidence. Cancellation follows the same cleanup boundary. If cleanup cannot
+be proved, the operator receives an unsupported outcome with retained evidence, not an eligible
+repair. No background recovery or automatic retry starts.
+
+The pinned SRT `0.0.70` manager owns shared mutable proxy state. Its public API exposes socket paths
+and reset, but not bridge process ownership. Flow's
+[manager adapter](../src/infrastructure/sandbox/anthropic-sandbox-runtime-manager.ts) delegates that
+lifecycle without additional termination evidence. Inspection of the installed dependency found:
+
+- `initializeLinuxNetworkBridge` creates the bridge processes before returning their handles.
+  Some startup failures signal children and throw without returning those handles.
+- A multiplexed proxy shares one process and socket between HTTP and SOCKS. Cleanup must not
+  mistake those references for two independently owned processes.
+- `killBridgeProcess` can resolve immediately after its timeout escalation sends `SIGKILL`.
+  Reset completion therefore does not always establish termination.
+- The bridge command uses `socat` with `fork`. Joining its parent alone does not prove that its
+  connection-handling descendants have stopped.
+
+These are source findings, not a reproduced leak or a new runtime qualification result.
+[Node's child-process contract](https://nodejs.org/api/child_process.html#subprocesskilled) also
+distinguishes a successful signal request from process termination. A process closure event does
+not independently establish termination of every descendant.
+
+Compare these implementation boundaries before changing the dependency:
+
+| Option | Benefit | Cost and uncertainty |
+| --- | --- | --- |
+| RL-A: Observer-only lifecycle extension to pinned SRT, recommended | Exposes ownership at creation while preserving the existing proxy implementation. | Requires a separately identified dependency patch and a qualified descendant-ownership mechanism. A callback returning parent handles is insufficient. |
+| RL-B: Dedicated manager process | Separates the manager's global state and descriptor environment from the main host. | Adds a bounded communication protocol and crash recovery. Owning or killing this process alone does not prove descendant settlement. |
+| RL-C: Rebuild the observer manager from lower-level components | Gives Flow direct control of process creation. | Duplicates proxy authentication, multiplexing, filtering, TLS, and cleanup behavior. Creates the largest policy-drift risk. |
+
+RL-A is the recommendation because it changes the ownership boundary without replacing proxy
+behavior. It is not yet an approved implementation contract. Complete the descendant-ownership
+design before implementation. Do not substitute PID discovery, a signal request, or a timer for
+termination evidence. No privileged host provisioning is assumed.
+
+The proposed extension must meet these gates:
+
+1. Capture owned lifecycle handles at creation, before any asynchronous wait or failing startup
+   path. Register failure and closure observation before control can leave that path.
+2. Account for shared handles once. Retain ownership after partial startup, cancellation, and
+   escalation until the actual termination outcome is known.
+3. Prove settlement of both bridge parents and connection-handling descendants. Qualify normal
+   completion, partial startup, resistant children, and owner interruption with real processes.
+4. Prove relay execution, listener readiness, and exclusion of private result descriptors.
+   A socket pathname or successful spawn alone is not sufficient readiness evidence.
+5. Preserve proxy settings, authentication, filtering, mounts, and environment semantics. Keep
+   ordinary command execution on the unchanged manager path.
+6. Identify the upstream source, patch, notices, and resulting artifact separately. Do not modify
+   installed dependency files in place or identify modified bytes as the original upstream build.
+
+Apply these failure dispositions to admission, startup, observation, and release:
+
+| Failure | Required disposition |
+| --- | --- |
+| Timeout or cancellation | Stop new work, request bounded cleanup through owned handles, and reject acceptance if settlement remains unknown. |
+| Partial startup | Retain every created handle; account for cleanup before returning a settled failure. |
+| Invalid input or missing identity metadata | Reject before execution. Do not fall back to another command or proxy policy. |
+| Missing dependency or unavailable proxy | Classify as unsupported infrastructure failure, not a candidate behavior defect. |
+| Resource exhaustion | Stop admission, retain uncertain effects, and reject automatic repair. |
+
+This proposal does not enable repairs, authorize another pilot, change network policy, or establish
+immutable runtime custody. It does not replace namespace cleanup with host-bridge cleanup: both
+remain required. Executable bytes, loaders, and libraries need their own custody evidence.
+
 #### Connect the native application-result path
 
 Implement this path in an observer-only patch to the pinned supervisor. Preserve the unchanged
