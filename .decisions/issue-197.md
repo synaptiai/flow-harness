@@ -2831,3 +2831,20 @@ Local typecheck, lint, format check, and production build passed. The five runti
 on macOS as expected, without Linux qualification credit. All three documentation gates and 21
 focused documentation/workflow tests passed. Independent test/workflow and documentation reviews
 found no P1-P3 findings. All five changed files belong to the approved cancellation control.
+
+### Authenticate cancellation sensitivity and select actual actions
+
+Run 34169737226 at exact a9e321d8114e877f4ae99b8ba7d1324fb69e564b failed as intended,
+job101887621081, September7 UTC23:21:06-23:23:12 (126 seconds). The three original owner cases
+passed. Active cases: three existing passed, two new failed, each at line261 on actual code0/null
+versus code1/null after independent settlement assertion passed. Pre-cleanup output was exactly
+OWNED+SETTLED, empty stderr, no overflow. No cleanup failure appeared. Predicate/native steps
+skipped; this run does not qualify actual interruption. Active suite8.70s (8.46s tests).
+
+Added a workflow guard rejecting FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE and observed its local
+RED against the still-enabled flag. Only then removed the test-only workflow substitution.
+Actual held SIGTERM/empty-EOF qualification remains pending; runtime test and native source unchanged.
+
+Local typecheck, lint, format check, build, all three documentation gates, and 21 focused tests
+passed. Independent review re-fetched and corroborated the exact RED source, job, assertions,
+counts, and timings, and found no P1-P3 findings in the five-file GREEN-selection delta.

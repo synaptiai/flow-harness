@@ -431,10 +431,11 @@ Next, qualify cancellation and controller disconnection with a held connection. 
 [remaining lifecycle gates](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
 for startup failure, escalation, owner loss, and runtime custody before manager integration.
 
-The held-connection cancellation and disconnection cases are prepared. Their first hosted run
-substitutes normal stop to confirm that successful cleanup cannot count as an interrupted outcome.
-After that failure is verified, run the actual signal and empty-input cases. Both must prove
-independent descendant settlement after failed owner closure, before test socket cleanup.
+The held-connection cancellation and disconnection controls rejected normal stop in
+[run 34169737226](https://github.com/synaptiai/flow-harness/actions/runs/34169737226) at `a9e321d`.
+Both confirmed settlement before rejecting exit status 0. The three existing active cases passed.
+Actual signal and empty-input qualification is pending. Both must prove independent descendant
+settlement after failed owner closure, before test socket cleanup.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

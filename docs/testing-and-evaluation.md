@@ -1061,8 +1061,11 @@ guardian path. This substitutes a real normal stop in those two cases. Independe
 settlement must pass, but the interrupted-outcome assertions must fail on exit status 0. This is
 not an interruption test pass. Remove that variable before qualification of actual interruption.
 
-The dedicated hosted workflow currently selects this intentional failing control. These observations
-occur after owner closure, not at the instant of a terminal receipt.
+The intentional failing control was verified in
+[run 34169737226](https://github.com/synaptiai/flow-harness/actions/runs/34169737226) at `a9e321d`.
+Both new cases confirmed settlement, then rejected the actual normal exit status 0. The three
+existing active-bridge cases passed. The dedicated hosted workflow now selects actual interruption.
+Its qualification is pending. These observations occur after owner closure, not at a terminal receipt.
 
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.

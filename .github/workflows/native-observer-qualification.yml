@@ -71,8 +71,6 @@ jobs:
       - name: Test active bridge descendants
         env:
           FLOW_TEST_HOST_BRIDGE_GUARDIAN: ${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian
-          # Intentional RED: a normal stop must not qualify as interruption.
-          FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE: "1"
         run: npm run test:runtime -- test/runtime/host-bridge-descendants.runtime.test.ts
 
       - name: Calibrate bridge settlement predicate

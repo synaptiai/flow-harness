@@ -54,6 +54,7 @@ describe("native observer qualification workflow", () => {
       run: "npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts",
     });
     expect(source).not.toContain("FLOW_TEST_HOST_BRIDGE_BASELINE");
+    expect(source).not.toContain("FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE");
     const descendantStep = job.steps.find(
       (step: { name: string }) => step.name === "Test active bridge descendants",
     );
