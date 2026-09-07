@@ -2024,3 +2024,37 @@ issues. Tests use actual files and elapsed time without filesystem mocks or fake
 tests join both real operations and do not assume which I/O completes first; the persistent-empty
 case independently establishes that empty content retries without acceptance. Integration imports
 the helper and removes the old local implementation. Native execution of this correction is pending.
+
+### Writer-access and held-descendant gate GREEN
+
+Run 34157941663, job 101853551320, completed successfully at exact source
+e39737ab501e5f35785ba33088e63bbd27453b39. Job duration was 2m43s. All 275 cases passed with
+zero skips: original266, five writer/forgery cases, one host live/reaped calibration, one real
+zombie calibration, and two held descendant cases. Runtime duration was 18.14s (17.77s test bodies).
+Both descendants passed independent identity/pidfd checks and same-inode read-only release.
+The private-frame event triggered an immediate host check without first waiting for ordinary-output
+closure. That check required termination plus original-identity absence before accepting the result.
+Its asynchronous IPC can finish after ordinary streams close; no atomic frame-arrival/termination
+ordering is claimed. No retry-until-dead loop or safety-alarm expiry established those results.
+
+Two clean builds matched all 23 artifacts. Binary SHA-256 remains
+67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d; object SHA-256 remains
+2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b. No production native header,
+patch, or encoder changes occurred versus063843a. The job retained root
+/tmp/flow-observer-transport-Jkj1H7 on its ephemeral host; this is not a persistent uploaded archive.
+Independent authenticated GitHub and source review corroborated these results and their limits.
+
+Local final checks passed typecheck, lint, format, all322 focused regressions, documentation gates,
+and whitespace checks. Mac collection still skips275 native cases. The existing untouched lint
+information remains. No full-CI, release, model-run, fixture-denial, outer-relay, or repair-readiness
+claim follows. The full usable-checkpoint goal remains active; this continuation made verified
+progress, including a failed fixture hypothesis test followed by correction and actual GREEN.
+
+Next bounded slice: inherited ignored/blocked signal controls at the already calibrated fault
+launcher, followed by an exact separately identified false-normal mutant of the worker fail-stop
+path. Preserve real ordinary exit0. Then qualify remaining reporting and cancellation paths before
+namespace restrictions and complete policy-interference history. All broader design gates remain open.
+
+Final evidence review corrected one P3 precision finding: frame-triggered asynchronous observation
+does not prove atomic absence at the instant the frame arrived or completion before output EOF.
+Public evidence now states the actual acceptance ordering and explicitly retains that limitation.

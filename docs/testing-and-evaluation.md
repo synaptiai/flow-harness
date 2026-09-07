@@ -729,8 +729,11 @@ time, and session. It then holds a process descriptor, or *pidfd*, to avoid PID-
 The host changes one byte in an existing read-only-mounted release file only after identity checks.
 The application must first prove that it can read but cannot open that release file for writing.
 
-The result test checks settlement when the complete private frame arrives, before waiting for
-ordinary output closure. It must not wait for the child to disappear after receiving the result.
+The complete private frame triggers a host settlement check without first waiting for ordinary
+output closure. The check requires termination and original-identity absence before accepting the result.
+It must not retry until the child disappears. The host exchange does not establish atomic ordering
+between frame arrival and process termination.
+
 Host-observed elapsed time must exclude the child's safety timeout as an explanation for termination.
 The host tool never signals a discovered process. Cleanup can signal only separately spawned,
 owned test processes.
@@ -755,11 +758,19 @@ Linux maps a session leader outside the current PID namespace to zero through
 [its namespace-relative PID lookup](https://github.com/torvalds/linux/blob/v6.17/kernel/pid.c#L459-L475).
 The corrected fixture must distinguish this valid value from a syscall error. Its ordinary
 namespace control requires an explicit zero-session readiness notice, followed by independent host
-identity and settlement checks. The corrected native execution remains pending.
+identity and settlement checks.
 
-Host visibility for sandbox descendants and the read-only release handoff remain unqualified.
-These results do not qualify all writer-access mechanisms, immutable runtime custody, outer proxy
-cleanup, namespace policy, cancellation races, or repairs.
+The corrected [run 34157941663](https://github.com/synaptiai/flow-harness/actions/runs/34157941663)
+at `e39737a` passed all 275 cases without skips. Both descendant cases established host visibility
+and the read-only release handoff. The private-frame event triggered the host check without first
+waiting for ordinary-output closure. That check required termination and original-identity absence
+before result acceptance. The writer controls and live/zombie/reaped calibration also passed.
+Two clean builds matched all 23 artifacts, including the unchanged observer binary.
+
+The suite took 18.14 seconds on that host. This single run is not a performance benchmark.
+These results qualify only the tested paths in this profile. Other writer-access mechanisms,
+arbitrary descendants, immutable runtime custody, outer proxy cleanup, namespace policy,
+cancellation races, and repairs remain unqualified.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure

@@ -353,6 +353,8 @@ Completed implementation items describe source changes, not runtime qualificatio
   - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
   - [x] Implement the native frame encoder and cross-check its bytes with the decoder on macOS.
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.
+    - [x] Test stdout forgery and actual proc-FD/pidfd writer access with accessible controls.
+    - [ ] Qualify remaining writer paths and immutable executable/runtime custody.
 - [ ] Extend trusted setup and the existing supervisor to launch the exact admitted application.
   Preserve failed execution, normal exit, signal, and policy-interference distinctions.
   - [x] Record an observer-only patch separately from unchanged vendored source and baseline output.
@@ -360,6 +362,7 @@ Completed implementation items describe source changes, not runtime qualificatio
   - [x] Replace flattened wait statuses and unchecked setup with the observer-specific contract below.
   - [x] Pass the first real Linux x64 application-result control: exact output, private exit 7, and channel EOF.
   - [x] Test all 256 normal exits, SIGTERM, invalid inputs, and execution/reporting/self-kill denial on Linux x64.
+  - [x] Test held ordinary and new-session descendants with independent live/zombie/reaped calibration.
   - [ ] Qualify the remaining worker setup, reporting, signal-state, and termination failure paths.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.
@@ -396,6 +399,19 @@ Two clean builds again produced 23 identical artifacts, including the unchanged 
 These controls qualify the tested result paths, not every failure mode or a protected execution boundary.
 Writer authenticity, exact immutable runtime custody, descendant cleanup, cancellation, policy
 interference, and repair eligibility remain open.
+
+The next [native run](https://github.com/synaptiai/flow-harness/actions/runs/34157941663) at
+`e39737a` passed all 275 cases without skips. It adds real writer-access controls and held ordinary
+and new-session descendants. Host observations separately distinguish live, zombie, and reaped
+processes. The private-frame event triggers the host settlement check without first waiting for
+ordinary-output closure. The check must establish termination and original-identity absence before
+result acceptance, not atomic ordering between frame arrival and termination.
+The [testing guide](testing-and-evaluation.md#develop-the-native-result-transport-independently)
+retains the preceding fixture failure, diagnostic proof, correction, and exact evidence scope.
+
+This closes those bounded controls only. Qualify inherited ignored and blocked signal state next,
+with negative controls that expose false normal-exit classification. Remaining reporting failures,
+cancellation, immutable custody, outer relays, and policy interference remain mandatory.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
 responding to a forbidden operation or stopping the observed namespace. Missing observation, listener

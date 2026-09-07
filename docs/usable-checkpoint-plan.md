@@ -340,7 +340,7 @@ The expanded native result gate passed 266 tests without skips in
 It covered all normal exit codes, real SIGTERM, invalid inputs, and three kernel-enforced failure chains.
 The two clean builds again matched all 23 artifacts. The observer binary remained unchanged.
 
-Next, qualify private-writer exclusion and descendant settlement with independent host observations.
+Private-writer and descendant controls now have bounded native evidence.
 
 The implemented test expansion registers 275 cases. It adds accessible-writer counterexamples,
 forged-output rejection, and held descendants with independent live, zombie, and reaped controls.
@@ -351,11 +351,17 @@ Linux
 The ordinary descendant failed its readiness precondition, so the next case could not start.
 The [diagnostic run](https://github.com/synaptiai/flow-harness/actions/runs/34157520762) confirmed
 that the fixture incorrectly rejected a namespace-relative session ID of zero. The test-only
-correction preserves independent host identity checks. Descendant settlement remains unqualified
-until the corrected native run passes.
+correction preserves independent host identity checks.
 
-Do not infer those properties from the passing result tests. Policy interference, fixture denial,
-ordinary-command descriptor hardening, and the remaining lifecycle gates still block repair readiness.
+The corrected [run 34157941663](https://github.com/synaptiai/flow-harness/actions/runs/34157941663)
+at `e39737a` passed all 275 cases without skips. Both fixed descendant types passed independent
+host identity and settlement checks. The writer-access and live/zombie/reaped controls passed.
+All 23 clean-build artifacts matched, including the unchanged observer binary.
+
+Next, qualify inherited signal state and the false-normal negative control, then remaining reporting
+and cancellation failures. Policy interference, fixture denial, immutable runtime custody,
+ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
+These passing controls do not close UC-01, UC-05, or VR-02.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.
 The original five isolation probes and all nine internal command tests passed. Only two of three
