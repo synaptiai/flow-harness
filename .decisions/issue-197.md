@@ -577,3 +577,27 @@ real adversarial containment tests for the actual future adapter and each suppor
 Independent delta review found no P1, P2, or P3 findings. Documentation style, local links,
 changed-prose checks, and whitespace checks passed. This is reviewed design evidence, not runtime
 qualification or approval to enable the proposed recovery scope.
+
+### Approach B verification-repair approval and VR-02 entry
+
+On September 7, 2026, the user explicitly approved `docs/bounded-verification-repair-design.md`
+Approach B, including limited feedback disclosure and mandatory verifier-isolation qualification
+before enabling repairs. This is new authority after the fifth pilot, not a reinterpretation of
+that pilot's consumed approval. VR-01 is complete. VR-02 is in progress. VR-03 through VR-05 remain
+pending. VR-06 still requires a separately authorized experiment. Retained candidates, model
+transmission, merge, and release remain outside this implementation approval.
+
+The preceding exact-head run `34117070990` completed successfully at
+`fcc97fc6251439868671acf4b0761dcd86fe268e`. Quality passed 6,694 coverage tests in 468 files,
+two browser tests, and 82 runtime tests. Coverage was 85.04% statements, 79.94% branches,
+92.53% functions, and 85.63% lines. Four Lean tests were skipped in the quality job and passed
+without skips in the separate proof job. Proof execution took 100.18 seconds, with 103.10 seconds
+total test duration. Dependency audit passed. The verified appliance image was
+`sha256:73559bb7a6d90c71601661ff13e82e59e1efa7ba05db22b5fb3e619f7e146a73`.
+These results do not establish the proposed observer's isolation or complete UC-01.
+
+Implementation starts by tracing the production native sandbox and command executor. Independent
+agents inspect the process/filesystem boundary and challenge the trusted-observer design. The
+first real probes use disposable fixture processes and synthetic canaries, not credentials or
+retained target candidates. Classifier authority remains outside candidate stdout and stderr.
+Repair selection stays disabled until the complete adapter and claimed host profile are qualified.

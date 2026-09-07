@@ -1,12 +1,15 @@
-# Bounded verification repair proposal
+# Bounded verification repair design
 
-This proposal is for maintainers deciding how UC-05 handles candidate verification failures before
-independent review. It is a design proposal, not an approved runtime contract or supported feature.
-It does not authorize another pilot, candidate modification, publication, or merge.
+This design governs implementation of UC-05 recovery from candidate verification failures before
+independent review. The user approved Approach B on September 7, 2026, including limited feedback
+disclosure and mandatory verifier-isolation qualification before enabling repairs. Approval permits
+implementation and qualification work, not another live pilot, publication, or merge.
+
+The feature is not yet implemented or supported. Existing and retained pilot candidates remain unchanged.
 
 The [usable-checkpoint plan](usable-checkpoint-plan.md) owns delivery status. The existing
 [bounded review repair design](bounded-review-repair-design.md) remains the approved contract.
-This proposal extends its coverage without replacing its safety rules or qualification obligations.
+This design extends its coverage without replacing its safety rules or qualification obligations.
 
 ## Start from the observed failure
 
@@ -33,7 +36,7 @@ These approaches differ in authority and user experience, not just implementatio
 | B: Typed, bounded verification repair | Flow selects an explicitly eligible repair from trusted verification evidence before review. | Larger change; needs verifier isolation, durable failure receipts, and shared repair selection. | Addresses this failure class without resetting resources; adds bounded verification and repair work. | Forged or misclassified evidence could incorrectly authorize work or disclose private test information. |
 | C: Operator-directed correction after a terminal stop | A maintainer diagnoses the failure and authorizes a distinct correction workflow. | Preserves current runtime behavior; requires recurring operator work. | Supports ambiguous failures, but human response dominates completion time. | Does not deliver the intended reduction in operator burden. |
 
-Recommend B as the capability direction, subject to the gates below. A is useful preparation, not
+Approach B is selected, subject to the gates below. A is useful preparation, not
 a substitute for B. C remains the disposition for unsupported or disputed failures. Do not implement
 B by treating every nonzero exit as a behavioral defect.
 
@@ -256,11 +259,12 @@ recognize every future failure. The isolation boundary and live repair effective
 
 ## Decide and implement in gated phases
 
-The Approach A maintainer owns these proposed phases. Their status is pending, not implemented:
+The Approach A maintainer owns these phases. Approval completes VR-01 only. VR-02 is in progress.
+VR-03 through VR-05 remain pending, and VR-06 requires separate experiment authorization.
 
 | Phase | Deliverable | Required evidence |
 | --- | --- | --- |
-| VR-01 | Approve recovery scope and limited disclosure. | Select B or an alternative; preserve exact merge approval and all existing qualification gates. |
+| VR-01 | Approved: recovery scope and limited disclosure. | The user selected B on September 7, 2026; exact merge approval and all qualification gates remain required. |
 | VR-02 | Qualify verifier isolation and typed outcomes. | Real processes cannot forge receipts through stdout, files, inherited descriptors, or process access. Unsupported fixtures stop without model work. |
 | VR-03 | Freeze exact schemas, compatibility, and resource accounting. | Strict parsing, byte bounds, legacy digest tests, shared cycles, model and verification reservations, once-only settlement, and timing arithmetic. |
 | VR-04 | Integrate selection, repair context, replay, and complete re-verification. | Real Git ancestry and scope checks; crash-boundary replay; no stale review, approval, duplicate dispatch, or duplicate charge. |
@@ -279,6 +283,20 @@ before permitting any further command or model work.
 Retain every failed case and verify that no unauthorized model call, write, publication, or merge
 occurred. Unit doubles cannot replace real containment tests or the installed live qualification.
 Fresh-task comparisons remain required before claiming reduced operator burden or broader readiness.
+
+### Execute the isolation gate first
+
+Track VR-02 as the following dependency-ordered checks:
+
+- [ ] Trace the existing candidate execution boundary and select a concrete protected observer without adding arbitrary privileged scripts.
+- [ ] Define explicit fixture, process, output, cleanup, and behavioral-classification preconditions for that observer.
+- [ ] Test real candidate attempts against private files, process access, inherited descriptors, and forged result output.
+- [ ] Test new-session descendants between verification stages and confirm complete cleanup before classification.
+- [ ] Run positive and negative controls on each claimed host profile, retaining unsupported outcomes and failures.
+- [ ] Complete independent adversarial review before enabling any repair-selection path.
+
+Keep repair selection disabled throughout this gate. A passing sandbox probe does not qualify a
+behavioral observer, and a passing observer does not complete installed lifecycle qualification.
 
 The first slice does not provide cross-host transfer, post-publication repair, new provider selection,
 human adjudication, semantic convergence guarantees, or automatic merging. It does not remove the

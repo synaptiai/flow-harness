@@ -247,14 +247,17 @@ from recovery after verification fails before review. Design the latter explicit
 Track these fifth-attempt follow-ups without changing the retained candidate:
 
 - [ ] Require real closed stdin and subprocess timeouts in the candidate's public noninteractive tests.
-- [ ] Decide the verification-failure recovery contract, preserving private holdouts and all resource and authority boundaries.
+- [x] Approve the verification-failure recovery contract, preserving private evidence and all resource and authority boundaries.
 - [ ] Qualify any approved correction through a separately authorized experiment, retaining all five previous outcomes.
 
-The [verification repair proposal](bounded-verification-repair-design.md) develops three alternatives
-and recommends an explicitly bounded extension. Its VR-01 through VR-06 gates remain pending.
+The [verification repair design](bounded-verification-repair-design.md) develops three alternatives.
+The user approved Approach B on September 7, 2026, including limited feedback disclosure and
+mandatory verifier-isolation qualification before enabling repairs. VR-01 is complete, and VR-02 is
+in progress. Implementation and independent review remain pending. VR-06 requires separate live-experiment authorization.
+
 In particular, generic error codes do not prove a behavioral defect, and the current shared
-command sandbox does not establish a trusted verifier-result channel. Approve the new scope and
-limited disclosure before implementation. Prove verifier isolation before enabling repair selection.
+command sandbox does not establish a trusted verifier-result channel. Prove verifier isolation before
+enabling repair selection. This approval does not authorize another pilot, retained-candidate modification, publication, or merge.
 
 The new archive is 2,870,110 bytes with SHA-256
 `0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.
@@ -273,8 +276,8 @@ The later [quality job](https://github.com/synaptiai/flow-harness/actions/runs/3
 failed one of 6,687 tests during Git admission. Investigation reproduced a separate empty-input
 pipe race and added a focused correction with seven passing regression tests. Independent review
 also passed the existing admission suites. The retained CI diagnostics cannot establish that race
-as the historical failure's cause. This correction still requires fresh hosted qualification and
-does not enable verification-failure repair or authorize another pilot.
+as the historical failure's cause. The later hosted verification recorded below covers this correction.
+It does not enable verification-failure repair or authorize another pilot.
 
 A full local coverage attempt at `1a841be` ended with exit code 137 before a final report.
 Five tests had reported failures. A bounded reproduction confirmed four test-runner timeouts
@@ -282,8 +285,14 @@ and one pass.
 
 A scoped test-only correction uses the repository's existing 30-second test timeout
 policy. The five selected behaviors then passed. Both complete affected files subsequently passed
-all 47 tests, alongside formatting, lint, type checking, and compilation. Full coverage remains
-open. No production budgets, assertions, or coverage thresholds changed.
+all 47 tests, alongside formatting, lint, type checking, and compilation. No production budgets,
+assertions, or coverage thresholds changed.
+
+Hosted [run 34117070990](https://github.com/synaptiai/flow-harness/actions/runs/34117070990) passed all
+three jobs at source `fcc97fc6251439868671acf4b0761dcd86fe268e` on September 7, 2026. Quality passed
+6,694 coverage tests, two browser tests, and 82 runtime tests. The separate proof job passed all
+four Lean runtime tests without skips. Dependency audit passed. These results qualify that exact
+CI head, not the installed pilot, a future package, or the new verification-repair design.
 
 Earlier local verification passed 6,683 coverage tests, 44 runtime
 tests, and two browser tests, plus build, type checking, formatting, lint, and documentation gates.
