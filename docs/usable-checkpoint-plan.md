@@ -252,8 +252,9 @@ Track these fifth-attempt follow-ups without changing the retained candidate:
 
 The [verification repair design](bounded-verification-repair-design.md) develops three alternatives.
 The user approved Approach B on September 7, 2026, including limited feedback disclosure and
-mandatory verifier-isolation qualification before enabling repairs. VR-01 is complete, and VR-02 is
-in progress. Implementation and independent review remain pending. VR-06 requires separate live-experiment authorization.
+mandatory verifier-isolation qualification before enabling repairs. VR-01 is complete. VR-02 found
+native macOS child-process survival after command settlement and awaits a host-support decision.
+Implementation and independent review remain pending. VR-06 requires separate live-experiment authorization.
 
 In particular, generic error codes do not prove a behavioral defect, and the current shared
 command sandbox does not establish a trusted verifier-result channel. Prove verifier isolation before

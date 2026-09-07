@@ -601,3 +601,45 @@ agents inspect the process/filesystem boundary and challenge the trusted-observe
 first real probes use disposable fixture processes and synthetic canaries, not credentials or
 retained target candidates. Classifier authority remains outside candidate stdout and stderr.
 Repair selection stays disabled until the complete adapter and claimed host profile are qualified.
+
+### VR-02 native process-survival reproduction
+
+Two bounded production-native runs on Darwin ARM64, Node 26.7.0, and SRT 0.0.70 failed the ordinary
+and new-session descendant prerequisite. Session 92890: two failures, one pass, 2.652 seconds of
+test execution and 11.43 seconds total. Session 58231: the same two failures and one pass,
+2.952 seconds of test execution and 9.70 seconds total. Each child established a live heartbeat
+and exact host-process identity before its parent was released. Command execution then reported
+success while heartbeat growth and the owned process remained observable. The private verifier
+file, symlink, and open-descriptor case passed. These are prerequisite probes, not adapter qualification.
+
+An independent reviewer confirmed the Darwin failures' validity and found a separate P2 Linux
+test expectation: candidate-visible writes to a private masking filesystem need not imply a host
+write. That expectation was corrected while retaining mandatory host canary and absence checks.
+The correction does not change the Darwin expectation. All four observed helper processes were
+absent in a separate permitted `ps` observation after cleanup. No unrelated process was signaled.
+
+Source corroborates the normal-exit mechanism: `CommandNodeExecutor` calls
+`waitForProcessTreeExit` without normal-tree confirmation, whose default is false. Enabling that
+flag alone would not contain detached new-session descendants. Official Node process documentation
+and the Linux PID-namespace manual independently distinguish those lifetimes. The existing
+container-command factory uses Linux `/proc` owner records, so Mac Docker availability alone is
+not a qualified alternative.
+
+The mandatory gate requires a host-support decision before enabling repairs. Recommend native
+Linux qualification first, with explicit unavailability for native Mac repair. Alternatives are
+a Linux-hosted controller appliance accessible from Mac, or stronger native Mac containment first.
+No profile is selected and Linux has not passed the new probes. The user received these three
+options through the structured question tool. No additional pilot or model transmission occurred.
+
+The candidate observer design also retains a separate unresolved control: a permission-only
+assertion cannot classify the absent base CLI's generic nonzero exit as a behavioral negative
+control. Define and qualify that observation explicitly; neither approval nor stderr parsing
+supplies its missing proof.
+
+After the Linux-only test expectation correction, session 89007 reproduced both Darwin failures
+again and passed the private-file/descriptor case. Test execution took 2.774 seconds, with
+13.05 seconds total. The final probe file passes focused formatting and lint. The full typecheck,
+lint, and format chain completed successfully; lint retains its pre-existing informational
+constructor suggestion. Documentation style, links, prose, and whitespace checks passed.
+Runtime qualification remains failed, so the new probe file is retained uncommitted rather than
+represented as a passing feature. No production code was changed.

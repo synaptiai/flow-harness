@@ -259,7 +259,8 @@ recognize every future failure. The isolation boundary and live repair effective
 
 ## Decide and implement in gated phases
 
-The Approach A maintainer owns these phases. Approval completes VR-01 only. VR-02 is in progress.
+The Approach A maintainer owns these phases. Approval completes VR-01 only. VR-02 has a measured
+native macOS containment gap and awaits a host-support decision.
 VR-03 through VR-05 remain pending, and VR-06 requires separate experiment authorization.
 
 | Phase | Deliverable | Required evidence |
@@ -297,6 +298,32 @@ Track VR-02 as the following dependency-ordered checks:
 
 Keep repair selection disabled throughout this gate. A passing sandbox probe does not qualify a
 behavioral observer, and a passing observer does not complete installed lifecycle qualification.
+
+### Resolve the measured native macOS gap
+
+On September 7, 2026, three real-process runs tested native SRT `0.0.70` on macOS ARM64 with Node.js
+`26.7.0`. Every run observed ordinary and new-session descendants writing after successful command
+settlement. Readiness and process-identity controls passed before release. The private-file and
+open-descriptor probe passed. Owned helpers exited after cleanup. This establishes a failed cleanup
+prerequisite for this observer, not a demonstrated escape into private controller state.
+
+The [command executor](../src/infrastructure/process/command-node-executor.ts) does not request
+process-group confirmation on ordinary command completion. Adding that confirmation alone cannot
+contain a child in another session. [Node.js documents detached process groups](https://nodejs.org/api/child_process.html#optionsdetached).
+Linux [process namespaces](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html) provide a
+different lifecycle boundary, but the new observer probes have not qualified Linux yet.
+
+Three host strategies remain available for decision:
+
+| Strategy | Benefit | Cost or limitation |
+| --- | --- | --- |
+| Native Linux first, recommended | Reuse the existing namespace boundary and target the hosted pilot environment. | Keep the new repair capability unavailable on native macOS until separately qualified. |
+| Linux appliance accessible from macOS | Use a Linux-hosted controller for Mac users as well. | Adds deployment and operational requirements that are not part of the current approved host contract. |
+| Stronger native macOS boundary first | Preserve a native Mac experience for the new capability. | Requires further containment research and implementation before qualification; feasibility is not established. |
+
+No strategy has been selected. The existing container-command implementation also uses Linux
+process-owner records. Docker availability on a Mac does not establish a supported Mac controller.
+Keep this deployment decision separate from pilot, disclosure, and exact-candidate merge approvals.
 
 The first slice does not provide cross-host transfer, post-publication repair, new provider selection,
 human adjudication, semantic convergence guarantees, or automatic merging. It does not remove the
