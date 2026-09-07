@@ -641,6 +641,38 @@ descendant-containment failure, set `FLOW_VERIFIER_ISOLATION_DIAGNOSTIC=1` for t
 The fixture suite remains Linux-only. The Mac diagnostic is expected to fail its descendant checks.
 Neither its results nor a default Mac skip count as Linux qualification.
 
+### Develop the native result transport independently
+
+The source-only `Native observer qualification` workflow provides a focused Linux x64 feedback
+path while a full CI run is active. It runs only
+`test/runtime/native-observer-transport.runtime.test.ts` on Ubuntu 24.04. Its unique check name,
+`Native observer development (not full CI)`, cannot replace the full CI or release gates.
+It uses the existing sandbox prerequisites, read-only repository permissions, no model credentials,
+and a separate non-cancelling concurrency group.
+
+The first trigger is a push of reviewed source to the exact branch
+`codex/issue-197-native-qualification`. Check that the branch is absent or has the expected prior
+head before updating it. Do not force-push or create a PR for this feedback branch. Keep its commits
+in the normal issue branch for full review. Remove the feedback branch after its work is integrated.
+
+This separate branch does not update the active issue PR. The ordinary CI workflow listens to
+`main` pushes and PR events, so the focused push does not cancel its in-progress proof build.
+GitHub supports this initial
+[branch-push trigger](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)
+before the new workflow reaches the default branch. Manual dispatch is also configured for later
+use after the workflow is available there.
+
+The black-box test first requires the unchanged SRT launch to execute a fixed application with
+exact output and exit code 7. It then requires the observer launch to deliver a private normal-exit
+record for 7, exact channel EOF, and outer transport status 0. The upstream helper does not implement
+that protocol, so the initial native regression is expected to fail after the positive control.
+A platform skip or failure before that control is not the required failing-test evidence.
+
+The test uses an owned empty home directory to exclude user shell startup files. Its test roots
+are retained as diagnostic evidence, including after a future result-channel pass. Process closure
+and SRT reset do not yet establish complete relay and host-bridge disposal. A passing result-channel
+test does not qualify that separate cleanup boundary, fixture denial, or repair enablement.
+
 If a probe cannot confirm cleanup, inspect its retained fixture
 path before removing evidence. Do not signal a process using a PID reported by candidate code.
 

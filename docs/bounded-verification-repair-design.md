@@ -602,6 +602,12 @@ Apply these changes to the actual process paths:
    A proxy child can exit first, so a wait for any child cannot substitute for this identity check.
    Emit one final frame only after the inner settlement requirement is satisfied.
 
+The observer's outer exit code is 0 only after successful result delivery and required inner
+settlement. The private frame carries the application result, including a nonzero exit code.
+Retain the actual outer status in ordinary command evidence. Do not rewrite it to the application's
+exit code or infer application success from outer status 0. This observer-only protocol does not
+change the ordinary SRT helper's exit behavior.
+
 Linux's
 [PID namespace teardown](https://github.com/torvalds/linux/blob/v6.17/kernel/pid_namespace.c#L179-L264)
 waits for namespace processes before allowing its init process to be reaped. This supports the

@@ -1639,3 +1639,60 @@ or container was created and no emulated build was attempted. The sole existing 
 do not substitute ARM64 checks for native x64 evidence or implement the native patch before its
 real failing qualification control is runnable. No production code, credentials, model invocation,
 retained pilot candidate, merge, or release changed in this audit.
+
+### Isolated hosted feedback and the first native transport regression
+
+The prior continuation was a verified wait on live run 34147986514, not a failed or abandoned
+build. A new safe route avoids coupling every native test iteration to that expensive proof build:
+a dedicated workflow triggered only by the exact codex/issue-197-native-qualification branch.
+It has a distinct workflow, job, and non-cancelling concurrency group. Existing CI, PR checks,
+release gates, credentials, and model authority are unchanged. The branch was confirmed absent
+with a successful remote-head lookup before preparation. No PR is created for the feedback branch.
+Keep its commits on the normal issue branch and remove it after integration.
+
+Compared waiting for full CI on every iteration, changing full-CI conditions, and this isolated
+feedback branch. Selected the separate branch: it supplies native Linux execution without cancelling
+the active PR run or making skipped full-CI jobs look like required-check success. GitHub push
+workflows can run before their file is on the default branch; manual dispatch is retained for
+later use. The workflow checks exact triggering SHA, Linux x64, and a non-root test identity. It
+uses existing pinned actions and ephemeral sandbox prerequisites, contents:read, no persisted
+checkout credential, and npm ci --ignore-scripts. It executes only the named regression. Sources:
+https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push
+and https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency.
+
+The new black-box regression uses the real production SRT manager, seccompApplyPath option,
+manager-owned proxy socket getters, existing launch rewrite, and result decoder. A fixed static
+C application inventories its entry descriptors, prints one exact marker, and exits 7. The
+unchanged launch must pass this positive control. The rewritten default upstream launch must
+then demonstrate its exact unsupported-exec behavior before the missing-frame assertion is
+eligible as behavioral RED evidence. A setup failure or a Mac skip cannot satisfy that gate.
+
+The default helper is pinned to package 0.0.70 and actual installed x64 SHA-256
+5c92b0f369a626f5d7cb27d7912cfa882dc26a3690f17cc0016480c5b8b01df7.
+An explicit canonical future helper path can be supplied by FLOW_TEST_NATIVE_OBSERVER_HELPER;
+invalid inputs do not fall back. The future passing record must contain normal_exit7 and exact
+EOF, with original output and transport exit0. The observer protocol now explicitly distinguishes
+successful result delivery (outer0) from the application result (private7). Ordinary command
+evidence retains the actual outer value; ordinary SRT execution is unchanged.
+
+Both actual test launch environments receive an owned empty HOME. It is a documented test safety
+binding, not a change to production environment policy. Test roots are deliberately retained and
+reported on all outcomes. No recursive deletion is scheduled. Opened artifacts are compared even
+after failed assertions, and host descriptors close with allSettled. Preparation, compilation,
+process capture, and release attempts are bounded. Capture distinguishes real EOF from forced
+reader destruction after a failed join. These controls do not authenticate the writer, prove
+artifact immutability, or establish complete relay/bridge disposal.
+
+Independent review found and corrected an expired-preparation edge: a preparation returning
+between its cancellation and join deadlines must release without launching. Final independent
+reviews found no remaining P1–P3 in the workflow or black-box test. The scaffold first rejected
+the missing workflow, then passed; changing its trigger to main produced a behavioral failure,
+and the mutation was restored. Local C syntax-only checking passed but is not a Linux build or
+execution result. No native production patch is implemented by this preparation.
+
+Final local full type checking, production build, capability-reference check, and 40 scaffold and
+architecture tests passed. Documentation style, links, prose, and formatting passed. A new lint
+warning mistook the literal GitHub concurrency expression for JavaScript interpolation; its exact
+string assertion now has a targeted explanatory suppression. The pre-existing informational
+constructor diagnostic remains unrelated. Native execution is still pending, so this record does
+not claim the regression has reached its intended RED assertion.
