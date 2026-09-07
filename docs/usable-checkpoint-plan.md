@@ -118,7 +118,7 @@ order does not authorize an unreviewed design or broaden model authority.
 | --- | --- | --- | --- | --- |
 | UC-01 | Release blocker; Approach A maintainer | Complete the installed hosted pilot described in this plan. | Exact archive identity and complete issue-to-merge evidence, with all attempts retained. | Every pilot settlement. |
 | UC-02 | Release blocker; release maintainer | After UC-01, complete Slice 13.4 and obtain exact publication authorization. | Qualified package on both named hosts, no P1–P3 findings, successful required CI, and verified public installation. | UC-01 passes or package identity changes. |
-| UC-03 | Next delivery-design priority; Approach A maintainer | Design repository onboarding and reusable configuration after qualification. | A new user configures a separate clean repository from the guide without maintainer-authored hidden files; measure steps, time, and interventions. Missing checks or credentials fail safely. | UC-01 settles; reassess before selecting another infrastructure feature. |
+| UC-03 | Next delivery-design priority; Approach A maintainer | Design repository onboarding and reusable configuration after qualification, including the approved Mac-local Linux execution path. | A new user configures a separate clean repository from the guide without hidden maintainer setup; measure steps, time, and interventions. Missing checks or credentials fail safely. Qualify the Mac launcher, persistent Linux state, credential protection, resource limits, and recovery. | UC-01 settles; reassess before selecting another infrastructure feature. |
 | UC-04 | Next delivery-design priority; Approach A maintainer | Design guided issue-to-plan preparation with UC-03. | Proposed criteria, commands, paths, budgets, and approval rules are explicit and reviewable. A human freezes the contract before execution; generated plans pass production admission. | UC-03 design review and every plan-authoring failure. |
 | UC-05 | Bounded blocked-review repair locally verified, qualification open; Approach A maintainer | Qualify the approved same-host repair contract using a separately authorized experiment and frozen NV-01 comparison. Keep broader NV-03 recovery research separate. Resolve report validity separately from candidate acceptance. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation, disputed findings, and false-acceptance tests. | Before another pilot; third-attempt settlement promoted this item. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
@@ -134,6 +134,13 @@ The third attempt reconfirmed UC-08a with byte-identical archive content and bot
 It exercised UC-08 discovery with one refused command among four requests. It did not reach the
 stopping threshold. Its progress through implementation and deterministic verification does not
 close the installed merge gate.
+
+The user approved hosted native Linux qualification first, followed by a tested Mac-local Linux
+launcher and environment. This is a required UC-03 usability deliverable, not an optional research
+deferral. The entire controller must run inside the qualified Linux environment. Test setup,
+repository isolation, credential handling, bounded memory and disk use, restart recovery, evidence
+inspection, and exact-candidate approval. Keep the execution host's run state local to that host.
+A launcher must not import hosted forensic archives as live state or claim cross-host recovery.
 
 UC-03 also owns a unified public path for diagnosing issue-owned nested failures. Today,
 `flow issue inspect` exposes parent lifecycle state, not nested command-refusal counts. The
@@ -253,7 +260,9 @@ Track these fifth-attempt follow-ups without changing the retained candidate:
 The [verification repair design](bounded-verification-repair-design.md) develops three alternatives.
 The user approved Approach B on September 7, 2026, including limited feedback disclosure and
 mandatory verifier-isolation qualification before enabling repairs. VR-01 is complete. VR-02 found
-native macOS child-process survival after command settlement and awaits a host-support decision.
+native macOS child-process survival after command settlement. The user selected GitHub-hosted native
+Linux qualification first, followed by the UC-03 Mac-local Linux usability deliverable.
+
 Implementation and independent review remain pending. VR-06 requires separate live-experiment authorization.
 
 In particular, generic error codes do not prove a behavioral defect, and the current shared

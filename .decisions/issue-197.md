@@ -643,3 +643,22 @@ lint, and format chain completed successfully; lint retains its pre-existing inf
 constructor suggestion. Documentation style, links, prose, and whitespace checks passed.
 Runtime qualification remains failed, so the new probe file is retained uncommitted rather than
 represented as a passing feature. No production code was changed.
+
+### Approved Linux-first qualification and Mac-local usability path
+
+The user accepted the recommendation to qualify the Linux runtime on GitHub Actions first,
+then deliver a tested Mac-local Linux launcher and environment. The operator can remain on macOS.
+This closes the host-strategy decision, not VR-02 qualification. Mac-native repair stays unavailable
+pending its own proven boundary. Linux ARM64 and x64 evidence must remain distinct.
+
+UC-03 now explicitly owns the Mac-local deliverable: complete controller execution in Linux,
+persistent same-host state, repository isolation, credential protection, bounded resource use,
+recovery, evidence inspection, and exact-head approval. No virtualization product, deployment
+permissions, resource allocation, or credential provisioning is implicitly selected.
+
+The first execution step is a dedicated model-free Ubuntu 24.04 x64 CI job using the production
+native sandbox and pinned Node dependency graph. It must fail platform or dependency admission,
+not silently skip. The native Mac prerequisite failures remain reproducible through an explicit
+diagnostic mode. A default Mac skip for this Linux-targeted suite is not passing qualification.
+Existing required CI gates remain intact. No new pilot, model transmission, merge, or release is
+authorized by this host-strategy decision.

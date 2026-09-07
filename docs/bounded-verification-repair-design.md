@@ -259,8 +259,8 @@ recognize every future failure. The isolation boundary and live repair effective
 
 ## Decide and implement in gated phases
 
-The Approach A maintainer owns these phases. Approval completes VR-01 only. VR-02 has a measured
-native macOS containment gap and awaits a host-support decision.
+The Approach A maintainer owns these phases. Approval completes VR-01 only. VR-02 targets hosted
+native Linux first, following the user's September 7, 2026, host-strategy approval.
 VR-03 through VR-05 remain pending, and VR-06 requires separate experiment authorization.
 
 | Phase | Deliverable | Required evidence |
@@ -313,17 +313,27 @@ contain a child in another session. [Node.js documents detached process groups](
 Linux [process namespaces](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html) provide a
 different lifecycle boundary, but the new observer probes have not qualified Linux yet.
 
-Three host strategies remain available for decision:
+The host-strategy decision considered these alternatives:
 
 | Strategy | Benefit | Cost or limitation |
 | --- | --- | --- |
-| Native Linux first, recommended | Reuse the existing namespace boundary and target the hosted pilot environment. | Keep the new repair capability unavailable on native macOS until separately qualified. |
+| Native Linux first, selected | Reuse the existing namespace boundary and target the hosted pilot environment. | Keep the new repair capability unavailable on native macOS until separately qualified. |
 | Linux appliance accessible from macOS | Use a Linux-hosted controller for Mac users as well. | Adds deployment and operational requirements that are not part of the current approved host contract. |
 | Stronger native macOS boundary first | Preserve a native Mac experience for the new capability. | Requires further containment research and implementation before qualification; feasibility is not established. |
 
-No strategy has been selected. The existing container-command implementation also uses Linux
-process-owner records. Docker availability on a Mac does not establish a supported Mac controller.
-Keep this deployment decision separate from pilot, disclosure, and exact-candidate merge approvals.
+The user selected native Linux first, using GitHub Actions for initial qualification. The Mac
+remains the operator's computer. No Linux probe result is yet qualified by that decision.
+The existing container-command implementation also uses Linux process-owner records. Docker
+availability on a Mac does not establish a supported Mac controller.
+
+A tested Mac-local Linux launcher and execution environment is a required follow-up usability
+deliverable under UC-03. It must run the complete controller inside Linux, preserve run state,
+protect credentials, bound resource use, and support evidence inspection and exact merge approval.
+Select and qualify its deployment mechanism before documenting it as supported. Hosted Linux x64
+qualification does not establish local Linux ARM64 qualification or native macOS repair support.
+
+This strategy authorizes model-free hosted qualification and implementation work, not another live
+pilot, retained-candidate modification, publication, or merge.
 
 The first slice does not provide cross-host transfer, post-publication repair, new provider selection,
 human adjudication, semantic convergence guarantees, or automatic merging. It does not remove the
