@@ -522,6 +522,18 @@ Linux x64 job or a matching native Linux x64 host.
 
 ## Verify native Linux observer prerequisites
 
+For portable frame-format checks in a source checkout, install a C11 compiler available as
+`/usr/bin/cc` on macOS or Linux. The runtime test compiles fixed native controls and checks their
+output against the TypeScript decoder:
+
+```sh
+npx vitest run --config vitest.runtime.config.ts test/runtime/native-observer-encoder.runtime.test.ts
+```
+
+All three cases passed on macOS with 670 valid and 83 rejected record vectors, plus memory controls.
+The test does not run through ordinary `npm test`. It verifies encoding, not protected execution
+or Linux isolation. A missing or unusable compiler fails this runtime check.
+
 The `verifier-isolation` CI job runs
 `test/runtime/verification-observer-isolation.runtime.test.ts`,
 `test/runtime/verification-observer-fixture.runtime.test.ts`,
@@ -539,8 +551,9 @@ the probe interrupts a second queued notification without receiving it. The test
 to report `EINTR`, exit normally, and leave an empty listener. A separate receive-control case
 receives both requests. Neither case permits the namespace syscall to execute.
 
-These controls test notification-history loss, not the safety of a replacement observer. A skipped
-Mac run does not verify compilation or kernel behavior. The first hosted execution remains pending.
+These controls test notification-history loss, not the safety of a replacement observer. Both cases
+passed in [hosted run 34147986514](https://github.com/synaptiai/flow-harness/actions/runs/34147986514).
+A skipped Mac run does not verify compilation or kernel behavior.
 
 The clone3 compatibility suite measures four fixed Node.js 26.7.0 controls: timers, asynchronous
 file access, a worker thread, and a subprocess. Each control runs without tracing, under full
@@ -554,6 +567,12 @@ include tracing overhead and are not benchmarks. Passing fixed controls does not
 restriction preserves arbitrary candidate behavior or that a replacement observer is secure.
 Linux hosts require `strace`. A missing tool fails rather than skips these measurements.
 
+All four controls passed on Linux 6.17.0-1022-azure with glibc 2.39 and strace 6.8 in run 34147986514.
+Normal traces recorded 6, 10, 7, and 12 completed `clone3` calls respectively, with no `ENOSYS` returns.
+Forced traces recorded 1, 1, 1, and 2 calls respectively, all injected `ENOSYS` returns.
+The forced controls therefore exercised a changed path on this host. They do not establish
+equivalence for arbitrary candidate code or authorize excluding fallback calls from interference checks.
+
 The supplementary-group experiment compares two synthetic fixture sets under unchanged SRT.
 One uses the host's primary group and must reproduce the nested capability bypass. The other
 uses an already-held supplementary group and must preserve `EACCES` for denied inputs.
@@ -564,8 +583,12 @@ It reports only bounded synthetic results after the integrity checks pass.
 The experiment requires a non-root Linux x64 user with an existing supplementary group distinct
 from the primary group, zero, and the overflow display value. Missing prerequisites fail the test.
 It does not create groups or change host group membership. Mount identity remapping remains
-outside this experiment's qualification scope. The first hosted execution is pending, and a pass
-would not select a production fixture policy or qualify the observer.
+outside this experiment's qualification scope. The experiment passed in hosted run 34147986514.
+
+The primary group was 1001 and the selected supplementary group was 4. The nested group map
+contained only `0 1001 1`. The primary-group reads succeeded, while supplementary-group reads
+returned `EACCES` through both paths. Host fixture identities remained unchanged.
+This result does not select a production fixture policy or qualify the observer.
 
 The separate `proof-runtime` job also compares two clean builds of the unchanged upstream native
 helper after its proof acceptance tests. In a source checkout,

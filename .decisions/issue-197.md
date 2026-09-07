@@ -1371,3 +1371,88 @@ Linux-only suites reported seven Mac skips, not native qualification. No C compi
 execution occurred locally. All 35 scaffold tests and the documentation gates passed after the
 CI file-list test first rejected the missing experiment. The focused hosted job now contains
 24 cases across six suites. Native outcomes and group availability remain pending.
+
+### Next native transport slice: retained distinctions and report-failure counterexample
+
+Published checkpoint 68de0d7069946146d3a1dbf4dfc6fa80f842dd08 to existing draft PR 201.
+The exact-head hosted run is 34147986514. Preserve its active proof preparation; no further push,
+cancellation, or retry is required to inspect the pending native results.
+
+An independent read-only transport review mapped the minimum extension onto the existing outer
+stub, inner PID 1, and worker. Use an outer-stub-owned final writer, an inner-supervisor report
+channel, and a worker close-on-exec error channel. The application must inherit none of them.
+The outer stub reports only after inner reaping/namespace teardown; the host additionally needs
+full frame EOF, ordinary stream completion, cancellation exclusion, and successful sandbox release.
+
+The review found a concrete hole in a proposed normal-exit inference: an error writer returning
+EBADF or EPERM, followed by ordinary _exit(1), can produce empty EOF and normal worker status
+without successful execution. EPIPE and parent death do not cover all write failures. Therefore
+failed/partial error reporting needs a qualified non-normal fail-stop, with no ordinary-exit
+fallback if the fail-stop itself fails. Signals remain launch-unproven/unsupported. No normal
+exit code can be reserved as an internal sentinel because all 256 codes are valid application
+results. Descriptor, loader/library, explicit environment, immutable byte custody, and exact
+argument contracts remain required. No native transport implementation or qualification is claimed.
+
+### First hosted results for the new qualification controls
+
+Run 34147986514 focused job 101824043131 completed with 23 passes, one unchanged original
+fixture failure, and zero skips across six files. New notification-history controls passed 2/2,
+clone3 measurements passed 4/4, and the paired-group experiment passed 1/1. Requested head
+68de0d7069946146d3a1dbf4dfc6fa80f842dd08 and tested merge
+82345259484e8f1914df34e5bda5bd91272dfb68 both have tree
+6ce23fe629e027641125a47a7f34a513437a778a, independently checked through the Git commit API.
+
+Host metadata: Node 26.7.0, Linux 6.17.0-1022-azure, glibc 2.39, strace 6.8. The selected host
+group pair was primary 1001 and supplementary 4. Nested UID/GID maps included only 0→1001.
+Primary vectors before/after were [0,0,2,0]; supplementary vectors were [13,13,2,0]. Mounted
+aliases retained the same results. chmod/chgrp returned EROFS (30), bind succeeded, remount
+returned EPERM (1), and host fixture identities were unchanged. Idmapped mounts and the
+observer remain explicitly unqualified. The result supports investigating the lower-interference
+existing-group boundary, not silently replacing the selected namespace policy.
+
+Asked the user to choose between refining A with existing-group fixture ownership (recommended,
+subject to remaining qualification), retaining namespace restrictions with complete interference
+tracking, or adding separately provisioned ownership. Shared protected-result transport and ABI
+work can proceed independently of that choice. Audit passed; full quality, proof, and the new
+native baseline comparison remain pending. No live model work or repair enablement occurred.
+
+Cross-checked the clone3 baseline rather than assuming injection changed behavior. Normal traced
+counts [calls, completed, ENOSYS, injected] were timers [6,6,0,0], filesystem [10,10,0,0], worker
+[7,7,0,0], subprocess [12,12,0,0]. Forced counts were respectively [1,1,1,1], [1,1,1,1],
+[1,1,1,1], [2,2,2,2]. Thus normal host execution supported the calls, and injection exercised
+a different fallback path. This qualifies only these four fixed controls on the observed host.
+It does not prove arbitrary-candidate semantic equivalence or allow ignoring policy interference.
+
+### Native frame encoder implemented and checked on macOS
+
+Added observer-result.h as a separate internal ABI component, not part of the unchanged upstream
+baseline. It validates all six closed frame variants, exact 64/32-byte buffer lengths, and flags
+before modifying output. It encodes fields explicitly in little-endian order and captures correlation
+bytes in a local frame before copying output, supporting overlap without native structure layout.
+The function rejects null pointers; other pointer validity remains the caller's storage contract.
+
+Three runtime-only tests compile and execute fixed C controls against 670 valid and 83 invalid
+vectors, plus buffer-canary and overlapping-storage controls. Expected bytes are independently
+constructed in TypeScript and decoded through the existing production parser. Deliberately removing
+the flags guard and reversing byte order each failed behavioral assertions. Both mutations were
+restored before the final passing run. Independent source/test review found no remaining P1–P3.
+
+Initial local compiler admission failed for a missing header, an inherited LIBRARY_PATH linker
+warning, and restricted Apple cache setup including one compiler timeout. These are not behavioral
+RED evidence. An explicit compiler environment removes ambient linker inputs, and the same installed
+Apple compiler passed the actual linked controls with ordinary host permission. Final restored tests,
+full type checking, formatting, and diff checks passed. Main additionally passed 263 tests across
+four focused parser/scaffold/build suites and six documentation/library-inventory cases across two
+additional suites, for 269 total focused passes. The pinned upstream source identity remains unchanged. Native compilation
+here proves portable ABI behavior on macOS, not Linux security or protected transport.
+
+Five failed compiler scopes remain retained rather than risking deletion during uncertain work:
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/flow-native-encoder-qbzja2,
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/flow-native-encoder-JMFF5s,
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/flow-native-encoder-s3O87w,
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/flow-native-encoder-hWLrnL,
+/private/var/folders/d2/g9pllprx19g0scltk66wsf6m0000gn/T/flow-native-encoder-9laxpZ.
+A manual linked-control diagnostic remains at /private/tmp/flow-encoder-link-diagnostic.AKHQdl.
+These contain synthetic compiler/control artifacts, not pilot data. No broad process cleanup or
+deletion is authorized by this record. Normal completed mutation-test scopes were cleaned by
+their own lifetime owner. No subsequent push was made while the hosted proof build remained active.

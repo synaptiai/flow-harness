@@ -2,6 +2,8 @@
 
 This directory is for contributors preparing the Linux x64 observer. It contains unchanged
 upstream source and a build recipe, not a qualified observer. Flow does not load its output.
+`observer-result.h` separately implements the internal result-frame encoder. It is not linked into
+the unchanged upstream baseline or connected to production execution.
 The [verification repair design](../../docs/bounded-verification-repair-design.md) owns the
 observer contract and the remaining implementation and qualification gates.
 
@@ -84,7 +86,19 @@ materials are not a release-license approval. See the repository's
 
 ## Check the build tooling
 
-The focused tests use real files and subprocesses without Docker. Synthetic artifact trees test
+To check the portable result encoder, you need a C11 compiler at `/usr/bin/cc` on macOS or Linux:
+
+```sh
+npx vitest run --config vitest.runtime.config.ts test/runtime/native-observer-encoder.runtime.test.ts
+```
+
+The three runtime cases compile and execute C controls. They compare encoded bytes against the
+TypeScript decoder, including all normal exit codes, signal values, failure boundaries, and flags.
+Invalid fields or buffer lengths must leave the output unchanged. Memory controls check boundary
+bytes and overlapping correlation storage. Ordinary `npm test` does not require this compiler.
+These checks establish frame compatibility only, not channel custody, execution identity, or Linux isolation.
+
+The focused build-tooling tests use real files and subprocesses without Docker. Synthetic artifact trees test
 comparison and rejection behavior only; they are not executable artifacts or native evidence.
 
 ```sh

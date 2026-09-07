@@ -272,8 +272,14 @@ sandbox exit code alone cannot distinguish a deliberate exit from a signal.
 
 The focused Linux job now contains 24 tests across six suites. Two notification-history
 counterexample cases, four Node compatibility measurements, and one paired supplementary-group
-experiment await their first hosted execution.
-Mac skips do not qualify these tests.
+experiment passed in [run 34147986514](https://github.com/synaptiai/flow-harness/actions/runs/34147986514).
+The focused job passed 23 cases and failed the unchanged original fixture case, with no skips.
+The source `68de0d7` and tested merge `8234525` have identical file trees.
+
+The group experiment
+supports further evaluation of an existing-group fixture boundary, not policy adoption or observer
+qualification. Mount-identity attack coverage remains open. The broader quality, proof, and native
+build comparison results are still pending. Mac skips do not qualify Linux behavior.
 VR-06 requires separate live-experiment authorization.
 
 The expanded job at `e826687` passed 16 tests and failed the nested-namespace fixture read check.

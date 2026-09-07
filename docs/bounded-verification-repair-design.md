@@ -350,6 +350,7 @@ Track the native boundary separately from its host integration and behavioral qu
   toolchain, source, patch, generated-filter, and binary identities. Compare independent clean builds.
 - [ ] Define and test bounded private result framing, exact invocation binding, and descriptor ownership.
   - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
+  - [x] Implement the native frame encoder and cross-check its bytes with the decoder on macOS.
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.
 - [ ] Extend trusted setup and the existing supervisor to launch the exact admitted application.
   Preserve failed execution, normal exit, signal, and policy-interference distinctions.
@@ -418,6 +419,12 @@ The internal decoder recognizes one 64-byte frame. It does not authenticate the 
 launch, executable identity, stream completion, or descendant settlement. Keep it disconnected from
 repair selection until the native transport and composed observer pass qualification.
 
+The separate C encoder now passes portable macOS checks for 670 valid records, 83 rejected
+records, and memory boundaries. These checks include all normal exit codes and signal fields
+under both flag values. Deliberate byte-order and invalid-flag mutations failed the tests and were
+removed. This evidence covers byte compatibility only. The unchanged upstream baseline does not
+include this encoder, and protected transport and Linux artifact integration remain unqualified.
+
 The frame uses these exact byte offsets. Encode integers explicitly in little-endian order, not
 by copying a native C structure:
 
@@ -448,6 +455,40 @@ and settlement (5). These phases do not carry candidate-provided messages or pat
 Reject wrong versions, incomplete frames, duplicate frames, trailing bytes, mismatched correlations,
 unknown flags, and contradictory fields. Retain fallback use in every terminal variant. A matching
 correlation is a binding check, not a secret or proof of writer authenticity.
+
+The native transport must keep three channels separate:
+
+| Process | Retained authority |
+| --- | --- |
+| Host | Read the final result and ordinary command output. |
+| Outer trusted stub | Own the sole final-result writer and read the inner supervisor's report. |
+| Inner PID 1 | Report the raw worker wait result and read the worker's setup or execution error. |
+| Trusted worker before execution | Write a bounded failure record and hold the admitted executable descriptor. |
+| Executed application | Hold only admitted ordinary descriptors, with no result-channel endpoint. |
+
+Close unnecessary endpoints immediately after each fork. Mark the worker error channel and
+executable descriptor close-on-exec. The outer stub must wait for the inner supervisor and its
+namespace teardown before emitting a successful transport result. The host still requires complete
+streams, exact frame EOF, cancellation checks, and successful sandbox release.
+
+An empty close-on-exec error channel does not independently prove successful execution. For an
+initial normal-exit-only classifier, audit every trusted pre-execution path. A failed or partial
+error-record write must stop the worker without a normal exit. Writing an error and then using a
+nonzero exit code is insufficient if the write itself failed.
+
+Every exit code from 0 through 255 is also a valid application result. Qualify a non-normal fail-stop.
+Verify that a failed fail-stop cannot fall through to an ordinary exit.
+
+Keep signaled workers launch-unproven and unsupported unless a separate trusted execution witness
+is qualified. Test descriptor errors such as `EBADF` independently from a broken reader and
+`SIGPIPE`. Kernel execution tracing is a stronger alternative, but it adds separate signal,
+thread, and reaping obligations. Neither inference nor tracing is qualified by this design alone.
+
+Bind ordered arguments, an explicit environment, working directory, stdin, and the admitted runtime
+to the invocation. Launch the admitted ELF descriptor without PATH lookup or script fallback.
+An open descriptor pins an inode, not immutable contents. Artifact custody must also protect the
+executable bytes, dynamic loader, and libraries. Do not replace existing command evidence with the
+application result or treat ordinary command status as the private transport's success witness.
 
 Evaluate existing Flow code before introducing another supervisor. The
 [Prime process driver](../prime-container/internal/supervisor/driver_process_unix.go)
