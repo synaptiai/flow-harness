@@ -2251,3 +2251,40 @@ documentation/workflow contract tests, documentation gates, and whitespace check
 collection skips 296 cases; it does not qualify the correction or report controls. The unchanged
 informational lint note remains. All five modified files are scoped to this test-helper correction,
 test-only syscall controls, and their evidence. Next action is the actual Linux GREEN gate.
+
+### Late cancellation and terminal reporting GREEN
+
+Run 34160441703, job 101860982994, passed at exact source
+2f9552b1c958ddb734d7ae17a4bb978bbe6c79a8. Job duration was 2m23s, from 20:42:46Z to 20:45:09Z
+on 2026-09-07. All 296 cases passed with zero skips: prior 289, four report-fault cases, two real
+non-cancelled barrier twins, and the final aggregate for both previously failing cancellation windows.
+The suite took 28.63s with 28.16s test bodies. This is a single-run measurement, not a benchmark.
+
+Two clean builds matched all 29 artifacts. Genuine binary SHA-256 remains
+67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d and its object remains
+2698198d70f40e46280a6aae806c4b5397cef932e280a31c51125b32c88fca6b. Mutant binary remains
+6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b. The run retained
+/tmp/flow-observer-transport-yvKKVz on its ephemeral host; this is not an uploaded archive.
+Independent authenticated GitHub verification corroborated source, job, counts, timings, identities,
+retained path, and qualification limits.
+
+The same genuine runtime now rejects each previously accepted cancelled observation with the exact
+owned cancellation reason, after callbacks and genuine release settle. Non-cancelled controls pass.
+The four fixed-descriptor faults produce the specified missing-report/outer-failure or complete
+supervisor-failure outcomes while preserving application output, and the identical assertions reject
+actual passthrough successes. These results close LC-1, LC-2, RP-1, RP-2, and RP-3 for the tested
+profile. They do not prove every microtask interleaving, native graceful forwarding, closed-peer or
+partial reporting, arbitrary applications, immutable custody, policy history, fixture denial, or
+outer-relay disposal. No production observer code, model pilot, credentials, merge, release, or
+repair enablement changed. UC-01, UC-05, VR-02, and the full usable-checkpoint objective stay open.
+
+The auxiliary read-only next-step audit for absent/readerless result channels returned partial
+notes, then failed at the agent service's safety check. Its analysis is incomplete, not independent
+design approval or qualification. No implementation or retry of that subtask occurred. Existing
+closed-reader, partial-report, native cancellation, custody, and policy gates remain recorded as open.
+This goal turn made verified progress by reproducing two real acceptance gaps and verifying their fix.
+
+Final four-file evidence review found no P1–P3 issues. All 41 documentation/workflow contract tests,
+all three documentation gates, and whitespace checks passed after the GREEN update. Save this
+evidence locally without rerunning an identical native build. Implementation remains on the dedicated
+qualification branch; the ordinary draft PR, main, and published release remain unchanged.

@@ -367,10 +367,13 @@ defines the direct signal-state checks, real counterexamples, and genuine-versus
 
 The [late-cancellation regression](https://github.com/synaptiai/flow-harness/actions/runs/34159934936)
 confirmed that the test harness accepted complete results after cancellation at two held completion
-boundaries. Both non-cancelled controls passed. The acceptance checks are corrected in source, and
-four terminal-reporting controls are added. The 296-case expansion still requires native qualification.
+boundaries. Both non-cancelled controls passed. The corrected checks and four terminal-reporting
+controls passed native qualification in
+[run 34160441703](https://github.com/synaptiai/flow-harness/actions/runs/34160441703) at `2f9552b`.
+All 296 cases passed without skips, and all 29 clean-build artifacts matched. The genuine observer
+binary remained unchanged.
 
-Next, qualify this correction and the reporting controls, then address remaining reporting and native
+Next, address remaining reporting and native
 cancellation failures. The testing guide distinguishes these gates from test-helper cancellation checks.
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

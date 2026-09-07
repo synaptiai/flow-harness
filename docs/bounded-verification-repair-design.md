@@ -415,8 +415,13 @@ application dispositions and masks, then requires the genuine failure assertion 
 complete false-normal result. All 289 cases passed without skips in
 [run 34159189998](https://github.com/synaptiai/flow-harness/actions/runs/34159189998) at `0255e9d`.
 Two clean builds matched all 29 artifacts without changing the genuine observer binary.
-Remaining reporting failures,
-cancellation, immutable custody, outer relays, and policy interference remain mandatory.
+
+The later [296-case run](https://github.com/synaptiai/flow-harness/actions/runs/34160441703) at
+`2f9552b` passed all cases without skips. It adds four fixed-descriptor reporting controls and corrects
+two reproduced late-cancellation acceptance gaps in the test helper. Both clean builds matched all
+29 artifacts without changing the genuine observer binary. This is not native graceful-cancellation
+qualification. Remaining reporting failures, native cancellation, immutable custody, outer relays,
+and policy interference remain mandatory.
 
 Use mandatory, fail-closed policy observation in the trusted supervisor. Record interference before
 responding to a forbidden operation or stopping the observed namespace. Missing observation, listener

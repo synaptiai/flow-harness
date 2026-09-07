@@ -774,6 +774,8 @@ These results qualify only the tested paths in this profile. Other writer-access
 arbitrary descendants, immutable runtime custody, outer proxy cleanup, namespace policy,
 cancellation races, and repairs remain unqualified.
 
+#### Check inherited signals and false-normal results
+
 The next expansion adds inherited-signal controls and a false-normal negative control.
 All 289 cases passed without skips in
 [run 34159189998](https://github.com/synaptiai/flow-harness/actions/runs/34159189998) at `0255e9d`.
@@ -825,6 +827,8 @@ or use it for issue execution. These controls do not enable repairs or qualify r
 The successful run retained `/tmp/flow-observer-transport-bwPzTT` on its ephemeral host.
 That path is not a persistent uploaded evidence archive.
 
+#### Check reporting failures and late cancellation
+
 The next regression adds two non-cancelled controls and one final test of both cancellation windows.
 The regression must reject cancellation after proven child closure
 or successful sandbox release while the corresponding completion callback remains held. Each callback
@@ -838,7 +842,9 @@ This confirms the two test-helper acceptance gaps, not a defect in a production-
 The correction checks cancellation after evidence callbacks, after genuine sandbox release, and before
 returning the observation. Earlier operation and release errors retain precedence. These checks cannot
 revoke a result after its promise has fulfilled. Consumers must still check cancellation before classification.
-Native execution of the correction is pending.
+The correction passed both reproduced schedules and their non-cancelled controls in the
+[296-case run](https://github.com/synaptiai/flow-harness/actions/runs/34160441703) at `2f9552b`.
+This does not prove every cancellation interleaving or native graceful signal handling.
 
 The new reporting controls keep the fixed application's normal execution intact while denying one
 private-channel operation. Each must also reject a real passthrough observation using the same outcome
@@ -855,9 +861,15 @@ The following mapping applies only to the current fixed descriptor topology:
 
 Every case requires exact application and launcher output and no outer terminating signal. These
 filters apply to all inheriting processes, not authenticated roles. Requalify them if descriptor
-allocation or the fixed static application changes. The expanded suite registers 296 cases.
-Their native qualification is pending. Closed readers, partial records, graceful signal forwarding,
-and outer relay settlement remain separate gates.
+allocation or the fixed static application changes.
+
+[Run 34160441703](https://github.com/synaptiai/flow-harness/actions/runs/34160441703) at `2f9552b`
+passed all 296 cases without skips, including the four reporting controls and their real passthrough
+counterexamples. The suite took 28.63 seconds. Two clean builds matched all 29 artifacts, with unchanged
+genuine and mutant binaries. This is one qualification run, not a performance benchmark.
+
+The run retained `/tmp/flow-observer-transport-yvKKVz` on its ephemeral host, not as an uploaded archive.
+Closed readers, partial records, graceful signal forwarding, and outer relay settlement remain separate gates.
 
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure
