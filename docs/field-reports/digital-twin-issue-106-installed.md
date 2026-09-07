@@ -11,6 +11,10 @@ the exact merge approval gate. Independent operator checks found a P2 defect mis
 review and frozen tests. The operator withheld approval and cancelled the wait. None of the four
 attempts completed issue-to-merge qualification. No live repair cycle has been exercised.
 
+The fifth, separately approved [permission-verification attempt](#permission-verification-attempt)
+failed the strengthened holdout before review or publication. None of the five attempts completed
+issue-to-merge qualification. Keep every attempt in the denominator. No live repair cycle ran.
+
 In the first attempt, the installed command passed plan validation and host admission on Ubuntu
 24.04 x64. It started
 one implementation workflow and preserved its terminal failure. The implementation agent returned
@@ -515,3 +519,106 @@ Track the following preparation work before another live attempt:
 4. Freeze any revised verification and workflow bytes as new preparation. Preserve this run's
    evidence and original holdout identity. A new live attempt requires separate authorization.
    This attempt's one-run allowance is consumed.
+
+## Permission-verification attempt
+
+The user approved preparation PR 112 at `8cfab4a` and one new pilot on September 7, 2026.
+The preparation merged as `8dcdd755b22c1cbc04bc56e49c7bef5e9f72aa48` at 08:51:00 UTC.
+Independent checks confirmed that its tree exactly matches the reviewed head. It strengthens
+permission-error verification without implementing the target status command or changing candidate PR 111.
+The [execution plan](../usable-checkpoint-plan.md#implement-bounded-review-repair) records the
+revised holdout and review-workflow identities and preparation verification.
+
+[Actions run 34102894745](https://github.com/danielbentes/digital-twin/actions/runs/34102894745)
+was dispatched once at 08:52:18 UTC from the preparation merge. It retains Flow source
+`544aebc13bfc50879de52396062a869ca975c367`, OpenRouter `z-ai/glm-5.3-flash`, and all option B limits.
+The existing provider, GitHub, and evidence credentials were securely provisioned as three
+temporary Actions secrets. No new provider key was created.
+
+Package preparation and both hosted installation checks passed. The retained 2,870,110-byte
+archive has SHA-256 `0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.
+It is byte-identical to the prior option B package and passes the local production package verifier.
+This rechecks the package identity, not the changed target verification or an accepted candidate.
+
+The run failed at `candidate_holdout_failed` on September 7, 2026, at 09:02:49.644 UTC.
+The parent run is `issue-fc48827b-68d6-4d6c-97a5-93c18e466345`. Its terminal event is sequence 12.
+
+The unpublished candidate head is `36cbf5535855d8503f232b36b8e6b715172e84dd`, with tree
+`9ed2d2b301562c314837ea6d7b7f613cf5a3b286`. Implementation, its public-test node, and its assessment
+succeeded. Controller-owned acceptance did not pass. Independent review, repair, publication,
+candidate CI, and merge did not run.
+
+### Confirm the failure boundary
+
+The base negative control failed because the preparation has no status command. The candidate
+passed earlier holdout cases, including direct file-read denial. It failed the inaccessible-parent
+case after an independent subprocess established `PermissionError`.
+
+The authenticated command receipt reports `unreadable settings returned success`. It has exit code
+1, complete output, and no timeout or interruption. Its stdin digest matches the revised frozen
+holdout. Retained candidate source confirms that `cmd_status` checks `os.path.exists` before
+calling the error-preserving loader. That check suppresses directory-traversal denial and selects
+the successful missing-settings result.
+
+The candidate's public permission test covers an unreadable file, not an inaccessible parent.
+It checks the effective user ID instead of independently proving denied access. Passing that
+test does not establish the missing directory-traversal behavior.
+
+An independent local reproduction passed all 22 generated public tests, then failed the exact
+frozen holdout on byte-identical candidate source. A separate direct fixture confirmed `PermissionError`
+from reading the file, while status returned exit code 0 and the missing-settings JSON.
+The public test helper also uses `input=None`, which inherits stdin instead of closing it.
+It has no subprocess timeout. Its stated closed-stdin coverage is therefore not established.
+
+This is evidence that the strengthened acceptance gate rejects the defect. It is not evidence
+that model review improved: that workflow never started. It is not a resource-exhaustion failure.
+The controller selects repair from a valid blocked review, not from `candidate_holdout_failed`.
+Unused repair capacity does not authorize a different recovery path.
+
+### Reconcile usage and custody
+
+The implementation child settled with complete availability for all five resource dimensions:
+
+| Measure | Settled value |
+| --- | --- |
+| Node starts | 3 |
+| Model tokens | 174,850 |
+| Reported model cost | 5,650 micro-USD, or $0.005650 |
+| Active execution | 181,326 milliseconds |
+| Artifact bytes | 5,149 |
+
+Session records independently total `31,524 + 4,830 + 138,496 = 174,850` tokens, including cache reads.
+This uses 34.97% of the initial implementation token ceiling. There were 11 model turns and
+13 tool calls. Five calls requested command execution, with one authority refusal and four
+executions. No review or repair child exists.
+
+Per-message cost records sum to 5,655 micro-USD, five more than the settled child cost.
+The adapter rounds individual message costs and aggregate session costs separately. That rounding
+granularity explains a possible difference of this size. Retain both observations rather than
+claiming identical totals or treating either as a provider invoice.
+
+Both encrypted snapshots authenticated. Their plaintext archives are byte-identical: 2,801,031 bytes
+with SHA-256 `197841d3acedc1d86d5b13d0306cc70b9326121659a9de78658b0ef10c7479b2`.
+The operator removed all three dedicated Actions secrets and verified that none remained.
+The existing local provider credential and evidence decryption key remain intact.
+
+GitHub confirms that issue 106 remains open. Only the earlier candidate PR 111 remains open,
+unchanged at `ae9fd001a8ac312c6d8042d9fa585f3ebaaf26fd`. This attempt created no candidate PR.
+Its one-run authorization is consumed. No retry, manual candidate repair, budget increase, or
+release followed this failure.
+
+### Select the next design boundary
+
+UC-01 and BR-06 remain unqualified. UC-05 needs a decision about failures before independent review:
+
+1. Improve public implementation guidance and regression requirements within the current lifecycle.
+   This has the smallest scope but still stops on any controller-owned verification failure.
+2. Design bounded verification-failure repair as a separate extension. This is the recommended
+   capability direction, not an approved implementation or retry. Define eligible failures,
+   sanitized feedback, evidence binding, resource accounting, and fresh verification before review.
+   Keep private holdout content private and prevent infrastructure or integrity failures from becoming repair requests.
+3. Keep these failures terminal and require an operator-authored correction. This preserves the
+   current boundary but does not reduce the operator burden that motivated UC-05.
+
+Do not convert this terminal run into a blocked review or disclose its private holdout to
+manufacture a repair result. Any future experiment must retain this failure in its denominator.

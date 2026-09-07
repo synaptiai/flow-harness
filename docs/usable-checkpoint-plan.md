@@ -199,7 +199,8 @@ Next preparation work, without changing or rerunning the retained candidate:
 - [ ] Require a fresh candidate's public tests to establish denied access independently of candidate success.
 - [x] Extend review guidance for absence versus file-read and directory-traversal failures.
 - [x] Verify and review newly frozen preparation before seeking authority for another live attempt.
-- [ ] Get preparation-merge and new-run authorization, then execute one newly frozen attempt.
+- [x] Get preparation-merge and new-run authorization and dispatch one newly frozen attempt.
+- [x] Verify the new candidate, retain its outcome and usage, and settle qualification from evidence.
 
 The new preparation leaves candidate PR 111 unchanged. Its controller-only holdout distinguishes
 file-read denial from parent-directory traversal denial. An independent subprocess must establish
@@ -225,7 +226,29 @@ The revised holdout SHA-256 is
 `ac257f59dcd74de640c4e34df8efa0a35fcb5eeb6da51b1a604f2412f5121469`, and the revised review
 workflow SHA-256 is `97ce2548b1f68f2428939b7db9b6713ee7f86617f823ef6456b2bd007e727dbe`.
 The plan, implementation and repair workflows, candidate paths, provider, and option B limits
-remain unchanged. PR 112 is open and unmerged. No new pilot or credential provisioning has occurred.
+remain unchanged. The user approved the preparation merge and one fresh run on September 7, 2026.
+PR 112 merged as `8dcdd755b22c1cbc04bc56e49c7bef5e9f72aa48`. Its tree exactly matches the reviewed
+head.
+
+The operator reused existing credentials for three temporary Actions secrets and dispatched
+[run 34102894745](https://github.com/danielbentes/digital-twin/actions/runs/34102894745)
+once at 08:52:18 UTC from that merge. It failed at `candidate_holdout_failed` before independent
+review or publication. The strengthened check caught inaccessible-parent false success in candidate
+`36cbf5535855d8503f232b36b8e6b715172e84dd`. No repair cycle ran. Both evidence snapshots authenticated,
+and the operator removed all three temporary Actions secrets. No additional attempt or budget
+increase is authorized.
+
+The [fifth-attempt report](field-reports/digital-twin-issue-106-installed.md#permission-verification-attempt)
+records the exact failure, settled usage, custody, and remaining design choices. None of five
+attempts completed issue-to-merge qualification. UC-01, UC-05, and BR-06 remain open.
+The public permission-test requirement remains unmet. UC-05 must distinguish blocked-review repair
+from recovery after verification fails before review. Design the latter explicitly before execution.
+
+Track these fifth-attempt follow-ups without changing the retained candidate:
+
+- [ ] Require real closed stdin and subprocess timeouts in the candidate's public noninteractive tests.
+- [ ] Decide the verification-failure recovery contract, preserving private holdouts and all resource and authority boundaries.
+- [ ] Qualify any approved correction through a separately authorized experiment, retaining all five previous outcomes.
 
 The new archive is 2,870,110 bytes with SHA-256
 `0d277acff5b3ca4d9cf1dfdd990a53f98441cfbced09109ccbe5ca776bc941d4`.

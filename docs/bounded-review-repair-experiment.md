@@ -167,7 +167,14 @@ implementing issue 106. The [approved attempt](https://github.com/danielbentes/d
 used that base. Exact-package checks passed, but issue-to-merge and repair qualification were
 not achieved.
 
-Complete these preparation gates before the approved dispatch:
+The separately approved [permission-verification attempt](field-reports/digital-twin-issue-106-installed.md#permission-verification-attempt)
+used preparation PR 112 and the same Flow package bytes. It failed the strengthened holdout
+before independent review. No repair ran, so BR-06 remains unqualified. The current policy does
+not select repair from a controller-owned verification failure. Such recovery needs a separate
+design decision, not a budget increase or reinterpretation of this experiment.
+
+The original option B dispatch used these preparation gates. Their original-holdout requirement
+describes that attempt, not the separately approved revision in PR 112:
 
 1. Add the exact approved policy and repair workflow to the target preparation. Preserve the
    original holdout bytes, criterion descriptions, permitted paths, and command identities.
