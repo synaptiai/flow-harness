@@ -43,6 +43,22 @@ const checkSchema = z
     connection: observation,
   })
   .strict();
+const rejectionSchema = z
+  .object({
+    event: z.literal("error"),
+    code: z.literal("bridge-discovery"),
+    errno: z.number().int().min(1).max(2_147_483_647),
+  })
+  .strict();
+
+/** Provisional discovery rejection. Successful close() must also confirm disposal. */
+export class BridgeDiscoveryRejection extends Error {
+  readonly code = "bridge-discovery";
+  constructor(readonly errno: number) {
+    super(`Bridge discovery rejected with errno ${errno}`);
+    this.name = "BridgeDiscoveryRejection";
+  }
+}
 export type BridgeReady = z.infer<typeof readySchema>;
 export type BridgeCheck = z.infer<typeof checkSchema>;
 
@@ -88,6 +104,8 @@ export function createBridgeProbe(options: Options): BridgeProbe {
     },
   );
   let failure: Error | undefined;
+  let secondaryFailure: Error | undefined;
+  let rejection: BridgeDiscoveryRejection | undefined;
   let pending:
     | {
         kind: "ready" | "check";
@@ -107,13 +125,18 @@ export function createBridgeProbe(options: Options): BridgeProbe {
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
+  const inputSettled = new Promise<void>((resolve) => {
+    child.stdin.once("finish", resolve);
+    child.stdin.once("close", resolve);
+  });
 
   const stopOwnedProbe = (): void => {
     if (exit === undefined && child.exitCode === null && child.signalCode === null)
       child.kill("SIGKILL");
   };
   const fail = (error: Error): void => {
-    failure ??= error;
+    if (failure === undefined) failure = error;
+    else if (failure !== error) secondaryFailure ??= error;
     if (pending !== undefined) {
       clearTimeout(pending.timer);
       pending.reject(failure);
@@ -126,7 +149,17 @@ export function createBridgeProbe(options: Options): BridgeProbe {
     exit = { code, signal };
     options.signal.removeEventListener("abort", abort);
     resolveClosed();
-    if (!closing || pending !== undefined || output.length !== 0 || code !== 0 || signal !== null)
+    const rejectedNormally =
+      rejection !== undefined &&
+      secondaryFailure === undefined &&
+      code === 1 &&
+      signal === null &&
+      pending === undefined &&
+      output.length === 0;
+    if (
+      !rejectedNormally &&
+      (!closing || pending !== undefined || output.length !== 0 || code !== 0 || signal !== null)
+    )
       fail(new Error(`Bridge probe closed unexpectedly: ${JSON.stringify(exit)}`));
   });
   child.on("error", () => fail(new Error("Bridge probe launch failed")));
@@ -141,6 +174,10 @@ export function createBridgeProbe(options: Options): BridgeProbe {
     outputBytes += chunk.length;
     if (outputBytes > 8192) {
       fail(new Error("Bridge probe output exceeded its bound"));
+      return;
+    }
+    if (rejection !== undefined) {
+      fail(new Error("Extra output after bridge discovery rejection"));
       return;
     }
     if (failure !== undefined) return;
@@ -161,6 +198,19 @@ export function createBridgeProbe(options: Options): BridgeProbe {
       const parsed: unknown = JSON.parse(text);
       if (!Buffer.from(text).equals(bytes) || JSON.stringify(parsed) !== text)
         throw new Error("Noncanonical bridge probe output");
+      const rejected = pending.kind === "ready" ? rejectionSchema.safeParse(parsed) : undefined;
+      if (rejected?.success) {
+        rejection = new BridgeDiscoveryRejection(rejected.data.errno);
+        failure = rejection;
+        const completion = pending;
+        pending = undefined;
+        output = Buffer.alloc(0);
+        clearTimeout(completion.timer);
+        completion.reject(rejection);
+        // The real oracle returns 1 after this record. Do not replace its
+        // natural exit with our own signal; close() must authenticate closure.
+        return;
+      }
       const record =
         pending.kind === "ready" ? readySchema.parse(parsed) : checkSchema.parse(parsed);
       if (record.event === "bridge-ready") {
@@ -239,11 +289,16 @@ export function createBridgeProbe(options: Options): BridgeProbe {
             child.stdin.once("error", () => resolve());
           });
           child.stdin.end("quit\n");
+        } else if (rejection !== undefined && secondaryFailure === undefined) {
+          // No quit command follows rejection. Destroyed is not settled: join
+          // the actual input finish/close even when native exit won the race.
+          inputCompletion = inputSettled;
+          if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
         } else stopOwnedProbe();
         try {
           await join(inputCompletion);
         } catch (error) {
-          const failures = [failure, error].filter(Boolean);
+          const failures = [failure, secondaryFailure, error].filter(Boolean);
           stopOwnedProbe();
           try {
             await join();
@@ -252,9 +307,24 @@ export function createBridgeProbe(options: Options): BridgeProbe {
           }
           throw new AggregateError(failures, "Bridge probe cleanup failed");
         }
+        options.signal.throwIfAborted();
+        if (
+          rejection !== undefined &&
+          failure === rejection &&
+          secondaryFailure === undefined &&
+          exit?.code === 1 &&
+          exit.signal === null &&
+          output.length === 0 &&
+          (child.stdin.writableFinished || child.stdin.closed)
+        )
+          return;
         if (failure !== undefined)
           throw new AggregateError(
-            [failure, new Error(`Bridge probe closure: ${JSON.stringify(exit)}`)],
+            [
+              failure,
+              secondaryFailure,
+              new Error(`Bridge probe closure: ${JSON.stringify(exit)}`),
+            ].filter(Boolean),
             "Bridge probe failed before normal closure",
           );
         if (!inputFinished || exit?.code !== 0 || exit.signal !== null || output.length !== 0)

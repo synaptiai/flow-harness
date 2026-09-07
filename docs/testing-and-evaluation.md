@@ -1023,8 +1023,14 @@ immutable executable custody, or repair readiness from this single passing case.
 
 The next test increment adds one-byte expected-argument mismatch and two-held-connection controls.
 Each requires a specific discovery rejection and normal checker closure, not a generic exception.
-The existing settlement case supplies a fresh one-connection positive control. The rejection
-classification in the wrapper is not yet implemented and must first produce its hosted failing control.
+The existing settlement case supplies a fresh one-connection positive control.
+
+The failing control, [run 34168850085](https://github.com/synaptiai/flow-harness/actions/runs/34168850085)
+at `069cb70`, passed the settlement case and failed both specific-rejection assertions because the
+wrapper returned generic errors. Both rejected checkers exited with status 1 and no signal.
+The wrapper now recognizes a strict discovery-error record while keeping readiness rejected.
+Rejection cleanup requires natural exit status 1, actual input closure or completion, no additional
+stream or protocol failures, and no cancellation. Its hosted pass remains pending.
 
 The separate `test/runtime/host-bridge-predicate.runtime.test.ts` gate compiles the existing real
 process fixtures and records two independent live, unreaped, and reaped lifecycles. It applies

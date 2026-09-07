@@ -2759,3 +2759,18 @@ both roles against those snapshots. It also demonstrates the known-bad terminati
 accepting real unreaped data. This is sensitivity calibration, not simultaneous bridge-tree evidence.
 The workflow test failed on the missing calibration step before that step was added. All remaining
 stage-2 and manager-integration gates remain open. No repairs, model, credentials, merge, or release.
+
+Authenticated RED run 34168850085 at exact 069cb700546a7559c5bdef2380e47f94dc21a872,
+job 101885145319, September 7 UTC 23:05:30-23:07:36. The active suite passed the original
+settlement case and failed the two specific error assertions with generic malformed-record errors.
+Both joined checker records report {code:1,signal:null}. This proves missing wrapper classification,
+not yet the intended native errno values. Build/three owner cases passed; predicate and native
+application-result steps skipped. The active suite took 5.86 seconds (5.62 seconds tests).
+
+Only after observing RED, add strict typed discovery rejection to the test wrapper. Receipt rejects
+ready and retains failure, but does not signal the checker. Natural exit1/null signal is permitted
+only after that exact record; extras, stream errors, or cancellation invalidate clean rejection.
+Close sends no quit bytes, joins actual input finish/close and child close, and rechecks cancellation.
+Destroyed alone is not input settlement. Preserve a bounded first secondary error as well as the
+primary rejection and actual closure. Test assertions now require the actual error class too.
+The ordinary readiness path, C oracle, guardian, and production runtime are unchanged.

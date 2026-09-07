@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   type BridgeCheck,
+  BridgeDiscoveryRejection,
   type BridgeProbe,
   bridgeSettled as settled,
   createBridgeProbe,
@@ -204,7 +205,9 @@ describe.skipIf(!enabled)("host bridge active-descendant settlement", () => {
         });
         if (mode !== "settlement") {
           // A generic error, timeout, or forced process closure must not pass.
-          await expect(probe.ready()).rejects.toMatchObject({
+          const rejected = probe.ready();
+          await expect(rejected).rejects.toBeInstanceOf(BridgeDiscoveryRejection);
+          await expect(rejected).rejects.toMatchObject({
             name: "BridgeDiscoveryRejection",
             code: "bridge-discovery",
             errno: mode === "argument-mismatch" ? 71 : 17,

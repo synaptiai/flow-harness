@@ -422,9 +422,11 @@ matched 32 artifacts.
 Exact-argument mismatch, multiple-connection rejection, and explicit
 two-process predicate calibration remain required. Stage 2 and the usable checkpoint remain open.
 
-The tests for these controls are now prepared. First verify the hosted failure for the wrapper's
-missing typed rejection handling. Then require specific native rejection, clean checker closure,
-the fresh positive case, and real predicate calibration before closing these three controls.
+The tests reached the expected wrapper-classification failure in
+[run 34168850085](https://github.com/synaptiai/flow-harness/actions/runs/34168850085) at `069cb70`.
+Typed rejection handling is now implemented but still needs its hosted pass. Require specific
+native rejection, clean checker closure, the fresh positive case, and real predicate calibration
+before closing these three controls.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
