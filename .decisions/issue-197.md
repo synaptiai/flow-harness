@@ -535,3 +535,45 @@ post-merge verification. All five issue 106 attempts remain unsuccessful at that
 The source-built issue 6 result and offline installed lifecycle tests cannot replace it.
 Therefore, the incremental correction can be committed after its checks, but PR 201 remains draft
 and is not ready for approval or merge. The unapproved verification-repair proposal remains separate.
+
+### Preapproval verifier reuse assessment
+
+Read-only source inspection at `ee371db` reassessed existing containment before proposing new
+infrastructure. This work does not approve VR-01, implement VR-02, enable repair, or authorize
+another candidate or model run. Hosted run `34111318839` remained live during the assessment.
+
+The main thread traced issue verification through `CommandNodeExecutor` and both command sandboxes.
+An independent agent traced the Lean proof driver, supervisor, domain decision, and runtime tests.
+The main thread then inspected the cited implementation paths. Primary Linux process-namespace
+and Docker security documentation cross-checked the operating-system assumptions.
+
+- `srt-command-sandbox.ts:1149–1184` validates a private Linux PID/user namespace, capability drop,
+  and `/proc` mount. The pinned sandbox dependency also emits these controls. This is a reusable
+  candidate boundary, not a qualified verifier-result producer.
+- The macOS dependency's `macos-sandbox-utils.js:285–289` restricts process information, signals,
+  and task-port access to the same sandbox. Flow's `process-group` label describes execution
+  containment and cannot alone establish or refute verifier isolation on macOS.
+- `command-node-executor.ts:248–292` captures the launched command's standard streams and process
+  outcome. Putting a new structured marker in those streams does not make its producer trusted.
+- `local-docker-container-command-engine.ts:790–841` uses private process isolation, no network,
+  restricted mounts, no new privileges, dropped capabilities, and resource controls. An adapter
+  still needs its own producer, file, descriptor, fixture, and classification proofs.
+- `proof-container/cmd/flow-proof-supervisor/main.go:94–177` runs compiler work as the reduced
+  proof user and emits the supervisor's result separately. Lines 304–343 lock and freeze compiler
+  artifacts. Lines 420–485 keep pinned checker execution privileged within the appliance.
+- The same supervisor's lines 187–208 classify missing modules, permission failures, and resource
+  errors within compiler rejection. That verdict is not behavioral-repair authority.
+- `local-lean-proof-driver.ts:204–277` records intent, inspects effective container identity, and
+  confirms cleanup. `lean-proof-verification.ts:398–406` requires cleanup before acceptance.
+  These patterns can inform new accounting without supplying its missing verification reservation.
+- `process_linux.go:20–40` removes one process group. It is not proof that a new-session descendant
+  cannot survive into another verification stage. Complete-container cleanup remains a separate
+  boundary. This assessment did not demonstrate an escape or qualify arbitrary adversarial code.
+
+The proposal now records these reuse limits. No runtime tests, new host configuration, dependency
+change, candidate execution, or model transmission was part of this assessment. VR-02 still needs
+real adversarial containment tests for the actual future adapter and each supported host profile.
+
+Independent delta review found no P1, P2, or P3 findings. Documentation style, local links,
+changed-prose checks, and whitespace checks passed. This is reviewed design evidence, not runtime
+qualification or approval to enable the proposed recovery scope.

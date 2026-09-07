@@ -122,6 +122,40 @@ Qualify each supported verifier adapter and host profile explicitly. If the curr
 enforce the required separation, stop this gate and return with the measured limitation and alternatives.
 Do not silently fall back to candidate stdout or label a partial adapter as general recovery.
 
+### Reuse controls without inheriting qualification
+
+Source inspection at `ee371db` found existing controls that can inform VR-02. None provides a
+qualified behavioral-verification adapter. This assessment does not select a new host profile or
+authorize implementation.
+
+| Existing component | Reusable control | Remaining proof |
+| --- | --- | --- |
+| [Native Linux sandbox](../src/infrastructure/sandbox/srt-command-sandbox.ts) | Admission requires private process and user namespaces, dropped capabilities, and a private `/proc` mount. | Protect the verifier outside candidate authority, including files, descriptors, and process access. |
+| [Native macOS sandbox](../src/infrastructure/sandbox/anthropic-sandbox-runtime-manager.ts) | The pinned sandbox dependency applies process-access restrictions as well as filesystem rules. | Qualify the actual verifier boundary on macOS. The executor's process-group label neither proves nor disproves that isolation. |
+| [Container command engine](../src/infrastructure/oci/local-docker-container-command-engine.ts) | Execution uses private process isolation, no network, restricted mounts, dropped capabilities, and resource controls. | Keep verifier authority outside candidate-accessible mounts and processes. Container configuration alone does not prove receipt integrity. |
+| [Lean proof supervisor](../proof-container/cmd/flow-proof-supervisor/main.go) | A protected supervisor captures compiler output, freezes artifacts, and emits its own result. Compilation runs with reduced privileges. | Qualify behavioral assertions separately. Pinned privileged checkers are not a safe execution path for arbitrary repository scripts. |
+
+Linux's [process namespace documentation](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)
+explains why candidate processes cannot address processes in an ancestor namespace through process IDs.
+It also distinguishes process visibility from the mounted `/proc` view. These are necessary boundary
+details, not proof that every descriptor, shared file, or result channel is protected.
+[Docker's security guidance](https://docs.docker.com/engine/security/) separately identifies daemon
+access, mount configuration, capabilities, and kernel controls as security concerns.
+
+Do not copy the Lean verdict taxonomy into repair selection. Its compiler rejection includes missing
+modules, permission errors, and resource failures. Those outcomes do not establish an eligible coding
+defect. Reuse durable execution identity, effective-policy checks, bounded capture, and confirmed cleanup,
+not domain-specific acceptance meanings.
+
+VR-02 must test surviving descendants between verification stages, not only cleanup after the complete
+container exits. Existing process-group cleanup and ordinary descendant tests do not prove containment
+against a child that creates a new session. This is a verification gap for reuse, not a demonstrated
+escape from the complete Lean appliance.
+
+Keep the existing candidate sandbox and add only the protected, qualified observation boundary required
+by this flow. Do not introduce a generic verifier-plugin system or silently require a new appliance.
+If qualification requires a different deployment profile, return with its measured tradeoffs before changing the supported host contract.
+
 ## Bound disclosure as well as execution
 
 Freeze a public feedback catalog before the first model invocation. Each allowed entry maps a
