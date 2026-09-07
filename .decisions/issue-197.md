@@ -2357,3 +2357,63 @@ An independent authenticated evidence check corroborated the exact commit, run, 
 timings, artifact equality, hashes, and ephemeral retention scope. Final four-document review found
 no P1–P3 issues. All 41 documentation/workflow tests, three documentation gates, and whitespace
 checks passed after the evidence update. Save this evidence as a local documentation-only commit.
+
+### Native interruption and host escalation qualification
+
+Previous turn classification: verified progress. The clean current tree began at 1d8d7d3. GitHub
+revalidation confirmed run 34161291314 terminal success at 0c3d6a9 and the dedicated branch at the
+same commit. No live job required resumption. The full usable-checkpoint goal remains active.
+
+Discovery found the existing TypeScript/Vitest/Node quality commands and Linux C fixtures. No LSP
+tool is available; use source tracing, TypeScript diagnostics, C compilation, and actual Linux
+execution. Heavy checks remain serial. Independent critical-path review selected native cancellation,
+not additional scalar invocation tests, as the next prerequisite for managed observer integration.
+
+Trace: observer-application.h forwards signals to its exact recorded child, retries interrupted waits,
+and checks interruption only after child settlement. TERM-resistant applications therefore require
+external escalation in the current implementation. This is not yet a reproduced production defect.
+The Prime process driver provides a separate process-group lifecycle but not this observer's private
+result contract; copying that supervisor would not qualify this path. Linux documentation confirms
+the special namespace-init signal behavior and kernel termination of namespace members on init death:
+https://man7.org/linux/man-pages/man7/pid_namespaces.7.html . Signal-handler operation constraints:
+https://man7.org/linux/man-pages/man7/signal-safety.7.html . These references guide controls, not runtime proof.
+
+Compared three methods: a host AbortSignal-only check would repeat prior helper evidence without
+testing native forwarding; a new production readiness/supervision protocol would enlarge the change
+before a failing case; an owned trusted launcher plus existing independent host process probes tests
+the actual helper without production changes. Use the third method under existing qualification
+approval. No new model, credential, repair, merge, or release authority is inferred.
+
+NC-1: no-TERM control must produce real normal0 with descendant settlement. NC-2: send TERM only
+to the launcher's direct unreaped helper child after the host releases an existing read-only gate;
+the fixed application acknowledges actual TERM then exits0. Require protected supervisor_failed,
+EINTR, settlement, normal outer0 and EOF; challenge the same assertion with NC-1. NC-3: a fixed
+TERM-resistant application acknowledges receipt but remains alive. Host then aborts through existing
+bounded capture escalation. Require the exact cancellation rejection, actual owned ChildProcess close,
+private EOF/no bytes, genuine sandbox release, and independent descendant pidfd termination and
+original-identity absence. The probe uses the outer test signal so observation cancellation cannot
+destroy its evidence mechanism. No PID from candidate output becomes signal authority.
+
+Application readiness does not prove native forwarder readiness: both supervisors install handlers
+after fork. Preserve unexpected race outcomes as RED, without sleeps/retries or weakened assertions.
+The launcher has one monotonic three-second gate/settlement budget beneath the existing four-second
+capture deadline. It closes parent copies of FD3/4/19, checks no-auto-reap SIGCHLD, and never signals
+after reaping/ECHILD. Its TERM-request marker precedes kill so immediate host escalation cannot race
+the marker; the application's separate exact receipt proves delivery. Fixture expiry remains failure.
+
+Tests were written before launcher support. The production observer is unchanged until a real defect
+is reproduced. A separate agent owns the fixed application extension; root owns tests/launcher, and
+an independent reviewer checks ownership, lifecycle, and evidence. Three new runtime cases preserve
+the prior 303 and final late-cancellation aggregate. macOS collection skips 306 cases, not native
+passes. Type checking, lint, formatting, and all 16 real-file readiness tests passed locally.
+The existing informational adapter lint notice is unchanged. Public guide and architecture now
+describe these pending test-only boundaries. Full cancellation, immutable custody, policy history,
+fixture denial, host integration, and outer-relay gates remain open.
+
+Pre-native review found one P3: the three new cases inherited a 30-second watchdog while combined
+schedules can consume more within existing inner limits. Set the same 45-second watchdog as
+neighboring native cases; no execution, release, cleanup, or model budget increased. Final source
+and four-document review found no remaining P1–P3 findings. All 376 focused verification tests,
+41 documentation/workflow tests, documentation gates, build, source integrity, typecheck, lint,
+format, and whitespace checks passed. The nine changed files are all in scope. Native execution
+is pending; local collection and static C syntax checks are not native qualification.

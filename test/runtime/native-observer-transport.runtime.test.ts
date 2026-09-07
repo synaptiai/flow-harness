@@ -82,6 +82,8 @@ type FaultMode =
   | "deny-exec-write"
   | "deny-exec-write-kill"
   | "close-app-fd"
+  | "signal-owned-term"
+  | "signal-owned-control"
   | ReportingFault
   | InvocationFault
   | `signal-${SignalState}-${SignalFault | "control"}`;
@@ -835,6 +837,59 @@ describe
         }),
     );
 
+    it(
+      "accepts the uncancelled real native cancellation control",
+      (context) =>
+        runCase(context, async (value) => {
+          const result = await nativeCancellationSchedule(value, context.signal, "control");
+          expect(result.status).toBe("fulfilled");
+        }),
+      45_000,
+    );
+
+    it(
+      "rejects native interruption even when the TERM-handling application exits zero",
+      (context) =>
+        runCase(context, async (value) => {
+          const positive = await nativeCancellationSchedule(value, context.signal, "control");
+          if (positive.status !== "fulfilled") throw positive.reason;
+          const assertInterrupted = (result: Awaited<ReturnType<typeof observe>>) => {
+            expect(result.record).toEqual({
+              kind: "supervisor_failed",
+              errno: 4,
+              stage: "settlement",
+              clone3FallbackUsed: false,
+            });
+            expect(result.code).toBe(0);
+            expect(result.signal).toBeNull();
+            expect(result.privateEof).toBe(true);
+          };
+          expect(() => assertInterrupted(positive.value)).toThrowError();
+          const interrupted = await nativeCancellationSchedule(
+            value,
+            context.signal,
+            "cooperative",
+          );
+          if (interrupted.status !== "fulfilled") throw interrupted.reason;
+          assertInterrupted(interrupted.value);
+        }),
+      45_000,
+    );
+
+    it(
+      "settles a TERM-resistant native application and held descendant after owned host cancellation",
+      (context) =>
+        runCase(context, async (value) => {
+          const positive = await nativeCancellationSchedule(value, context.signal, "control");
+          expect(positive.status).toBe("fulfilled");
+          const interrupted = await nativeCancellationSchedule(value, context.signal, "resistant");
+          expect(interrupted.status).toBe("rejected");
+          if (interrupted.status === "rejected")
+            expect(interrupted.reason).toEqual(new Error("Native observer process cancelled"));
+        }),
+      45_000,
+    );
+
     it.for(["child-closed-hook-held", "released-observation-held"] as const)(
       "accepts the noncancelled real %s completion-barrier twin",
       { timeout: 45_000 },
@@ -882,6 +937,163 @@ describe
       45_000,
     );
   });
+
+async function nativeCancellationSchedule(
+  value: Fixture,
+  signal: AbortSignal,
+  mode: "control" | "cooperative" | "resistant",
+) {
+  await requireArtifact(value, signal);
+  await calibrateHostProcess(value, signal);
+  await calibrateHostZombie(value, signal);
+  const token = randomBytes(32).toString("hex");
+  const releasePath = join(value.privateRoot, `cancel-release-${token}`);
+  const readyPath = join(value.workspace, `cancel-ready-${token}`);
+  const release = await open(releasePath, "wx+", 0o600);
+  value.handles.push(release);
+  expect((await release.write(Buffer.from([0]), 0, 1, 0)).bytesWritten).toBe(1);
+  await release.chmod(0o444);
+  const before = await release.stat({ bigint: true });
+  const cancellation = new AbortController();
+  const closed = completionLatch<CaptureResult>();
+  const fault = mode === "control" ? "signal-owned-control" : "signal-owned-term";
+  let probe: HostProbe | undefined;
+  let disposed = false;
+  let authorized = false;
+  let termReceived = false;
+  let settledAtFrame = false;
+  let released = false;
+  const failures: unknown[] = [];
+  let outcome: PromiseSettledResult<Awaited<ReturnType<typeof observe>>> | undefined;
+  const requireDescendantGone = async () => {
+    if (probe === undefined)
+      throw new Error("Missing independent cancellation descendant identity");
+    expect(await probe.check()).toEqual({
+      event: "check",
+      pidfdTerminated: true,
+      originalIdentityAbsent: true,
+      procState: null,
+    });
+  };
+  try {
+    outcome = await observe(value, AbortSignal.any([signal, cancellation.signal]), {
+      application: value.descendant,
+      args: [`cancel-${mode}`, token, releasePath, readyPath],
+      fault,
+      runtimeSupportPaths: [releasePath],
+      onReleased: async () => {
+        released = true;
+      },
+      hooks: {
+        onStarted: async (hookSignal) => {
+          await waitForReady(readyPath, hookSignal);
+          // Keep this independent oracle alive across observation cancellation.
+          // It never signals the discovered PID; only its own process is owned.
+          probe = await startHostProbe({
+            executable: value.hostProcess,
+            mode: "discover",
+            uid: ownUid(),
+            marker: token,
+            cwd: value.workspace,
+            env: value.environment,
+            signal,
+          });
+          if (disposed) {
+            await probe.close();
+            throw new Error("Late cancellation oracle after observation settlement");
+          }
+          const ready = await probe.ready();
+          expect(ready.session).toBe(ready.pid);
+          const live = await probe.check();
+          expect(live.pidfdTerminated).toBe(false);
+          expect(live.originalIdentityAbsent).toBe(false);
+          hookSignal.throwIfAborted();
+          authorized = true;
+          expect((await release.write(Buffer.from([1]), 0, 1, 0)).bytesWritten).toBe(1);
+          if (mode === "resistant") {
+            await waitForReady(`${readyPath}.term`, hookSignal, "term-received\n");
+            termReceived = true;
+            hookSignal.throwIfAborted();
+            cancellation.abort(new Error("Owned native cancellation qualification"));
+          }
+        },
+        onPrivateFrame: async () => {
+          expect(authorized).toBe(true);
+          expect(mode).not.toBe("resistant");
+          await requireDescendantGone();
+          settledAtFrame = true;
+        },
+        onChildClosed: (result) => closed.resolve(result),
+      },
+    }).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+    // A rejected timeout alone cannot satisfy cancellation. Require the actual
+    // owned ChildProcess close, genuine lease release, and independent settlement.
+    const closure = await bounded(
+      closed.promise,
+      1000,
+      "Missing owned cancellation process closure",
+    );
+    expect(authorized).toBe(true);
+    expect(released).toBe(true);
+    expect(closure.privateEof).toBe(true);
+    expect(closure.stdout.toString("utf8")).toBe(
+      "flow-observer-cancellation-parent:release-readonly\n",
+    );
+    expect(closure.stderr.toString("utf8")).toBe(
+      faultMarker(fault) +
+        (mode === "control" ? "" : "flow-observer-owned-helper:term-requested\n"),
+    );
+    if (mode === "resistant") {
+      expect(termReceived).toBe(true);
+      expect(closure.code).toBeNull();
+      expect(closure.signal).toBe("SIGKILL");
+      expect(closure.privateBytes.length).toBe(0);
+      await requireDescendantGone();
+    } else {
+      expect(settledAtFrame).toBe(true);
+      if (outcome.status !== "fulfilled") throw outcome.reason;
+      expectTransport(outcome.value, closure.stdout, closure.stderr.toString("utf8"));
+      if (mode === "control") {
+        expect(outcome.value.record).toEqual({
+          kind: "normal_exit",
+          exitCode: 0,
+          clone3FallbackUsed: false,
+        });
+        await expect(readFile(`${readyPath}.term`)).rejects.toHaveProperty("code", "ENOENT");
+      } else {
+        await waitForReady(`${readyPath}.term`, signal, "term-received\n");
+      }
+    }
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    disposed = true;
+    try {
+      if (probe !== undefined) await probe.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      expect(await lstat(releasePath, { bigint: true })).toMatchObject({
+        dev: before.dev,
+        ino: before.ino,
+        mode: before.mode,
+        uid: before.uid,
+        gid: before.gid,
+        size: 1n,
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length)
+    throw new AggregateError(failures, "Native cancellation qualification failed; root retained");
+  if (outcome === undefined) throw new Error("Native cancellation outcome missing");
+  return outcome;
+}
 
 function completionLatch<T>() {
   let release: ((value: T) => void) | undefined;

@@ -22,6 +22,9 @@
  * fixed environment entry after shell startup. They never change the helper
  * executable or held application descriptor. invoke-valid-env is the matching
  * positive control for the one-entry environment, not an invocation fault.
+ * signal-owned-{term,control} fork the actual helper as an owned child, close
+ * parent copies of private descriptors, and wait for the host-owned release
+ * byte. Only term signals that unreaped child. Neither mode creates a frame.
  *
  * FD 8 is deliberately coupled to observer-application.h's checked topology:
  * close_range(5..UINT_MAX), report pipe 5/6, then worker error pipe 7/8.
@@ -67,7 +70,8 @@ static int mode_number(const char *name) {
         "deny-final-write", "deny-inner-write", "deny-outer-read", "deny-worker-read",
         "invoke-short-correlation", "invoke-invalid-correlation",
         "invoke-invalid-separator", "invoke-relative-application",
-        "invoke-invalid-env-name", "invoke-env-no-equals", "invoke-valid-env"
+        "invoke-invalid-env-name", "invoke-env-no-equals", "invoke-valid-env",
+        "signal-owned-term", "signal-owned-control"
     };
     for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (strcmp(name, names[i]) == 0) return (int)i;
@@ -279,6 +283,89 @@ static int run_signal_control(int state) {
         : "flow-observer-signal-control:blocked:term-returned-exit-99\n");
 }
 
+static int cancellation_child_failure(pid_t child) {
+    int status;
+    pid_t waited;
+    do { waited = waitpid(child, &status, WNOHANG); } while (waited < 0 && errno == EINTR);
+    /* No automatic reaper is installed. A still-waitable direct child retains
+     * its PID; after reaping or ECHILD, never signal that numeric PID again. */
+    if (waited == 0) {
+        (void)kill(child, SIGKILL);
+        (void)signal_wait(child, &status, 250);
+    }
+    return 123; // Failure remains failure even if cleanup completes.
+}
+
+static int run_owned_cancellation(int argc, char **argv, int send_term) {
+    if (argc != 11 || argv[9][0] != '/' || argv[10][0] != '/' ||
+        (send_term ? strcmp(argv[7], "cancel-cooperative") != 0 &&
+                     strcmp(argv[7], "cancel-resistant") != 0
+                   : strcmp(argv[7], "cancel-control") != 0)) return 120;
+    struct sigaction action, actual;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = SIG_DFL;
+    if (sigemptyset(&action.sa_mask) != 0 || sigaction(SIGCHLD, &action, NULL) != 0 ||
+        sigaction(SIGCHLD, NULL, &actual) != 0 || actual.sa_handler != SIG_DFL ||
+        (actual.sa_flags & SA_NOCLDWAIT) != 0) return 121;
+    const long long start = signal_milliseconds();
+    if (start < 0) return 121;
+    const pid_t parent = getpid();
+    const pid_t child = fork();
+    if (child < 0) return 121;
+    if (child == 0) {
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(122);
+        execve(argv[2], &argv[2], environ);
+        _exit(122);
+    }
+    const int result_closed = close(3);
+    const int application_closed = close(4);
+    const int canary_closed = close(19);
+    if (result_closed != 0 || application_closed != 0 || canary_closed != 0)
+        return cancellation_child_failure(child);
+    /* Open only in the parent after fork. This gate descriptor never enters
+     * the helper and cannot retain the result-channel writer. */
+    const int release = open(argv[9], O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat metadata;
+    if (release < 0) return cancellation_child_failure(child);
+    int gate_failed = fstat(release, &metadata) != 0 ||
+        !S_ISREG(metadata.st_mode) || metadata.st_size != 1;
+    while (!gate_failed) {
+        unsigned char state;
+        const ssize_t length = pread(release, &state, 1, 0);
+        if (length < 0 && errno == EINTR) continue;
+        if (length != 1 || state > 1) { gate_failed = 1; break; }
+        if (state == 1) break;
+        int status;
+        const pid_t waited = waitpid(child, &status, WNOHANG);
+        if (waited == child || (waited < 0 && errno != EINTR)) {
+            (void)close(release);
+            return 123; // Reaped/unknown child: no PID-based cleanup signal.
+        }
+        const long long now = signal_milliseconds();
+        if (now < 0 || now - start >= 3000) { gate_failed = 1; break; }
+        const struct timespec delay = { .tv_sec = 0, .tv_nsec = 1000000 };
+        if (nanosleep(&delay, NULL) != 0 && errno != EINTR) { gate_failed = 1; break; }
+    }
+    const int release_closed = close(release);
+    if (gate_failed || release_closed != 0) return cancellation_child_failure(child);
+    const long long now = signal_milliseconds();
+    if (now < 0 || now - start >= 3000) return cancellation_child_failure(child);
+    if (send_term) {
+        int status;
+        const pid_t waited = waitpid(child, &status, WNOHANG);
+        if (waited != 0) return waited == child || (waited < 0 && errno == ECHILD)
+            ? 123 : cancellation_child_failure(child);
+        /* Publish before kill: receipt can trigger immediate host escalation.
+         * The application's separate notice proves actual TERM delivery. */
+        if (write_all("flow-observer-owned-helper:term-requested\n") != 0 ||
+            kill(child, SIGTERM) != 0) return cancellation_child_failure(child);
+    }
+    int status;
+    const int waited = signal_wait(child, &status, (int)(3000 - (now - start)));
+    if (waited != 0) return waited == -2 ? 123 : cancellation_child_failure(child);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 123;
+}
+
 int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "--signal-control-child") == 0)
         return signal_control_child(argv[2]);
@@ -299,6 +386,7 @@ int main(int argc, char **argv) {
     if (write_all("flow-observer-fault:") != 0 || write_all(argv[1]) != 0 ||
         write_all(":canary=live-regular-matches-app\n") != 0) return 121;
     if (control) return run_signal_control(signal_state) == 0 ? 0 : 121;
+    if (mode == 26 || mode == 27) return run_owned_cancellation(argc, argv, mode == 26);
     char *fixed_environment[] = {"FLOW_OBSERVER_QUALIFICATION=value", NULL};
     char **helper_environment = environ;
     /* argv strings and pointers belong to this fixed launcher. All mutation

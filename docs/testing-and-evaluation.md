@@ -901,6 +901,33 @@ The run retained `/tmp/flow-observer-transport-cqUgnY` on its ephemeral host, no
 This single run is not a performance benchmark. These controls do not cover all argument or environment
 limits, every blocked variable family, immutable executable identity, or the remaining isolation gates.
 
+#### Check native interruption and host escalation
+
+Three new controls are implemented but await native qualification. They use the actual observer and
+a fixed application with a held descendant in a new session. The application installs its TERM
+handler before starting that descendant. The test acquires an independent process handle for the
+live descendant before releasing the read-only gate.
+
+The trusted test launcher starts the real helper as its own child. It closes its copies of the
+private result and application descriptors. After the gate opens, it either waits without signaling
+or requests TERM for that exact unreaped child. It never signals a process identified by application
+output. Its three-second limit is a test admission bound, not a production cancellation guarantee.
+
+- The control receives no TERM and must produce a real normal-exit record for zero.
+- The cooperative application records actual TERM receipt, then exits zero. The observer must
+  return `supervisor_failed` with `errno: 4` and `stage: settlement`, not application success.
+  The same interruption assertion must reject the real no-TERM control.
+- The resistant application records TERM receipt but stays alive. The host then cancels the
+  observation using the existing bounded escalation path. Rejection alone is insufficient.
+  Require actual owned process closure, private EOF without a result, and successful sandbox release.
+  Independently confirm that the held descendant terminated and its original identity is absent.
+
+Application readiness does not prove that both supervisor forwarding handlers are installed.
+An unexpected startup-race result must remain a failed test, not trigger a delay or automatic retry.
+These controls do not qualify every signal or cancellation interleaving, prove native escalation
+without the host, or establish complete outer-relay cleanup. The expanded suite contains 306 cases.
+The preceding 303-case run does not qualify these additions.
+
 The test uses an owned empty home directory to exclude user shell startup files. Its test roots
 are retained as diagnostic evidence, including after passing result tests. Process closure
 and SRT reset do not yet establish complete relay and host-bridge disposal. A passing result-channel

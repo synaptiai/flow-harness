@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 export async function waitForReady(
   path: string,
   signal: AbortSignal,
-  expectedNotice: "ready\n" | "ready-session-zero\n" = "ready\n",
+  expectedNotice: "ready\n" | "ready-session-zero\n" | "term-received\n" = "ready\n",
 ): Promise<void> {
   const deadline = performance.now() + 1000;
   while (performance.now() < deadline) {

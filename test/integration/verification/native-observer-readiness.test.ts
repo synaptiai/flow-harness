@@ -55,7 +55,7 @@ it(
   }),
 );
 
-it.for(["ready\n", "ready-session-zero\n"] as const)(
+it.for(["ready\n", "ready-session-zero\n", "term-received\n"] as const)(
   "accepts the empty-to-complete publication transition for %j",
   ownedTestCase(async (notice, scope) => {
     const path = join(await scope.temporaryDirectory("flow-native-ready-"), "notice");

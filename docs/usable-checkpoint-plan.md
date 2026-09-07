@@ -380,8 +380,12 @@ All 303 cases passed without skips, and all 29 clean-build artifacts matched. Th
 malformed arguments and environment entries against real accepted-invocation controls.
 They do not qualify the complete input envelope or immutable executable identity.
 
-Next, address remaining reporting and native
-cancellation failures. The testing guide distinguishes these gates from test-helper cancellation checks.
+Next, run the three new [native interruption controls](testing-and-evaluation.md#check-native-interruption-and-host-escalation).
+They require real TERM delivery, interruption despite an application exit of zero, and independently
+observed descendant settlement after host escalation. These controls await native qualification.
+Address any demonstrated failure before connecting the observer to the managed command boundary.
+Remaining reporting and cancellation interleavings stay separate from test-helper cancellation checks.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.
