@@ -3159,3 +3159,35 @@ test logic changes after this sensitivity run. Actual-decision qualification rem
 Independent five-file selector/evidence review found no P1-P3 findings. Local typecheck, lint,
 format, build, all three documentation gates, and21 focused tests passed. Commit/push only the
 reviewed actual-rule selection to the dedicated qualification branch.
+
+### Qualify selected owner-loss rejection
+
+Run34208296145 exact2fe279c782a426c3089e6a62e179cd3ec07a5ab9 succeeded,
+job102002967568, September8 UTC09:08:01-09:11:47 (226seconds). All323 passed, zero skips:
+3owner+5active+8startup/lifecycle+1predicate+306native. Startup suite8.25s/tests8.09s (8093ms file);
+owner4.68s/4.56s, active10.94s/10.78s, predicate514ms/329ms, native22.51s/22.18s (22179ms file).
+Bwrap0.9.0 and canonical/usr/bin/socat1 verified. Two clean builds matched32 artifacts:
+guardian1b5c57faf55976a30d8161bac667ec960b43279e22a3231abe0ae3698c729dff,
+object4cda7ac749e727c777484810004f3bea38d8b3a5195f9ac6a74e4c79274ce6f8,
+observer67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d,
+false-normal6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b unchanged.
+observerQualified:false remains. Native diagnostic root/tmp/flow-observer-transport-y98nk2 was
+retained on the ephemeral runner, not uploaded. Witness/relay test builds remain outside that
+32-artifact comparison.
+
+Main and independent reviewer authenticated metadata/checkout identity, no actual baseline env,
+zero C/runtime changes from RED, all test counts, and native identities. The exact killed-owner,
+OWNEDonly, remaininglive, nonterminatedchild report passed before the actual shared predicate
+rejected settlement. All three normal-release positives accepted the same predicate. The witness
+report predates test-namespace disposal; disposal cannot upgrade guardian cleanup to confirmed.
+
+This closes the selected test-namespace owner-loss rejection gate only. Runtime custody is next:
+current guardian admission checks canonical path/permissions and later execve uses that path.
+Bind executable and runtime bytes and qualify the fixed relay's group/ancestry premise before
+manager integration. Stage2, stages3-4, UC-01/UC-05/VR-02 remain open. No repairs, production
+integration, models, credentials, merge, or release. Update canonical guide/architecture/plan and
+the native README's old first-test summary without claiming production custody.
+
+Final independent six-document review found no P1-P3 findings. All three documentation gates
+and21 focused tests passed. Commit evidence locally without rerunning unchanged native execution
+for prose-only updates. The full usable-checkpoint goal remains active and incomplete.

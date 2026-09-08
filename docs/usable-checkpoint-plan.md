@@ -429,7 +429,7 @@ These three additional controls are complete. Stage 2 and the usable checkpoint 
 
 Next, complete the
 [remaining lifecycle gates](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
-for owner loss and runtime custody before manager integration.
+for runtime custody before manager integration.
 
 The held-connection cancellation and disconnection controls rejected normal stop in
 [run 34169737226](https://github.com/synaptiai/flow-harness/actions/runs/34169737226) at `a9e321d`.
@@ -467,16 +467,24 @@ All 322 selected tests passed without skips, and both clean builds matched 32 ar
 The fixed child's actual TERM receipt and immediate liveness preceded independently confirmed
 termination and no remaining child. The cooperative twin failed the same resistance decision
 while cleaning up normally. This closes the selected resistant-child gate in the test namespace.
-Owner loss, unnamespaced runtime custody, and manager integration remain open.
+Owner loss, unnamespaced runtime custody, and manager integration remained open at that checkpoint.
 
 The owner-loss gate now has a test-only case that captures a live child immediately after the
 owned guardian dies, before namespace teardown. The sensitivity run rejected the weak decision's
 false acceptance in
 [run 34207774066](https://github.com/synaptiai/flow-harness/actions/runs/34207774066) at `17d469e`.
 The exact surviving-child observations passed, as did the other seven startup cases.
-Actual-decision qualification remains pending. See the
+See the
 [owner-loss test guide](testing-and-evaluation.md#qualify-bridge-owner-loss).
 Test-namespace disposal must not become evidence of successful guardian cleanup.
+
+The actual owner-loss decision then passed in
+[run 34208296145](https://github.com/synaptiai/flow-harness/actions/runs/34208296145) at `2fe279c`.
+All 323 selected tests passed without skips, and both clean builds matched 32 artifacts.
+The killed guardian and surviving child remained an unconfirmed guardian-cleanup outcome, even
+though the test namespace subsequently disposed of its processes. This closes the selected
+owner-loss rejection gate within the test namespace only. Runtime custody is the next admission
+prerequisite before manager integration. Stage 2 and the usable checkpoint remain incomplete.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

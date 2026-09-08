@@ -830,17 +830,21 @@ not independently identify the terminating signal. Escalation attribution also r
 fixed child's no-normal-exit path and the guardian's final-KILL-before-reaping order. See the
 [resistance qualification guide](testing-and-evaluation.md#qualify-resistant-bridge-descendants).
 
-Complete these remaining bounded stage-2 gates next:
+The selected owner-loss rejection passed in
+[run 34208296145](https://github.com/synaptiai/flow-harness/actions/runs/34208296145) at `2fe279c`.
+The witness signaled only its unreaped direct guardian, kept input open, and recorded the actual
+killed-owner result. It immediately captured remaining-child and process-handle observations
+before draining output. The exact live-child report passed, and the shared settlement decision
+rejected guardian cleanup. All 323 selected tests passed without skips, and both clean builds
+matched 32 artifacts.
 
-| Gate | Required evidence |
-| --- | --- |
-| Owner loss | Establish independent test-owned cleanup custody first. Loss of the guardian must remain unconfirmed cleanup, never accepted settlement. Do not create an orphaning test or signal discovered PIDs. |
-| Runtime custody | Bind the admitted executable and runtime bytes and establish the relay's process-group and ancestry-preservation premise. Canonical path equality is insufficient. |
+The test namespace disposed of its processes only after the witness recorded those observations.
+This closes the selected owner-loss rejection gate, not production owner-loss custody or successful
+guardian cleanup. See the [owner-loss guide](testing-and-evaluation.md#qualify-bridge-owner-loss).
 
-Start with owner loss. Preserve the independently established test-owned namespace custody so a
-failed control cannot leave an orphaned process. Signal only the guardian owned at creation.
-Record its actual termination and remaining-child evidence before namespace teardown. Loss of the
-guardian must remain an unconfirmed cleanup outcome, not a successful release.
+Complete runtime custody next. Bind the admitted executable and runtime bytes and establish the
+relay's process-group and ancestry-preservation premise. Canonical path equality is insufficient.
+Stage 2 remains incomplete until this admission gate passes.
 
 Runtime custody is an admission prerequisite, not an invitation to
 expand these tests into general containment. Multiplexed bridges, partial manager startup, retained

@@ -1194,7 +1194,7 @@ unnamespaced runtime custody, or repair readiness. They add no production depend
 
 ### Qualify bridge owner loss
 
-The startup suite defines an additional owner-loss case. Hosted qualification is pending.
+The startup suite includes an owner-loss case qualified on hosted Linux x64.
 It reuses the existing test-only namespace witness, fixed relay, and socket-bound child process
 handle. No production manager or guardian code changes for this case.
 
@@ -1226,8 +1226,16 @@ active-descendant cases also passed. Later predicate and native cases were skipp
 clean builds matched 32 artifacts.
 
 The dedicated workflow now selects the actual decision. Its guard rejects the sensitivity
-variable. Actual-decision qualification remains pending, and production owner-loss handling
-remains unqualified.
+variable. The actual decision passed in
+[run 34208296145](https://github.com/synaptiai/flow-harness/actions/runs/34208296145) at `2fe279c`.
+The exact killed-owner and surviving-child report passed, and the shared decision rejected
+guardian settlement. All three normal-release cases accepted settlement with the same decision.
+
+All 323 selected tests passed without skips: three owner, five active-descendant, eight startup
+and lifecycle, one predicate calibration, and 306 native cases. Both clean builds matched 32
+artifacts. The test code was unchanged between the sensitivity and actual runs. This qualifies
+the selected test-namespace rejection, not successful guardian cleanup or production owner-loss
+custody. Runtime admission and manager integration remain unqualified.
 
 ### Test the internal observer components
 

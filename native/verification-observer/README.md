@@ -88,9 +88,10 @@ package. The default `--build` mode does not install that package or apply the o
 
 The observer build also compiles `flow-host-bridge-guardian` and retains its relinkable object and
 source. This separate executable owns trusted host-bridge processes during development tests.
-It is not connected to the production SRT manager. Its first release-contract tests do not qualify
-active descendants, complete interruption handling, or runtime custody. See the
-[host-bridge test guide](../../docs/testing-and-evaluation.md#test-the-host-bridge-owner).
+It is not connected to the production SRT manager. The
+[host-bridge test guide](../../docs/testing-and-evaluation.md#test-the-host-bridge-owner) records
+the selected lifecycle qualifications and their test-namespace limits. Runtime custody and
+production manager integration remain unqualified.
 
 On a Docker failure, the launcher reports the exit state and the last 16 KiB of captured output as
 one JSON record. The limit applies before text decoding and JSON encoding. Each failed operation
