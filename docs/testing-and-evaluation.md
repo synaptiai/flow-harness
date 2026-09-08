@@ -1045,7 +1045,7 @@ and 306 existing native cases, with no skips. Both clean builds matched 32 artif
 The mismatch and ambiguity tests confirmed discovery errors `EPROTO` (71) and `EEXIST` (17),
 respectively, followed by natural checker closure. The real predicate calibration passed in both roles.
 
-The selected controls are complete, but bridge qualification is not. Startup failure, escalation,
+The selected controls are complete, but bridge qualification is not. Escalation,
 owner loss, and runtime custody remain open. The
 [lifecycle implementation plan](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
 defines their next evidence gates.
@@ -1087,7 +1087,7 @@ That mode launches a direct bridge and is expected to fail these owner-contract 
 It is not a fallback or a production configuration. The focused hosted workflow uses the real
 owner artifact after completing the two-build comparison.
 
-Failed startup, resistant descendants, owner loss, runtime custody, and isolated-manager integration
+Resistant descendants, owner loss, runtime custody, and isolated-manager integration
 remain separate qualification gates. These development tests do not
 enable repairs or complete installed issue-lifecycle acceptance.
 
@@ -1095,7 +1095,7 @@ enable repairs or complete installed issue-lifecycle acceptance.
 
 The development-only `test/runtime/host-bridge-startup.runtime.test.ts` suite requires the same
 explicit guardian path as the host-bridge tests. It compiles a separate static C witness and uses
-the installed `bwrap` executable. The hosted startup gate is under qualification, not yet passed.
+the installed `bwrap` executable. The selected startup cases passed in the test namespace.
 The ordinary SRT manager does not load this witness.
 
 The witness runs as process 1 in a private PID namespace. It holds guardian control input open
@@ -1130,8 +1130,16 @@ The sensitivity control failed as required in
 [run 34203882521](https://github.com/synaptiai/flow-harness/actions/runs/34203882521) at `7b7efb1`.
 The exact unreaped-child observation passed before the weak decision incorrectly accepted it.
 The other four startup cases passed. The hosted runner used bubblewrap 0.9.0 and compiled the
-separate witness successfully. The workflow now selects the actual decision, whose qualification
-is pending, and its guard rejects the sensitivity variable.
+separate witness successfully. The workflow now selects the actual decision, and its guard rejects
+the sensitivity variable.
+
+The actual decision passed in
+[run 34204460549](https://github.com/synaptiai/flow-harness/actions/runs/34204460549) at `abb23a4`.
+All five startup cases passed, including both real adopted-child controls. The same run passed
+three original owner cases, five active cases, one predicate calibration, and 306 native cases.
+All 320 selected tests passed without skips, and both clean builds matched 32 artifacts.
+This closes the selected startup cases within the test namespace, not unnamespaced runtime custody
+or the remaining observer qualification gates.
 
 ### Test the internal observer components
 

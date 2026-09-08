@@ -2943,3 +2943,35 @@ Final five-file selection review found no P1-P3 findings. Local typecheck comple
 longer quiet interval; inspected its actual process and did not restart it. Lint, format, build,
 all three documentation gates, and21 focused tests passed. Commit and push only the reviewed
 actual-decision selection to the dedicated qualification branch.
+
+### Qualify selected startup failure and independent no-child decision
+
+Run34204460549 at exactabb23a4a6ea7af6c0077e03e9dc45d80faff365f succeeded,
+job101990592457, September8 UTC08:26:00-08:29:28 (208seconds). Counts:
+3owner+5active+5startup+1predicate+306native=320passed, zero skips. Startup suite5.03s (4.79s tests),
+nonELF1509ms, absentlistenerparent1529ms, forwarding1533ms. Both adopted live/zombie controls passed.
+Owner4.73s (4.57s tests), active8.56s (8.32s tests), predicate696ms (448ms tests), native29.48s
+(29.01s tests). Runner bwrap0.9.0, canonical relay/usr/bin/socat1. Two clean builds matched32 artifacts.
+Guardian1b5c57faf55976a30d8161bac667ec960b43279e22a3231abe0ae3698c729dff,
+object4cda7ac749e727c777484810004f3bea38d8b3a5195f9ac6a74e4c79274ce6f8,
+observer67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d,
+false-normal6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b unchanged.
+observerQualified:false remains. Native diagnostic root/tmp/flow-observer-transport-NAvEju was
+retained on the ephemeral runner, not uploaded. Startup witness is separately compiled test code,
+not part of the32-artifact reproducibility claim.
+
+Main and independent verifier authenticated exact SHA/job, tests, no skips, and native identities.
+The selected pre-execution/listener failure cases prove failed owner status, OWNED-only output,
+and the immediate independent ECHILD observation before namespace teardown. Real adopted residues
+and successful same-envelope forwarding passed. This closes selected startup behavior in the
+test namespace only; no unnamespaced runtime custody or complete stage2 claim is made.
+
+Next: fixed bounded resistant-child qualification must prove actual TERM delivery while alive,
+then independent termination/reaping after escalation. No inference from timing or normal socat
+completion. Preserve independent test custody. Owner-loss controls still require that custody;
+runtime byte admission and group/ancestry preservation remain prerequisites to manager integration.
+No production source changed, no repairs enabled, no model transmission, merge, or release.
+
+Final independent review of the five-document GREEN evidence update found no P1-P3 findings.
+All three documentation gates and21 focused tests passed. Commit this evidence locally without
+another unchanged native run. Full usable-checkpoint goal remains active and incomplete.

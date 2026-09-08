@@ -809,19 +809,26 @@ of the observed leader and connection child before test socket cleanup. All 315 
 passed without skips, and both clean builds matched 32 artifacts. This is post-owner-close evidence,
 not an atomic observation or runtime-custody proof.
 
+The selected startup-failure cases passed in a test-only PID namespace in
+[run 34204460549](https://github.com/synaptiai/flow-harness/actions/runs/34204460549) at `abb23a4`.
+The independent witness found no child immediately after the failed guardian exited, before
+namespace teardown. Real live and unreaped adopted-child controls calibrated that decision.
+A successful forwarding case checked the same namespace and writable fixture configuration.
+All 320 selected tests passed without skips, and both clean builds matched 32 artifacts.
+This is not evidence of unnamespaced host runtime custody.
+
 Complete these remaining bounded stage-2 gates next:
 
 | Gate | Required evidence |
 | --- | --- |
-| Startup failure | Cover failure before execution and real relay listener-creation failure. Require bounded failure, no accepted settlement, and confirmed disposal of owned processes. |
 | Resistant descendants | Use a fixed, bounded test relay to show a child still alive after the first termination signal and fully reaped after escalation. Ordinary relay completion does not prove this case. |
 | Owner loss | Establish independent test-owned cleanup custody first. Loss of the guardian must remain unconfirmed cleanup, never accepted settlement. Do not create an orphaning test or signal discovered PIDs. |
 | Runtime custody | Bind the admitted executable and runtime bytes and establish the relay's process-group and ancestry-preservation premise. Canonical path equality is insufficient. |
 
-Start with startup failure and distinguish rejection from confirmed cleanup. Keep control input
-open so an explicit stop cannot mask the startup failure. An unsuccessful owner exit alone does
-not prove disposal because cleanup failure also returns an unsuccessful status. Require an
-independent cleanup witness before closing this gate.
+Start with resistant descendants. Prove that the first termination signal reached an owned child
+that remained alive, then independently confirm termination and reaping after escalation.
+Do not infer signal resistance from elapsed time or from an ordinary relay that exits promptly.
+Preserve test-owned cleanup custody so a failed control cannot leave an orphaned process.
 
 Runtime custody is an admission prerequisite, not an invitation to
 expand these tests into general containment. Multiplexed bridges, partial manager startup, retained

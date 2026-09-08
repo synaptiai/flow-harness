@@ -429,7 +429,7 @@ These three additional controls are complete. Stage 2 and the usable checkpoint 
 
 Next, complete the
 [remaining lifecycle gates](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
-for startup failure, escalation, owner loss, and runtime custody before manager integration.
+for escalation, owner loss, and runtime custody before manager integration.
 
 The held-connection cancellation and disconnection controls rejected normal stop in
 [run 34169737226](https://github.com/synaptiai/flow-harness/actions/runs/34169737226) at `a9e321d`.
@@ -444,9 +444,14 @@ This closes the selected held-connection gate, not stage 2 or the usable checkpo
 Startup-failure qualification has a test-only namespace witness and five real-process cases.
 The sensitivity run exposed the weak decision's false acceptance of an actual unreaped child in
 [run 34203882521](https://github.com/synaptiai/flow-harness/actions/runs/34203882521) at `7b7efb1`.
-The other four cases passed, including the same-environment forwarding twin. Actual-decision
-qualification remains pending. See the
+The other four cases passed, including the same-environment forwarding twin. See the
 [startup test guide](testing-and-evaluation.md#qualify-bridge-startup-cleanup).
+
+The actual decision then passed all five startup cases in
+[run 34204460549](https://github.com/synaptiai/flow-harness/actions/runs/34204460549) at `abb23a4`.
+All 320 selected tests passed without skips, and both clean builds matched 32 artifacts.
+The selected startup-failure gate is complete within the test namespace. Unnamespaced host custody,
+resistant descendants, owner loss, and manager integration remain open.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
