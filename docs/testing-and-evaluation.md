@@ -1045,13 +1045,13 @@ and 306 existing native cases, with no skips. Both clean builds matched 32 artif
 The mismatch and ambiguity tests confirmed discovery errors `EPROTO` (71) and `EEXIST` (17),
 respectively, followed by natural checker closure. The real predicate calibration passed in both roles.
 
-The selected controls are complete, but bridge qualification is not. Active cancellation and
-disconnection, startup failure, escalation, owner loss, and runtime custody remain open. The
+The selected controls are complete, but bridge qualification is not. Startup failure, escalation,
+owner loss, and runtime custody remain open. The
 [lifecycle implementation plan](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
 defines their next evidence gates.
 
-The held-connection suite now includes cancellation and controller-disconnection cases under
-qualification. Each keeps the independent checker active, sends `SIGTERM` only to the owned
+The held-connection suite includes qualified cancellation and controller-disconnection cases.
+Each keeps the independent checker active, sends `SIGTERM` only to the owned
 guardian or closes its control input without a command, then waits for owner closure. Before
 closing test sockets, it checks that both observed descendants are terminated and reaped. It also
 requires owner exit status 1 and only the `OWNED` record, without `SETTLED`.
@@ -1065,7 +1065,15 @@ The intentional failing control was verified in
 [run 34169737226](https://github.com/synaptiai/flow-harness/actions/runs/34169737226) at `a9e321d`.
 Both new cases confirmed settlement, then rejected the actual normal exit status 0. The three
 existing active-bridge cases passed. The dedicated hosted workflow now selects actual interruption.
-Its qualification is pending. These observations occur after owner closure, not at a terminal receipt.
+These observations occur after owner closure, not at a terminal receipt.
+
+Actual interruption and empty control input passed in
+[run 34170082955](https://github.com/synaptiai/flow-harness/actions/runs/34170082955) at `002e361`.
+All three original owner cases, five active-connection cases, one predicate calibration, and
+306 native application-result cases passed without skips. Both clean builds matched 32 artifacts.
+Both new cases confirmed failed owner closure, no `SETTLED`, and termination and reaping of the
+observed leader and connection child before test socket cleanup. The workflow guard rejects the
+normal-stop substitution variable to prevent accidental use during qualification.
 
 The original direct-bridge control failed as expected in
 [run 34164823372](https://github.com/synaptiai/flow-harness/actions/runs/34164823372) at `9f0d777`.
@@ -1079,8 +1087,8 @@ That mode launches a direct bridge and is expected to fail these owner-contract 
 It is not a fallback or a production configuration. The focused hosted workflow uses the real
 owner artifact after completing the two-build comparison.
 
-Active connection descendants, failed startup, ancestry preservation, owner interruption, and
-isolated-manager integration remain separate qualification gates. These development tests do not
+Failed startup, resistant descendants, owner loss, runtime custody, and isolated-manager integration
+remain separate qualification gates. These development tests do not
 enable repairs or complete installed issue-lifecycle acceptance.
 
 ### Test the internal observer components

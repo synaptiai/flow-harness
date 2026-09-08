@@ -427,15 +427,19 @@ two-process predicate calibration then passed in
 All 313 selected tests passed without skips, and both clean builds matched 32 artifacts.
 These three additional controls are complete. Stage 2 and the usable checkpoint remain open.
 
-Next, qualify cancellation and controller disconnection with a held connection. Then complete the
+Next, complete the
 [remaining lifecycle gates](bounded-verification-repair-design.md#implement-the-approved-lifecycle-extension)
 for startup failure, escalation, owner loss, and runtime custody before manager integration.
 
 The held-connection cancellation and disconnection controls rejected normal stop in
 [run 34169737226](https://github.com/synaptiai/flow-harness/actions/runs/34169737226) at `a9e321d`.
 Both confirmed settlement before rejecting exit status 0. The three existing active cases passed.
-Actual signal and empty-input qualification is pending. Both must prove independent descendant
-settlement after failed owner closure, before test socket cleanup.
+
+Actual signal and empty-input cases then passed in
+[run 34170082955](https://github.com/synaptiai/flow-harness/actions/runs/34170082955) at `002e361`.
+Both proved independent descendant settlement after failed owner closure, before test socket
+cleanup. All 315 selected tests passed without skips, and both clean builds matched 32 artifacts.
+This closes the selected held-connection gate, not stage 2 or the usable checkpoint.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.

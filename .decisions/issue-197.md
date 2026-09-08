@@ -2848,3 +2848,39 @@ Actual held SIGTERM/empty-EOF qualification remains pending; runtime test and na
 Local typecheck, lint, format check, build, all three documentation gates, and 21 focused tests
 passed. Independent review re-fetched and corroborated the exact RED source, job, assertions,
 counts, and timings, and found no P1-P3 findings in the five-file GREEN-selection delta.
+
+### Qualify held cancellation and disconnection
+
+Run34170082955 succeeded at exact002e361522028be4b7e2e145757537bddc9ff14e,
+job101888573098, September7 UTC23:27:10-23:29:49 (159 seconds). Three original owner tests,
+five active cases, one predicate calibration, and306 native application-result cases passed with
+zero skips: 3+5+1+306=315. Owner suite4.72s (4.56s tests), active8.66s (8.43s tests), predicate786ms
+(546ms tests), native32.09s (31.63s tests). Actual interrupt and disconnect each took1527ms.
+Both clean builds matched32 artifacts. Guardian binary1b5c57faf55976a30d8161bac667ec960b43279e22a3231abe0ae3698c729dff,
+guardian object4cda7ac749e727c777484810004f3bea38d8b3a5195f9ac6a74e4c79274ce6f8,
+genuine observer67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d,
+and false-normal6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b are unchanged.
+Build evidence still says observerQualified:false. Native diagnostic root
+/tmp/flow-observer-transport-ZrN91W existed on the ephemeral runner; it was not uploaded.
+
+Actual held SIGTERM and command-free EOF both passed after independently observed live readiness.
+Each required one post-owner-close independent check proving both identities terminated/reaped,
+then code1/null signal and OWNED-only output, before emergency socket cleanup. This closes only
+the selected held cancellation/disconnection gate. No native source change was needed.
+
+The main agent authenticated metadata and logs and cross-checked the exact test/source assertions
+and clean-build comparison contract. Additional independent GREEN-result verification could not
+run because the reviewer hit an account usage limit. Earlier code/test, RED-evidence, and
+GREEN-selection reviews completed with no P1-P3 findings. Do not claim the unavailable extra pass.
+
+Next startup pair: a real executable-format failure after group ACK and actual socat listener
+failure under an absent parent directory. Keep guardian input open and issue no stop/EOF/signal
+before spontaneous failure; OWNED does not assert listener readiness. Code1 alone cannot prove
+cleanup because settle_owned failure also returns1. Independent test-owned cleanup custody and
+an observation before emergency cleanup are required; an outer test subreaper is a candidate,
+not an implemented or qualified solution. Preserve startup, resistant-descendant, owner-loss,
+runtime-custody, and isolated-manager integration gates. No repairs, pilot, merge, or release.
+
+Main-agent review of the four-document evidence update against actual source and logs found no
+P1-P3 findings. All three documentation gates and 21 focused tests passed. Record this update
+locally without another unchanged native run. Full goal remains active, not achieved or blocked.
