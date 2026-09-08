@@ -1,5 +1,5 @@
 /* Test-only startup witness, executed as PID 1 in a private bwrap PID namespace.
- * CLI: witness observe|release|live-residue|zombie-residue GUARDIAN RELAY UNIX TCP
+ * CLI: witness observe|release|live-residue|zombie-residue|resistance GUARDIAN RELAY UNIX TCP
  * Never signals a discovered PID. Capture the no-child observation immediately
  * after waiting for the exact owner, before draining pipes or namespace teardown.
  * The two calibration modes create real adopted children, not guardian receipts.
@@ -23,6 +23,8 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "host-bridge-resistance-witness.h"
 
 extern char **environ;
 
@@ -99,7 +101,8 @@ int main(int argc, char **argv) {
     const int release = strcmp(argv[1], "release") == 0;
     const int live = strcmp(argv[1], "live-residue") == 0;
     const int zombie = strcmp(argv[1], "zombie-residue") == 0;
-    if (!release && !live && !zombie && strcmp(argv[1], "observe") != 0) return 120;
+    const int resistance = strcmp(argv[1], "resistance") == 0;
+    if (!release && !live && !zombie && !resistance && strcmp(argv[1], "observe") != 0) return 120;
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     sigset_t empty;
@@ -118,6 +121,11 @@ int main(int argc, char **argv) {
         prctl(PR_GET_PDEATHSIG, &parent_death_signal) != 0 || parent_death_signal != SIGKILL ||
         syscall(SYS_close_range, 3u, UINT_MAX, 0u) != 0 || nonblocking(0) != 0 ||
         nonblocking(1) != 0) return 120;
+    struct resistance_observation observation = { .listener = -1, .connection = -1, .pidfd = -1 };
+    if (resistance) {
+        observation.listener = resistance_listen(argv[4]);
+        if (observation.listener < 0) return 121;
+    }
     int control[2], output[2], diagnostic[2];
     if (pipe2(control, O_CLOEXEC) != 0 || pipe2(output, O_CLOEXEC) != 0 ||
         pipe2(diagnostic, O_CLOEXEC) != 0) return 121;
@@ -151,7 +159,19 @@ int main(int argc, char **argv) {
         }
         if (read_output(output[0], out, &out_length, &out_closed) != 0 ||
             read_output(diagnostic[0], err, &err_length, &err_closed) != 0) return 122;
-        if (owner_closed && out_closed && err_closed) break;
+        if (resistance) {
+            if (resistance_accept(&observation, owner, argv) != 0 ||
+                resistance_read(&observation, control_closed) != 0) return 122;
+            if (observation.ready && !control_closed) {
+                const char owned[] = "FLOW_HOST_BRIDGE_V1 OWNED\n";
+                if (out_length == sizeof(owned) - 1 && memcmp(out, owned, out_length) == 0) {
+                    if (owner_closed || resistance_terminated(observation.pidfd) != 0 ||
+                        write(control[1], "stop\n", 5) != 5 || close(control[1]) != 0) return 122;
+                    control_closed = 1;
+                }
+            }
+        }
+        if (owner_closed && out_closed && err_closed && (!resistance || observation.closed)) break;
         if (release && !control_closed) {
             const ssize_t count = read(0, command + command_length, sizeof(command) - command_length);
             if (count > 0) {
@@ -170,13 +190,23 @@ int main(int argc, char **argv) {
     if (close(output[0]) != 0 || close(diagnostic[0]) != 0 ||
         (!control_closed && close(control[1]) != 0)) return 122;
     if (!WIFEXITED(status) && !WIFSIGNALED(status)) return 122;
+    if (resistance) {
+        observation.terminated = resistance_terminated(observation.pidfd);
+        if (observation.terminated < 0 || close(observation.pidfd) != 0 ||
+            close(observation.connection) != 0 || close(observation.listener) != 0) return 122;
+    }
     printf("{\"ownerCode\":%d,\"ownerSignal\":%d,\"stdoutHex\":\"",
            WIFEXITED(status) ? WEXITSTATUS(status) : -1,
            WIFSIGNALED(status) ? WTERMSIG(status) : 0);
     print_hex(out, out_length);
     printf("\",\"stderrHex\":\"");
     print_hex(err, err_length);
-    printf("\",\"remaining\":\"%s\"}\n", remaining);
+    printf("\",\"remaining\":\"%s\"", remaining);
+    if (resistance) printf(
+        ",\"resistance\":{\"termObserved\":%s,\"liveAfterTerm\":%s,\"terminated\":%s}",
+        observation.term ? "true" : "false", observation.live_after_term ? "true" : "false",
+        observation.terminated ? "true" : "false");
+    printf("}\n");
     if (fflush(stdout) != 0 || ferror(stdout)) return 123;
     return 0; /* Namespace cleanup cannot revise the already captured observation. */
 }

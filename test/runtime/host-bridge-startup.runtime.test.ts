@@ -13,6 +13,7 @@ import { z } from "zod";
 const guardian = process.env.FLOW_TEST_HOST_BRIDGE_GUARDIAN;
 const enabled = process.platform === "linux" && process.arch === "x64" && guardian !== undefined;
 const weakBaseline = process.env.FLOW_TEST_STARTUP_REAPING_BASELINE === "1";
+const cooperativeBaseline = process.env.FLOW_TEST_RESISTANCE_BASELINE === "1";
 const execFile = promisify(callbackExecFile);
 const owned = "FLOW_HOST_BRIDGE_V1 OWNED\n";
 const reportSchema = z.strictObject({
@@ -27,6 +28,13 @@ const reportSchema = z.strictObject({
     .max(512)
     .regex(/^(?:[0-9a-f]{2})*$/),
   remaining: z.enum(["none", "live", "unreaped"]),
+  resistance: z
+    .strictObject({
+      termObserved: z.boolean(),
+      liveAfterTerm: z.boolean(),
+      terminated: z.boolean(),
+    })
+    .optional(),
 });
 type Report = z.infer<typeof reportSchema>;
 
@@ -36,9 +44,20 @@ function disposed(report: Report): boolean {
   return weakBaseline ? report.remaining !== "live" : report.remaining === "none";
 }
 
+function resistanceQualified(report: Report): boolean {
+  return (
+    report.remaining === "none" &&
+    report.resistance?.termObserved === true &&
+    report.resistance.liveAfterTerm &&
+    report.resistance.terminated
+  );
+}
+
 describe.skipIf(!enabled)("bridge startup with independent namespace custody", () => {
   let witness: string;
   let relay: string;
+  let resistant: string;
+  let cooperative: string;
   beforeAll(async () => {
     const root = await mkdtemp(join(await realpath(tmpdir()), "flow-startup-build-"));
     witness = join(root, "witness");
@@ -67,7 +86,74 @@ describe.skipIf(!enabled)("bridge startup with independent namespace custody", (
     );
     expect(compiled.stdout).toBe("");
     expect(compiled.stderr).toBe("");
+    resistant = join(root, "resistant-relay");
+    cooperative = join(root, "cooperative-relay");
+    for (const [destination, flags] of [
+      [resistant, []],
+      [cooperative, ["-DFLOW_TEST_COOPERATIVE=1"]],
+    ] as const) {
+      const fixture = await execFile(
+        "/usr/bin/cc",
+        [
+          "-static",
+          "-std=c11",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pedantic",
+          ...flags,
+          fileURLToPath(new URL("../fixtures/host-bridge-resistant-relay.c", import.meta.url)),
+          "-o",
+          destination,
+        ],
+        {
+          cwd: root,
+          env: { PATH: "/usr/bin:/bin" },
+          timeout: 5000,
+          killSignal: "SIGKILL",
+          maxBuffer: 8192,
+        },
+      );
+      expect(fixture.stdout).toBe("");
+      expect(fixture.stderr).toBe("");
+    }
   });
+
+  it.for(["resistant", "cooperative"] as const)(
+    "requires actual TERM survival before accepting the %s child as resistance evidence",
+    async (kind, context) => {
+      const root = await temporaryRoot();
+      // Sensitivity control substitutes a real cooperative executable, not observations.
+      const executable = kind === "cooperative" || cooperativeBaseline ? cooperative : resistant;
+      const report = await observe(
+        witness,
+        "resistance",
+        executable,
+        root,
+        join(root, "resistance.sock"),
+        1,
+        context.signal,
+      );
+      expect(report).toMatchObject({
+        ownerCode: 0,
+        ownerSignal: 0,
+        stdoutHex: Buffer.from(`${owned}FLOW_HOST_BRIDGE_V1 SETTLED\n`).toString("hex"),
+        stderrHex: "",
+        remaining: "none",
+        resistance: { terminated: true },
+      });
+      expect(
+        resistanceQualified(report),
+        "Clean disposal alone does not establish TERM survival",
+      ).toBe(kind === "resistant");
+      expect(report.resistance).toEqual({
+        termObserved: kind === "resistant",
+        liveAfterTerm: kind === "resistant",
+        terminated: true,
+      });
+    },
+  );
 
   it.for(["live-residue", "zombie-residue"] as const)(
     "rejects actual adopted %s before namespace teardown",
@@ -202,7 +288,7 @@ async function temporaryRoot(): Promise<string> {
 
 async function observe(
   witness: string,
-  mode: "observe" | "release" | "live-residue" | "zombie-residue",
+  mode: "observe" | "release" | "live-residue" | "zombie-residue" | "resistance",
   relay: string,
   root: string,
   path: string,

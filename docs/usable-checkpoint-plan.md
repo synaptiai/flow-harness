@@ -453,6 +453,12 @@ All 320 selected tests passed without skips, and both clean builds matched 32 ar
 The selected startup-failure gate is complete within the test namespace. Unnamespaced host custody,
 resistant descendants, owner loss, and manager integration remain open.
 
+The resistant-child gate now has two test-only cases and an independent socket-bound process
+observation in the existing witness. The initial hosted sensitivity run remains pending. It must
+reject a cooperative twin as resistance evidence after confirming clean disposal. See the
+[resistant-child qualification guide](testing-and-evaluation.md#qualify-resistant-bridge-descendants).
+No production code or repair policy changes in this test slice.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

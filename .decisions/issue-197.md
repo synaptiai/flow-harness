@@ -2975,3 +2975,59 @@ No production source changed, no repairs enabled, no model transmission, merge, 
 Final independent review of the five-document GREEN evidence update found no P1-P3 findings.
 All three documentation gates and21 focused tests passed. Commit this evidence locally without
 another unchanged native run. Full usable-checkpoint goal remains active and incomplete.
+
+### Design the resistant-descendant qualification
+
+Current tree was clean at c75c58c; previous turn completed verified startup progress. This gate
+serves the operator's clean-stop flow: owned readiness -> explicit guardian stop -> actual child
+TERM receipt and immediate independent liveness -> guardian closure and no remaining child.
+It does not enable repairs, change ordinary SRT, or complete unnamespaced runtime custody.
+
+Compared three mechanisms: elapsed-time/file markers are too weak (stale or ambiguous delivery);
+a separate oracle process would contaminate the PID1 witness's immediate ECHILD observation;
+one witness-owned Unix socket plus SO_PEERPIDFD preserves that observation and binds a retained
+kernel process handle to the child that actually connected. Select the socket option, with no
+numeric-PID fallback. It is test-only; unsupported kernel/socket behavior is a failed qualification.
+Linux6.8 UAPI/socket implementation confirm option77 returns the socket peer's pidfd. The previously
+qualified runner reports6.17.0-1022-azure; actual socket support still requires runtime proof.
+Sources: https://raw.githubusercontent.com/torvalds/linux/v6.8/include/uapi/asm-generic/socket.h
+https://raw.githubusercontent.com/torvalds/linux/v6.8/net/core/sock.c
+
+Independent design review agrees: child must connect after fork, not inherit the leader's socket.
+Verify peer UID/PID, guardian->leader->child ancestry, group/session, exact argv, and initial
+pidfd liveness before stop. Block TERM before readiness; sigwaitinfo validates SI_USER and sender
+guardianPID, then the child sends one receipt and enters a no-normal-exit loop. Witness samples
+liveness immediately after receipt with no retry. Final owner closure/ECHILD and terminated pidfd
+must precede namespace teardown. A fully cleaned cooperative twin with default TERM and no receipt
+must be rejected by the SAME resistance predicate, not merely throw or time out.
+
+Implementation boundaries: extend only the existing test witness and its runtime suite, with
+fixed separately compiled relay fixtures. No additional oracle child or production dependency.
+Timeout/abort/partial startup retain unconfirmed cleanup and fail. Invalid/extra bytes, wrong
+identity, unsupported pidfd option, output overflow, or missing context fail closed. Test-only
+namespace custody disposes leftovers after observations; never revise a failed observation.
+Retain strict bounded output, deadlines, no discovered-PID signals, and existing startup tests.
+Pidfd evidence does NOT independently capture SIGKILL wait status. Escalation attribution relies
+also on fixed child source and unchanged guardian final-KILL-before-reaping ordering.
+
+### Implement the resistant-child sensitivity tests
+
+Added two real-process cases to the existing startup suite and a separately compiled fixed relay
+with a compile-time cooperative twin. A test-only header extends the existing PID1 witness with
+bounded Unix SEQPACKET observations, SO_PEERPIDFD identity, before/after process ancestry/UID/argv
+checks, immediate TERM/liveness sampling, and final termination before namespace teardown.
+The immediate owner-wait/ECHILD ordering is unchanged. No production source or dependency changed.
+The first dedicated workflow selects FLOW_TEST_RESISTANCE_BASELINE=1: its resistant case must
+fail the resistance predicate after proving normal guardian output/status, terminated child handle,
+and no remaining child. The cooperative case and original five cases must pass. Native compile
+and Linux behavior remain pending, not inferred from local checks.
+
+Local typecheck, lint, format, build, three documentation gates, and21 focused tests passed.
+Seven runtime cases skipped on Mac, without qualification credit. Documentation style checks
+initially rejected two semicolons and a long paragraph; corrected and reran all gates cleanly.
+All nine modified/new files belong to the approved qualification slice. Preserve local-only
+startup evidence commitc75c58c when pushing the next reviewed source to the dedicated branch.
+
+Independent nine-file spec/code/test/documentation review found no P1-P3 findings. It corroborated
+socket-bound identity, immediate single liveness sample, immutable immediate ECHILD, and clean-false
+cooperative predicate ordering. Native compile and behavior remain pending the hosted run.

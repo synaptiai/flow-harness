@@ -207,6 +207,7 @@ flowchart TB
         observerProcessOracle["Independent host process checks<br/>Observe descendant termination without signaling it"]
         bridgePredicate["Bridge cleanup decision tests<br/>Replay real live, unreaped, and reaped observations"]
         bridgeStartup["Startup cleanup witness — test only<br/>Private PID namespace · records leftovers before teardown"]
+        bridgeResistance["Fixed resistant and cooperative children — test only<br/>Real signal receipt · no traffic forwarding"]
         observerFixture["Private fixture owner<br/>Permissions · identities · safe disposal"]
         observerCommand["Linux command observation<br/>Original output · namespace and cleanup evidence"]
         observerResult["Private result decoder<br/>Exact framing · invocation binding<br/>Not proof of trusted execution"]
@@ -252,6 +253,9 @@ flowchart TB
     observerTests -->|"Checks forwarding and release receipts"| bridgeOwner
     observerTests -->|"Checks startup failures and real leftover controls"| bridgeStartup
     bridgeStartup -->|"Waits for this owned process, then checks for remaining children"| bridgeOwner
+    bridgeOwner -->|"Owns fixed lifecycle fixtures in resistance tests"| bridgeResistance
+    bridgeResistance -->|"Connects after fork and reports actual signal receipt"| bridgeStartup
+    bridgeStartup -->|"Checks kernel-bound child liveness and termination"| bridgeResistance
     bridgeOwner -->|"Owns the process group and cleanup"| bridgeRelay
     observerTests -->|"Runs fixed interruption controls"| observerSignalDriver
     observerSignalDriver -->|"Starts and owns the actual helper child"| observerNative
@@ -466,6 +470,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | --- | --- | --- |
 | Bridge cleanup decision tests, qualification only | `test/runtime/host-bridge-predicate.runtime.test.ts`, `test/runtime/helpers/host-bridge-probe.ts`, and `test/runtime/helpers/native-observer-zombie-control.ts` | Replays actual live, unreaped, and reaped observations against the same decision used by the held-connection test. The callback supplies records only after the owned calibration processes close. The selected calibration passed on hosted Linux x64. This is not simultaneous bridge-tree evidence or production repair selection. |
 | Startup cleanup witness, qualification only | `test/runtime/host-bridge-startup.runtime.test.ts` and `test/fixtures/host-bridge-startup-witness.c` | Starts the actual guardian inside a test-only PID namespace. The witness records remaining children immediately after waiting for the exact guardian and before namespace teardown. Real adopted live and unreaped children calibrate this check. A forwarding case checks the same test environment. The five selected cases passed on hosted Linux x64. This does not establish unnamespaced host custody or change the ordinary manager. |
+| Resistant-child observation, qualification pending | `test/fixtures/host-bridge-resistant-relay.c` and `test/fixtures/host-bridge-resistance-witness.h` | Extends the existing witness without another child process. A socket supplies the connected child's kernel-bound process handle. Separately compiled resistant and cooperative fixtures distinguish actual TERM survival from successful cleanup alone. This tests lifecycle behavior, not traffic forwarding or production custody. |
 | Preview release automation | `package.json`, `npm-shrinkwrap.json`, `scripts/resolve-preview-release-identity.mjs`, `scripts/verify-preview-npm-release.mjs`, `src/domain/release/`, `src/infrastructure/release/`, `scripts/build-package-release.mjs`, `scripts/verify-package.mjs`, `.github/workflows/preview-release.yml`, and `.github/workflows/preview-npm-stage.yml` | Validates one manifest-owned identity, builds and verifies one bounded archive on supported x64 hosts, publishes a complete immutable GitHub prerelease, then reverifies and stages those exact bytes through short-lived stage-only npm authority. |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |

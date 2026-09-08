@@ -1141,6 +1141,40 @@ All 320 selected tests passed without skips, and both clean builds matched 32 ar
 This closes the selected startup cases within the test namespace, not unnamespaced runtime custody
 or the remaining observer qualification gates.
 
+### Qualify resistant bridge descendants
+
+The startup suite also defines two lifecycle-only cases. Their hosted qualification is pending.
+It compiles `host-bridge-resistant-relay.c` twice: once as a resistant relay-shaped fixture and
+once as a cooperative twin. Neither fixture forwards traffic. The real-socat forwarding case
+remains a separate requirement.
+
+The existing process-1 witness owns a local socket before starting the actual guardian. The fixed
+relay child connects after forking. The witness obtains the peer's credentials and process handle
+through `SO_PEERCRED` and `SO_PEERPIDFD`. It checks the guardian, leader, and child ancestry,
+user identity, process group, session, exact relay arguments, and initial liveness. The handle
+comes from the socket's peer identity, not a later lookup by numeric process ID.
+
+This uses the
+[Linux socket implementation](https://github.com/torvalds/linux/blob/v6.8/net/core/sock.c)
+and requires kernel support for `SO_PEERPIDFD`. Unsupported hosts fail qualification.
+
+Only after child readiness and the actual `OWNED` receipt does the witness send `stop` and close
+control input. The resistant child blocks `SIGTERM`, verifies its actual sender with `sigwaitinfo`,
+reports receipt, and remains alive. The witness immediately checks its process handle without
+retrying for a favorable sample. After the guardian closes, acceptance also requires a terminated
+child handle and the immediate no-remaining-children observation, before namespace teardown.
+
+The cooperative twin exits on `SIGTERM` without reporting resistance. It must clean up normally
+but fail the same resistance decision. For initial sensitivity testing only, set
+`FLOW_TEST_RESISTANCE_BASELINE=1` to substitute this real cooperative executable in the resistant
+case. That case must reject missing resistance evidence after confirming successful disposal.
+The dedicated workflow currently selects this sensitivity control. No passing result is claimed.
+
+A terminated process handle does not report the terminating signal. The escalation interpretation
+also depends on the fixed child's lack of a normal exit path after receipt and the guardian's
+final `SIGKILL` before reaping. These cases do not establish arbitrary-process containment,
+unnamespaced runtime custody, or repair readiness. They add no production dependency.
+
 ### Test the internal observer components
 
 The fixture-owner tests use real local files. They cover byte and identity drift, denied file and
