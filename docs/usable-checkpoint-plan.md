@@ -441,6 +441,12 @@ Both proved independent descendant settlement after failed owner closure, before
 cleanup. All 315 selected tests passed without skips, and both clean builds matched 32 artifacts.
 This closes the selected held-connection gate, not stage 2 or the usable checkpoint.
 
+Startup-failure qualification now has a test-only namespace witness and five real-process cases
+under review. The first run deliberately weakens the cleanup decision so an actual unreaped child
+must expose a false pass. The normal-forwarding twin checks the same environment used by both
+startup failures. See the [startup test guide](testing-and-evaluation.md#qualify-bridge-startup-cleanup).
+No startup gate is closed until the sensitivity and actual-decision runs pass their required checks.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

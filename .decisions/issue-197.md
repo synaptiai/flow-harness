@@ -2884,3 +2884,41 @@ runtime-custody, and isolated-manager integration gates. No repairs, pilot, merg
 Main-agent review of the four-document evidence update against actual source and logs found no
 P1-P3 findings. All three documentation gates and 21 focused tests passed. Record this update
 locally without another unchanged native run. Full goal remains active, not achieved or blocked.
+
+### Prepare startup cleanup qualification with independent test custody
+
+Previous turn made verified progress; current tree was clean at c66885c. Reviewed guardian admission,
+fork/group ACK, exec error channel, await_release, and settle_owned paths. OWNED is not listener
+readiness; stop/EOF must not be sent during spontaneous failure tests. Code1 alone cannot prove
+cleanup. An outer subreaper alone observes ECHILD but cannot guarantee live-adoptee cleanup under
+the no-discovered-PID-signals constraint. Cgroup custody adds host delegation/setup authority.
+Selected the existing bwrap dependency's private PID namespace for TEST custody only, with a
+fixed witness as PID1 and no automatic intermediate reaper. This does not qualify host custody.
+
+Cross-checked kernel PID-namespace init-death behavior, PR_SET_CHILD_SUBREAPER, and wait semantics:
+https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
+https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html
+https://man7.org/linux/man-pages/man2/wait.2.html
+Checked bubblewrap v0.9.0 source/docs for --as-pid-1 and --die-with-parent. Hosted installed-version
+evidence and actual execution still required; upstream reading does not qualify the runner.
+
+Independent design review required explicit PID1 watchdog handler, normal SIGCHLD disposition,
+immediate nonreaping waitid after exact owner wait, a writable owned fixture mount, and a normal
+forwarding twin. Implemented those constraints. Real intermediate parents create adopted live and
+zombie residues for the SAME no-child acceptance predicate; no fake guardian receipts. Namespace
+teardown happens only after the immutable observation and cannot turn it into acceptance. Node
+signals only its directly spawned bwrap; forced closure is an unconfirmed-cleanup test failure.
+
+New fixed C witness compiles separately from the 32 reproducible native artifacts. Two real
+failure inputs cover non-ELF executable-format rejection and socat absent-listener-parent failure.
+The positive twin holds a real connection through release. Initial RED selects a weak test-only
+predicate that accepts actual unreaped observations, expecting exactly that calibration to fail.
+No production source, credentials, model calls, repair enablement, merge, or release changed.
+
+Independent code/test review found one P3: final cancellation throw hid accumulated cleanup/join
+errors. Fixed by retaining abort reason with bounded failures and the owned diagnostic root.
+Added checked PDEATHSIG==SIGKILL admission before fork. Final code/test/documentation review
+found no remaining P1-P3 findings. Local typecheck, lint, format, build, three doc gates, and21
+focused tests passed. Five runtime cases skipped on Mac without Linux qualification credit.
+All eight changed/new files are within the approved startup qualification; native compile and
+runtime checks are pending the dedicated hosted RED run.

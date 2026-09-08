@@ -1091,6 +1091,41 @@ Failed startup, resistant descendants, owner loss, runtime custody, and isolated
 remain separate qualification gates. These development tests do not
 enable repairs or complete installed issue-lifecycle acceptance.
 
+### Qualify bridge startup cleanup
+
+The development-only `test/runtime/host-bridge-startup.runtime.test.ts` suite requires the same
+explicit guardian path as the host-bridge tests. It compiles a separate static C witness and uses
+the installed `bwrap` executable. The hosted startup gate is under qualification, not yet passed.
+The ordinary SRT manager does not load this witness.
+
+The witness runs as process 1 in a private PID namespace. It holds guardian control input open
+for failure cases and waits for the exact guardian process. It immediately records whether any
+child remains, before draining output or tearing down the namespace. Only `ECHILD` from that
+non-reaping check means no children remain. A live child and a terminated but unreaped child
+both prevent acceptance.
+
+The five cases distinguish the following outcomes:
+
+| Case | Required evidence |
+| --- | --- |
+| Executable-format failure | An executable file passes path and permission checks but fails actual execution. The guardian exits with status 1, emits only `OWNED`, and leaves no child. |
+| Listener-parent failure | Actual socat cannot create its listener beneath an absent directory. No control command is sent. The same failed-owner and no-child requirements apply. |
+| Normal forwarding | The same namespace configuration forwards a real held connection and accepts explicit release. The fixture directory is writable so a read-only mount cannot explain the failure cases. |
+| Adopted live child | A real intermediate parent exits while its child remains alive. The witness records a live child and rejects cleanup acceptance. |
+| Adopted unreaped child | A real intermediate parent leaves an exited child unreaped. The witness records the leftover and rejects cleanup acceptance. |
+
+The last two cases calibrate the witness, not the guardian's protocol. They do not invent guardian
+receipts. Namespace teardown follows the recorded observation and cannot change it to a pass.
+This separation relies on the documented
+[Linux PID namespace lifecycle](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html).
+Forced wrapper closure remains unconfirmed cleanup and fails the test.
+
+For the initial sensitivity run only, the dedicated workflow selects
+`FLOW_TEST_STARTUP_REAPING_BASELINE=1`. This deliberately weakens the test's acceptance decision
+to ignore a real unreaped child. The unreaped-child case must fail while the other four cases pass.
+Remove this variable after authenticating that failure, then rerun the actual decision.
+These tests qualify behavior within the test namespace, not unnamespaced host runtime custody.
+
 ### Test the internal observer components
 
 The fixture-owner tests use real local files. They cover byte and identity drift, denied file and
