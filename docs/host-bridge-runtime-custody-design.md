@@ -171,8 +171,9 @@ libc call. Source review, link-map inspection, and runtime checks must establish
 
 The wrapper implementation, environment admission, and executable custody remain open. A separate
 static-baseline build is implemented for comparison. Its selected build and forwarding checks
-[passed on hosted Linux x64](testing-and-evaluation.md#baseline-evidence). Restricted argument
-admission is the next failing-test gate, not a property established by that baseline result.
+[passed on hosted Linux x64](testing-and-evaluation.md#baseline-evidence). The baseline then
+[failed the restricted-argument test as expected](testing-and-evaluation.md#expose-missing-restricted-argument-admission).
+This establishes the failing-test gate, not an implemented argument restriction.
 
 ### Check the source bundle
 

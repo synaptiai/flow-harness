@@ -3370,3 +3370,32 @@ and initializes before processing options, so admission must precede the call in
 GNU ld documentation independently confirms that --wrap replaces unresolved references only.
 These are source/design findings, not linked-wrapper or native runtime evidence. No new user
 decision is needed for this lexical gate within RC-B. Actual nativeRED must precede implementation.
+
+### Restricted-argument native RED observed
+
+Committed the reviewed test/evidence delta as94dc2353179d80b58444894fbc5d9260049139cd and pushed
+only the approved dedicatedqualificationbranch, fast-forward from6d1c62e. Hosted run34216779457
+checked out that exact revision. Its Linux x64 job ran September8,2026,10:41:35–10:46:59UTC.
+All preceding build and qualification steps passed. Runtime counts are3+5+8+1+18+3+306=344
+preceding passes, plus two portable process-control passes. No runtime test skipped.
+
+Only the final intended-V assertion failed: baseline normal exit0, version text on stdout,
+empty stderr, versus required normal64, empty stdout, and fixed invalid_arguments diagnostic.
+The positive normal-exit control passed in34ms, the parent-termination negative control in30ms,
+and the actual-V case failed in11ms. This is observed nativeRED, not a timeout or build failure.
+The skipped setup-node post step is not a skipped runtime case. Workflow failure is intentional
+and remains visible. It is not green CI or qualification of the restricted profile.
+
+Both clean builds matched again. Reported static binary, libc archive, and relay link-map hashes
+match run34214345967 exactly. Main authenticated run metadata and targeted logs using gh.
+Output artifacts were not independently downloaded and rehashed. Updated the canonical testing
+guide, runtime design, and checkpoint plan to replace pendingRED with measured evidence.
+Argument/environment/resolver implementation, bootstrap and sealed-byte custody, broad lifecycle
+qualification, manager integration, and full goal completion remain open. No repair enablement,
+model call, credential work, production setting change, merge, or release occurred.
+
+Independent review authenticated the same exact-source run and confirmed346passes, one intended
+failure, no runtime skips, and no unexpected failed step. Final four-document review found no
+P1-P3. All three documentation gates and20focused documentation-contract tests passed after
+splitting one overlong paragraph. This evidence-only commit stays local until the next scoped
+qualification-source push; no redundant hosted run is needed for prose alone.

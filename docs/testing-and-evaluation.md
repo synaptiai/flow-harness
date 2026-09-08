@@ -716,7 +716,14 @@ FLOW_TEST_RESTRICTED_RELAY=/absolute/path/to/socat-static-baseline \
 The unwrapped baseline is expected to fail by reporting its version with status 0. The dedicated
 workflow runs this deliberate failing-test experiment after the passing baseline and observer checks.
 It does not suppress failure or substitute the baseline for a production restricted relay.
-The native failure still needs observation before wrapper implementation. This one case does not
+
+[Run 34216779457](https://github.com/synaptiai/flow-harness/actions/runs/34216779457) observed this
+exact failure on Linux x64 at `94dc2353179d80b58444894fbc5d9260049139cd`. The baseline returned
+status 0, version text on standard output, and empty standard error. All 344 preceding runtime
+executions and both portable controls passed, with no test skips. Only the intended argument test
+failed. The static relay, libc archive, and link-map digests matched the earlier baseline evidence.
+
+This completes the failing-test gate before wrapper implementation. This one case does not
 qualify the complete argument grammar, environment, resolver behavior, or executable custody.
 
 ### Develop the native result transport independently

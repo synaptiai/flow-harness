@@ -497,7 +497,11 @@ The separate static-baseline build and three forwarding cases passed on native L
 [run 34214345967](https://github.com/synaptiai/flow-harness/actions/runs/34214345967) at `6d1c62e`.
 The two clean builds matched 28 baseline artifacts, and all 344 selected runtime executions passed.
 The existing system-relay checks remain separate. This baseline has no restricted argument,
-resolver, or environment wrapper. The restricted-argument failing-test experiment is next.
+resolver, or environment wrapper.
+
+The restricted-argument test failed as expected in
+[run 34216779457](https://github.com/synaptiai/flow-harness/actions/runs/34216779457) at `94dc235`.
+All 344 preceding runtime executions and both process controls passed. The wrapper is next.
 The baseline result does not close runtime custody or stage 2.
 
 Policy interference, fixture denial, immutable runtime custody,
