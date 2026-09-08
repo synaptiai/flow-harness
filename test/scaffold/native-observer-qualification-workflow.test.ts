@@ -57,6 +57,7 @@ describe("native observer qualification workflow", () => {
     expect(source).not.toContain("FLOW_TEST_HOST_BRIDGE_INTERRUPT_BASELINE");
     expect(source).not.toContain("FLOW_TEST_STARTUP_REAPING_BASELINE");
     expect(source).not.toContain("FLOW_TEST_RESISTANCE_BASELINE");
+    expect(source).not.toContain("FLOW_TEST_OWNER_LOSS_BASELINE");
     const descendantStep = job.steps.find(
       (step: { name: string }) => step.name === "Test active bridge descendants",
     );

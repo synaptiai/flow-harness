@@ -3138,3 +3138,24 @@ typecheck, lint, format, build, all three documentation gates, and21 focused tes
 validation initially rejected a26-word sentence; split it and reran the gates. Eight runtime cases
 skipped on Mac, without Linux qualification credit. All seven changed files are in scope.
 Push only the dedicated qualification branch; no merge, release, or production integration.
+
+### Authenticate owner-loss sensitivity
+
+Run34207774066 exact17d469e54f7145b58409b2363896b4d1be4557ea,
+job102001260196, September8 UTC09:02:23-09:05:22 (179seconds), failed exactly the shared settlement
+predicate at line195:86 (true versus requiredfalse). The exact report at187-194 had already passed:
+ownerCode-1/signal9/OWNEDonly/empty stderr/remaininglive/childTerminatedfalse. Owner-loss case17ms.
+Other7startup/resistance cases passed, suite8.40s/tests8.17s (8173ms file). Prior3owner and5active
+cases passed; laterpredicate and306native cases skipped. Fixture compilation and actual bounded
+namespace closure succeeded, not a compiler/setup/cleanup failure. Two clean builds matched32
+artifacts with unchanged guardian/object/observer/false-normal identities and observerQualified:false.
+Bwrap0.9.0 and canonical/usr/bin/socat1. Main and independent reviewer authenticated exact source,
+actual selected baseline, real observation ordering, counts, and identities.
+
+Added a scaffold guard against FLOW_TEST_OWNER_LOSS_BASELINE and observed localRED atline60 while
+still selected. Removed only the workflow selector after authenticating hostedRED. No C or runtime
+test logic changes after this sensitivity run. Actual-decision qualification remains pending.
+
+Independent five-file selector/evidence review found no P1-P3 findings. Local typecheck, lint,
+format, build, all three documentation gates, and21 focused tests passed. Commit/push only the
+reviewed actual-rule selection to the dedicated qualification branch.

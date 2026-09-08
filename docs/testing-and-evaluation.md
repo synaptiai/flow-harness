@@ -1217,8 +1217,17 @@ The same test-only settlement decision accepts the normal forwarding and resista
 must reject owner loss. For initial sensitivity testing only, set
 `FLOW_TEST_OWNER_LOSS_BASELINE=1`. This deliberately treats any recorded guardian exit as settled.
 The owner-loss case must fail that decision after its exact live-child observations pass.
-The dedicated workflow currently selects this sensitivity control. Actual qualification remains
-pending, and production owner-loss handling remains unqualified.
+
+The sensitivity control failed as required in
+[run 34207774066](https://github.com/synaptiai/flow-harness/actions/runs/34207774066) at `17d469e`.
+The exact killed-owner and surviving-child assertions passed before the weak settlement decision
+incorrectly accepted that result. The other seven startup cases passed. Three owner and five
+active-descendant cases also passed. Later predicate and native cases were skipped, and both
+clean builds matched 32 artifacts.
+
+The dedicated workflow now selects the actual decision. Its guard rejects the sensitivity
+variable. Actual-decision qualification remains pending, and production owner-loss handling
+remains unqualified.
 
 ### Test the internal observer components
 

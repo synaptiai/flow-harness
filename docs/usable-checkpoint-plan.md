@@ -470,8 +470,12 @@ while cleaning up normally. This closes the selected resistant-child gate in the
 Owner loss, unnamespaced runtime custody, and manager integration remain open.
 
 The owner-loss gate now has a test-only case that captures a live child immediately after the
-owned guardian dies, before namespace teardown. Its hosted sensitivity qualification remains
-pending. See the [owner-loss test guide](testing-and-evaluation.md#qualify-bridge-owner-loss).
+owned guardian dies, before namespace teardown. The sensitivity run rejected the weak decision's
+false acceptance in
+[run 34207774066](https://github.com/synaptiai/flow-harness/actions/runs/34207774066) at `17d469e`.
+The exact surviving-child observations passed, as did the other seven startup cases.
+Actual-decision qualification remains pending. See the
+[owner-loss test guide](testing-and-evaluation.md#qualify-bridge-owner-loss).
 Test-namespace disposal must not become evidence of successful guardian cleanup.
 
 Policy interference, fixture denial, immutable runtime custody,
