@@ -1168,7 +1168,15 @@ The cooperative twin exits on `SIGTERM` without reporting resistance. It must cl
 but fail the same resistance decision. For initial sensitivity testing only, set
 `FLOW_TEST_RESISTANCE_BASELINE=1` to substitute this real cooperative executable in the resistant
 case. That case must reject missing resistance evidence after confirming successful disposal.
-The dedicated workflow currently selects this sensitivity control. No passing result is claimed.
+
+The sensitivity control failed as required in
+[run 34206240523](https://github.com/synaptiai/flow-harness/actions/runs/34206240523) at `4a00f87`.
+Only the resistance decision failed, after the clean-disposal assertions passed. The cooperative
+case and original five startup cases passed. Three owner and five active-descendant cases also
+passed. Later predicate and native cases were skipped. Both clean builds matched 32 artifacts.
+
+The dedicated workflow now selects the actual resistant fixture. Its guard rejects the
+sensitivity variable. Qualification of actual resistant behavior remains pending.
 
 A terminated process handle does not report the terminating signal. The escalation interpretation
 also depends on the fixed child's lack of a normal exit path after receipt and the guardian's

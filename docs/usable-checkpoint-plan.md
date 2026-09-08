@@ -454,8 +454,10 @@ The selected startup-failure gate is complete within the test namespace. Unnames
 resistant descendants, owner loss, and manager integration remain open.
 
 The resistant-child gate now has two test-only cases and an independent socket-bound process
-observation in the existing witness. The initial hosted sensitivity run remains pending. It must
-reject a cooperative twin as resistance evidence after confirming clean disposal. See the
+observation in the existing witness. The sensitivity run rejected the cooperative twin as
+resistance evidence after confirming clean disposal in
+[run 34206240523](https://github.com/synaptiai/flow-harness/actions/runs/34206240523) at `4a00f87`.
+The other six startup cases passed. Actual resistant behavior remains pending. See the
 [resistant-child qualification guide](testing-and-evaluation.md#qualify-resistant-bridge-descendants).
 No production code or repair policy changes in this test slice.
 

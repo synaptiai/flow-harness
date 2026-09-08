@@ -3031,3 +3031,27 @@ startup evidence commitc75c58c when pushing the next reviewed source to the dedi
 Independent nine-file spec/code/test/documentation review found no P1-P3 findings. It corroborated
 socket-bound identity, immediate single liveness sample, immutable immediate ECHILD, and clean-false
 cooperative predicate ordering. Native compile and behavior remain pending the hosted run.
+
+### Authenticate the cooperative resistance sensitivity control
+
+Run34206240523 at exact4a00f8794592a16ec94181523865e7777224c3b1,
+job101996267673, September8 UTC08:45:35-08:48:04 (149seconds), failed exactly the intended
+resistance predicate at line149 (false versus requiredtrue), AFTER normal guardian0/signal0,
+OWNED+SETTLED, empty stderr, remainingnone, and terminatedchild assertions passed.
+Startup6passed/1failed: selectedcooperative1524ms, cooperative1514ms, live9ms, zombie8ms,
+executable-format1510ms, listener-parent1529ms, forwarding1533ms; suite8.27s/tests8.05s.
+Prior3owner and5active cases passed. Later predicate and306native cases skipped. The witness and
+both fixture variants compiled under strict warnings, and actual socket-bound peer handles worked.
+No setup/compiler/cleanup failure. Two clean builds matched32 artifacts with unchanged native
+identities and observerQualified:false. Bwrap0.9.0 and canonical/usr/bin/socat1 verified.
+Main and independent reviewer authenticated exact source, result ordering, counts, and identities.
+
+Added a scaffold guard against FLOW_TEST_RESISTANCE_BASELINE and observed its localRED while
+the workflow still selected the twin. Removed only that workflow selection after authenticating
+the hosted sensitivity result. Actual resistant behavior is still pending; no C or runtime-test
+logic changed after the sensitivity run. Keep all remaining lifecycle gates open.
+
+Independent five-file selection/evidence review found no P1-P3 findings. Local typecheck, lint,
+format, build, all three documentation gates, and21 focused tests passed. Corrected the new
+evidence paragraph boundary after prose validation rejected its combined sentence count.
+Commit and push the reviewed actual-fixture selection only to the dedicated qualification branch.
