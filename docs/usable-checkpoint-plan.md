@@ -486,6 +486,11 @@ though the test namespace subsequently disposed of its processes. This closes th
 owner-loss rejection gate within the test namespace only. Runtime custody is the next admission
 prerequisite before manager integration. Stage 2 and the usable checkpoint remain incomplete.
 
+Runtime-custody research now identifies a compatibility decision before implementation. The
+[three-option comparison](host-bridge-runtime-custody-design.md) recommends qualifying a packaged
+static relay under an explicit observer-only profile. Source, build, bootstrap, byte-custody, and
+compatibility gates remain open. No relay replacement or host-policy change has been selected.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

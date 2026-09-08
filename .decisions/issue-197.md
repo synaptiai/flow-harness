@@ -3191,3 +3191,38 @@ the native README's old first-test summary without claiming production custody.
 Final independent six-document review found no P1-P3 findings. All three documentation gates
 and21 focused tests passed. Commit evidence locally without rerunning unchanged native execution
 for prose-only updates. The full usable-checkpoint goal remains active and incomplete.
+
+### Research runtime custody before changing the compatibility contract
+
+Started from clean4da0028. Re-read actual SRT0.0.70 bridge creation, inner relay command,
+guardian valid_arguments/execve, static build recipe, source manifest, and open stage2 gates.
+No production code, dependency, native artifact, workflow, or test changes in this slice.
+
+Main review compared Linux seals/execveat/executable-memfd policy, dynamic-loader behavior,
+glibc NSS loading, musl resolver behavior, and dm-verity against the admitted runtime requirement.
+Independent review traced fixed socat fork/group/ancestry behavior and inherited environment
+effects in upstream1.8.0.0 commit2da070164d454971d5c970b5278e645051f0d0f7. Original authored
+source was read through Google's source mirror after upstream source browsing was unavailable.
+That review does not identify Ubuntu patches or bind source to installed executable bytes.
+HostedGREEN used1.8.0.0-4ubuntu0.1, not a proven pristine upstream build.
+
+The new canonical docs/host-bridge-runtime-custody-design.md records sources, actor flows,
+bootstrap assumptions, three alternatives, qualification sequence, failure outcomes, and non-goals.
+RC-A freezes a finite dynamic runtime closure; RC-B packages a static relay under a restricted
+observer profile; RC-C requires an administrator-provisioned verified image. Recommend RC-B for
+qualification only, pending an explicit compatibility decision. Neither descriptor pinning nor
+static ELF metadata alone proves immutable runtime closure. Sealed-byte identity does not qualify
+mutable guardian bootstrap or runtime configuration by implication.
+
+This is a material decision, not a routine implementation confirmation: RL-A preserves inherited
+environment and resolver behavior. A musl switch or restricted profile changes that contract.
+No option has been selected or implemented. Ordinary SRT, inner relays, repairs, pilots, credentials,
+merge, and release remain untouched. Stage2, stage3-4, UC-01/UC-05/VR-02 stay open.
+
+Independent four-document source/spec review found no P1-P3 findings and confirmed RC-B is
+defensible only as a restricted-profile qualification proposal. Made the profile step explicitly
+require configuration-byte custody and external-resolver trust boundaries before implementation.
+All three documentation gates and21 focused documentation/workflow contract tests passed.
+Initial prose lint rejected semicolons and one26-word sentence; corrected before the passing run.
+All five changed files belong to the active runtime-custody design gate. No new Linux execution
+claim is made for this documentation-only commit. Keep it local pending the compatibility decision.

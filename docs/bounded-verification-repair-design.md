@@ -846,6 +846,11 @@ Complete runtime custody next. Bind the admitted executable and runtime bytes an
 relay's process-group and ancestry-preservation premise. Canonical path equality is insufficient.
 Stage 2 remains incomplete until this admission gate passes.
 
+The [runtime custody proposal](host-bridge-runtime-custody-design.md) compares a frozen dynamic
+runtime, a packaged static relay, and an administrator-provisioned verified image. It recommends
+qualification of a restricted observer relay profile. That compatibility decision remains pending.
+RL-A approval does not authorize silently changing inherited environment or resolver behavior.
+
 Runtime custody is an admission prerequisite, not an invitation to
 expand these tests into general containment. Multiplexed bridges, partial manager startup, retained
 manager failures, and proxy compatibility remain in stages 3 and 4.
