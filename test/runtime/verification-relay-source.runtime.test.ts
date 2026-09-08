@@ -61,6 +61,51 @@ it(
 // No generated archive-shaped data or successful-build substitute is accepted.
 describe.skipIf(sourceRoot === undefined)("selected relay source admission", () => {
   it(
+    "captures the restricted profile recipe separately from the unwrapped baseline",
+    ownedTest(async (scope) => {
+      const owner = await scope.temporaryDirectory("flow-relay-profile-");
+      const source = join(owner, "source");
+      const output = join(owner, "profile");
+      await mkdir(source);
+      for (const name of names)
+        await copyFile(join(requiredSourceRoot(), name), join(source, name));
+      const result = await execFile(
+        process.execPath,
+        [launcher, "--freeze-relay-profile-context", source, output],
+        { timeout: 3_000, maxBuffer: 32_768 },
+      );
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.baselineOnly).toBe(false);
+      expect(evidence.profile).toBe("host-bridge-ipv4-loopback-v1");
+      expect(evidence.relayQualified).toBe(false);
+      expect(Object.keys(evidence.inputs)).toHaveLength(17);
+      const wrapper = await readFile(
+        new URL("../../native/verification-relay/restricted-relay.c", import.meta.url),
+      );
+      expect(await readFile(join(output, "restricted-relay.c"))).toEqual(wrapper);
+      expect(evidence.inputs["restricted-relay.c"]).toBe(
+        createHash("sha256").update(wrapper).digest("hex"),
+      );
+      for (const [name, sourcePath] of [
+        ["restricted-relay.LICENSE", "../../native/verification-relay/restricted-relay.LICENSE"],
+        ["Flow-Apache-2.0.LICENSE", "../../LICENSE"],
+      ] as const) {
+        const license = await readFile(new URL(sourcePath, import.meta.url));
+        expect(await readFile(join(output, name))).toEqual(license);
+        expect(evidence.inputs[name]).toBe(createHash("sha256").update(license).digest("hex"));
+      }
+      const baseline = join(owner, "baseline");
+      await execFile(process.execPath, [launcher, "--freeze-relay-context", source, baseline], {
+        timeout: 3_000,
+        maxBuffer: 32_768,
+      });
+      await expect(lstat(join(baseline, "restricted-relay.c"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }),
+  );
+
+  it(
     "checks the actual release bundle without claiming build or runtime qualification",
     ownedTest(async (scope) => {
       const root = await scope.temporaryDirectory("flow-relay-source-");

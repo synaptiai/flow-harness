@@ -1,6 +1,7 @@
 # Third-party notices
 
-Flow is licensed under the Apache License 2.0. It depends on or studies the following separately licensed projects.
+Flow's main license remains Apache License 2.0. The [restricted host relay](#restricted-host-relay)
+has a wrapper-only dual-license exception. Flow depends on or studies the following separately licensed projects.
 
 ## Pi
 
@@ -33,6 +34,23 @@ exact libc source package, and installed library notices for review and relinkin
 distribution must also preserve the applicable libc, libgcc, and other linked-component
 licenses and satisfy their redistribution requirements. The source checks and build recipe
 do not constitute release-license approval.
+
+## Restricted host relay
+
+On September 8, 2026, the user approved `Apache-2.0 OR MIT` for Synapti.ai's new
+`native/verification-relay/restricted-relay.c` only. Its [file-specific grant](native/verification-relay/restricted-relay.LICENSE)
+records both options. This exception does not change the root Apache-2.0 license or any upstream license.
+
+The development build combines the wrapper with socat 1.8.1.3 under the wrapper's MIT option.
+The selected socat source grants GPLv2 without an option to use later versions.
+The combined artifact remains subject to GPLv2 distribution requirements, including corresponding source and build scripts.
+Musl 1.2.6 and the selected patches retain their upstream notices.
+
+The build retains the wrapper's MIT notice as `licenses/flow-relay-MIT` and Flow's Apache-2.0 text
+as `licenses/flow-Apache-2.0`. It also retains the existing socat, musl, and toolchain notices.
+This license choice is not release approval, runtime qualification, or permission to replace the shared SRT relay.
+The [runtime custody design](docs/host-bridge-runtime-custody-design.md#apply-the-approved-linked-wrapper-license)
+records the compatibility evidence and remaining gates.
 
 ## YAML
 

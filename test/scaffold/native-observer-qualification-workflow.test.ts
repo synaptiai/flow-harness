@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 describe("native observer qualification workflow", () => {
-  it("exposes missing restricted argument admission only after baseline verification", async () => {
+  it("qualifies the separate restricted relay after baseline and real profile forwarding", async () => {
     const workflow = parse(
       await readFile(
         new URL("../../.github/workflows/native-observer-qualification.yml", import.meta.url),
@@ -13,18 +13,40 @@ describe("native observer qualification workflow", () => {
     const steps = workflow.jobs["native-observer-development"].steps;
     const restricted = steps.find(
       (step: { name: string }) =>
-        step.name === "Expose missing restricted relay argument admission",
+        step.name === "Test restricted relay argument and environment admission",
     );
     expect(restricted?.run).toBe(
       "npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts",
     );
     expect(restricted?.env.FLOW_TEST_RESTRICTED_RELAY).toContain(
-      "/flow-relay-baseline/socat-static-baseline",
+      "/flow-relay-comparison/flow-host-relay",
     );
     expect(steps.indexOf(restricted)).toBeGreaterThan(
       steps.findIndex(
         (step: { name: string }) => step.name === "Test the native application-result path",
       ),
+    );
+    const forwarding = steps.find(
+      (step: { name: string }) => step.name === "Test restricted relay profile forwarding",
+    );
+    expect(forwarding?.run).toBe(
+      "npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts",
+    );
+    expect(forwarding?.env.FLOW_TEST_HOST_BRIDGE_PROFILE).toBe("host-bridge-ipv4-loopback-v1");
+    expect(forwarding?.env.FLOW_TEST_HOST_BRIDGE_RELAY).toBe(
+      restricted?.env.FLOW_TEST_RESTRICTED_RELAY,
+    );
+    expect(steps.indexOf(forwarding)).toBeGreaterThan(
+      steps.findIndex(
+        (step: { name: string }) => step.name === "Test static relay baseline forwarding",
+      ),
+    );
+    expect(steps.indexOf(restricted)).toBeGreaterThan(steps.indexOf(forwarding));
+    expect(
+      steps.find((step: { name: string }) => step.name === "Compare two clean relay profile builds")
+        .run,
+    ).toContain(
+      '--build-relay-profile "$RUNNER_TEMP/flow-relay-sources" "$RUNNER_TEMP/flow-relay-comparison"',
     );
   });
   it("qualifies the static relay baseline separately without changing the system-relay test", async () => {
@@ -42,7 +64,7 @@ describe("native observer qualification workflow", () => {
       "npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts",
     );
     expect(baseline?.env.FLOW_TEST_HOST_BRIDGE_RELAY).toContain(
-      "/flow-relay-baseline/socat-static-baseline",
+      "/flow-relay-comparison/socat-static-baseline",
     );
     expect(
       steps.find(

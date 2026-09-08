@@ -502,6 +502,17 @@ if (import.meta.main) {
     } else if (mode === "--freeze-relay-context" && args.length === 2) {
       const { freezeRelayContext } = await import("../verification-relay/build.mjs");
       process.stdout.write(`${JSON.stringify(await freezeRelayContext(args[0], args[1]))}\n`);
+    } else if (mode === "--freeze-relay-profile-context" && args.length === 2) {
+      const { freezeRelayProfileContext } = await import("../verification-relay/build.mjs");
+      process.stdout.write(
+        `${JSON.stringify(await freezeRelayProfileContext(args[0], args[1]))}\n`,
+      );
+    } else if (mode === "--build-relay-profile" && args.length === 2) {
+      const { buildRelayProfile } = await import("../verification-relay/build.mjs");
+      const evidence = await buildRelayProfile(args[0], args[1]);
+      process.stdout.write(
+        `${JSON.stringify({ built: true, baselineOnly: false, profile: evidence.profile, relayQualified: false, artifactCount: Object.keys(evidence.artifacts).length })}\n`,
+      );
     } else if (mode === "--build-relay-baseline" && args.length === 2) {
       const { buildRelayBaseline } = await import("../verification-relay/build.mjs");
       const evidence = await buildRelayBaseline(args[0], args[1]);
@@ -546,7 +557,7 @@ if (import.meta.main) {
       await build(args[0], true, true);
     else
       throw new Error(
-        "Use --check-relay-sources SOURCE_DIRECTORY, --freeze-relay-context/--build-relay-baseline SOURCE_DIRECTORY NEW_OUTPUT_DIRECTORY, --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
+        "Use --check-relay-sources SOURCE_DIRECTORY, --freeze-relay-context/--freeze-relay-profile-context/--build-relay-baseline/--build-relay-profile SOURCE_DIRECTORY NEW_OUTPUT_DIRECTORY, --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
       );
   } catch (error) {
     process.stderr.write(

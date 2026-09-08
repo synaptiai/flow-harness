@@ -30,12 +30,28 @@ const builderImage =
   "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec";
 
 export async function freezeRelayContext(source, output) {
+  return freezeContext(source, output, false);
+}
+
+export async function freezeRelayProfileContext(source, output) {
+  return freezeContext(source, output, true);
+}
+
+async function freezeContext(source, output, restricted) {
   const checked = await captureRelaySources(source);
   const inputs = new Map([...checked.inputs].map(([name, bytes]) => [`sources/${name}`, bytes]));
-  for (const name of recipeNames) {
+  for (const name of [
+    ...recipeNames,
+    ...(restricted ? ["restricted-relay.c", "restricted-relay.LICENSE"] : []),
+  ]) {
     const bytes = await readFile(join(ownRoot, name));
     if (bytes.length > 131_072) throw new Error("relay recipe exceeds capture limit");
     inputs.set(name, bytes);
+  }
+  if (restricted) {
+    const bytes = await readFile(resolve(ownRoot, "../../LICENSE"));
+    if (bytes.length > 131_072) throw new Error("relay license exceeds capture limit");
+    inputs.set("Flow-Apache-2.0.LICENSE", bytes);
   }
   if (digest(inputs.get("source-manifest.json")) !== checked.sourceManifestSha256)
     throw new Error("relay source manifest changed during preparation");
@@ -68,7 +84,8 @@ export async function freezeRelayContext(source, output) {
     sourceManifestSha256: checked.sourceManifestSha256,
     inputs: Object.fromEntries([...inputs].map(([name, bytes]) => [name, digest(bytes)])),
     sourceNames: [...checked.inputs.keys()],
-    baselineOnly: true,
+    baselineOnly: !restricted,
+    ...(restricted ? { profile: "host-bridge-ipv4-loopback-v1" } : {}),
     relayQualified: false,
   };
 }
@@ -86,7 +103,7 @@ async function docker(args, timeout = 30_000) {
     process.stderr.write(
       `${JSON.stringify({ event: "relay-build-docker-failure", code: error.code, signal: error.signal, outputTail: String(error.stderr ?? "").slice(-16_384) })}\n`,
     );
-    throw new Error("relay baseline Docker operation failed");
+    throw new Error("relay comparison Docker operation failed");
   }
 }
 
@@ -120,10 +137,18 @@ async function captureArtifacts(root, expected) {
 }
 
 export async function buildRelayBaseline(source, output) {
+  return buildRelay(source, output, false);
+}
+
+export async function buildRelayProfile(source, output) {
+  return buildRelay(source, output, true);
+}
+
+async function buildRelay(source, output, restricted) {
   const platform = (await docker(["info", "--format", "{{.OSType}}/{{.Architecture}}"])).trim();
   if (process.platform !== "linux" || process.arch !== "x64" || platform !== "linux/x86_64")
     throw new Error(
-      "relay baseline requires native Linux x64 and a Linux x64 Docker daemon; emulation is not qualified",
+      "relay build requires native Linux x64 and a Linux x64 Docker daemon; emulation is not qualified",
     );
   const destination = join(await realpath(dirname(resolve(output))), basename(resolve(output)));
   try {
@@ -137,7 +162,7 @@ export async function buildRelayBaseline(source, output) {
   let complete = false;
   try {
     const context = join(scratch, "context");
-    const frozen = await freezeRelayContext(source, context);
+    const frozen = await freezeContext(source, context, restricted);
     for (const pass of ["first", "second"]) {
       builder = `flow-relay-${randomUUID()}`;
       await docker([
@@ -187,27 +212,48 @@ export async function buildRelayBaseline(source, output) {
       "licenses/GPL-3",
       ...frozen.sourceNames.map((name) => `sources/${name}`),
       ...[...recipeNames, "inputs.sha256", "musl-patched.sha256"].map((name) => `recipe/${name}`),
+      ...(restricted
+        ? [
+            "recipe/restricted-relay.c",
+            "licenses/flow-relay-MIT",
+            "licenses/flow-Apache-2.0",
+            "restricted-relay.o",
+            "flow-host-relay",
+            "profile.link-map",
+            "profile-elf-header.txt",
+            "profile-elf-program-headers.txt",
+            "profile-elf-dynamic.txt",
+            "profile-symbols.txt",
+            "profile-disassembly.txt",
+          ]
+        : []),
     ]);
     const first = await captureArtifacts(join(scratch, "first"), expected);
     const second = await captureArtifacts(join(scratch, "second"), expected);
     for (const [name, bytes] of first)
-      if (!bytes.equals(second.get(name))) throw new Error("relay baseline clean builds differ");
+      if (!bytes.equals(second.get(name))) throw new Error("relay clean builds differ");
     for (const [name, hash] of Object.entries(frozen.inputs)) {
-      const artifact = name.startsWith("sources/") ? name : `recipe/${name}`;
-      if (digest(first.get(artifact)) !== hash)
-        throw new Error("relay baseline provenance mismatch");
+      const artifact =
+        name === "restricted-relay.LICENSE"
+          ? "licenses/flow-relay-MIT"
+          : name === "Flow-Apache-2.0.LICENSE"
+            ? "licenses/flow-Apache-2.0"
+            : name.startsWith("sources/")
+              ? name
+              : `recipe/${name}`;
+      if (digest(first.get(artifact)) !== hash) throw new Error("relay build provenance mismatch");
     }
     await mkdir(destination, { mode: 0o700 });
     for (const [name, bytes] of first) {
       await mkdir(dirname(join(destination, name)), { recursive: true, mode: 0o700 });
       await writeFile(join(destination, name), bytes, {
         flag: "wx",
-        mode: name === "socat-static-baseline" ? 0o700 : 0o600,
+        mode: name === "socat-static-baseline" || name === "flow-host-relay" ? 0o700 : 0o600,
       });
     }
     const evidence = {
       version: 1,
-      purpose: "static-relay-comparison-baseline",
+      purpose: restricted ? "restricted-host-relay-comparison" : "static-relay-comparison-baseline",
       ...frozen,
       comparison: "two-clean-builds-identical",
       builderImage,

@@ -9,17 +9,40 @@ import { describe, expect, it } from "vitest";
 
 const baseline = process.env.FLOW_TEST_HOST_BRIDGE_BASELINE === "1";
 const guardian = process.env.FLOW_TEST_HOST_BRIDGE_GUARDIAN;
+const profile = process.env.FLOW_TEST_HOST_BRIDGE_PROFILE;
+if (
+  profile !== undefined &&
+  (profile !== "host-bridge-ipv4-loopback-v1" ||
+    guardian === undefined ||
+    process.env.FLOW_TEST_HOST_BRIDGE_RELAY === undefined ||
+    baseline)
+)
+  throw new Error(
+    "Restricted forwarding requires the exact profile, guardian, and relay selection",
+  );
 const enabled =
   process.platform === "linux" && process.arch === "x64" && (baseline || guardian !== undefined);
 
 describe.skipIf(!enabled)("host bridge owner release contract", () => {
-  it.for(["stop", "disconnect", "malformed"] as const)(
-    "handles %s after actual bridge forwarding without false acceptance",
-    async (release, context) => {
+  it.for(
+    (["stop", "disconnect", "malformed"] as const).flatMap((release) =>
+      (profile === undefined ? ["normal"] : ["normal", "maximum"]).map((pathLength) => ({
+        release,
+        pathLength,
+      })),
+    ),
+  )(
+    "handles $release after actual bridge forwarding with $pathLength path length",
+    async ({ release, pathLength }, context) => {
       const executable = baseline ? "/usr/bin/socat" : requiredGuardian();
       const signal = AbortSignal.any([context.signal, AbortSignal.timeout(10_000)]);
       const root = await mkdtemp(join(await realpath(tmpdir()), "flow-bridge-owner-"));
-      const path = join(root, "bridge.sock");
+      const prefix = `${root}/`;
+      const path =
+        pathLength === "normal"
+          ? join(root, "bridge.sock")
+          : `${prefix}${"s".repeat(107 - Buffer.byteLength(prefix))}`;
+      if (pathLength === "maximum") expect(Buffer.byteLength(path)).toBe(107);
       // Retain this test's socket and directory as diagnostic evidence. Removal is
       // deliberately not evidence of process settlement, especially in the RED run.
       const sockets = new Set<Socket>();
@@ -78,7 +101,10 @@ async function exerciseBridge(
   signal.throwIfAborted();
   const child = spawn(executable, baseline ? args : [relay, ...args], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { PATH: "/usr/bin:/bin" },
+    env:
+      profile === undefined
+        ? { PATH: "/usr/bin:/bin" }
+        : { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC" },
   });
   let output = "";
   let errors = "";

@@ -17,7 +17,7 @@ jobs:
   native-observer-development:
     name: Native observer development (not full CI)
     runs-on: ubuntu-24.04
-    # Two observer and two relay builds each allow ten minutes, plus preparation.
+    # Two observer and two relay comparison builds each allow ten minutes, plus preparation.
     timeout-minutes: 50
     steps:
       - name: Check out the triggering commit
@@ -99,16 +99,24 @@ jobs:
           node native/verification-observer/build.mjs --check-relay-sources "$RUNNER_TEMP/flow-relay-sources"
           FLOW_TEST_RELAY_SOURCE_ROOT="$RUNNER_TEMP/flow-relay-sources" npm run test:runtime -- test/runtime/verification-relay-source.runtime.test.ts
 
-      - name: Compare two clean static relay baseline builds
+      - name: Compare two clean relay profile builds
         run: |
-          node native/verification-observer/build.mjs --build-relay-baseline "$RUNNER_TEMP/flow-relay-sources" "$RUNNER_TEMP/flow-relay-baseline"
-          cat "$RUNNER_TEMP/flow-relay-baseline/build-evidence.json"
-          env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC "$RUNNER_TEMP/flow-relay-baseline/socat-static-baseline" -V
+          node native/verification-observer/build.mjs --build-relay-profile "$RUNNER_TEMP/flow-relay-sources" "$RUNNER_TEMP/flow-relay-comparison"
+          cat "$RUNNER_TEMP/flow-relay-comparison/build-evidence.json"
+          cat "$RUNNER_TEMP/flow-relay-comparison/profile-disassembly.txt"
+          env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC "$RUNNER_TEMP/flow-relay-comparison/socat-static-baseline" -V
 
       - name: Test static relay baseline forwarding
         env:
           FLOW_TEST_HOST_BRIDGE_GUARDIAN: ${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian
-          FLOW_TEST_HOST_BRIDGE_RELAY: ${{ runner.temp }}/flow-relay-baseline/socat-static-baseline
+          FLOW_TEST_HOST_BRIDGE_RELAY: ${{ runner.temp }}/flow-relay-comparison/socat-static-baseline
+        run: npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
+
+      - name: Test restricted relay profile forwarding
+        env:
+          FLOW_TEST_HOST_BRIDGE_GUARDIAN: ${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian
+          FLOW_TEST_HOST_BRIDGE_RELAY: ${{ runner.temp }}/flow-relay-comparison/flow-host-relay
+          FLOW_TEST_HOST_BRIDGE_PROFILE: host-bridge-ipv4-loopback-v1
         run: npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
 
       - name: Test the native application-result path
@@ -122,9 +130,7 @@ jobs:
           /usr/bin/python3 -I -S -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))'
           npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts
 
-      - name: Expose missing restricted relay argument admission
+      - name: Test restricted relay argument and environment admission
         env:
-          # Deliberate RED qualification against the real, unwrapped baseline.
-          # This is not a fallback artifact for the future restricted profile.
-          FLOW_TEST_RESTRICTED_RELAY: ${{ runner.temp }}/flow-relay-baseline/socat-static-baseline
+          FLOW_TEST_RESTRICTED_RELAY: ${{ runner.temp }}/flow-relay-comparison/flow-host-relay
         run: npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts

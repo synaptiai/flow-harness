@@ -1,4 +1,4 @@
-# Verification relay source admission
+# Verification relay source admission and builds
 
 These maintainer procedures check the reviewed source inputs and build a separate static baseline
 for the observer-only RC-B relay. The baseline is not the restricted profile. The
@@ -88,3 +88,37 @@ Those bounds are not relay runtime limits or proof that an artifact is safe.
 The baseline deliberately has no Flow argument, environment, or resolver wrapper. Real forwarding
 qualification uses the [host-bridge test procedure](../../docs/testing-and-evaluation.md#qualify-the-static-relay-baseline).
 The restricted profile and executable-custody gates remain open.
+
+## Prepare the restricted profile comparison
+
+The user approved the [wrapper-only dual license](../../docs/host-bridge-runtime-custody-design.md#apply-the-approved-linked-wrapper-license)
+on September 8, 2026. The wrapper offers `Apache-2.0 OR MIT`, and the combined GPLv2 relay selects the MIT option.
+Flow's main Apache-2.0 license and upstream licenses remain unchanged. This decision is not release approval.
+Native compilation and execution remain unverified.
+
+The separate profile context captures the same authenticated inputs plus the trusted
+`restricted-relay.c` source, its license grant, and the root Apache-2.0 license text:
+
+```sh
+node native/verification-observer/build.mjs --freeze-relay-profile-context /absolute/path/to/source-inputs /absolute/path/to/new-context
+```
+
+This source-only command works on macOS or Linux. It records
+`profile: "host-bridge-ipv4-loopback-v1"`, `baselineOnly: false`, and `relayQualified: false`.
+The ordinary baseline context does not capture this wrapper.
+The profile context records 17 captured inputs, including the two license texts.
+
+Use native Linux x64 to build the profile comparison:
+
+```sh
+node native/verification-observer/build.mjs --build-relay-profile /absolute/path/to/source-inputs /absolute/path/to/new-comparison
+```
+
+Each clean build preserves the unwrapped `socat-static-baseline` before relinking the same
+upstream objects with the separately compiled wrapper. The 39 compared artifacts include the
+wrapper source and object, `flow-host-relay`, profile link map, ELF reports, symbols, and selected
+disassembly. They also retain `licenses/flow-relay-MIT` and `licenses/flow-Apache-2.0` with the upstream notices.
+The output still reports `relayQualified: false`. Follow the
+[profile qualification procedure](../../docs/testing-and-evaluation.md#qualify-the-restricted-relay-profile)
+for explicit rejection and real forwarding checks. Do not use this development executable as
+the shared SRT relay or treat a successful build as runtime custody.

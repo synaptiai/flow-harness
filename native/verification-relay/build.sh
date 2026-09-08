@@ -38,6 +38,31 @@ readelf --dynamic /out/socat-static-baseline > /out/elf-dynamic.txt
 if grep -q INTERP /out/elf-program-headers.txt || grep -q NEEDED /out/elf-dynamic.txt; then
   exit 1
 fi
+# Only the explicit restricted-profile context captures this trusted recipe.
+# Preserve the independently executable baseline and relink the same upstream objects.
+if test -f /source/restricted-relay.c; then
+  cp /source/restricted-relay.c /out/recipe/restricted-relay.c
+  cp /source/restricted-relay.LICENSE /out/licenses/flow-relay-MIT
+  cp /source/Flow-Apache-2.0.LICENSE /out/licenses/flow-Apache-2.0
+  /opt/flow-musl/bin/musl-gcc -std=c11 -O2 -g0 -Wall -Wextra -Werror \
+    -ffile-prefix-map=/source=. -c /source/restricted-relay.c -o /out/restricted-relay.o
+  rm socat
+  make socat LDFLAGS='-static -Wl,--build-id=none,--wrap=main,--wrap=getaddrinfo,-Map=/out/profile.link-map /out/restricted-relay.o'
+  cp socat /out/flow-host-relay
+  readelf --file-header /out/flow-host-relay > /out/profile-elf-header.txt
+  readelf --program-headers /out/flow-host-relay > /out/profile-elf-program-headers.txt
+  readelf --dynamic /out/flow-host-relay > /out/profile-elf-dynamic.txt
+  if grep -q INTERP /out/profile-elf-program-headers.txt || grep -q NEEDED /out/profile-elf-dynamic.txt; then
+    exit 1
+  fi
+  nm -n /out/flow-host-relay > /out/profile-symbols.txt
+  {
+    objdump -d --disassemble=_start_c /out/flow-host-relay
+    objdump -d --disassemble=__wrap_main /out/flow-host-relay
+    objdump -d --disassemble=Getaddrinfo /out/flow-host-relay
+    objdump -d --disassemble=__wrap_getaddrinfo /out/flow-host-relay
+  } > /out/profile-disassembly.txt
+fi
 {
   gcc --version
   ld --version
