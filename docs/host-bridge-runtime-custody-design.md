@@ -168,8 +168,11 @@ permits this explicit restriction. The earlier RL-A approval alone did not autho
 The planned implementation uses separately identified argument and resolver wrappers around the
 selected socat source. Link-time wrapping affects matching unresolved references, not every internal
 libc call. Source review, link-map inspection, and runtime checks must establish the actual call path.
+
 The wrapper implementation, environment admission, and executable custody remain open. A separate
-static-baseline build is implemented for comparison. Its native execution remains pending qualification.
+static-baseline build is implemented for comparison. Its selected build and forwarding checks
+[passed on hosted Linux x64](testing-and-evaluation.md#baseline-evidence). Restricted argument
+admission is the next failing-test gate, not a property established by that baseline result.
 
 ### Check the source bundle
 
@@ -178,8 +181,8 @@ Linux. It reads local input files and returns `sourceOnly: true` and `relayQuali
 It does not download, extract, compile, execute, or verify signatures. The reviewed Flow manifest
 owns the expected identities. An input-directory manifest cannot replace that authority.
 
-The capture function returns checked byte buffers. A future build must consume those buffers,
-not reopen the original paths after checking them. This is a source snapshot, not a guarantee that
+The capture function returns checked byte buffers. The baseline build consumes those buffers
+without reopening the original paths. This is a source snapshot, not a guarantee that
 the source directory remains unchanged or that an executable stays immutable through execution.
 
 ### Complete the remaining gates

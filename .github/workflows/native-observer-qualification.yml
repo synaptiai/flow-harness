@@ -121,3 +121,10 @@ jobs:
         run: >-
           /usr/bin/python3 -I -S -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], close_fds=True))'
           npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts
+
+      - name: Expose missing restricted relay argument admission
+        env:
+          # Deliberate RED qualification against the real, unwrapped baseline.
+          # This is not a fallback artifact for the future restricted profile.
+          FLOW_TEST_RESTRICTED_RELAY: ${{ runner.temp }}/flow-relay-baseline/socat-static-baseline
+        run: npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts

@@ -3328,3 +3328,45 @@ architecture checking with emulation unqualified. The build recipe's actual Linu
 28artifact comparison, version smoke, andthreebaseline forwarding cases remain unproven pending
 the exact-source hosted run. This is a qualification-source commit, not feature completion.
 Remote dedicatedqualificationref revalidated at2fe279c782a426c3089e6a62e179cd3ec07a5ab9.
+
+### Static baseline passed; prepare restricted-argument RED
+
+Hosted Linux x64 run34214345967 checked out exact6d1c62e5d0e309cf72de6c8603a2bf41c6a82a4b
+and passed September8,2026,10:14:08–10:19:33UTC. Two clean observer builds matched32artifacts;
+two clean static baseline builds matched28artifacts. All344selected runtime executions passed
+without skips (3+5+8+1+18+3+306). This counts executions, not344unique cases. Main and independent
+review checked run metadata, logs, exact source/recipe identities, and reported artifact hashes.
+This is not an independent download and rehash of output artifacts.
+
+The static relay binary SHA256 is24e76aca3a3a0435777afcd5769f27691b6c99d6b7306cfd85084cce8c37cbd0.
+Actual version execution reports socat1.8.1.3, IPv4/IPv6 enabled, defaultIPv4, and disabled
+exec/system/shell/OpenSSL/libwrap/readline. The three static forwarding cases close connections
+before release. They do not qualify active-held-child cleanup, restricted resolver/environment,
+sealed executable custody, production integration, or repair readiness.
+
+Added the next RED test against the real explicitly selected static baseline: general option-V
+must return normal64, empty stdout, and the fixed invalid_arguments diagnostic. The unwrapped
+baseline is expected to return0 with version output instead. The dedicated workflow runs this
+experiment last without suppressing failure. The missing workflow step first failed its scaffold
+test, then the wired workflow passed70focused regression cases. Actual nativeRED is still pending.
+
+Independent review found oneP2: numeric exit64 and signalnull can coexist with parent intervention.
+The real direct-child control reproduced that classification error before the fix. The adapter
+now requires killed===false. A real normal-exit positive control prevents a reject-all adapter
+from passing. Both portable controls pass; the Linux artifact case skips locally on MacARM64.
+The inherited-pipe timeout variant is corroborated by installed Node source, not runtime-reproduced.
+Only each test's directly owned child is signaled and joined. Independent rereview found no P1-P3.
+
+Documentation records the measured baseline and remaining limits. Style, links, clarity, and
+targeted formatting checks pass. Final typecheck and application build then passed, run serially
+under local memory pressure. Full lint and formatting checks passed again, with only the existing
+unrelated constructor lint information. Final independent code/test/documentation review found
+no P1-P3. No production configuration, model call, credentials, merge, release, or repair enablement.
+The full goal, runtime custody, stage2, stages3–4, and UC-01/UC-05/VR-02 remain open.
+
+Next-wrapper source readiness review cross-checked the guardian's closed path/port grammar against
+SRT's raw argument arrays and socat's delimiter/escape parsing. Upstream main reads SOCAT_MAIN_WAIT
+and initializes before processing options, so admission must precede the call into upstream main.
+GNU ld documentation independently confirms that --wrap replaces unresolved references only.
+These are source/design findings, not linked-wrapper or native runtime evidence. No new user
+decision is needed for this lexical gate within RC-B. Actual nativeRED must precede implementation.

@@ -3,6 +3,30 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 describe("native observer qualification workflow", () => {
+  it("exposes missing restricted argument admission only after baseline verification", async () => {
+    const workflow = parse(
+      await readFile(
+        new URL("../../.github/workflows/native-observer-qualification.yml", import.meta.url),
+        "utf8",
+      ),
+    );
+    const steps = workflow.jobs["native-observer-development"].steps;
+    const restricted = steps.find(
+      (step: { name: string }) =>
+        step.name === "Expose missing restricted relay argument admission",
+    );
+    expect(restricted?.run).toBe(
+      "npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts",
+    );
+    expect(restricted?.env.FLOW_TEST_RESTRICTED_RELAY).toContain(
+      "/flow-relay-baseline/socat-static-baseline",
+    );
+    expect(steps.indexOf(restricted)).toBeGreaterThan(
+      steps.findIndex(
+        (step: { name: string }) => step.name === "Test the native application-result path",
+      ),
+    );
+  });
   it("qualifies the static relay baseline separately without changing the system-relay test", async () => {
     const workflow = parse(
       await readFile(
@@ -117,7 +141,11 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain(
       'node native/verification-observer/build.mjs --build-observer-failure-controls "$RUNNER_TEMP/flow-native-observer"',
     );
-    expect(job.steps.at(-1).env).toEqual({
+    expect(
+      job.steps.find(
+        (step: { name: string }) => step.name === "Test the native application-result path",
+      ).env,
+    ).toEqual({
       FLOW_TEST_NATIVE_OBSERVER_HELPER:
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Assert the literal GitHub runner path expression.
         "${{ runner.temp }}/flow-native-observer/flow-observer-apply-seccomp",

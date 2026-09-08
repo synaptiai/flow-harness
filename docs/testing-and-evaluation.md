@@ -646,7 +646,8 @@ Neither its results nor a default Mac skip count as Linux qualification.
 ### Qualify the static relay baseline
 
 This development gate compares a source-built static relay with the existing host-relay behavior.
-It does not implement the restricted RC-B profile. Native evidence for this new build remains pending.
+It does not implement the restricted RC-B profile. The selected baseline build and forwarding cases
+passed on hosted Linux x64 at `6d1c62e`.
 
 First complete the [static baseline build](../native/verification-relay/README.md#build-the-static-comparison-baseline)
 and the existing native guardian build on Linux x64. Select both artifacts explicitly:
@@ -666,6 +667,57 @@ The baseline uses ordinary musl `localhost` resolution and the existing test's P
 It does not establish the proposed four-entry environment, resolver isolation, immutable executable
 custody, all lifecycle cases, or production integration. Its build artifact reader assumes private,
 trusted Docker output after compilation. That reader is not a runtime admission mechanism.
+
+#### Baseline evidence
+
+[Run 34214345967](https://github.com/synaptiai/flow-harness/actions/runs/34214345967) passed at exact
+source `6d1c62e5d0e309cf72de6c8603a2bf41c6a82a4b` on September 8, 2026. Both clean builds matched
+28 static-baseline artifacts. The separate observer builds matched 32 artifacts.
+
+The runtime execution counts were `3 + 5 + 8 + 1 + 18 + 3 + 306 = 344`, with no skips. The three
+guardian cases ran twice, once against the system relay and once against the static baseline.
+Only the latter three cases establish baseline forwarding evidence. Connections closed before
+release, so these cases do not qualify held-connection cleanup for the new baseline.
+
+The selected artifact identities are:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Static relay | `24e76aca3a3a0435777afcd5769f27691b6c99d6b7306cfd85084cce8c37cbd0` |
+| Static libc archive | `48fb886557a1a864138789d5f08f57cb7e92481c524979c5fe71fc110e993e48` |
+| Relay link map | `9a0dba26203d1026666a1bf9d110c9f8e13745977a023a75b6e8b3a94fab2de8` |
+
+Actual execution reported socat `1.8.1.3` on Linux `6.17.0-1022-azure`, with IPv4 and IPv6 enabled
+and IPv4 as the default. Exec, system, shell, OpenSSL, libwrap, and readline support were disabled.
+The source and recipe digests matched the exact Git revision. This review authenticated logs and
+source identities, not an independent download and rehash of the output artifacts.
+
+#### Expose missing restricted argument admission
+
+The next test requires the restricted relay to reject the general `-V` option before entering
+upstream socat. The required result is exit status 64, empty standard output, and the single
+standard-error line `FLOW_RELAY_PROFILE_V1 invalid_arguments`. Spawn errors, timeouts, signals,
+and output overflow cannot count as this rejection.
+
+Two portable controls first calibrate exit-result handling with real Node.js children. One exits
+normally with status 64. The other waits for a signal from its owning test, then exits with that
+same status and diagnostic. The latter must remain rejected because Node records `killed: true`.
+
+Each control creates only one direct child and joins it. These controls do not simulate or qualify
+relay descendants. Without an explicit Linux relay artifact, only the portable controls run.
+
+Run the test against an explicitly selected artifact:
+
+```sh
+FLOW_TEST_RESTRICTED_RELAY=/absolute/path/to/socat-static-baseline \
+  npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts
+```
+
+The unwrapped baseline is expected to fail by reporting its version with status 0. The dedicated
+workflow runs this deliberate failing-test experiment after the passing baseline and observer checks.
+It does not suppress failure or substitute the baseline for a production restricted relay.
+The native failure still needs observation before wrapper implementation. This one case does not
+qualify the complete argument grammar, environment, resolver behavior, or executable custody.
 
 ### Develop the native result transport independently
 

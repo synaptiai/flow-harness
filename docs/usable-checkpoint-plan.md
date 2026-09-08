@@ -493,10 +493,12 @@ reviewed inputs and rejects changed bytes or invalid inventories. Native build, 
 byte-custody, and compatibility gates remain open. No production relay replacement or host-policy
 change is enabled.
 
-The separate static-baseline build and its hosted forwarding check are prepared for native Linux
-x64 qualification. They reuse the reviewed source inputs and preserve the existing system-relay
-checks. This comparison baseline has no restricted resolver or environment wrapper. Build and
-forwarding evidence remain pending, and a passing baseline cannot close runtime custody.
+The separate static-baseline build and three forwarding cases passed on native Linux x64 in
+[run 34214345967](https://github.com/synaptiai/flow-harness/actions/runs/34214345967) at `6d1c62e`.
+The two clean builds matched 28 baseline artifacts, and all 344 selected runtime executions passed.
+The existing system-relay checks remain separate. This baseline has no restricted argument,
+resolver, or environment wrapper. The restricted-argument failing-test experiment is next.
+The baseline result does not close runtime custody or stage 2.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
