@@ -1120,11 +1120,18 @@ This separation relies on the documented
 [Linux PID namespace lifecycle](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html).
 Forced wrapper closure remains unconfirmed cleanup and fails the test.
 
-For the initial sensitivity run only, the dedicated workflow selects
+For diagnostic reproduction of the initial sensitivity run only, set
 `FLOW_TEST_STARTUP_REAPING_BASELINE=1`. This deliberately weakens the test's acceptance decision
 to ignore a real unreaped child. The unreaped-child case must fail while the other four cases pass.
 Remove this variable after authenticating that failure, then rerun the actual decision.
 These tests qualify behavior within the test namespace, not unnamespaced host runtime custody.
+
+The sensitivity control failed as required in
+[run 34203882521](https://github.com/synaptiai/flow-harness/actions/runs/34203882521) at `7b7efb1`.
+The exact unreaped-child observation passed before the weak decision incorrectly accepted it.
+The other four startup cases passed. The hosted runner used bubblewrap 0.9.0 and compiled the
+separate witness successfully. The workflow now selects the actual decision, whose qualification
+is pending, and its guard rejects the sensitivity variable.
 
 ### Test the internal observer components
 

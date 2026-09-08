@@ -2922,3 +2922,24 @@ found no remaining P1-P3 findings. Local typecheck, lint, format, build, three d
 focused tests passed. Five runtime cases skipped on Mac without Linux qualification credit.
 All eight changed/new files are within the approved startup qualification; native compile and
 runtime checks are pending the dedicated hosted RED run.
+
+### Authenticate startup cleanup sensitivity
+
+Run34203882521 at exact7b7efb1a49701e9ef468be704a5d95d682886e87,
+job101988746986, September8 UTC08:19:36-08:21:47 (131seconds), failed exactly the intended
+unreaped-child predicate after its exact actual report assertion passed (line92,true versusfalse).
+Startup4passed/1failed: live8ms, zombie9ms, executable-format1506ms, listener-parent1526ms,
+forwarding1528ms. Suite4.95s (4.82s tests). Native witness compiled under strict warnings;
+bubblewrap0.9.0 executed all five envelopes. Prior3owner and5active cases passed. Later predicate
+and306native cases skipped. No setup/compiler/cleanup failure was reported. Two clean builds
+matched32 artifacts, with unchanged guardian binary/object identity and observerQualified:false.
+
+Independent verifier corroborated the source, job, failure assertion, and individual test outcomes.
+Added a scaffold guard rejecting the sensitivity variable and observed localRED with it still
+selected. Then removed only the workflow's weak-decision selection. Actual test/C code unchanged;
+actual-decision qualification remains pending.
+
+Final five-file selection review found no P1-P3 findings. Local typecheck completed after a
+longer quiet interval; inspected its actual process and did not restart it. Lint, format, build,
+all three documentation gates, and21 focused tests passed. Commit and push only the reviewed
+actual-decision selection to the dedicated qualification branch.
