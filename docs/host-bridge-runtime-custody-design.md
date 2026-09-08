@@ -168,7 +168,8 @@ permits this explicit restriction. The earlier RL-A approval alone did not autho
 The planned implementation uses separately identified argument and resolver wrappers around the
 selected socat source. Link-time wrapping affects matching unresolved references, not every internal
 libc call. Source review, link-map inspection, and runtime checks must establish the actual call path.
-The wrapper implementation, static build, environment admission, and executable custody remain open.
+The wrapper implementation, environment admission, and executable custody remain open. A separate
+static-baseline build is implemented for comparison. Its native execution remains pending qualification.
 
 ### Check the source bundle
 

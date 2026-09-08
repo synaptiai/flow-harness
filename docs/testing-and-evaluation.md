@@ -643,11 +643,35 @@ descendant-containment failure, set `FLOW_VERIFIER_ISOLATION_DIAGNOSTIC=1` for t
 The fixture suite remains Linux-only. The Mac diagnostic is expected to fail its descendant checks.
 Neither its results nor a default Mac skip count as Linux qualification.
 
+### Qualify the static relay baseline
+
+This development gate compares a source-built static relay with the existing host-relay behavior.
+It does not implement the restricted RC-B profile. Native evidence for this new build remains pending.
+
+First complete the [static baseline build](../native/verification-relay/README.md#build-the-static-comparison-baseline)
+and the existing native guardian build on Linux x64. Select both artifacts explicitly:
+
+```sh
+FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
+FLOW_TEST_HOST_BRIDGE_RELAY=/absolute/path/to/socat-static-baseline \
+  npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
+```
+
+The three cases require actual UNIX-to-TCP forwarding and check normal stop, input closure, and
+malformed release input. The workflow keeps its separate system-relay run unchanged. An absent
+`FLOW_TEST_HOST_BRIDGE_RELAY` still selects the installed system relay, not the static baseline.
+The test resolves the selected path before passing it to the guardian.
+
+The baseline uses ordinary musl `localhost` resolution and the existing test's PATH-only environment.
+It does not establish the proposed four-entry environment, resolver isolation, immutable executable
+custody, all lifecycle cases, or production integration. Its build artifact reader assumes private,
+trusted Docker output after compilation. That reader is not a runtime admission mechanism.
+
 ### Develop the native result transport independently
 
-The source-only `Native observer qualification` workflow provides a focused Linux x64 feedback
-path while a full CI run is active. It runs only
-`test/runtime/native-observer-transport.runtime.test.ts` on Ubuntu 24.04. Its unique check name,
+The development `Native observer qualification` workflow provides a focused Linux x64 feedback
+path while a full CI run is active. It runs the native result-path and host-bridge regressions,
+source-admission checks, and static-baseline forwarding tests on Ubuntu 24.04. Its unique check name,
 `Native observer development (not full CI)`, cannot replace the full CI or release gates.
 It uses the existing sandbox prerequisites, read-only repository permissions, no model credentials,
 and a separate non-cancelling concurrency group. It uses the explicit
@@ -655,7 +679,8 @@ and a separate non-cancelling concurrency group. It uses the explicit
 separately identified, deliberately broken test executable. Ordinary `--build` and `--build-observer`
 modes do not produce that negative control.
 
-The job has a 30-minute limit. Each build has a separate 10-minute limit, and native process
+The job has a 50-minute limit for two observer builds and two static relay baseline builds.
+Each build has a separate 10-minute limit, and native process
 checks have bounded deadlines. Job expiry is a failed run, not proof of completed cleanup.
 
 The first trigger is a push of reviewed source to the exact branch

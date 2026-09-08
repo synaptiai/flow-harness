@@ -1,7 +1,7 @@
 # Verification relay source admission
 
-This maintainer procedure checks the reviewed source inputs for the observer-only RC-B relay.
-It does not build or qualify a relay. The
+These maintainer procedures check the reviewed source inputs and build a separate static baseline
+for the observer-only RC-B relay. The baseline is not the restricted profile. The
 [runtime custody design](../../docs/host-bridge-runtime-custody-design.md) owns the profile,
 authentication caveats, and remaining qualification gates. Repairs remain disabled.
 
@@ -46,3 +46,45 @@ Do not change the trusted manifest to make unknown bytes pass.
 The checker uses the manifest beside its own module, not a manifest from the input directory.
 Treat the Flow checkout and bootstrap as trusted inputs. Captured bytes do not establish executable
 custody, and a successful check does not authorize using a system relay as a replacement.
+
+## Build the static comparison baseline
+
+Use a native Linux x64 host with a Linux x64 Docker daemon and Buildx. macOS can prepare the
+source context. The build command checks reported host and daemon architecture, not emulation.
+Emulation is not qualified. The dedicated hosted
+qualification workflow supplies this environment without changing your Mac's host policy.
+
+To inspect the captured source and build recipe without compiling, create a new context directory:
+
+```sh
+node native/verification-observer/build.mjs --freeze-relay-context /absolute/path/to/source-inputs /absolute/path/to/new-context
+```
+
+The command rejects an existing destination. It captures the checked source buffers and the trusted
+local recipe. Do not edit the context and then describe it as the original captured input.
+
+On native Linux x64, build into a new output directory whose parent already exists:
+
+```sh
+node native/verification-observer/build.mjs --build-relay-baseline /absolute/path/to/source-inputs /absolute/path/to/new-baseline
+```
+
+The command prepares one private context and uses two separate clean Buildx builders. It verifies
+the musl patch results, builds static musl and socat, rejects ELF interpreter or shared-library
+requirements, and compares every retained artifact. Source compilation has no network access.
+Pinned images and a dated Debian package snapshot supply the build tools.
+
+Success emits `built: true`, `baselineOnly: true`, and `relayQualified: false`.
+`build-evidence.json` records input and artifact digests. The output retains original sources and
+patches, recipe, license notices, configuration, libc archive, link map, toolchain inventory,
+ELF inspection, and `socat-static-baseline`. This is development evidence, not a published package.
+
+Each Docker build has a ten-minute deadline. An operation failure stops the comparison and reports
+owned scratch for inspection. An existing output is never replaced. A failed publication might
+leave a partial output without complete evidence. Do not use partial output as a passing result.
+Artifact capture permits at most 32 MiB per file and 64 MiB in total as build resource guards.
+Those bounds are not relay runtime limits or proof that an artifact is safe.
+
+The baseline deliberately has no Flow argument, environment, or resolver wrapper. Real forwarding
+qualification uses the [host-bridge test procedure](../../docs/testing-and-evaluation.md#qualify-the-static-relay-baseline).
+The restricted profile and executable-custody gates remain open.

@@ -17,8 +17,8 @@ jobs:
   native-observer-development:
     name: Native observer development (not full CI)
     runs-on: ubuntu-24.04
-    # Two builds each allow ten minutes, plus preparation and bounded cleanup.
-    timeout-minutes: 30
+    # Two observer and two relay builds each allow ten minutes, plus preparation.
+    timeout-minutes: 50
     steps:
       - name: Check out the triggering commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -82,6 +82,34 @@ jobs:
         env:
           FLOW_TEST_HOST_BRIDGE_GUARDIAN: ${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian
         run: npm run test:runtime -- test/runtime/host-bridge-predicate.runtime.test.ts
+
+      - name: Acquire and check reviewed relay sources
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { mkdirSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const root = join(process.env.RUNNER_TEMP, 'flow-relay-sources');
+          mkdirSync(root, { mode: 0o700 });
+          const manifest = JSON.parse(readFileSync('native/verification-relay/source-manifest.json', 'utf8'));
+          for (const item of manifest.inputs) {
+            execFileSync('curl', ['--fail', '--location', '--silent', '--show-error', '--proto', '=https', '--proto-redir', '=https', '--max-time', '45', '--output', join(root, item.path), item.url], { timeout: 50_000, stdio: 'inherit' });
+          }
+          NODE
+          node native/verification-observer/build.mjs --check-relay-sources "$RUNNER_TEMP/flow-relay-sources"
+          FLOW_TEST_RELAY_SOURCE_ROOT="$RUNNER_TEMP/flow-relay-sources" npm run test:runtime -- test/runtime/verification-relay-source.runtime.test.ts
+
+      - name: Compare two clean static relay baseline builds
+        run: |
+          node native/verification-observer/build.mjs --build-relay-baseline "$RUNNER_TEMP/flow-relay-sources" "$RUNNER_TEMP/flow-relay-baseline"
+          cat "$RUNNER_TEMP/flow-relay-baseline/build-evidence.json"
+          env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC "$RUNNER_TEMP/flow-relay-baseline/socat-static-baseline" -V
+
+      - name: Test static relay baseline forwarding
+        env:
+          FLOW_TEST_HOST_BRIDGE_GUARDIAN: ${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian
+          FLOW_TEST_HOST_BRIDGE_RELAY: ${{ runner.temp }}/flow-relay-baseline/socat-static-baseline
+        run: npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
 
       - name: Test the native application-result path
         env:

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -38,6 +38,25 @@ it(
   }),
 );
 
+it(
+  "rejects invalid source before creating a relay build context",
+  ownedTest(async (scope) => {
+    const owner = await scope.temporaryDirectory("flow-relay-context-");
+    const source = join(owner, "source");
+    await mkdir(source);
+    await expect(
+      execFile(
+        process.execPath,
+        [launcher, "--freeze-relay-context", source, join(owner, "context")],
+        {
+          timeout: 3_000,
+          maxBuffer: 32_768,
+        },
+      ),
+    ).rejects.toThrow("relay source integrity: inventory mismatch");
+  }),
+);
+
 // Inputs must be the actual authenticated public archives and patch files.
 // No generated archive-shaped data or successful-build substitute is accepted.
 describe.skipIf(sourceRoot === undefined)("selected relay source admission", () => {
@@ -60,6 +79,46 @@ describe.skipIf(sourceRoot === undefined)("selected relay source admission", () 
         relayQualified: false,
       });
       expect(await Promise.all(names.map((name) => readFile(join(root, name))))).toEqual(before);
+    }),
+  );
+
+  it(
+    "captures a separate build context from authentic bytes and refuses replacement",
+    ownedTest(async (scope) => {
+      const owner = await scope.temporaryDirectory("flow-relay-freeze-");
+      const source = join(owner, "source");
+      const output = join(owner, "context");
+      await mkdir(source);
+      for (const name of names)
+        await copyFile(join(requiredSourceRoot(), name), join(source, name));
+      const args = [launcher, "--freeze-relay-context", source, output];
+      const result = await execFile(process.execPath, args, { timeout: 3_000, maxBuffer: 32_768 });
+      const evidence = JSON.parse(result.stdout) as {
+        inputs: Record<string, string>;
+        baselineOnly: boolean;
+        relayQualified: boolean;
+      };
+      expect(evidence.baselineOnly).toBe(true);
+      expect(evidence.relayQualified).toBe(false);
+      expect(Object.keys(evidence.inputs)).toHaveLength(14);
+      for (const [path, hash] of Object.entries(evidence.inputs)) {
+        expect(
+          createHash("sha256")
+            .update(await readFile(join(output, path)))
+            .digest("hex"),
+        ).toBe(hash);
+      }
+      await expect(execFile(process.execPath, args, { timeout: 3_000 })).rejects.toThrow("EEXIST");
+      const captured = await readFile(join(output, "sources/resolver.patch"));
+      await writeFile(join(source, "resolver.patch"), "changed after capture");
+      expect(await readFile(join(output, "sources/resolver.patch"))).toEqual(captured);
+      const rejected = join(owner, "rejected");
+      await expect(
+        execFile(process.execPath, [launcher, "--freeze-relay-context", source, rejected], {
+          timeout: 3_000,
+        }),
+      ).rejects.toThrow("relay source integrity:");
+      await expect(lstat(rejected)).rejects.toMatchObject({ code: "ENOENT" });
     }),
   );
 

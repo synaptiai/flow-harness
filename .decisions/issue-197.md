@@ -3280,3 +3280,51 @@ Scope: ten files, all within issue197 RC-B source selection/admission or its doc
 Keep this commit local. Static relay build, wrappers, bootstrap, sealed-byte admission, native
 compatibility/lifecycle qualification, stage2 completion, stages3-4, UC-01/UC-05/VR-02 stay open.
 No production activation, repair enablement, model call, credential work, merge, or release.
+
+### Prepare a real static relay comparison baseline
+
+Started from cleandd057e3. Revalidated the source selection, RC-B profile, existing native build,
+and qualification workflow. Local Docker reports linux/aarch64, so it cannot satisfy native
+Linuxx64 qualification. Local source/context checks remain meaningful; emulation is not substituted.
+
+Independent source audit confirmed the selected fixed socat command supplies localhost plus the
+decimal port with AI_ADDRCONFIG/AF_UNSPEC/SOCK_STREAM/IPPROTO_TCP. Musl's AI_ADDRCONFIG probes
+local IPv4/IPv6 availability. A later restricted wrapper must validate the actual incoming hints,
+then deliberately use numeric IPv4 with AI_NUMERICHOST|AI_NUMERICSERV. Generic socat error handling
+can retry EAI_SOCKTYPE indefinitely; unsupported wrapper inputs must not trigger that fallback.
+Main cross-checked actual source. These observations do not substitute for linked/runtime evidence.
+
+Added a separately named baseline build, not a wrapper placeholder or runtime admission path.
+The new context captures authenticated source buffers and the trusted build recipe. Native build
+uses the existing pinned images/datedapt snapshot, applies and verifies the selectedmusl patches,
+compiles with no build-step network, compares two separate clean builds, and retains original
+source/patches, recipe, license/configuration/link/ELF/toolchain evidence andstaticlibc. It publishes
+captured compared buffers, with baselineOnly:true/relayQualified:false. Build-output capture assumes
+private trusted Docker output, not candidate-controlled files or executable lifetime custody.
+
+ObservedRED for unsupported --freeze-relay-context against the existing launcher, then17actual
+source cases passed. Addedpositive context capture/refusal/drift checks next. ObservedworkflowRED
+for missing separate staticrelayforwarding step, then wired exactsource acquisition andtwo baseline
+builds into the dedicated workflow. Existing systemrelay andnativeobserver tests remain unchanged
+in their selection. The three additionalforwarding cases explicitly select the builtbaseline through
+FLOW_TEST_HOST_BRIDGE_RELAY. They still use ordinarymusl localhost resolution andPATH-onlyenv.
+
+Expanded the job deadline from30 to50minutes to coverfour separately bounded10minbuilds plus
+preparation. This is a development feedback job, not fullCI/release or a budget increase for models.
+Typecheck/applicationbuild and expandedlocaltests are pending at this record. Nativequalification
+requires a reviewed qualification commit andpush before its evidence can exist. No merge/release,
+productionmanager change, credentials, ormodels are involved. The full goal andstage2 remain open.
+
+The positive realcontext case then found that the patched-file validation pattern excluded the
+underscore in actual res_msend.c. Fixed the filenameclass, retained the failing-test evidence, and
+all18real-source/context cases passed without skips. All69focused build/workflow/documentation
+regression cases passed. Typecheck, applicationbuild, lint, formatting, shellsyntax, and all three
+documentation gates passed. The Mac compilers remainedlive under memorypressure and were joined;
+they were not restarted or counted as failed merely because observation returned no new output.
+
+Independent code/test review found no additional P1-P3. Independent documentation review found
+oneP3 overclaim that architecture checks reject emulation. Corrected it to reported-host/daemon
+architecture checking with emulation unqualified. The build recipe's actual Linux compilation,
+28artifact comparison, version smoke, andthreebaseline forwarding cases remain unproven pending
+the exact-source hosted run. This is a qualification-source commit, not feature completion.
+Remote dedicatedqualificationref revalidated at2fe279c782a426c3089e6a62e179cd3ec07a5ab9.

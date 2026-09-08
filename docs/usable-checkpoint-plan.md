@@ -493,6 +493,11 @@ reviewed inputs and rejects changed bytes or invalid inventories. Native build, 
 byte-custody, and compatibility gates remain open. No production relay replacement or host-policy
 change is enabled.
 
+The separate static-baseline build and its hosted forwarding check are prepared for native Linux
+x64 qualification. They reuse the reviewed source inputs and preserve the existing system-relay
+checks. This comparison baseline has no restricted resolver or environment wrapper. Build and
+forwarding evidence remain pending, and a passing baseline cannot close runtime custody.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

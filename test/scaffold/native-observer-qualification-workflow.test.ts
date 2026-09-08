@@ -3,6 +3,29 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 describe("native observer qualification workflow", () => {
+  it("qualifies the static relay baseline separately without changing the system-relay test", async () => {
+    const workflow = parse(
+      await readFile(
+        new URL("../../.github/workflows/native-observer-qualification.yml", import.meta.url),
+        "utf8",
+      ),
+    );
+    const steps = workflow.jobs["native-observer-development"].steps;
+    const baseline = steps.find(
+      (step: { name: string }) => step.name === "Test static relay baseline forwarding",
+    );
+    expect(baseline?.run).toBe(
+      "npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts",
+    );
+    expect(baseline?.env.FLOW_TEST_HOST_BRIDGE_RELAY).toContain(
+      "/flow-relay-baseline/socat-static-baseline",
+    );
+    expect(
+      steps.find(
+        (step: { name: string }) => step.name === "Test the host bridge owner release contract",
+      ).env.FLOW_TEST_HOST_BRIDGE_RELAY,
+    ).toBeUndefined();
+  });
   it("isolates the native feedback branch from full CI and privileged events", async () => {
     const source = await readFile(
       new URL("../../.github/workflows/native-observer-qualification.yml", import.meta.url),
@@ -23,7 +46,7 @@ describe("native observer qualification workflow", () => {
     const job = workflow.jobs["native-observer-development"];
     expect(job.name).toBe("Native observer development (not full CI)");
     expect(job["runs-on"]).toBe("ubuntu-24.04");
-    expect(job["timeout-minutes"]).toBe(30);
+    expect(job["timeout-minutes"]).toBe(50);
     expect(job.steps[0].with["persist-credentials"]).toBe(false);
     expect(
       job.steps
@@ -108,6 +131,18 @@ describe("native observer qualification workflow", () => {
     expect(commands).toContain(
       "npm run test:runtime -- test/runtime/native-observer-transport.runtime.test.ts",
     );
-    expect(commands).not.toMatch(/proof:prepare|gh\s|git push|npm publish|curl|wget/);
+    const acquisition = job.steps.find(
+      (step: { name: string }) => step.name === "Acquire and check reviewed relay sources",
+    );
+    expect(acquisition.run).toContain("native/verification-relay/source-manifest.json");
+    expect(acquisition.run).toContain("'--proto', '=https', '--proto-redir', '=https'");
+    expect(acquisition.run).toContain("'--max-time', '45'");
+    expect(acquisition.run).toContain("--check-relay-sources");
+    const otherCommands = job.steps
+      .filter((step: { name: string }) => step.name !== acquisition.name)
+      .flatMap((step: { run?: string }) => step.run ?? [])
+      .join("\n");
+    expect(otherCommands).not.toMatch(/curl|wget/);
+    expect(commands).not.toMatch(/proof:prepare|gh\s|git push|npm publish|wget|--insecure/);
   });
 });

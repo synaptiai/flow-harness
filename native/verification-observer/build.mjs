@@ -499,6 +499,15 @@ if (import.meta.main) {
       process.stdout.write(
         `${JSON.stringify({ verified: true, sourceOnly: true, inputCount: checked.inputs.size, sourceManifestSha256: checked.sourceManifestSha256, relayQualified: false })}\n`,
       );
+    } else if (mode === "--freeze-relay-context" && args.length === 2) {
+      const { freezeRelayContext } = await import("../verification-relay/build.mjs");
+      process.stdout.write(`${JSON.stringify(await freezeRelayContext(args[0], args[1]))}\n`);
+    } else if (mode === "--build-relay-baseline" && args.length === 2) {
+      const { buildRelayBaseline } = await import("../verification-relay/build.mjs");
+      const evidence = await buildRelayBaseline(args[0], args[1]);
+      process.stdout.write(
+        `${JSON.stringify({ built: true, baselineOnly: true, relayQualified: false, artifactCount: Object.keys(evidence.artifacts).length })}\n`,
+      );
     } else if (mode === "--check-sources" && args.length <= 1) {
       const checked = await sourceCheck(args[0] ?? ownRoot);
       process.stdout.write(
@@ -537,7 +546,7 @@ if (import.meta.main) {
       await build(args[0], true, true);
     else
       throw new Error(
-        "Use --check-relay-sources SOURCE_DIRECTORY, --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
+        "Use --check-relay-sources SOURCE_DIRECTORY, --freeze-relay-context/--build-relay-baseline SOURCE_DIRECTORY NEW_OUTPUT_DIRECTORY, --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
       );
   } catch (error) {
     process.stderr.write(
