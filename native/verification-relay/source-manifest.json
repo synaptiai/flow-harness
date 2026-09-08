@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "purpose": "observer-host-relay-source-selection",
+  "profile": "host-bridge-ipv4-loopback-v1",
+  "qualification": "not-performed",
+  "inputs": [
+    {
+      "path": "socat_1.8.1.3.orig.tar.bz2",
+      "url": "https://snapshot.debian.org/file/f513bde6e2aac573a4eca57824cfe2fd1de6c578",
+      "bytes": 605749,
+      "sha256": "25bc6476292b2e614220989c77b0b6fca87bb2525d9747b31a6639b1fb602418"
+    },
+    {
+      "path": "socat_1.8.1.3-1.dsc",
+      "url": "https://snapshot.debian.org/file/dc2f345394859cb22f35933eda03ca201c7c5784",
+      "bytes": 1865,
+      "sha256": "3b08d04105a730c1fe8d6d6ee6b0c081376b729a67d3dd69fd92c8bd6570a7b1"
+    },
+    {
+      "path": "musl-1.2.6.tar.gz",
+      "url": "https://musl.libc.org/releases/musl-1.2.6.tar.gz",
+      "bytes": 1082499,
+      "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
+    },
+    {
+      "path": "musl-1.2.6.tar.gz.asc",
+      "url": "https://musl.libc.org/releases/musl-1.2.6.tar.gz.asc",
+      "bytes": 490,
+      "sha256": "8a696228404cd4bae6379cf7538fc5d18c133b0ada54a41c1c6cef31d3c22ab6"
+    },
+    {
+      "path": "iconv.patch",
+      "url": "https://www.openwall.com/lists/musl/2026/04/03/2/1",
+      "bytes": 7502,
+      "sha256": "444fa70e52ca158fb7d4bad560637790bbf8f72e80b82fff840dd66fa83091e3"
+    },
+    {
+      "path": "qsort.patch",
+      "url": "https://www.openwall.com/lists/musl/2026/04/10/3/1",
+      "bytes": 5594,
+      "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb"
+    },
+    {
+      "path": "resolver.patch",
+      "url": "https://git.musl-libc.org/cgit/musl/patch/?id=6f6bd4a1896ba0be19168abc1346c8c7e3851709",
+      "bytes": 1173,
+      "sha256": "915b898897ef54ec9e126851b9445456aa97b4a62f0abe2d74a20ba17c00ec6e"
+    }
+  ],
+  "authentication": {
+    "socat": {
+      "authority": "Debian source uploader",
+      "primaryFingerprint": "A0DF7E0D3851E0EE45C00BC8ACE1F33CB933BBBB",
+      "signingFingerprint": "7D887DC8BA7BBBA7B835E3BADCE310E7864CC8BF",
+      "signatureDigest": "SHA512",
+      "identityUrl": "https://nm.debian.org/person/gcs/"
+    },
+    "musl": {
+      "authority": "musl upstream release",
+      "primaryFingerprint": "836489290BB6B70F99FFDA0556BCDB593020450F",
+      "signatureDigest": "SHA1",
+      "identityUrl": "https://musl.libc.org/releases.html",
+      "sha256CorroborationUrl": "https://github.com/openwrt/openwrt/blob/ab06327b134503a2590f42bb9e788013d05505aa/toolchain/musl/common.mk",
+      "caveat": "Legacy upstream signature digest; independent distribution checksum corroboration is not a stronger upstream signature."
+    }
+  },
+  "muslPatchedFiles": {
+    "src/stdlib/qsort.c": "c7c9e1437e55ad9ac3f24f4b0eb54fbd09f8175a21299f4d7412181b27dfa57a",
+    "src/locale/iconv.c": "7038e7f56b0bf7e62541140df50d498f84c81383854f2c97b0e755f8cc11e226",
+    "src/locale/gb18030utf.h": "94b51d272a81a1164a035918253004ab71cc21e29f11100dcf9bd3dc22757c28",
+    "src/network/res_msend.c": "489f39af21fdca8add42a46f9f9e8e7eb80a0d55e941071a6723c6e215ffccca"
+  }
+}

@@ -493,7 +493,13 @@ function sha256(bytes) {
 if (import.meta.main) {
   try {
     const [mode, ...args] = process.argv.slice(2);
-    if (mode === "--check-sources" && args.length <= 1) {
+    if (mode === "--check-relay-sources" && args.length === 1) {
+      const { captureRelaySources } = await import("../verification-relay/source-check.mjs");
+      const checked = await captureRelaySources(args[0]);
+      process.stdout.write(
+        `${JSON.stringify({ verified: true, sourceOnly: true, inputCount: checked.inputs.size, sourceManifestSha256: checked.sourceManifestSha256, relayQualified: false })}\n`,
+      );
+    } else if (mode === "--check-sources" && args.length <= 1) {
       const checked = await sourceCheck(args[0] ?? ownRoot);
       process.stdout.write(
         `${JSON.stringify({ verified: true, sourceManifestSha256: checked.manifestSha256, sourceCount: sources.length })}\n`,
@@ -531,7 +537,7 @@ if (import.meta.main) {
       await build(args[0], true, true);
     else
       throw new Error(
-        "Use --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
+        "Use --check-relay-sources SOURCE_DIRECTORY, --check-sources [root], --freeze-context/--freeze-observer-context/--freeze-observer-failure-controls-context root NEW_DIRECTORY, --compare/--compare-observer/--compare-observer-failure-controls first second, or --build/--build-observer/--build-observer-failure-controls NEW_OUTPUT_DIRECTORY",
       );
   } catch (error) {
     process.stderr.write(

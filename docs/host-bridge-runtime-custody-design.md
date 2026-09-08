@@ -1,9 +1,10 @@
 # Host-bridge runtime custody proposal
 
-Status: research complete for the next decision; implementation and qualification have not started.
+Status: RC-B approved on September 8, 2026. Source admission is implemented.
+Native qualification remains open.
 This proposal is for maintainers implementing the observer-only host bridge in issue #197.
 It does not change the approved [RL-A lifecycle boundary](bounded-verification-repair-design.md#resolve-host-bridge-ownership-before-integration).
-Selecting a restricted runtime profile requires a separate compatibility decision.
+The approval selects a restricted observer-only runtime profile. Qualification remains required.
 
 Runtime custody means binding execution to admitted code bytes and preventing those bytes from
 changing through the owned process lifetime. It includes executable dependencies, not just a path.
@@ -76,7 +77,7 @@ None can both accept arbitrary runtime code injection and claim a fixed executab
 | RC-B: Packaged static relay, recommended for qualification | Reduces the code dependency set and permits descriptor-based execution of a sealed artifact. No administrator-managed image is assumed. | A static-musl build creates a distinct observer profile. It needs explicit resolver and environment constraints, reproducible builds, source notices, and compatibility qualification. It is not equivalent to arbitrary system `socat`. |
 | RC-C: Administrator-provisioned verified runtime image | Can bind a larger glibc runtime and its paths to an identified image. | Requires image maintenance and host provisioning. External services and writable mounts still need boundaries. This adds operator burden and does not follow from Linux CI availability. |
 
-Recommendation: approve RC-B for a restricted observer host-relay profile and staged qualification.
+Decision: use RC-B for a restricted observer host-relay profile and staged qualification.
 Preserve ordinary execution and proxy policy. Do not infer production admission from this selection.
 If preserving a specific host NSS setup is essential, prefer RC-A and identify that setup first.
 NSS means the Name Service Switch, which selects glibc name-service backends.
@@ -114,9 +115,75 @@ For RC-C, [dm-verity](https://docs.kernel.org/admin-guide/device-mapper/verity.h
 read-only block device against a cryptographic root. It does not automatically authenticate that
 root, close other executable paths, or include external services. Image custody still needs design.
 
-## Proposed RC-B qualification sequence
+## RC-B qualification sequence
 
-These steps are pending the compatibility decision. They are not implementation claims.
+### Selected source inputs
+
+The reviewed [source manifest](../native/verification-relay/source-manifest.json) selects socat
+`1.8.1.3` and musl `1.2.6`, with three musl patch inputs. It records exact input sizes and SHA-256
+digests. This is source selection, not an admitted executable identity or completed build recipe.
+
+The socat archive matches the checksum in the Debian uploader's signed `1.8.1.3-1` source
+descriptor. The signature uses SHA-512 and the key published in the uploader's
+[Debian identity](https://nm.debian.org/person/gcs/). This authenticates the original source archive.
+It does not apply Debian packaging changes or qualify an installed Debian binary.
+
+The musl archive matches its [upstream release signature](https://musl.libc.org/releases.html).
+That signature uses legacy SHA-1. Its SHA-256 also matches the independently maintained
+[OpenWrt source manifest](https://github.com/openwrt/openwrt/blob/ab06327b134503a2590f42bb9e788013d05505aa/toolchain/musl/common.mk).
+This corroboration does not turn the legacy signature into a stronger upstream signature.
+The Flow manifest records both fingerprints and this limitation.
+
+The selected musl patches address these source paths:
+
+| Input | Selected correction | Source evidence |
+| --- | --- | --- |
+| `iconv.patch` | GB18030 conversion, including CVE-2026-6042 | [Upstream maintainer patch](https://www.openwall.com/lists/musl/2026/04/03/2/1) |
+| `qsort.patch` | Sorting overflow, shift behavior, and workspace bounds, including CVE-2026-40200 | [Upstream maintainer patch series](https://www.openwall.com/lists/musl/2026/04/10/3/1) |
+| `resolver.patch` | Correct nameserver indexing when IPv6 is unavailable | [Pinned upstream resolver fix](https://git.musl-libc.org/cgit/musl/patch/?id=6f6bd4a1896ba0be19168abc1346c8c7e3851709) |
+
+All three inputs applied to the selected musl source without offsets or fuzz. The manifest records
+the resulting four file digests. The source-admission command checks the seven input files only.
+It does not apply patches or verify an extracted tree. A later build must verify the patched tree
+and retain the complete build recipe, license notices, and corresponding source.
+
+### Restricted profile to implement
+
+The selected profile identifier is `host-bridge-ipv4-loopback-v1`. These are implementation
+requirements, not supported production options yet:
+
+| Boundary | Requirement |
+| --- | --- |
+| Relay role | Host bridge only. Keep the exact two SRT arguments documented in this proposal. Do not change the shared `socatPath` setting. |
+| Destination | Resolve the admitted `localhost` target to IPv4 loopback `127.0.0.1` inside the reviewed relay implementation. Require a numeric port. Do not consult host NSS, DNS, hosts files, or service files. |
+| Environment | Construct the exact profile environment: `PATH=/usr/bin:/bin`, `LANG=C`, `LC_ALL=C`, and `TZ=UTC`. Reject unsupported explicit invocation inputs. Do not inherit the controller's ambient environment. |
+| Other inherited state | Preserve the admitted working directory, user identity, and host network. |
+| Unsupported configurations | Reject IPv6-only backends, custom hostname resolution, and additional relay options. Do not silently substitute a different profile. |
+| Evidence | Audit the actual linked implementation and test forwarding, rejection, startup, and settlement on native Linux x64. |
+
+The installed SRT manager binds its local multiplexer to `127.0.0.1`, which supports this initial
+IPv4 choice. Custom IPv6 or NSS-dependent backends need a separately designed profile. RC-B approval
+permits this explicit restriction. The earlier RL-A approval alone did not authorize it.
+
+The planned implementation uses separately identified argument and resolver wrappers around the
+selected socat source. Link-time wrapping affects matching unresolved references, not every internal
+libc call. Source review, link-map inspection, and runtime checks must establish the actual call path.
+The wrapper implementation, static build, environment admission, and executable custody remain open.
+
+### Check the source bundle
+
+Use the [maintainer source-admission procedure](../native/verification-relay/README.md) on macOS or
+Linux. It reads local input files and returns `sourceOnly: true` and `relayQualified: false`.
+It does not download, extract, compile, execute, or verify signatures. The reviewed Flow manifest
+owns the expected identities. An input-directory manifest cannot replace that authority.
+
+The capture function returns checked byte buffers. A future build must consume those buffers,
+not reopen the original paths after checking them. This is a source snapshot, not a guarantee that
+the source directory remains unchanged or that an executable stays immutable through execution.
+
+### Complete the remaining gates
+
+The compatibility decision is approved. These steps remain implementation and qualification gates.
 
 1. Define the observer host-relay profile. Preserve exact arguments, working directory, identity,
    and host network. Enumerate accepted environment and resolver inputs. Reject unsupported inputs
@@ -143,8 +210,9 @@ These steps are pending the compatibility decision. They are not implementation 
 7. Qualify mutation and wrong-artifact rejection with real owned files and processes. Include
    pathname replacement, same-inode modification, seal failure, unsupported host policy, and
    incorrect dependency metadata. Calibrate weak decisions before testing the actual admission rule.
-8. Qualify actual forwarding and lifecycle behavior on Linux x64. Cover accepted IPv4 and IPv6
-   configurations, held and concurrent connections, partial startup, cancellation, and owner loss.
+8. Qualify actual forwarding and lifecycle behavior on Linux x64. Cover the accepted IPv4 profile,
+   rejection of unsupported IPv6 configurations, held and concurrent connections, partial startup,
+   cancellation, and owner loss.
    Compare the selected supported profile with the existing relay using the same traffic assertions.
 9. Complete independent code and test review. Record source-specific evidence and update the
    architecture before manager integration. Keep separate stage 3 and stage 4 gates open.

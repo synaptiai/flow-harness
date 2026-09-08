@@ -3226,3 +3226,57 @@ All three documentation gates and21 focused documentation/workflow contract test
 Initial prose lint rejected semicolons and one26-word sentence; corrected before the passing run.
 All five changed files belong to the active runtime-custody design gate. No new Linux execution
 claim is made for this documentation-only commit. Keep it local pending the compatibility decision.
+
+### RC-B approval and source/profile preparation
+
+The user explicitly approved RC-B on September8,2026. Cleanfbb535e verified before work.
+This authorizes the restricted observer-only static relay profile and its qualification, not
+ordinary-manager replacement, repair enablement, another pilot, credential work, merge, or release.
+Begin with actual accepted invocation/environment/resolver semantics and exact current source
+selection. Keep build evidence separate from the existing native observer/guardian artifacts.
+Test-first implementation and real Linux x64 qualification remain mandatory; no static-build or
+byte-custody claim follows from this approval. The original usable-checkpoint goal is active.
+
+### RC-B source admission implemented and reviewed
+
+Selected socat1.8.1.3 original archive via its Debian1.8.1.3-1 signed source descriptor, and
+musl1.2.6 plus upstream iconv, qsort-series, and resolver-index fixes. Downloaded actual public
+inputs over verified HTTPS into an owned temporary directory. No TLS bypass, credential read,
+source execution, or native compilation. The Flow-owned source manifest records exact URLs,
+seven file sizes/digests, authentication fingerprints, and four patched-file digests.
+
+GPG verified the Debian descriptor with the published uploader key and SHA512 signature, and
+the musl release with its published upstream key. Musl's signature uses legacy SHA1; explicitly
+recorded this limitation and independently corroborated the archiveSHA256 against OpenWrt
+commitab06327b134503a2590f42bb9e788013d05505aa. Corroboration is not a stronger upstream signature.
+The isolated public keyring used no user keyring and no agent. Applied all three musl inputs to
+the real extracted source with --fuzz=0, without offsets. No patched tree is executed by admission.
+
+The source-only CLI mode reads the checker-owned manifest, rejects source-root authority,
+captures bounded file bytes, checks file identity/stability, and hashes the captured buffers.
+It performs no download, signature verification, extraction, patching, build, or execution.
+Result remains sourceOnly:true/relayQualified:false. A future build must use captured buffers,
+not reopen original paths. Trusted checker/bootstrap remains an explicit assumption.
+
+Recorded RED: existing launcher rejected --check-relay-sources as unsupported instead of the
+required empty-inventory rejection. After implementation, real-source13cases passed, then the
+expanded16cases passed with no skips. Each of seven same-size input mutations is rejected;
+symlink, directory, oversized input, source-root manifest, missing input, FIFO, and root alias
+are rejected. FIFO and stat-race guards are source-reviewed, not concurrent-race qualified.
+
+Defined host-bridge-ipv4-loopback-v1 requirements separately from runtime support: exact host
+arguments, reviewed numeric-loopback resolution, explicit four-key environment, and rejection
+of unsupported inputs. Ordinary SRT and inner bridges are unchanged. The source-only component
+is now in the architecture map/diagram and has an executable maintainer procedure.
+
+Main Stage1 mapped the source-slice requirements to real CLI behavior. Independent code/test
+and documentation review found no P1-P3. Typecheck, lint, format, application build, all three
+documentation gates,16real-source runtime cases, and68focused build/documentation/workflow
+regression cases passed. Lint reported only the pre-existing unrelated useless-constructor info.
+No language-server tool is configured; CLI typechecking completed. Corrected four new prose
+semicolon violations before the passing clarity check. No native Linux execution claim is made.
+
+Scope: ten files, all within issue197 RC-B source selection/admission or its documentation.
+Keep this commit local. Static relay build, wrappers, bootstrap, sealed-byte admission, native
+compatibility/lifecycle qualification, stage2 completion, stages3-4, UC-01/UC-05/VR-02 stay open.
+No production activation, repair enablement, model call, credential work, merge, or release.

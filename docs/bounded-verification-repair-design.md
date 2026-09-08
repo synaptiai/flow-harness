@@ -847,9 +847,9 @@ relay's process-group and ancestry-preservation premise. Canonical path equality
 Stage 2 remains incomplete until this admission gate passes.
 
 The [runtime custody proposal](host-bridge-runtime-custody-design.md) compares a frozen dynamic
-runtime, a packaged static relay, and an administrator-provisioned verified image. It recommends
-qualification of a restricted observer relay profile. That compatibility decision remains pending.
-RL-A approval does not authorize silently changing inherited environment or resolver behavior.
+runtime, a packaged static relay, and an administrator-provisioned verified image. The user approved
+RC-B on September 8, 2026, selecting qualification of a restricted observer relay profile.
+Define its accepted environment and resolver behavior explicitly. Ordinary execution remains unchanged.
 
 Runtime custody is an admission prerequisite, not an invitation to
 expand these tests into general containment. Multiplexed bridges, partial manager startup, retained
