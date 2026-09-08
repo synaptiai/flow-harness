@@ -1143,7 +1143,7 @@ or the remaining observer qualification gates.
 
 ### Qualify resistant bridge descendants
 
-The startup suite also defines two lifecycle-only cases. Their hosted qualification is pending.
+The startup suite also defines two lifecycle-only cases qualified on hosted Linux x64.
 It compiles `host-bridge-resistant-relay.c` twice: once as a resistant relay-shaped fixture and
 once as a cooperative twin. Neither fixture forwards traffic. The real-socat forwarding case
 remains a separate requirement.
@@ -1176,7 +1176,16 @@ case and original five startup cases passed. Three owner and five active-descend
 passed. Later predicate and native cases were skipped. Both clean builds matched 32 artifacts.
 
 The dedicated workflow now selects the actual resistant fixture. Its guard rejects the
-sensitivity variable. Qualification of actual resistant behavior remains pending.
+sensitivity variable. The actual selection passed in
+[run 34206798752](https://github.com/synaptiai/flow-harness/actions/runs/34206798752) at `26e3e02`.
+Both new cases and the original five startup cases passed. The resistant child proved actual
+TERM receipt and immediate liveness, followed by termination and no remaining child.
+The cooperative twin cleaned up but did not satisfy the same resistance decision.
+
+All 322 selected tests passed without skips: three owner, five active-descendant, seven startup
+and resistance, one predicate calibration, and 306 native cases. Both clean builds matched 32
+artifacts. The witness and fixed relay variants are separately compiled test code, not part of
+that artifact comparison. The test code was unchanged between the sensitivity and actual runs.
 
 A terminated process handle does not report the terminating signal. The escalation interpretation
 also depends on the fixed child's lack of a normal exit path after receipt and the guardian's

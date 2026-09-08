@@ -3055,3 +3055,35 @@ Independent five-file selection/evidence review found no P1-P3 findings. Local t
 format, build, all three documentation gates, and21 focused tests passed. Corrected the new
 evidence paragraph boundary after prose validation rejected its combined sentence count.
 Commit and push the reviewed actual-fixture selection only to the dedicated qualification branch.
+
+### Qualify selected resistant-child behavior
+
+Run34206798752 at exact26e3e02de8d25f5dd858cb5423414809602d0262 succeeded,
+job101998069489, September8 UTC08:51:40-08:54:19 (159seconds). All322 passed, zero skips:
+3owner+5active+7startup/resistance+1predicate+306native. Actual resistant1526ms and cooperative1512ms;
+startup suite8.14s/tests7.98s (7979ms file). Owner4.68s/4.56s, active9.11s/8.94s,
+predicate558ms/370ms, native25.59s/25.24s. Bwrap0.9.0 and canonical/usr/bin/socat1.
+Two clean builds matched32 artifacts. Guardian1b5c57faf55976a30d8161bac667ec960b43279e22a3231abe0ae3698c729dff,
+object4cda7ac749e727c777484810004f3bea38d8b3a5195f9ac6a74e4c79274ce6f8,
+observer67f7fed7aef6b2bf63082bc05387164b26db02bc49454564a0829872acb6627d,
+false-normal6d3cc6fd7f49a28f70e0d70e7cacd6f527d7471bae4e1b7b0a45b74bc5156c8b unchanged.
+observerQualified:false remains. Native diagnostic root/tmp/flow-observer-transport-rihQbT was
+retained on the ephemeral runner, not uploaded. New witness/relay test builds are not included
+in the32-artifact comparison.
+
+Main and independent reviewer authenticated exact source/job, absence of baseline selection,
+unchanged C/runtime code since RED, all counts, and native identities. Actual resistant receipt,
+immediate pinned-handle liveness, final terminated handle, and immediate ECHILD passed. The
+cooperative twin cleaned up but failed the same resistance predicate. No inferred signal-status
+claim: pidfd does not identify SIGKILL; attribution additionally depends on fixed no-exit child
+source and unchanged guardian final-KILL-before-reaping ordering.
+
+This closes selected fixed-child resistance behavior within the test PID namespace only. Next:
+owner-loss controls using existing independent test custody, then runtime byte custody and
+group/ancestry preservation before manager integration. Full stage2, stages3-4, UC-01/UC-05/VR-02
+remain open. No production source changes, repairs, model transmissions, credentials, merge, or
+release. Record this verified milestone without rerunning unchanged execution for prose alone.
+
+Final independent five-document review found no P1-P3 findings. All three documentation gates
+and21 focused tests passed. Commit this evidence locally without another unchanged native run.
+The usable-checkpoint goal remains active and incomplete.

@@ -817,18 +817,30 @@ A successful forwarding case checked the same namespace and writable fixture con
 All 320 selected tests passed without skips, and both clean builds matched 32 artifacts.
 This is not evidence of unnamespaced host runtime custody.
 
+The selected resistant-child cases passed in
+[run 34206798752](https://github.com/synaptiai/flow-harness/actions/runs/34206798752) at `26e3e02`.
+The actual fixed child reported TERM receipt and remained alive during the witness's immediate
+process-handle check. Normal guardian closure then required a terminated child handle and the
+independent no-remaining-children observation before namespace teardown. The cooperative twin
+cleaned up but did not pass the same resistance decision. All 322 selected tests passed without
+skips, and both clean builds matched 32 artifacts.
+
+This closes selected resistance behavior within the test namespace only. The process handle does
+not independently identify the terminating signal. Escalation attribution also relies on the
+fixed child's no-normal-exit path and the guardian's final-KILL-before-reaping order. See the
+[resistance qualification guide](testing-and-evaluation.md#qualify-resistant-bridge-descendants).
+
 Complete these remaining bounded stage-2 gates next:
 
 | Gate | Required evidence |
 | --- | --- |
-| Resistant descendants | Use a fixed, bounded test relay to show a child still alive after the first termination signal and fully reaped after escalation. Ordinary relay completion does not prove this case. |
 | Owner loss | Establish independent test-owned cleanup custody first. Loss of the guardian must remain unconfirmed cleanup, never accepted settlement. Do not create an orphaning test or signal discovered PIDs. |
 | Runtime custody | Bind the admitted executable and runtime bytes and establish the relay's process-group and ancestry-preservation premise. Canonical path equality is insufficient. |
 
-Start with resistant descendants. Prove that the first termination signal reached an owned child
-that remained alive, then independently confirm termination and reaping after escalation.
-Do not infer signal resistance from elapsed time or from an ordinary relay that exits promptly.
-Preserve test-owned cleanup custody so a failed control cannot leave an orphaned process.
+Start with owner loss. Preserve the independently established test-owned namespace custody so a
+failed control cannot leave an orphaned process. Signal only the guardian owned at creation.
+Record its actual termination and remaining-child evidence before namespace teardown. Loss of the
+guardian must remain an unconfirmed cleanup outcome, not a successful release.
 
 Runtime custody is an admission prerequisite, not an invitation to
 expand these tests into general containment. Multiplexed bridges, partial manager startup, retained
