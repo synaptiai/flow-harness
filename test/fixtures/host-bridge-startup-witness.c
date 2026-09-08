@@ -1,5 +1,6 @@
 /* Test-only startup witness, executed as PID 1 in a private bwrap PID namespace.
- * CLI: witness observe|release|live-residue|zombie-residue|resistance GUARDIAN RELAY UNIX TCP
+ * CLI: witness MODE GUARDIAN RELAY UNIX TCP
+ * MODE: observe|release|live-residue|zombie-residue|resistance|owner-loss
  * Never signals a discovered PID. Capture the no-child observation immediately
  * after waiting for the exact owner, before draining pipes or namespace teardown.
  * The two calibration modes create real adopted children, not guardian receipts.
@@ -102,7 +103,10 @@ int main(int argc, char **argv) {
     const int live = strcmp(argv[1], "live-residue") == 0;
     const int zombie = strcmp(argv[1], "zombie-residue") == 0;
     const int resistance = strcmp(argv[1], "resistance") == 0;
-    if (!release && !live && !zombie && !resistance && strcmp(argv[1], "observe") != 0) return 120;
+    const int owner_loss = strcmp(argv[1], "owner-loss") == 0;
+    const int socket_observation = resistance || owner_loss;
+    if (!release && !live && !zombie && !socket_observation && strcmp(argv[1], "observe") != 0)
+        return 120;
     struct sigaction action;
     memset(&action, 0, sizeof(action));
     sigset_t empty;
@@ -122,7 +126,7 @@ int main(int argc, char **argv) {
         syscall(SYS_close_range, 3u, UINT_MAX, 0u) != 0 || nonblocking(0) != 0 ||
         nonblocking(1) != 0) return 120;
     struct resistance_observation observation = { .listener = -1, .connection = -1, .pidfd = -1 };
-    if (resistance) {
+    if (socket_observation) {
         observation.listener = resistance_listen(argv[4]);
         if (observation.listener < 0) return 121;
     }
@@ -146,6 +150,7 @@ int main(int argc, char **argv) {
     unsigned char out[256], err[256], command[6];
     size_t out_length = 0, err_length = 0, command_length = 0;
     int out_closed = 0, err_closed = 0, owner_closed = 0, control_closed = 0, status = 0;
+    int owner_kill_sent = 0, child_terminated_at_owner_loss = -1;
     const char *remaining = NULL;
     for (;;) {
         if (!owner_closed) {
@@ -154,20 +159,36 @@ int main(int argc, char **argv) {
                 /* No other wait, pipe drain, signal, or teardown before this sample. */
                 remaining = remaining_children();
                 if (remaining == NULL) return 122;
+                if (owner_loss) {
+                    if (!owner_kill_sent || !observation.ready || observation.pidfd < 0) return 122;
+                    /* Freeze this one sample before any output/socket drain. Never
+                     * replace it with a later observation or namespace cleanup. */
+                    child_terminated_at_owner_loss = resistance_terminated(observation.pidfd);
+                    if (child_terminated_at_owner_loss < 0) return 122;
+                }
                 owner_closed = 1;
             } else if (waited < 0 && errno != EINTR) return 122;
         }
         if (read_output(output[0], out, &out_length, &out_closed) != 0 ||
             read_output(diagnostic[0], err, &err_length, &err_closed) != 0) return 122;
-        if (resistance) {
+        if (socket_observation && !(owner_loss && owner_closed)) {
             if (resistance_accept(&observation, owner, argv) != 0 ||
-                resistance_read(&observation, control_closed) != 0) return 122;
-            if (observation.ready && !control_closed) {
+                resistance_read(&observation, owner_loss ? owner_kill_sent : control_closed) != 0)
+                return 122;
+            if (owner_loss && (observation.term || observation.closed)) return 122;
+            if (observation.ready && !(owner_loss ? owner_kill_sent : control_closed)) {
                 const char owned[] = "FLOW_HOST_BRIDGE_V1 OWNED\n";
                 if (out_length == sizeof(owned) - 1 && memcmp(out, owned, out_length) == 0) {
-                    if (owner_closed || resistance_terminated(observation.pidfd) != 0 ||
-                        write(control[1], "stop\n", 5) != 5 || close(control[1]) != 0) return 122;
-                    control_closed = 1;
+                    if (owner_closed || resistance_terminated(observation.pidfd) != 0) return 122;
+                    if (owner_loss) {
+                        /* Direct fork-owned, unreaped child only; never a discovered PID.
+                         * Keep control input open so EOF cannot request genuine cleanup. */
+                        if (owner <= 1 || kill(owner, SIGKILL) != 0) return 122;
+                        owner_kill_sent = 1;
+                    } else {
+                        if (write(control[1], "stop\n", 5) != 5 || close(control[1]) != 0) return 122;
+                        control_closed = 1;
+                    }
                 }
             }
         }
@@ -190,8 +211,9 @@ int main(int argc, char **argv) {
     if (close(output[0]) != 0 || close(diagnostic[0]) != 0 ||
         (!control_closed && close(control[1]) != 0)) return 122;
     if (!WIFEXITED(status) && !WIFSIGNALED(status)) return 122;
-    if (resistance) {
-        observation.terminated = resistance_terminated(observation.pidfd);
+    if (socket_observation) {
+        observation.terminated = owner_loss ? child_terminated_at_owner_loss :
+            resistance_terminated(observation.pidfd);
         if (observation.terminated < 0 || close(observation.pidfd) != 0 ||
             close(observation.connection) != 0 || close(observation.listener) != 0) return 122;
     }
@@ -206,6 +228,8 @@ int main(int argc, char **argv) {
         ",\"resistance\":{\"termObserved\":%s,\"liveAfterTerm\":%s,\"terminated\":%s}",
         observation.term ? "true" : "false", observation.live_after_term ? "true" : "false",
         observation.terminated ? "true" : "false");
+    if (owner_loss) printf(
+        ",\"ownerLoss\":{\"childTerminated\":%s}", observation.terminated ? "true" : "false");
     printf("}\n");
     if (fflush(stdout) != 0 || ferror(stdout)) return 123;
     return 0; /* Namespace cleanup cannot revise the already captured observation. */

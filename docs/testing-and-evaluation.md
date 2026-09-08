@@ -1192,6 +1192,34 @@ also depends on the fixed child's lack of a normal exit path after receipt and t
 final `SIGKILL` before reaping. These cases do not establish arbitrary-process containment,
 unnamespaced runtime custody, or repair readiness. They add no production dependency.
 
+### Qualify bridge owner loss
+
+The startup suite defines an additional owner-loss case. Hosted qualification is pending.
+It reuses the existing test-only namespace witness, fixed relay, and socket-bound child process
+handle. No production manager or guardian code changes for this case.
+
+The witness first checks child identity, liveness, readiness, and the actual `OWNED` receipt.
+It sends `SIGKILL` only to the direct guardian child it created and has not reaped. It keeps
+guardian input open so closing input cannot request normal cleanup. The witness waits for that
+exact child, immediately records remaining children, and then takes one child-handle sample.
+Both observations precede output draining and namespace teardown. The test requires an actual
+killed guardian, `OWNED` without `SETTLED`, a remaining live child, and a nonterminated child handle.
+
+The witness does not wait for the live child's socket to close or signal discovered descendants.
+It reports the captured failure before exiting. Subsequent test-namespace disposal is distinct
+from guardian cleanup and cannot turn that failure into accepted settlement. This uses the
+[documented PID namespace lifecycle](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)
+and the kernel's
+[namespace shutdown implementation](https://github.com/torvalds/linux/blob/v6.17/kernel/pid_namespace.c).
+The test still requires bounded normal wrapper closure. Forced closure remains a failure.
+
+The same test-only settlement decision accepts the normal forwarding and resistance cases and
+must reject owner loss. For initial sensitivity testing only, set
+`FLOW_TEST_OWNER_LOSS_BASELINE=1`. This deliberately treats any recorded guardian exit as settled.
+The owner-loss case must fail that decision after its exact live-child observations pass.
+The dedicated workflow currently selects this sensitivity control. Actual qualification remains
+pending, and production owner-loss handling remains unqualified.
+
 ### Test the internal observer components
 
 The fixture-owner tests use real local files. They cover byte and identity drift, denied file and

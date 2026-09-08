@@ -3087,3 +3087,54 @@ release. Record this verified milestone without rerunning unchanged execution fo
 Final independent five-document review found no P1-P3 findings. All three documentation gates
 and21 focused tests passed. Commit this evidence locally without another unchanged native run.
 The usable-checkpoint goal remains active and incomplete.
+
+### Design the owner-loss qualification
+
+Previous turn made verified progress: selected resistance passed322 tests, and clean HEAD5be953e
+records that milestone. Next operator flow: guardian disappears during owned relay activity ->
+record actual guardian termination and surviving descendant -> refuse settled release -> dispose
+the test namespace independently without upgrading the guardian result.
+
+Compared three mechanisms: test-owned PID namespace reuse retains already qualified custody and
+adds no helper process; production cgroup custody introduces host admission/provisioning outside
+this slice; host PID discovery/signaling changes the trust boundary and cannot supply creation-time
+ownership. Select existing namespace custody, not a new production containment claim.
+
+The existing socket-bound pidfd/ancestry/UID/argv readiness precedes SIGKILL to ONLY the direct
+guardian child returned by fork, which remains unreaped. Send no stop command. Immediately after
+the exact owner wait, retain the existing first ECHILD/live/unreaped sample, then take exactly one
+zero-time child pidfd sample before any pipe/socket drain. Require ownerCode-1/signal9, OWNEDonly,
+remaininglive and childTerminatedfalse. Do not await the live child's socket EOF. Report this
+immutable failed-guardian observation before PID1exit; namespace teardown is a different actor.
+
+Linux man-pages PID namespace lifecycle and kernel6.17 zap_pid_ns_processes independently explain
+this custody: PID1exit kills remaining namespace processes, and the kernel waits before allowing
+init to be reaped. Source review does not replace the actual wrapper's bounded zero-status closure.
+Sources: https://man7.org/linux/man-pages/man7/pid_namespaces.7.html
+https://raw.githubusercontent.com/torvalds/linux/v6.17/kernel/pid_namespace.c
+
+Use the same test-only guardian-settlement decision for normal forwarding/resistance positives and
+the new negative owner-loss report. First sensitivity decision deliberately treats any recorded
+owner closure as settled, without changing observations; require its false acceptance to fail
+after exact owner-loss evidence assertions. Then guard/remove the workflow variable and qualify
+the actual decision. No production policy or native guardian source changes.
+
+Failure modes: missing readiness/identity/support, failed owned signal, invalid output/protocol,
+observation error, timeout, cancellation, or forced wrapper closure all fail qualification and
+retain unconfirmed cleanup. No discovered descendant signals, no additional oracle child, no
+retries to improve a sample. Non-goals: unnamespaced runtime custody, generic owner crash recovery,
+manager integration, repair selection, model transmission, credentials, merge, and release.
+
+Independent design review agreed and specified keeping guardian input OPEN until its exact death,
+a separate once-only ownerKillSent flag, and no final overwrite of the frozen pidfd sample. The
+implementation retains those invariants. Existing forwarding/resistance positives and new loss
+negative share the settlement predicate. The first workflow selects FLOW_TEST_OWNER_LOSS_BASELINE=1
+for real owner-loss observations with a deliberately weak decision. No new C fixture/header,
+production code, or dependency. Native compilation and owner-loss behavior remain pending.
+
+Independent seven-file spec/code/test/documentation review found no P1-P3 findings. Main review
+corroborated the same creation-time signal custody and immutable observation ordering. Local
+typecheck, lint, format, build, all three documentation gates, and21 focused tests passed. Prose
+validation initially rejected a26-word sentence; split it and reran the gates. Eight runtime cases
+skipped on Mac, without Linux qualification credit. All seven changed files are in scope.
+Push only the dedicated qualification branch; no merge, release, or production integration.

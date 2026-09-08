@@ -75,6 +75,7 @@ jobs:
 
       - name: Test bridge startup cleanup
         env:
+          FLOW_TEST_OWNER_LOSS_BASELINE: "1"
           FLOW_TEST_HOST_BRIDGE_GUARDIAN: ${{ runner.temp }}/flow-native-observer/flow-host-bridge-guardian
         run: npm run test:runtime -- test/runtime/host-bridge-startup.runtime.test.ts
 

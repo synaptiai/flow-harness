@@ -469,6 +469,11 @@ termination and no remaining child. The cooperative twin failed the same resista
 while cleaning up normally. This closes the selected resistant-child gate in the test namespace.
 Owner loss, unnamespaced runtime custody, and manager integration remain open.
 
+The owner-loss gate now has a test-only case that captures a live child immediately after the
+owned guardian dies, before namespace teardown. Its hosted sensitivity qualification remains
+pending. See the [owner-loss test guide](testing-and-evaluation.md#qualify-bridge-owner-loss).
+Test-namespace disposal must not become evidence of successful guardian cleanup.
+
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
 These passing controls do not close UC-01, UC-05, or VR-02.

@@ -14,6 +14,7 @@ const guardian = process.env.FLOW_TEST_HOST_BRIDGE_GUARDIAN;
 const enabled = process.platform === "linux" && process.arch === "x64" && guardian !== undefined;
 const weakBaseline = process.env.FLOW_TEST_STARTUP_REAPING_BASELINE === "1";
 const cooperativeBaseline = process.env.FLOW_TEST_RESISTANCE_BASELINE === "1";
+const ownerClosureBaseline = process.env.FLOW_TEST_OWNER_LOSS_BASELINE === "1";
 const execFile = promisify(callbackExecFile);
 const owned = "FLOW_HOST_BRIDGE_V1 OWNED\n";
 const reportSchema = z.strictObject({
@@ -35,6 +36,7 @@ const reportSchema = z.strictObject({
       terminated: z.boolean(),
     })
     .optional(),
+  ownerLoss: z.strictObject({ childTerminated: z.boolean() }).optional(),
 });
 type Report = z.infer<typeof reportSchema>;
 
@@ -50,6 +52,21 @@ function resistanceQualified(report: Report): boolean {
     report.resistance?.termObserved === true &&
     report.resistance.liveAfterTerm &&
     report.resistance.terminated
+  );
+}
+
+function guardianSettled(report: Report): boolean {
+  // Sensitivity control confuses a recorded owner exit with completed cleanup.
+  // It changes only the test decision, never the real process observations.
+  if (ownerClosureBaseline) return report.ownerCode >= 0 || report.ownerSignal > 0;
+  const childTerminated = report.ownerLoss?.childTerminated ?? report.resistance?.terminated;
+  return (
+    report.ownerCode === 0 &&
+    report.ownerSignal === 0 &&
+    report.stdoutHex === Buffer.from(`${owned}FLOW_HOST_BRIDGE_V1 SETTLED\n`).toString("hex") &&
+    report.stderrHex === "" &&
+    report.remaining === "none" &&
+    childTerminated !== false
   );
 }
 
@@ -152,8 +169,31 @@ describe.skipIf(!enabled)("bridge startup with independent namespace custody", (
         liveAfterTerm: kind === "resistant",
         terminated: true,
       });
+      expect(guardianSettled(report)).toBe(true);
     },
   );
+
+  it("rejects guardian loss with a live child before independent namespace teardown", async (context) => {
+    const root = await temporaryRoot();
+    const report = await observe(
+      witness,
+      "owner-loss",
+      resistant,
+      root,
+      join(root, "owner-loss.sock"),
+      1,
+      context.signal,
+    );
+    expect(report).toEqual({
+      ownerCode: -1,
+      ownerSignal: 9,
+      stdoutHex: Buffer.from(owned).toString("hex"),
+      stderrHex: "",
+      remaining: "live",
+      ownerLoss: { childTerminated: false },
+    });
+    expect(guardianSettled(report), "Guardian closure is not descendant settlement").toBe(false);
+  });
 
   it.for(["live-residue", "zombie-residue"] as const)(
     "rejects actual adopted %s before namespace teardown",
@@ -264,6 +304,7 @@ describe.skipIf(!enabled)("bridge startup with independent namespace custody", (
         remaining: "none",
       });
       expect(disposed(report)).toBe(true);
+      expect(guardianSettled(report)).toBe(true);
     } finally {
       client?.destroy();
       for (const socket of sockets) socket.destroy();
@@ -288,7 +329,7 @@ async function temporaryRoot(): Promise<string> {
 
 async function observe(
   witness: string,
-  mode: "observe" | "release" | "live-residue" | "zombie-residue" | "resistance",
+  mode: "observe" | "release" | "live-residue" | "zombie-residue" | "resistance" | "owner-loss",
   relay: string,
   root: string,
   path: string,
