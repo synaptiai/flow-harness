@@ -122,7 +122,7 @@ order does not authorize an unreviewed design or broaden model authority.
 | UC-04 | Next delivery-design priority; Approach A maintainer | Design guided issue-to-plan preparation with UC-03. | Proposed criteria, commands, paths, budgets, and approval rules are explicit and reviewable. A human freezes the contract before execution; generated plans pass production admission. | UC-03 design review and every plan-authoring failure. |
 | UC-05 | Bounded blocked-review repair locally verified, qualification open; Approach A maintainer | Qualify the approved same-host repair contract using a separately authorized experiment and frozen NV-01 comparison. Keep broader NV-03 recovery research separate. Resolve report validity separately from candidate acceptance. | Bounded verifier-directed repairs reduce human interventions without changing holdouts, acceptance rules, authority, or aggregate budgets. Include oscillation, disputed findings, and false-acceptance tests. | Before another pilot; third-attempt settlement promoted this item. |
 | UC-06 | Measurement requirement; evaluation maintainer | Freeze the NV-01 plugin-versus-harness baseline before broader readiness claims. | Compare equivalent model routes and fresh tasks; report verified success, total cost, time, interventions, false acceptance, and missingness. | Before claiming plugin parity, superiority, or readiness beyond the qualified scope. |
-| UC-07 | Parity research in progress; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md). Add runnable demonstrations for supported practices, and compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory alone does not close this row. | UC-03 design review; prioritize gaps that blocked users in UC-06. |
+| UC-07 | Core compatibility delivery open; Approach A maintainer | Maintain the [23-command comparison](flow-plugin-parity.md) and deliver [UC-07a](#deliver-flow-workflow-and-github-artifact-parity). Compare plugin defaults separately from optional teams. | Each feature has an evidence-backed classification and a runnable demonstration where supported. An inventory or rendered template alone does not close this row. | At the current qualification checkpoint, before another optional infrastructure task, and during UC-06 comparisons. |
 | UC-08 | Implemented and locally verified, with bounded live discovery evidence; Approach A maintainer | Frozen command discovery, actionable mismatch feedback, and bounded ineffective-request stopping are implemented. Exact command authority and aggregate budgets remain unchanged. | The full suite passes 6,361 tests; native runtime checks pass 44 tests with platform skips. Independent source review found no remaining P1–P3 defects in this correction. The replacement recorded one command refusal among six requests and then used the exact allowed command. It did not reach the three-refusal stopping threshold or complete UC-01. | Reassess refusal rates, false stops, and broader behavior in a separately approved attempt. |
 | UC-08a | Satisfied for the replacement artifact; release maintainer | Retained archive SHA-256 `0a3090f8a0b495309672e67d66dd8303722226bb4e2f9a5a62d0338f794441b1`, source `e967c29`, and canonical evidence are retained locally. | Both named hosted checks passed on the same retained bytes; the pilot's authenticated archive digest matches. See the [field report](field-reports/digital-twin-issue-106-installed.md#replacement-attempt). | Reopen when package identity changes; this does not close UC-01 or UC-02. |
 
@@ -501,8 +501,17 @@ resolver, or environment wrapper.
 
 The restricted-argument test failed as expected in
 [run 34216779457](https://github.com/synaptiai/flow-harness/actions/runs/34216779457) at `94dc235`.
-All 344 preceding runtime executions and both process controls passed. The wrapper is next.
+All 344 preceding runtime executions and both process controls passed.
 The baseline result does not close runtime custody or stage 2.
+
+The unpublished wrapper and separate comparison build now implement the specified argument,
+environment, and numeric IPv4 resolver checks. Real-source context tests pass. The expanded
+rejection cases and positive forwarding cases await native Linux qualification.
+
+The user approved the [wrapper-only Apache-2.0 OR MIT license](host-bridge-runtime-custody-design.md#apply-the-approved-linked-wrapper-license)
+on September 8, 2026. The combined GPLv2 relay uses the MIT option. Flow's main Apache-2.0 license and upstream licenses remain unchanged.
+This approval permits the next qualification work, not release or runtime admission.
+Resolver-isolation evidence, executable custody, and the remaining lifecycle gates stay open.
 
 Policy interference, fixture denial, immutable runtime custody,
 ordinary-command descriptor hardening, and outer-relay cleanup still block repair readiness.
@@ -653,8 +662,69 @@ exhausted allowances stop execution. Fewer findings alone does not prove progres
 Semantic detection of repeated failure patterns remains deferred.
 Final merge remains separately approval-bound. Omitted repair policy preserves today's safe stop.
 
-UC-03 and UC-04 remain the next onboarding priorities after qualification. Promoting this concrete
-repair gap for design does not authorize unrelated infrastructure work or retire their evidence gates.
+UC-03 and UC-04 remain required onboarding priorities. Start UC-07a's contract audit and delivery
+design after a safe checkpoint in current qualification work. This sequencing does not retire
+onboarding evidence gates or authorize unrelated infrastructure work.
+
+## Deliver Flow workflow and GitHub artifact parity
+
+UC-07a is core product compatibility, not cosmetic polish or indefinite research. The September 8,
+2026 source and GitHub read-back assessment confirms a gap in public artifact generation and
+publication. Internal structured review already exists. See the
+[artifact comparison](flow-plugin-parity.md#separate-workflow-and-public-artifact-parity) for evidence.
+
+The Approach A maintainer owns this slice. First retain reviewed source and measured results from
+the current restricted-relay qualification step. A safe checkpoint records failures and open gates.
+it does not require or imply full runtime qualification. Then start the contract audit and design.
+
+Keep repairs disabled until their existing gates pass. Do not interrupt an owned qualification run
+or use this addition to authorize a new live pilot, credential operation, merge, or release.
+
+The initial plugin contract revision is `4c5cc3e3795d20a946aa551450c101d7da246a70`, matching the
+existing comparison. Record any revision change explicitly. The complete normative audit remains
+open: inspected templates are not the complete specification.
+
+Execute these phases in order. Mark a phase complete only with its required evidence:
+
+1. [ ] Audit the normative contract. Inventory commands, skills, templates, schemas, referenced
+   parsers, settings, and repository overrides at the pinned revision. For each requirement, track
+   information capture, actual execution, rendering, authorized publication, and independent
+   verification separately. Record mandatory, conditional, and optional behavior and explicit
+   deviations. Link issue authoring to UC-04, review and resolution to UC-05, and comparison to UC-06.
+2. [ ] Design versioned public artifact records and deterministic renderers. Cover issue context,
+   PR rationale, public decisions, acceptance mappings, verification, findings, cycles, and
+   resolutions. Bind every claim to evidence and an exact candidate. Define publication-identity
+   migration for frozen digests, persisted runs, retries, crash recovery, and manual PR edits.
+   Review meaningful design choices before implementation. Never silently reinterpret old runs.
+3. [ ] Deliver PR descriptions and review/resolution publication first. Generate meaningful titles,
+   required sections, file statistics, and truthful verification status from admitted evidence.
+   Add durable, host-controlled publication with stable finding IDs, priorities, locations,
+   evidence, suggested fixes, and compatible cycle markers. Define when blocked reviews become
+   public if no PR exists yet. Prevent duplicate publication, stale-head reports, false resolution
+   claims, and any implication that an automated review grants human merge approval.
+4. [ ] Complete structured issue crafting and procedural conformance. Include context, current
+   state, objectives, observable criteria, duplicate checks, and repository conventions. Verify
+   specification checking and applicable review facets through actual execution evidence. Never
+   claim teams, holdouts, or verdict judges ran because a template mentions them. Track unrelated
+   missing plugin capabilities separately rather than expanding this slice without a decision.
+5. [ ] Qualify behavior and document usage. Test missing criteria, inconsistent counts, unstable
+   IDs, false resolutions, and unexecuted checks reported as passed. Cover stale candidates,
+   disclosure leaks, Markdown escaping, and publication recovery.
+
+   Use a separately authorized
+   installed-package pilot and read back the actual GitHub artifacts. Update usage, contributor,
+   and operations documentation under the repository's Google developer style policy.
+
+All phases preserve privacy, verifier isolation, host-owned GitHub authority, exact-head approval,
+and recovery guarantees. Public artifacts must not expose secrets, raw model sessions, private
+holdouts, or privileged verifier details. Missing mandatory evidence must produce actionable
+blocking feedback, not placeholders or invented success.
+
+Close UC-07a only when every supported artifact satisfies the pinned contract or a documented
+deviation. Acceptance evidence must be traceable, and finding counts, IDs, cycle markers, and
+resolution states must agree. Process claims must match execution. Conformance tests and GitHub
+read-back must both pass. Report workflow enforcement, artifact parity, and optional capabilities
+separately. Closing this slice alone does not close UC-01, UC-02, or the broader UC-07 inventory.
 
 ## Keep deferrals bounded
 

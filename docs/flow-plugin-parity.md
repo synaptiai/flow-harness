@@ -114,7 +114,8 @@ for command discovery and feedback. The replacement satisfied UC-08a's archive-r
 two-host package gate for its exact bytes, but failed before accepted implementation. UC-01 and
 UC-02 remain blockers until their evidence is complete. Package identity changes reopen UC-08a.
 
-Then prioritize repository onboarding and guided plan preparation, measured under UC-03 and UC-04.
+At a safe checkpoint in current relay qualification, prioritize UC-07a's contract audit and design.
+Keep repository onboarding and guided plan preparation as required UC-03 and UC-04 deliverables.
 Use UC-06's equivalent-condition benchmark to identify costly gaps. Qualify UC-05's bounded
 blocked-review repair separately from broader NV-03 recovery research. UC-07 remains open until supported practices have
 runnable demonstrations as well as this inventory.
@@ -122,3 +123,52 @@ runnable demonstrations as well as this inventory.
 Do not convert command counts or completed roadmap gates into a completion percentage. They differ
 in scope, authority, and verification cost. Report verified outcomes, human interventions, failures,
 and missing evidence instead.
+
+## Separate workflow and public artifact parity
+
+The September 8, 2026 follow-up checked harness source at
+`04b346a` and read the two example PRs through GitHub. It confirms an implementation gap, not
+merely a prompt-quality problem. These observations do not establish complete procedural parity:
+
+- The [PR renderer](https://github.com/synaptiai/flow-harness/blob/04b346a/src/infrastructure/github/issue-lifecycle-host.ts#L1198)
+  generates `Implement issue #N`, a closing reference, and a run identifier. Publication digests
+  also depend on that renderer. The
+  [host regression test](https://github.com/synaptiai/flow-harness/blob/04b346a/test/integration/issue-lifecycle/controller/issue-lifecycle-host.test.ts#L66)
+  expects this minimal output. Changing the body requires a publication-identity migration, not
+  just a new template.
+- The [review record](https://github.com/synaptiai/flow-harness/blob/04b346a/src/domain/issue-lifecycle/review.ts)
+  already supports P1–P3 findings, evidence, recommendations, criterion mappings, and candidate-bound
+  verdict validation. Review is not absent. However, the
+  [GitHub lifecycle interface](https://github.com/synaptiai/flow-harness/blob/04b346a/src/application/github-issue-ports.ts#L194)
+  has no review or comment publication operation.
+- [digital-twin PR 111](https://github.com/danielbentes/digital-twin/pull/111) had the minimal
+  description, one comment, and no submitted GitHub reviews at read-back. A missing GitHub review
+  does not prove that no internal review ran.
+- [epic PR 1011](https://github.com/danielbentes/epic/pull/1011) had a substantive description,
+  one submitted review, and two comments at read-back. It illustrates useful public context. It
+  is not the normative specification or proof of template-perfect conformance.
+
+Use the existing pinned plugin revision `4c5cc3e3795d20a946aa551450c101d7da246a70` for the initial
+normative audit. Its
+[PR](https://github.com/synaptiai/synapti-marketplace/blob/4c5cc3e3795d20a946aa551450c101d7da246a70/plugins/flow/templates/pr-body.md),
+[review](https://github.com/synaptiai/synapti-marketplace/blob/4c5cc3e3795d20a946aa551450c101d7da246a70/plugins/flow/templates/review-comment.md),
+[resolution](https://github.com/synaptiai/synapti-marketplace/blob/4c5cc3e3795d20a946aa551450c101d7da246a70/plugins/flow/templates/resolution-comment.md), and
+[issue](https://github.com/synaptiai/synapti-marketplace/blob/4c5cc3e3795d20a946aa551450c101d7da246a70/plugins/flow/templates/issue-body.md)
+templates include broader artifact fields. Audit commands, skills, schemas, parsers,
+settings, and repository overrides before defining the complete contract. Optional template
+sections are not authority to claim an optional procedure ran.
+
+Assess each applicable requirement across five independent dimensions:
+
+| Dimension | Required evidence |
+| --- | --- |
+| Information captured | A validated record contains the required information with traceable sources. |
+| Workflow executed | Execution evidence shows the applicable procedure actually ran. |
+| Artifact rendered | A deterministic renderer satisfies the pinned public contract or a documented deviation. |
+| Artifact published | The host durably publishes authorized content for the exact candidate and reconciles retries. |
+| Behavior verified | Negative tests and real GitHub read-back confirm truthful, consistent output and recovery. |
+
+The [UC-07a delivery slice](usable-checkpoint-plan.md#deliver-flow-workflow-and-github-artifact-parity)
+owns phases, sequencing, and completion criteria. It prioritizes PR and review/resolution artifacts,
+then issue crafting and procedural conformance. Formatting fixtures alone cannot establish
+end-to-end readiness, and stronger public descriptions must not weaken disclosure or approval gates.

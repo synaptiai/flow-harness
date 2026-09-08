@@ -891,8 +891,17 @@ tracks the approved UC-05 repair implementation and its remaining qualification 
 now contains frozen repair authority, aggregate child accounting, exact-tree progress checks,
 and fresh exact-candidate verification. Local gates passed. Hosted and installed-package
 qualification remain open. Neither
-this implementation nor the earlier pilot result authorizes another live attempt. Onboarding
-and guided planning remain the next user-facing priorities.
+this implementation nor the earlier pilot result authorizes another live attempt.
+
+The September 8 assessment promotes Flow workflow and GitHub artifact parity to core compatibility
+delivery under [UC-07a](usable-checkpoint-plan.md#deliver-flow-workflow-and-github-artifact-parity).
+Start its contract audit and design after a safe checkpoint in the current relay qualification work.
+Deliver evidence-backed PR descriptions and durable review/resolution publication first, then
+structured issue authoring and procedural conformance. Keep onboarding and guided planning required
+under UC-03 and UC-04, and retain UC-05 and UC-06 evidence dependencies. The
+[artifact comparison](flow-plugin-parity.md#separate-workflow-and-public-artifact-parity) separates
+internal review, public artifacts, actual process execution, and independently verified behavior.
+This roadmap addition does not authorize a live pilot or claim those capabilities are implemented.
 
 ### Slice 13.4: Qualify and publish the usable checkpoint
 

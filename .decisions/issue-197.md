@@ -3399,3 +3399,105 @@ failure, no runtime skips, and no unexpected failed step. Final four-document re
 P1-P3. All three documentation gates and20focused documentation-contract tests passed after
 splitting one overlong paragraph. This evidence-only commit stays local until the next scoped
 qualification-source push; no redundant hosted run is needed for prose alone.
+
+### Restricted profile implementation and licensing decision gate
+
+Started from clean04b346a. The previous goal turn made progress: nativeRED at94dc235 established
+the missing argument restriction. Continued the approved RC-B profile rather than changing the
+ordinary manager or enabling repairs. Independent parallel work owned only the runtime rejection
+test file; root owned the C/build integration, positive forwarding, workflow, and documentation.
+
+Observed new source-context RED: --freeze-relay-profile-context was unsupported. Implemented
+the explicit profile context/build modes, capturing trusted restricted-relay.c bytes separately
+from the ordinary baseline. All19real-source/context cases then passed, including actual wrapper
+capture and absence from baseline contexts. The profile recipe preserves the baseline before
+relinking the same real upstream objects with separately compiled --wrap=main/getaddrinfo code.
+It compares37artifacts (28baseline plus9profile), including source/object/binary/map/ELF/symbols/
+selected disassembly. This inventory is implemented, not yet observed in a native build.
+
+The C gate admits exactly the two host arguments, conservative absolute ASCII paths shorter than
+108bytes, canonical ports1..65535, and exactly PATH/LANG/LC_ALL/TZ with fixed values. Repeated or
+extra environment entries fail before upstream main. The resolver validates the actual incoming
+localhost/port/AI_ADDRCONFIG/AF_UNSPEC/STREAM/TCP request, clears result, and delegates numeric
+127.0.0.1 with NUMERICHOST/NUMERICSERV and no ADDRCONFIG. Unsupported requests return EAI_FAIL,
+avoiding socat's broader socktype/service fallback. Source review does not prove runtime isolation.
+
+The rejection suite now has2real-process controls and53native negatives. Every path-bearing
+negative creates an owned root, makes no connection, and awaits only its directly owned child.
+Positive profile forwarding adds normal and107-byte path cases for each of3release outcomes.
+It requires explicit guardian/relay/profile selection and uses the exact four-entry environment.
+Ordinary system-relay and static-baseline tests keep their existing PATH-only environment.
+Workflow-scaffold RED exposed missing profile wiring. After wiring,50build/scaffold tests passed.
+Corrected one scaffold expectation that accidentally omitted the source-directory CLI argument.
+
+Independent implementation review found no functional P1-P3 in the C/build changes. A subsequent
+licensing review found a material publication gate: root LICENSE/package/notices are Apache2,
+while the authenticated socat README255,272–273 and source header grant GPLv2 without later-version
+permission. Its OpenSSL-only exception does not cover this wrapper. The new C file has no separate
+license grant. ASF GPL-compatibility guidance and FSF license-compatibility/license-list guidance
+independently corroborate Apache2/GPLv2 incompatibility and Expat/MIT compatibility with GPL.
+
+Do not infer a new license from the prior RC-B technical approval. Proposed choiceA: authorized
+rightsholder dual-licenses only the new socat-linked wrapper Apache-2.0 OR MIT, retaining actual
+MIT notices and GPLv2 source/build obligations for the combined relay. ChoiceB: GPL-2.0-only for
+the wrapper. ChoiceC: separately designed independent Apache relay without GPL-derived code.
+A is smallest, but requires authority over all code in that file; no existing upstream license
+can be changed. This is licensing-risk triage, not legal clearance. Independent review agrees.
+Publication of the new wrapper and its native hosted qualification push await the user choice.
+No new license, commit, push, binary distribution, host policy, credential, model, or release
+action occurred in this implementation turn. Local implementation changes remain uncommitted.
+
+Typecheck, application build, full lint and formatting passed. Lint retains only the pre-existing
+unrelated constructor information. All19real-source/context checks and20documentation tests passed.
+Portable runtime controls passed2cases;53profile negatives and3ordinary guardian cases skipped on
+Mac, which is not native qualification. Documentation style/links/clarity passed after splitting
+overlong prose. Independent integration/documentation review found no additional P1-P3 and
+confirmed the license gate remains explicit. A final mechanical formatter adjustment follows a
+shortened build error message. Native C compilation/link inspection, all53native negatives,
+6profile forwarding cases, duplicate-env control, resolver-isolation proof, custody and broader
+lifecycle gates remain open. The full goal remains active; this is the first licensing decision gate.
+
+### Approved wrapper license and public artifact parity tracking
+
+September 8, 2026: the user explicitly authorized Approach A for the license issue. Applied the
+wrapper-only Apache-2.0 OR MIT grant with the actual Copyright 2026 Synapti.ai notice and complete
+MIT text. The combined GPLv2 socat executable selects the wrapper's MIT option. Root LICENSE,
+package.json, and upstream licenses remain unchanged. This supersedes the pending decision above,
+not the separate release, runtime-custody, or repair-enable gates.
+
+Observed license-capture RED before implementation: the profile test required17inputs and found15.
+The restricted context now freezes the wrapper grant and root Apache2 bytes. Both are retained in
+the compared output under licenses/flow-relay-MIT and licenses/flow-Apache-2.0, with explicit
+input-to-artifact digest mapping. Counts are17inputs/39artifacts for profile,14/28forbaseline.
+All19actual-source tests then passed, including byte equality and hashes for both captured texts.
+Independent scope/mapping review found no P1-P3. Native build execution remains pending.
+
+The user pasted the missing side-chat handoff. Verified its central findings against unchanged
+04b346a renderer, publication digest creation/checks, exact-output test, review schema, and GitHub
+port. Read back actual public PRs with gh: digital-twin111has minimal body,0submittedreviews,
+1comment; epic1011has5829bodycharacters,1review,2comments. These are dated observations, not a
+normative specification. Inspected the four artifact templates from pinned plugin revision
+4c5cc3e3795d20a946aa551450c101d7da246a70; full commands/skills/parsers/settings/overrides audit remains open.
+
+Added UC-07a to canonical checkpoint tracking and linked it from roadmap/parity comparison.
+Five phases separate information capture, executed procedure, rendering, authorized publication,
+and independent verification. PR/review/resolution delivery precedes issue crafting; versioned
+publication migration, privacy, exact-head approval, recovery, negative tests, and installed GitHub
+read-back remain mandatory. Start audit/design after a safe current qualification checkpoint,
+without claiming full qualification or discarding UC-03/04onboarding priorities. Independent
+source/roadmap review found no P1-P3. No public GitHub artifact was edited during this assessment.
+
+Latest local gates:19real-source/context tests,27workflow/documentation tests, fullformat/lint,
+shell syntax, docsstyle/links/changedprose pass. Typecheck/build passed earlier for the current
+profile implementation; no application source changed in this continuation. Existing unrelated
+constructor lint information remains. The broad standard regression attempt is NOT green:
+restricted local listeners failEPERM, and several verification cases hit30secondtimeouts.
+The permitted targeted two-repair test also timed out at240seconds with incomplete owned cleanup.
+Retained evidence shows it reached cycle2preparation after two review/verification cycles; this
+cannot be explained solely by the restricted listener error. Investigation remains open, with
+no enlarged timeout, dropped assertions, or production changes. The broad run is still owned and active.
+
+All changes belong to the approved relay work or explicit side-chat roadmap addition. Prepare
+reviewed local commits and fast-forward only the already authorized dedicated model-free native
+qualification branch, observed at94dc235. This feedback push is not full CI, PR merge, release,
+runtime admission, new model/pilot authorization, or full goal completion.

@@ -169,11 +169,44 @@ The planned implementation uses separately identified argument and resolver wrap
 selected socat source. Link-time wrapping affects matching unresolved references, not every internal
 libc call. Source review, link-map inspection, and runtime checks must establish the actual call path.
 
-The wrapper implementation, environment admission, and executable custody remain open. A separate
-static-baseline build is implemented for comparison. Its selected build and forwarding checks
+The unpublished wrapper implements argument and environment admission plus the fixed resolver
+path. Native compilation, call-target inspection, resolver-isolation qualification, and executable
+custody remain open. The approved file-specific license permits the next qualification work, not a release.
+
+A separate static-baseline build is implemented for comparison. Its selected build and forwarding checks
 [passed on hosted Linux x64](testing-and-evaluation.md#baseline-evidence). The baseline then
 [failed the restricted-argument test as expected](testing-and-evaluation.md#expose-missing-restricted-argument-admission).
-This establishes the failing-test gate, not an implemented argument restriction.
+This establishes the failing-test gate, not qualification of the new wrapper.
+
+### Apply the approved linked-wrapper license
+
+The selected socat source grants GPL version 2 without an option to use later versions. Its
+`README` contains an OpenSSL-specific linking exception, not a general exception for Flow code.
+Flow's root license is Apache-2.0. Before this decision, the new `restricted-relay.c` had no file-specific exception.
+The [Apache Software Foundation](https://www.apache.org/licenses/GPL-compatibility.html) and
+[Free Software Foundation](https://www.gnu.org/licenses/license-compatibility.en.html) identify
+Apache-2.0 and GPLv2 as incompatible for a combined program.
+
+The build links this wrapper into socat. Keeping it in a separate source file does not remove that
+combination. The earlier RC-B technical approval did not explicitly select a different license for
+new Flow code. On September 8, 2026, the user approved option A for Synapti.ai's new wrapper only.
+The package must retain the required notices and corresponding source.
+
+The following comparison records the selected option and the alternatives considered:
+
+| Option | Effect and tradeoff |
+| --- | --- |
+| A: Apache-2.0 OR MIT for the new wrapper only | Approved September 8, 2026. The MIT option permits the GPLv2 combination while retaining permissive reuse of the wrapper. The [FSF lists Expat/MIT as GPL-compatible](https://www.gnu.org/licenses/license-list.html#Expat). |
+| B: GPL-2.0-only for the new wrapper | Not selected. Avoids this compatibility conflict, but removes independent permissive reuse of the wrapper. The rest of Flow would not receive a blanket license change. |
+| C: independently implement a standalone Apache-2.0 relay | Not selected. Avoids linking Flow code with socat only if the new implementation contains no GPL-derived code. Requires a separate design and full forwarding and lifecycle qualification. |
+
+The file-specific [wrapper grant](../native/verification-relay/restricted-relay.LICENSE) offers `Apache-2.0 OR MIT`.
+The combined socat artifact selects the MIT option for this wrapper. It remains subject to GPLv2 distribution requirements,
+including corresponding source and build scripts. Flow's root Apache-2.0 license and all upstream licenses remain unchanged.
+
+The profile build retains `licenses/flow-relay-MIT` and `licenses/flow-Apache-2.0` with the existing upstream notices.
+This approval does not authorize a release or establish runtime qualification. A rights or distribution question that remains
+uncertain needs qualified review before release. This is licensing-risk analysis, not legal clearance.
 
 ### Check the source bundle
 

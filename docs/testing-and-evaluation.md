@@ -706,16 +706,16 @@ same status and diagnostic. The latter must remain rejected because Node records
 Each control creates only one direct child and joins it. These controls do not simulate or qualify
 relay descendants. Without an explicit Linux relay artifact, only the portable controls run.
 
-Run the test against an explicitly selected artifact:
+To repeat only the original option probe, select the baseline artifact explicitly:
 
 ```sh
 FLOW_TEST_RESTRICTED_RELAY=/absolute/path/to/socat-static-baseline \
-  npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts
+  npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts -t 'general version option'
 ```
 
-The unwrapped baseline is expected to fail by reporting its version with status 0. The dedicated
-workflow runs this deliberate failing-test experiment after the passing baseline and observer checks.
-It does not suppress failure or substitute the baseline for a production restricted relay.
+The unwrapped baseline is expected to fail by reporting its version with status 0. At `94dc235`,
+the dedicated workflow ran this deliberate failing-test experiment after the passing baseline and
+observer checks. It did not suppress failure or substitute the baseline for a restricted relay.
 
 [Run 34216779457](https://github.com/synaptiai/flow-harness/actions/runs/34216779457) observed this
 exact failure on Linux x64 at `94dc2353179d80b58444894fbc5d9260049139cd`. The baseline returned
@@ -726,11 +726,56 @@ failed. The static relay, libc archive, and link-map digests matched the earlier
 This completes the failing-test gate before wrapper implementation. This one case does not
 qualify the complete argument grammar, environment, resolver behavior, or executable custody.
 
+### Qualify the restricted relay profile
+
+The unpublished `host-bridge-ipv4-loopback-v1` implementation has separate argument, environment,
+and numeric IPv4 resolver wrappers. Native compilation and execution remain unverified.
+The user approved the [wrapper-only dual license](host-bridge-runtime-custody-design.md#apply-the-approved-linked-wrapper-license)
+on September 8, 2026. The combined socat artifact selects the MIT option. This is not release approval.
+
+On Linux x64, the explicit `--build-relay-profile` mode compares two clean builds containing both
+`socat-static-baseline` and the separate `flow-host-relay`. Its 39-artifact inventory includes the
+wrapper source and object, executable, link map, ELF reports, symbol list, selected disassembly, and two Flow license notices.
+The baseline mode does not capture or compile the wrapper. Neither mode grants runtime admission.
+
+After the native build, select the restricted artifact for rejection checks:
+
+```sh
+FLOW_TEST_RESTRICTED_RELAY=/absolute/path/to/flow-host-relay \
+  npm run test:runtime -- test/runtime/restricted-relay.runtime.test.ts
+```
+
+The full suite has two real-process exit controls and 53 native rejection cases. Cases cover address
+grammar, delimiters, escaping, suffixes, ports, and path limits. Other cases cover version requests
+and missing, changed, or extra environment entries.
+
+Each rejected invocation uses only owned paths and makes no connection. Timeouts, signals,
+and output overflow cannot count as normal rejection. Duplicate environment entries still need a
+separate native control because Node.js environment objects cannot represent them.
+
+Run positive forwarding with the same restricted artifact:
+
+```sh
+FLOW_TEST_HOST_BRIDGE_GUARDIAN=/absolute/path/to/flow-host-bridge-guardian \
+FLOW_TEST_HOST_BRIDGE_RELAY=/absolute/path/to/flow-host-relay \
+FLOW_TEST_HOST_BRIDGE_PROFILE=host-bridge-ipv4-loopback-v1 \
+  npm run test:runtime -- test/runtime/host-bridge-guardian.runtime.test.ts
+```
+
+This explicit test selection constructs the exact four-key profile environment. Six cases check
+real forwarding and normal stop, disconnection, or malformed release with ordinary and 107-byte
+socket paths. The system-relay and static-baseline runs keep their PATH-only environment and
+three existing cases. An unknown profile or missing explicit artifact fails configuration.
+
+Passing these cases would not qualify resolver isolation, every port boundary, active-connection
+settlement, executable custody, or production integration. Those remain distinct gates. The
+ordinary SRT manager and shared `socatPath` setting remain unchanged, and repairs stay disabled.
+
 ### Develop the native result transport independently
 
 The development `Native observer qualification` workflow provides a focused Linux x64 feedback
 path while a full CI run is active. It runs the native result-path and host-bridge regressions,
-source-admission checks, and static-baseline forwarding tests on Ubuntu 24.04. Its unique check name,
+source-admission checks, and baseline and restricted-profile forwarding tests on Ubuntu 24.04. Its unique check name,
 `Native observer development (not full CI)`, cannot replace the full CI or release gates.
 It uses the existing sandbox prerequisites, read-only repository permissions, no model credentials,
 and a separate non-cancelling concurrency group. It uses the explicit
@@ -738,7 +783,7 @@ and a separate non-cancelling concurrency group. It uses the explicit
 separately identified, deliberately broken test executable. Ordinary `--build` and `--build-observer`
 modes do not produce that negative control.
 
-The job has a 50-minute limit for two observer builds and two static relay baseline builds.
+The job has a 50-minute limit for two observer builds and two relay comparison builds.
 Each build has a separate 10-minute limit, and native process
 checks have bounded deadlines. Job expiry is a failed run, not proof of completed cleanup.
 
