@@ -32,6 +32,7 @@ import {
   type PiAgentRunRequest,
   rollingReferenceProjectionLimit,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
+import { flowContextFromPiTranscript } from "../../../../src/infrastructure/pi/pi-transcript-context.js";
 
 const identity: ModelSessionIdentity = {
   runId: "run-agent",
@@ -1066,7 +1067,7 @@ describe("Pi provider-neutral model session", () => {
       model: "session-model",
       apiAdapter: model.api,
       thinking: "off",
-      runtimeVersion: "pi-0.84.0",
+      runtimeVersion: "pi-0.86.1",
       system: { bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
       toolCatalog: {
         bytes: expect.any(Number),
@@ -1356,8 +1357,9 @@ describe("Pi provider-neutral model session", () => {
         );
       },
       (context) => {
-        finalProviderMessages = context.messages;
-        finalProviderTools = context.tools ?? [];
+        const flowContext = flowContextFromPiTranscript(context);
+        finalProviderMessages = flowContext.messages;
+        finalProviderTools = flowContext.tools ?? [];
         return fauxAssistantMessage("Compacted context observed.");
       },
     ]);
@@ -1475,7 +1477,7 @@ describe("Pi provider-neutral model session", () => {
         return fauxAssistantMessage("not canonical summary JSON");
       },
       (context) => {
-        finalProviderMessages = context.messages;
+        finalProviderMessages = flowContextFromPiTranscript(context).messages;
         return fauxAssistantMessage("Original context observed.");
       },
     ]);
@@ -1532,7 +1534,7 @@ describe("Pi provider-neutral model session", () => {
         );
       },
       (context) => {
-        finalProviderMessages = context.messages;
+        finalProviderMessages = flowContextFromPiTranscript(context).messages;
         return fauxAssistantMessage("Recovered compacted context observed.");
       },
     ]);
@@ -1906,7 +1908,7 @@ function rollingPressureJournal(
           model: "gpt-5.6",
           apiAdapter: "openai-responses",
           thinking: "high",
-          runtimeVersion: "pi-0.84.0",
+          runtimeVersion: "pi-0.86.1",
           system: { sha256: "1".repeat(64), bytes: 1 },
           toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
           authority: { sha256: "3".repeat(64) },
@@ -2002,7 +2004,7 @@ function attemptTwoJournal(): InMemoryJournal {
         model: "session-model",
         apiAdapter: "faux",
         thinking: "off",
-        runtimeVersion: "pi-0.84.0",
+        runtimeVersion: "pi-0.86.1",
         system: { sha256: "1".repeat(64), bytes: 1 },
         toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
         authority: { sha256: "3".repeat(64) },
@@ -2066,7 +2068,7 @@ function attemptTwoAfterInterruptedCompactionJournal(): InMemoryJournal {
           model: "session-model",
           apiAdapter: "faux",
           thinking: "off",
-          runtimeVersion: "pi-0.84.0",
+          runtimeVersion: "pi-0.86.1",
           system: { sha256: "1".repeat(64), bytes: 1 },
           toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
           authority: { sha256: "3".repeat(64) },

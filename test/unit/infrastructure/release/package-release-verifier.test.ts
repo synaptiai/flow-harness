@@ -203,7 +203,7 @@ function packageManifestFixture(): Record<string, unknown> {
     version: "0.1.0-alpha.1",
     bin: { flow: "dist/cli/launcher.js" },
     exports: {},
-    engines: { node: ">=26.7.0" },
+    engines: { node: ">=26.8.2" },
     os: ["darwin", "linux"],
     publishConfig: { access: "public" },
   };

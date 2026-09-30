@@ -14,7 +14,7 @@ describe("environment doctor", () => {
       {
         target: "project",
         platform: "linux",
-        nodeVersion: "26.7.0",
+        nodeVersion: "26.8.2",
         invocationRoot: "/workspace/project",
       },
       dependencies,
@@ -65,7 +65,7 @@ describe("environment doctor", () => {
       {
         target: "project",
         platform: "linux",
-        nodeVersion: "26.6.99",
+        nodeVersion: "26.8.1",
         invocationRoot: "/workspace/project",
       },
       dependencies,
@@ -95,7 +95,7 @@ describe("environment doctor", () => {
       {
         target: "project",
         platform: "linux",
-        nodeVersion: "26.7.0",
+        nodeVersion: "26.8.2",
         invocationRoot: "/workspace/invocation",
       },
       dependencies,
@@ -200,7 +200,7 @@ describe("environment doctor", () => {
       {
         target: "workflow",
         platform: "linux",
-        nodeVersion: "26.7.0",
+        nodeVersion: "26.8.2",
         invocationRoot: "/workspace/project",
       },
       dependencies,
@@ -222,7 +222,7 @@ describe("environment doctor", () => {
       {
         target: "prime-agent",
         platform: "linux",
-        nodeVersion: "26.7.0",
+        nodeVersion: "26.8.2",
         invocationRoot: "/workspace/project",
       },
       dependencies,
@@ -253,7 +253,7 @@ describe("environment doctor", () => {
       {
         target: "workflow",
         platform: "linux",
-        nodeVersion: "26.7.0",
+        nodeVersion: "26.8.2",
         invocationRoot: "/workspace/project",
       },
       dependencies,
@@ -314,7 +314,7 @@ describe("environment doctor", () => {
       {
         target: "project",
         platform: "linux",
-        nodeVersion: "26.7.0",
+        nodeVersion: "26.8.2",
         invocationRoot: "/workspace/project",
         probeTimeoutMs: 5,
       },
@@ -338,7 +338,7 @@ describe("environment doctor", () => {
         {
           target: "project",
           platform: "linux",
-          nodeVersion: "26.7.0",
+          nodeVersion: "26.8.2",
           invocationRoot: "/workspace/project",
           probeTimeoutMs: 15_001,
         },
@@ -361,7 +361,7 @@ describe("environment doctor", () => {
         {
           target: "project",
           platform: "linux",
-          nodeVersion: "26.7.0",
+          nodeVersion: "26.8.2",
           invocationRoot: "/workspace/project",
           signal: controller.signal,
         },
