@@ -17,7 +17,7 @@
     "integrity": "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ=="
   },
   "locks": {
-    "nodeSha256": "2cc8903cfe80d6ee03470e4b999a457b8df7db90f87dd5c5f7cc7f98b713c182",
+    "nodeSha256": "bf5d8f7a159f8e758426e2f707487b558861662837f56b5bb6e18157e8d8cec6",
     "pythonSha256": "b681f2b4beb29bdef7ce4a0b7fef2cf6f24a0ab5e9974614d46bb72ea8ae9376"
   },
   "seccomp": {
