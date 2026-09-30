@@ -194,7 +194,7 @@ describe("Prime Agent package boundary", () => {
         "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ==",
     });
     expect(inputs.locks).toEqual({
-      nodeSha256: "6ec3f6f94913271f44878408ccaddfb6b13755800acf051c06f9a40545115faa",
+      nodeSha256: "2cc8903cfe80d6ee03470e4b999a457b8df7db90f87dd5c5f7cc7f98b713c182",
       pythonSha256: "b681f2b4beb29bdef7ce4a0b7fef2cf6f24a0ab5e9974614d46bb72ea8ae9376",
     });
     expect(inputs.seccomp).toEqual({
