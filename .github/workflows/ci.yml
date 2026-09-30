@@ -238,7 +238,7 @@ jobs:
         run: node scripts/audit-prime-dependencies.mjs
 
       - name: Audit runtime dependencies
-        run: npm audit --omit=dev --audit-level=low
+        run: node scripts/audit-runtime-dependencies.mjs
 
   proof-runtime:
     runs-on: ubuntu-24.04

@@ -26,6 +26,13 @@ Use `npm install` only when intentionally changing dependencies. Commit the resu
 `npm-shrinkwrap.json` change and explain why the dependency is needed. The publishable lock keeps
 the installed command's dependency tree reproducible.
 
+`node scripts/audit-runtime-dependencies.mjs` audits production dependencies. It fails on every
+advisory unless `scripts/runtime-audit-allowances.json` names that exact advisory, package, and
+installed path. Add an allowance only when no dependency update can remove the finding, such as an
+advisory inside a dependency's own published shrinkwrap. Each allowance must expire within 45 days.
+The audit also fails when an allowance expires or no longer matches a finding, so remove it as
+soon as an update clears the advisory.
+
 ## Run the current source
 
 Build the checkout and call its launcher directly when you need to test an uninstalled change:
