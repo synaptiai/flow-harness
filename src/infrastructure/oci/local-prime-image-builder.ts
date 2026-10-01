@@ -35,6 +35,7 @@ const MAX_CONTEXT_ENTRIES = 131_072;
 const MAX_CONTEXT_BYTES = 2_147_483_648;
 const MAX_DOCKER_OUTPUT_BYTES = 16_777_216;
 const MAX_DOCKER_COMMAND_MS = 1_800_000;
+const MAX_DOCKER_FAILURE_DIAGNOSTIC_CHARS = 4_096;
 const MAX_PRIME_ARCHIVE_BYTES = 67_108_864;
 const MAX_PRIME_ARCHIVE_DOWNLOAD_MS = 60_000;
 const MAX_RECOVERY_OPERATIONS = 16;
@@ -1322,7 +1323,10 @@ export async function runLocalDockerCommand(
       }
       signal?.removeEventListener("abort", onAbort);
     };
-    const requestTermination = (reason: "abort" | "failure" | "timeout", failure?: Error): void => {
+    const requestTermination = (
+      reason: "abort" | "failure" | "timeout",
+      failure?: Error | (() => Error),
+    ): void => {
       if (terminationStarted || settled) {
         return;
       }
@@ -1340,7 +1344,11 @@ export async function runLocalDockerCommand(
           } else if (reason === "timeout") {
             rejectCommand(terminatedCommandError("Docker command timed out"));
           } else {
-            rejectCommand(failure ?? new Error("Docker command failed"));
+            rejectCommand(
+              typeof failure === "function"
+                ? failure()
+                : (failure ?? new Error("Docker command failed")),
+            );
           }
         },
         (settlementError: unknown) => {
@@ -1375,14 +1383,9 @@ export async function runLocalDockerCommand(
       if (code === 0 || terminationStarted || settled) {
         return;
       }
-      const diagnostic = Buffer.concat(stderr).toString("utf8").slice(0, 4_096);
-      requestTermination(
-        "failure",
-        new Error(
-          `Docker command failed with ${childSignal ?? String(code)}${
-            diagnostic.length === 0 ? "" : `: ${diagnostic}`
-          }`,
-        ),
+      // Build the message after the process group settles, when stderr has fully drained.
+      requestTermination("failure", () =>
+        dockerCommandFailure(childSignal ?? String(code), stderr),
       );
     });
     child.once("close", (code, childSignal) => {
@@ -1395,17 +1398,26 @@ export async function runLocalDockerCommand(
         resolveCommand(Buffer.concat(stdout).toString("utf8"));
         return;
       }
-      const diagnostic = Buffer.concat(stderr).toString("utf8").slice(0, 4_096);
-      requestTermination(
-        "failure",
-        new Error(
-          `Docker command failed with ${childSignal ?? String(code)}${
-            diagnostic.length === 0 ? "" : `: ${diagnostic}`
-          }`,
-        ),
+      // Build the message after the process group settles, when stderr has fully drained.
+      requestTermination("failure", () =>
+        dockerCommandFailure(childSignal ?? String(code), stderr),
       );
     });
   });
+}
+
+function dockerCommandFailure(status: string, stderr: readonly Buffer[]): Error {
+  const diagnostic = dockerFailureDiagnostic(Buffer.concat(stderr).toString("utf8"));
+  return new Error(
+    `Docker command failed with ${status}${diagnostic.length === 0 ? "" : `: ${diagnostic}`}`,
+  );
+}
+
+/** Keep the end of Docker stderr, where BuildKit and the CLI report the failing step. */
+export function dockerFailureDiagnostic(stderr: string): string {
+  return stderr.length <= MAX_DOCKER_FAILURE_DIAGNOSTIC_CHARS
+    ? stderr
+    : `…${stderr.slice(-(MAX_DOCKER_FAILURE_DIAGNOSTIC_CHARS - 1))}`;
 }
 
 function terminateDockerCommandGroup(pid: number | undefined): void {

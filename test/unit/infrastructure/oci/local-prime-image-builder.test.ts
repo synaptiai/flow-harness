@@ -20,6 +20,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   LocalPrimeImageBuilder,
   primeImageBuildStageForDockerCommand,
+  dockerFailureDiagnostic,
   runLocalDockerCommand,
   verifyPrimeAgentArchiveBytes,
 } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
@@ -366,6 +367,44 @@ describe("local Prime image builder", () => {
       killed: true,
     });
   });
+
+  it("keeps the end of long Docker stderr, where the failing step is reported", () => {
+    expect(dockerFailureDiagnostic("short failure")).toBe("short failure");
+    const progress = "#9 sha256:layer 0B / 28.23MB 0.2s\n".repeat(400);
+    const diagnostic = dockerFailureDiagnostic(
+      `${progress}ERROR: failed to solve: the real cause\n`,
+    );
+
+    expect(diagnostic).toHaveLength(4_096);
+    expect(diagnostic.startsWith("…")).toBe(true);
+    expect(diagnostic.endsWith("ERROR: failed to solve: the real cause\n")).toBe(true);
+  });
+
+  it.runIf(process.platform === "linux")(
+    "reports the final Docker stderr lines when a command fails",
+    async () => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-docker-stderr-")));
+      const executable = join(root, "docker");
+      await writeFile(
+        executable,
+        `#!${process.execPath}
+process.stderr.write("#1 [internal] load build definition\\n".repeat(400));
+process.stderr.write("ERROR: failed to solve: the real cause\\n", () => process.exit(1));
+`,
+      );
+      await chmod(executable, 0o700);
+
+      const failure = await runLocalDockerCommand(executable, [], root).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message.startsWith("Docker command failed with 1: …")).toBe(true);
+      expect(message).toContain("ERROR: failed to solve: the real cause");
+    },
+  );
 
   it.runIf(process.platform === "linux")(
     "settles the complete Docker command process group before timeout rejection",
