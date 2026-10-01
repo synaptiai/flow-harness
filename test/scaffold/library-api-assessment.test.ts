@@ -19,11 +19,11 @@ describe("library API assessment", () => {
       version: "flow.library-boundary-analysis/v1",
       productionFiles: 335,
       exportedDeclarations: {
-        total: 3_074,
+        total: 3_075,
         application: 407,
         cli: 18,
         domain: 1_530,
-        infrastructure: 997,
+        infrastructure: 998,
         supervisor: 122,
       },
       documentedCliForms: 92,

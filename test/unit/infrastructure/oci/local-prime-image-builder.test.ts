@@ -305,11 +305,39 @@ describe("local Prime image builder", () => {
       stage: "clean build resources",
       cause: expect.objectContaining({
         errors: [
-          expect.objectContaining({ message: "private image retirement failed" }),
+          expect.objectContaining({
+            name: "PrimeDockerCleanupCommandError",
+            message: 'Docker cleanup command "image rm" failed',
+            cause: expect.objectContaining({ message: "private image retirement failed" }),
+          }),
           retirementCleanup,
         ],
       }),
     });
+  });
+
+  it("names the failed cleanup subcommand without its operands", async () => {
+    const { builder } = await createBuildHarness({ cleanupBuildxRemoveFailures: 1 });
+
+    const failure = await builder.build(1).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toMatchObject({
+      stage: "clean build resources",
+      cause: expect.objectContaining({
+        errors: [
+          expect.objectContaining({
+            command: "buildx rm",
+            message: 'Docker cleanup command "buildx rm" failed',
+            cause: expect.objectContaining({ message: "private BuildKit cleanup failed" }),
+          }),
+        ],
+      }),
+    });
+    const [cleanupError] = ((failure as Error).cause as AggregateError).errors as Error[];
+    expect(cleanupError?.message).not.toContain("flow-prime-builder");
   });
 
   it("verifies the Prime release archive with SHA-256 and npm integrity", () => {
