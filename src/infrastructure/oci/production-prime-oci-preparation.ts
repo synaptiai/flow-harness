@@ -59,6 +59,8 @@ import { resolveDockerManagedRuntimeExecutables } from "./prime-oci-runtime-exec
 const DOCKER_SOCKET = "/var/run/docker.sock" as const;
 const MAX_EXECUTABLE_BYTES = 268_435_456;
 const PREPARATION_CLEANUP_MS = 30_000;
+// Removing a BuildKit builder also deletes its state volume, which can take minutes on slow disks.
+const BUILDER_REMOVAL_CLEANUP_MS = 600_000;
 const MAX_ATTESTATION_BYTES = 1_048_576;
 const dockerInfoSchema = z
   .object({
@@ -133,14 +135,16 @@ export async function prepareProductionPrimeOciRuntime(input: {
         ...(retainedImageId === undefined ? {} : { retainedImageId }),
         run: (args, options) =>
           runLocalDockerCommand(dockerExecutable, args, options.environmentRoot, options.signal),
-        cleanupRun: (args, options) =>
-          runLocalDockerCommand(
+        cleanupRun: (args, options) => {
+          const timeoutMs = primeCleanupCommandTimeoutMs(args);
+          return runLocalDockerCommand(
             dockerExecutable,
             args,
             options.environmentRoot,
-            AbortSignal.timeout(PREPARATION_CLEANUP_MS),
-            PREPARATION_CLEANUP_MS,
-          ),
+            AbortSignal.timeout(timeoutMs),
+            timeoutMs,
+          );
+        },
       });
       const inspector = new LocalPrimeOciRuntimeInspector({
         run,
@@ -674,4 +678,11 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) {
     throw signal.reason ?? new Error("Prime OCI preparation was cancelled");
   }
+}
+
+/** Return the cleanup deadline for one Docker command; only builder removal needs longer. */
+export function primeCleanupCommandTimeoutMs(args: readonly string[]): number {
+  return args[0] === "buildx" && args[1] === "rm"
+    ? BUILDER_REMOVAL_CLEANUP_MS
+    : PREPARATION_CLEANUP_MS;
 }

@@ -20,6 +20,8 @@ const defaultDescriptorPath = join(projectRoot, ".flow", "proof-runtime", "attes
 const maximumOutputBytes = 16_777_216;
 const maximumFailureDiagnosticBytes = 65_536;
 const maximumAttestationBytes = 65_536;
+// Removing a BuildKit builder also deletes its state volume, which can take minutes on slow disks.
+const BUILDER_REMOVAL_TIMEOUT_MS = 600_000;
 const digestPattern = /^[a-f0-9]{64}$/;
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
 const buildInputBytes = await readFile(join(proofRoot, "build-inputs.json"));
@@ -151,7 +153,7 @@ async function buildImage(label, artifacts) {
     await runDocker(args, 3_600_000);
     const inspection = await inspectImage(tag);
     assertImage(inspection, undefined, artifacts);
-    await runDocker(["buildx", "rm", "--force", builder], 120_000);
+    await runDocker(["buildx", "rm", "--force", builder], BUILDER_REMOVAL_TIMEOUT_MS);
     builderCreated = false;
     return { builder, builderCreated, tag, imageDigest: inspection.Id };
   } catch (error) {
@@ -168,8 +170,8 @@ async function cleanupBuild(build) {
     );
   }
   if (build.builderCreated) {
-    await runDocker(["buildx", "rm", "--force", build.builder], 120_000).catch((error) =>
-      errors.push(error),
+    await runDocker(["buildx", "rm", "--force", build.builder], BUILDER_REMOVAL_TIMEOUT_MS).catch(
+      (error) => errors.push(error),
     );
   }
   if (errors.length > 0) throw new AggregateError(errors, "Lean proof build cleanup failed");
