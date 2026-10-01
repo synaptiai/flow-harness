@@ -100,15 +100,15 @@
     "@oh-my-pi/pi-ai": "17.2.12",
     "@oh-my-pi/pi-coding-agent": "17.2.12",
     "@types/node": "26.2.0",
-    "@vitest/coverage-v8": "4.1.10",
+    "@vitest/coverage-v8": "4.1.11",
     "playwright": "1.62.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "overrides": {
-    "adm-zip": "0.6.0",
+    "adm-zip": "0.6.1",
     "nanoid": "3.3.18",
-    "sharp": "0.35.3"
+    "sharp": "0.35.5"
   },
   "peerDependencies": {
     "@oh-my-pi/pi-ai": "17.2.12",
