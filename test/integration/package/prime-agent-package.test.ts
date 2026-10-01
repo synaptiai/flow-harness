@@ -61,7 +61,10 @@ describe("Prime Agent package boundary", () => {
     );
 
     expect(packageManifest.dependencies?.["extract-zip"]).toBe("file:vendor/extract-zip");
-    expect(packageManifest.overrides).toEqual({ "extract-zip": "$extract-zip" });
+    expect(packageManifest.overrides).toEqual({
+      "basic-ftp": "6.2.1",
+      "extract-zip": "$extract-zip",
+    });
     expect(replacementManifest).toEqual({
       name: "@synaptiai/flow-prime-disabled-extract-zip",
       version: "1.0.0",
@@ -85,6 +88,19 @@ describe("Prime Agent package boundary", () => {
     );
     expect(dockerfile).toContain("rm -rf /opt/flow/node/node_modules/prime-agent/dist/bundle");
     expect(dockerfile).toContain("rm -f /opt/flow/node/node_modules/.bin/prime-agent");
+  });
+
+  it("resolves basic-ftp to the release that fixes GHSA-c475-qrg2-pj4r", async () => {
+    const lock = JSON.parse(
+      await readFile(resolve(repositoryRoot, "prime-container/package-lock.json"), "utf8"),
+    ) as { readonly packages: Readonly<Record<string, { readonly version?: string }>> };
+    const copies = Object.entries(lock.packages).filter(
+      ([path]) => path === "node_modules/basic-ftp" || path.endsWith("/node_modules/basic-ftp"),
+    );
+
+    expect(copies).toEqual([
+      ["node_modules/basic-ftp", expect.objectContaining({ version: "6.2.1" })],
+    ]);
   });
 
   it("ships a default-deny seccomp policy with bounded socket authority", async () => {
@@ -194,7 +210,7 @@ describe("Prime Agent package boundary", () => {
         "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ==",
     });
     expect(inputs.locks).toEqual({
-      nodeSha256: "bf5d8f7a159f8e758426e2f707487b558861662837f56b5bb6e18157e8d8cec6",
+      nodeSha256: "aa51d237678469748d9d378db019f611361db1037992f052984293fd1eec858c",
       pythonSha256: "435feb8049c725058185b58b709327a680817cd48d527e8c465b6513fbf70cfd",
     });
     expect(inputs.seccomp).toEqual({
