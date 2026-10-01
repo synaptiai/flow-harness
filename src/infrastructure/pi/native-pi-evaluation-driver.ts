@@ -27,6 +27,7 @@ import {
   type ProviderStreams,
   type SimpleStreamOptions,
   type StreamOptions,
+  type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { z } from "zod";
 
@@ -42,6 +43,7 @@ import type {
   EvaluationHarnessOutcome,
   EvaluationMetrics,
 } from "../../domain/evaluation/records.js";
+import { flowContextFromPiTranscript } from "./pi-transcript-context.js";
 
 const BROKER_PROVIDER = "flow-host-broker";
 const BROKER_MODEL = "flow-host-model";
@@ -159,6 +161,7 @@ export async function runNativePiEvaluationSession(
     resourceLoader: lockedResourceLoader(),
     sessionManager: SessionManager.inMemory(workspace),
     settingsManager: SettingsManager.inMemory({
+      cacheWarming: "off",
       compaction: { enabled: false },
       retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
     }),
@@ -304,9 +307,9 @@ function brokerProvider(
 ) {
   const stream = (
     _model: Model<string>,
-    context: Context,
+    context: TranscriptContext,
     options?: StreamOptions | SimpleStreamOptions,
-  ) => brokerStream(model, context, options, infer, signal);
+  ) => brokerStream(model, flowContextFromPiTranscript(context), options, infer, signal);
   const api: ProviderStreams = { stream, streamSimple: stream };
   return createProvider({
     id: BROKER_PROVIDER,

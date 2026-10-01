@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "allowances": [
+    {
+      "advisory": "GHSA-q2hr-2g5m-vwhr",
+      "package": "brace-expansion",
+      "path": "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+      "expires": "2026-10-30",
+      "reason": "Pinned by the published Pi 0.86.1 shrinkwrap, which npm overrides cannot replace. Every Pi release through 0.99.1 pins 5.0.9. Remove when a Pi release ships brace-expansion 5.0.12 or newer."
+    },
+    {
+      "advisory": "GHSA-qhr7-859c-m2p7",
+      "package": "brace-expansion",
+      "path": "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+      "expires": "2026-10-30",
+      "reason": "Pinned by the published Pi 0.86.1 shrinkwrap, which npm overrides cannot replace. Every Pi release through 0.99.1 pins 5.0.9. Remove when a Pi release ships brace-expansion 5.0.12 or newer."
+    },
+    {
+      "advisory": "GHSA-6j4f-fj2g-mc7p",
+      "package": "brace-expansion",
+      "path": "node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion",
+      "expires": "2026-10-30",
+      "reason": "Pinned by the published Pi 0.86.1 shrinkwrap, which npm overrides cannot replace. Every Pi release through 0.99.1 pins 5.0.9. Remove when a Pi release ships brace-expansion 5.0.12 or newer."
+    }
+  ]
+}

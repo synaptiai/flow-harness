@@ -357,7 +357,8 @@ describe("public repository contracts", () => {
       readText(".decisions/issue-78.md"),
     ]);
 
-    expect(workflow).toContain("npm audit --omit=dev --audit-level=low");
+    expect(workflow).toContain("node scripts/audit-runtime-dependencies.mjs");
+    expect(workflow).not.toContain("npm audit --omit=dev --audit-level=low");
     expect(workflow).toContain("node scripts/audit-prime-dependencies.mjs");
     expect(containerDecision).toContain("npm audit --omit=dev --audit-level=low");
     expect(containerDecision).toContain(

@@ -105,6 +105,10 @@ import {
   countProviderInputTokens,
   ProviderInputTokenCountError,
 } from "./provider-input-token-counter.js";
+import {
+  flowContextFromPiTranscript,
+  piTranscriptFromFlowContext,
+} from "./pi-transcript-context.js";
 import { createWorkspaceAgentTools, type SemanticToolSession } from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
@@ -1101,6 +1105,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager: SettingsManager.inMemory({
+        cacheWarming: "off",
         compaction: { enabled: false },
         retry: {
           enabled: false,
@@ -1213,7 +1218,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
   }
 }
 
-const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.84.0";
+const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.86.1";
 const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const ROLLING_CONTEXT_OUTPUT_TOKEN_LIMITS = Object.freeze([4_096, 2_048] as const);
 const ROLLING_CONTEXT_MINIMUM_REDUCTION_BYTES = 4_096;
@@ -1917,7 +1922,7 @@ async function captureProviderRequest(input: {
     captured = await inspectProviderRequest(requestInput, init);
     throw new ProviderSerializationIntercepted();
   };
-  const stream = await input.stream(input.model, input.context, {
+  const stream = await input.stream(input.model, piTranscriptFromFlowContext(input.context), {
     ...input.options,
     transport: "sse",
     fetch: interceptFetch,
@@ -1960,7 +1965,7 @@ async function executeAdmittedProviderRequest(input: {
       throw error;
     }
   };
-  return await input.stream(input.model, input.context, {
+  return await input.stream(input.model, piTranscriptFromFlowContext(input.context), {
     ...input.options,
     transport: "sse",
     fetch: validatingFetch,
@@ -2055,7 +2060,8 @@ function attachModelSessionRecorder(
   let acceptedSummary: AcceptedContextSummary | undefined;
   let compactionUsage = emptyModelSessionUsage();
   let modelContextFailureCode: PiModelContextFailureCode | undefined;
-  session.agent.streamFunction = async (model, context, options) => {
+  session.agent.streamFunction = async (model, transcript, options) => {
+    const context = flowContextFromPiTranscript(transcript);
     if (
       request.phaseRouting !== undefined &&
       (request.phaseRouting.route.provider !== model.provider ||
@@ -2200,7 +2206,7 @@ function attachModelSessionRecorder(
     });
     activeRequest = { attempt, turn, request: requestSequence };
     return admittedProviderRequest === undefined
-      ? await originalStreamFunction(model, providerContext, options)
+      ? await originalStreamFunction(model, piTranscriptFromFlowContext(providerContext), options)
       : await executeAdmittedProviderRequest({
           model,
           context: providerContext,
@@ -2403,7 +2409,9 @@ async function prepareContextSummary(input: {
     try {
       const stream = await input.stream(
         input.model,
-        contextSummaryPrompt(partition.selected, summaryOptions.protectedConstraints),
+        piTranscriptFromFlowContext(
+          contextSummaryPrompt(partition.selected, summaryOptions.protectedConstraints),
+        ),
         contextSummaryInferenceOptions(input.options, outputTokenLimit),
       );
       message = await stream.result();
