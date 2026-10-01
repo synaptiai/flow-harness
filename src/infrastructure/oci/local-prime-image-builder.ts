@@ -341,7 +341,14 @@ export class LocalPrimeImageBuilder {
           commandOptions.environmentRoot,
           commandOptions.signal,
         ));
-    this.#cleanupRun = options.cleanupRun ?? this.#run;
+    const cleanupRun = options.cleanupRun ?? this.#run;
+    this.#cleanupRun = async (args, commandOptions) => {
+      try {
+        return await cleanupRun(args, commandOptions);
+      } catch (error) {
+        throw new PrimeDockerCleanupCommandError(args, error);
+      }
+    };
     this.#nonce = options.nonce ?? (() => randomUUID().replaceAll("-", ""));
     this.#verifyPrimeArchive = options.verifyPrimeArchive ?? downloadAndVerifyPrimeAgentArchive;
     this.#inspectImageArchive = options.inspectImageArchive ?? inspectPrimeImageArchive;
@@ -1435,6 +1442,27 @@ async function waitForDockerCommandGroupExit(pid: number | undefined): Promise<v
 
 function terminatedCommandError(message: string): Error {
   return Object.assign(new Error(message), { killed: true, signal: "SIGKILL" });
+}
+
+/** Names the failed cleanup subcommand without its container, image, or builder operands. */
+class PrimeDockerCleanupCommandError extends Error {
+  override readonly name = "PrimeDockerCleanupCommandError";
+  readonly command: string;
+
+  constructor(args: readonly string[], cause: unknown) {
+    const command = dockerSubcommand(args);
+    super(`Docker cleanup command "${command}" failed`, { cause });
+    this.command = command;
+  }
+}
+
+function dockerSubcommand(args: readonly string[]): string {
+  const words = [];
+  for (const arg of args.slice(0, 2)) {
+    if (!/^[a-z]{1,16}$/.test(arg)) break;
+    words.push(arg);
+  }
+  return words.length === 0 ? "(unknown)" : words.join(" ");
 }
 
 export class PrimeDockerCommandAbortError extends Error {
