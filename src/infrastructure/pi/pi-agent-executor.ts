@@ -3,6 +3,7 @@ import {
   type AssistantMessage,
   type Context,
   getSupportedThinkingLevels,
+  type JsonObject,
   type Message,
   type Tool,
   type ToolResultMessage,
@@ -114,6 +115,10 @@ import {
   countProviderInputTokens,
   ProviderInputTokenCountError,
 } from "./provider-input-token-counter.js";
+import {
+  flowContextFromPiTranscript,
+  piTranscriptFromFlowContext,
+} from "./pi-transcript-context.js";
 import {
   createWorkspaceAgentTools,
   type SemanticToolSession,
@@ -1316,6 +1321,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager: SettingsManager.inMemory({
+        cacheWarming: "off",
         compaction: { enabled: false },
         retry: {
           enabled: false,
@@ -2157,7 +2163,7 @@ async function captureProviderRequest(input: {
     captured = await inspectProviderRequest(requestInput, init);
     throw new ProviderSerializationIntercepted();
   };
-  const stream = await input.stream(input.model, input.context, {
+  const stream = await input.stream(input.model, piTranscriptFromFlowContext(input.context), {
     ...input.options,
     transport: "sse",
     fetch: interceptFetch,
@@ -2200,7 +2206,7 @@ async function executeAdmittedProviderRequest(input: {
       throw error;
     }
   };
-  return await input.stream(input.model, input.context, {
+  return await input.stream(input.model, piTranscriptFromFlowContext(input.context), {
     ...input.options,
     transport: "sse",
     fetch: validatingFetch,
@@ -2295,7 +2301,8 @@ function attachModelSessionRecorder(
   let acceptedSummary: AcceptedContextSummary | undefined;
   let compactionUsage = emptyModelSessionUsage();
   let terminalFailureCode: PiAgentFailureCode | undefined;
-  session.agent.streamFunction = async (model, context, options) => {
+  session.agent.streamFunction = async (model, transcript, options) => {
+    const context = flowContextFromPiTranscript(transcript);
     if (
       request.phaseRouting !== undefined &&
       (request.phaseRouting.route.provider !== model.provider ||
@@ -2461,7 +2468,7 @@ function attachModelSessionRecorder(
     });
     activeRequest = { attempt, turn, request: requestSequence };
     return admittedProviderRequest === undefined
-      ? await originalStreamFunction(model, providerContext, options)
+      ? await originalStreamFunction(model, piTranscriptFromFlowContext(providerContext), options)
       : await executeAdmittedProviderRequest({
           model,
           context: providerContext,
@@ -2615,7 +2622,7 @@ function isProvenCommandAuthorityRejection(
         type: "toolCall",
         name: "flow_exec",
         id: call.toolCallId,
-        arguments: input as Record<string, unknown>,
+        arguments: input as JsonObject,
       },
     );
     return !authority.requestDigests.includes(
@@ -2715,7 +2722,9 @@ async function prepareContextSummary(input: {
     try {
       const stream = await input.stream(
         input.model,
-        contextSummaryPrompt(partition.selected, summaryOptions.protectedConstraints),
+        piTranscriptFromFlowContext(
+          contextSummaryPrompt(partition.selected, summaryOptions.protectedConstraints),
+        ),
         contextSummaryInferenceOptions(input.options, outputTokenLimit),
       );
       message = await stream.result();

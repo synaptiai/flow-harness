@@ -120,6 +120,24 @@ describe("Lean proof runtime package boundary", () => {
     expect(preparation).toContain(".slice(-maximumFailureDiagnosticBytes)");
   });
 
+  it("allows BuildKit builder removal enough time to delete its state volume", async () => {
+    const preparation = await readFile(
+      resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"),
+      "utf8",
+    );
+    const constant = preparation.indexOf("const BUILDER_REMOVAL_TIMEOUT_MS = 600_000;");
+    const removals = preparation.match(
+      /runDocker\(\["buildx", "rm", "--force", [^\]]+\], ([^)]+)\)/g,
+    );
+
+    expect(constant).toBeGreaterThanOrEqual(0);
+    expect(constant).toBeLessThan(preparation.indexOf('buildImage("discovery"'));
+    expect(removals).toHaveLength(2);
+    for (const removal of removals ?? []) {
+      expect(removal).toContain("BUILDER_REMOVAL_TIMEOUT_MS");
+    }
+  });
+
   it("runs exact containment acceptance after discovery instead of waiting for three builds", async () => {
     const preparation = await readFile(
       resolve(repositoryRoot, "scripts/prepare-proof-runtime.mjs"),

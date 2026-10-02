@@ -39,16 +39,16 @@ describe("embedded Pi executor registry", () => {
       },
       harness: {
         package: "@earendil-works/pi-coding-agent",
-        version: "0.84.4",
+        version: "0.86.1",
         integrity:
-          "sha512-jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w==",
+          "sha512-vZBuNfJnruxZyemZ3O05V0S/Ylze08ahFTIQ1Mik++gVdOevPl89gt/Uv0U97BPAJaj9cj6Vf9rcIgKtUrd0BA==",
         packageContentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
       inference: {
         package: "@earendil-works/pi-ai",
-        version: "0.84.4",
+        version: "0.86.1",
         integrity:
-          "sha512-AClAZxf5+c4RRu44NJPS6wyQy+Nmq+Mzyyrdvm4ZVMNuixelO02RZX4G4Aq1F145Yzp43wnM5S+hLlSI7ypfVw==",
+          "sha512-1XHhI6D/fyQdsBieHC/E/4zGKVOoGe4yDyX67VXvzoYkFsX/qE7NpZE7E1RC8e6Bz8B9oG/P+MQFXikv2/BGEg==",
         packageContentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
       dependencyClosureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -101,8 +101,8 @@ async function registryFixture() {
   await Promise.all([
     mkdir(sourceRoot),
     writePackage(localDependencyRoot, "local-dependency", "1.0.0"),
-    writePackage(piCodingAgentRoot, "@earendil-works/pi-coding-agent", "0.84.4"),
-    writePackage(piAiRoot, "@earendil-works/pi-ai", "0.84.4"),
+    writePackage(piCodingAgentRoot, "@earendil-works/pi-coding-agent", "0.86.1"),
+    writePackage(piAiRoot, "@earendil-works/pi-ai", "0.86.1"),
   ]);
   await writeFile(join(sourceRoot, "runtime.js"), "export const runtime = 1;\n");
   const options: EmbeddedPiExecutorRegistryOptions = {

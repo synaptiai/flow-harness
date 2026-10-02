@@ -12,6 +12,7 @@
     "zod": "4.4.3"
   },
   "overrides": {
+    "basic-ftp": "6.2.1",
     "extract-zip": "$extract-zip"
   }
 }

@@ -1,7 +1,7 @@
-export const FLOW_MINIMUM_NODE_VERSION = "26.7.0" as const;
+export const FLOW_MINIMUM_NODE_VERSION = "26.10.0" as const;
 export const FLOW_SUPPORTED_PLATFORMS = Object.freeze(["darwin", "linux"] as const);
 
-const MINIMUM_NODE_VERSION = Object.freeze([26, 7, 0] as const);
+const MINIMUM_NODE_VERSION = Object.freeze([26, 10, 0] as const);
 
 export function isFlowHostSupported(input: {
   readonly platform: string;

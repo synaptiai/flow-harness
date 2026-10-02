@@ -5,8 +5,8 @@ Flow is licensed under the Apache License 2.0. It depends on or studies the foll
 ## Pi
 
 - Project: [earendil-works/pi](https://github.com/earendil-works/pi)
-- Packages: `@earendil-works/pi-coding-agent` 0.84.4, `@earendil-works/pi-ai` 0.84.4,
-  and `@earendil-works/pi-tui` 0.84.4
+- Packages: `@earendil-works/pi-coding-agent` 0.86.1, `@earendil-works/pi-ai` 0.86.1,
+  and `@earendil-works/pi-tui` 0.86.1
 - License: MIT
 - Use: direct runtime dependencies behind Flow's agent-executor and terminal-renderer adapters
 - Copied source: none

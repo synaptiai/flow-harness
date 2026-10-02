@@ -11,6 +11,7 @@ import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 import { AgentCommandRecorder } from "../../../src/infrastructure/pi/agent-command-recorder.js";
 import { AgentEffectRecorder } from "../../../src/infrastructure/pi/agent-effect-recorder.js";
 import { EmbeddedPiAgentRunner } from "../../../src/infrastructure/pi/pi-agent-executor.js";
+import { flowContextFromPiTranscript } from "../../../src/infrastructure/pi/pi-transcript-context.js";
 
 it("delivers frozen invocation metadata and timeout correction through the real Pi session", async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "flow-command-catalog-")));
@@ -26,7 +27,9 @@ it("delivers frozen invocation metadata and timeout correction through the real 
     let refusal: unknown;
     faux.setResponses([
       (context) => {
-        description = context.tools?.find((tool) => tool.name === "flow_exec")?.description;
+        description = flowContextFromPiTranscript(context).tools?.find(
+          (tool) => tool.name === "flow_exec",
+        )?.description;
         return fauxAssistantMessage(
           fauxToolCall(
             "flow_exec",
@@ -135,7 +138,8 @@ it("preserves the legacy provider-visible tool and system-prompt identity", asyn
     const runner = new EmbeddedPiAgentRunner(async () => runtime as never, createAgentSession);
     for (const authority of [undefined, legacy, catalog]) {
       faux.setResponses([
-        (context) => {
+        (transcript) => {
+          const context = flowContextFromPiTranscript(transcript);
           surfaces.push({
             tools: context.tools?.map(({ name, description, parameters }) => ({
               name,

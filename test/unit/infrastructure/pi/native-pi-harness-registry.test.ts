@@ -68,9 +68,9 @@ describe("native Pi harness registry", () => {
       },
       harness: {
         package: "@earendil-works/pi-coding-agent",
-        version: "0.84.4",
+        version: "0.86.1",
         integrity:
-          "sha512-jmOlrqUmvhh/siNWFRXjYLJzhKFIHNsAQaysRwzQPQFnPAaV/vhqHsLH/MBsIISA1Rjj7WTUFR3nJrpXoLx39w==",
+          "sha512-vZBuNfJnruxZyemZ3O05V0S/Ylze08ahFTIQ1Mik++gVdOevPl89gt/Uv0U97BPAJaj9cj6Vf9rcIgKtUrd0BA==",
         packageContentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         config: "pi-evaluation-v1",
         configDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -79,7 +79,7 @@ describe("native Pi harness registry", () => {
         id: "flow-pi-inference-v1",
         version: 1,
         package: "@earendil-works/pi-ai",
-        packageVersion: "0.84.4",
+        packageVersion: "0.86.1",
         packageIntegrity: expect.stringMatching(/^sha512-/),
         packageContentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
@@ -161,8 +161,8 @@ async function registryFixture() {
   await Promise.all([
     writeFile(driverPath, "export const driver = 'native-pi';\n", "utf8"),
     writeFile(protocolPath, "export const protocol = 1;\n", "utf8"),
-    writePackage(piCodingAgentRoot, "@earendil-works/pi-coding-agent", "0.84.4"),
-    writePackage(piAiRoot, "@earendil-works/pi-ai", "0.84.4"),
+    writePackage(piCodingAgentRoot, "@earendil-works/pi-coding-agent", "0.86.1"),
+    writePackage(piAiRoot, "@earendil-works/pi-ai", "0.86.1"),
     writePackage(sandboxRuntimeRoot, "@anthropic-ai/sandbox-runtime", "0.0.70"),
   ]);
   const options: NativePiHarnessRegistryOptions = {

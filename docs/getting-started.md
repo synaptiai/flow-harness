@@ -7,7 +7,7 @@ optional provider path and each safe recovery action.
 
 Install these prerequisites:
 
-- Node.js 26.7 or newer.
+- Node.js 26.10.0 or newer.
 - npm with global package support.
 - An x64 Linux or macOS host.
 

@@ -9,7 +9,7 @@ import {
 } from "../application/environment-doctor.js";
 import { isFlowHostSupported } from "../domain/host-requirements.js";
 
-const NODE_REQUIREMENT_MESSAGE = "Flow requires Node.js 26.7.0 or newer.";
+const NODE_REQUIREMENT_MESSAGE = "Flow requires Node.js 26.10.0 or newer.";
 const PLATFORM_REQUIREMENT_MESSAGE = "Flow supports Linux and macOS.";
 
 interface FlowCliModule {

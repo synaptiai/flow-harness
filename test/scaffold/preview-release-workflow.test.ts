@@ -177,7 +177,7 @@ describe("preview release workflow", () => {
           expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
         }
         if (step.uses?.startsWith("actions/setup-node@")) {
-          expect(step.with?.["node-version"]).toBe("26.7.0");
+          expect(step.with?.["node-version"]).toBe("26.10.0");
         }
       }
     }

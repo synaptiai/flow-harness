@@ -206,7 +206,7 @@ function isExpectedPackageManifest(value: unknown, version: string): boolean {
     value.version === version &&
     isExactObject(value.bin, { flow: "dist/cli/launcher.js" }) &&
     isExactObject(value.exports, {}) &&
-    isExactObject(value.engines, { node: ">=26.7.0" }) &&
+    isExactObject(value.engines, { node: ">=26.10.0" }) &&
     Array.isArray(value.os) &&
     value.os.length === 2 &&
     value.os[0] === "darwin" &&

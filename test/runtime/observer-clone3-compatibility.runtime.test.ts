@@ -33,7 +33,7 @@ describe.skipIf(!linuxX64)("Native clone3 compatibility measurements", () => {
         },
         async (scope) => {
           expect(process.getuid?.(), "Measurements require an unprivileged user").not.toBe(0);
-          expect(process.version, "This measurement is frozen to Node 26.7.0").toBe("v26.7.0");
+          expect(process.version, "This measurement is frozen to Node 26.10.0").toBe("v26.10.0");
           const directory = await scope.temporaryDirectory("flow-clone3-measurement-");
           const tools = {
             strace: await discover("strace", scope.signal),
@@ -78,7 +78,7 @@ describe.skipIf(!linuxX64)("Native clone3 compatibility measurements", () => {
             libc: libc.stdout.toString("utf8").trim(),
             strace: strace.stdout.toString("utf8").split("\n")[0] ?? "",
           };
-          expect(metadata.node).toBe("v26.7.0");
+          expect(metadata.node).toBe("v26.10.0");
           expect(metadata.kernel).toMatch(/^Linux [a-zA-Z0-9._+-]+$/);
           expect(metadata.libc).toMatch(/^glibc [0-9.]+$/);
           expect(metadata.strace).toMatch(/^strace -- version [a-zA-Z0-9.+_-]+$/);

@@ -123,12 +123,12 @@ describe("embedded Pi SDK integration", () => {
                   : invocation === 1
                     ? {
                         path: "source.ts",
-                        expectedSha256: version,
+                        ...(version === undefined ? {} : { expectedSha256: version }),
                         edits: [{ oldText: "value = 1", newText: "value = 2" }],
                       }
                     : {
                         path: "source.ts",
-                        expectedSha256: version,
+                        ...(version === undefined ? {} : { expectedSha256: version }),
                         content: afterReplace,
                       },
             };

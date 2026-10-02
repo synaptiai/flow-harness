@@ -542,7 +542,7 @@ receives both requests. Neither case permits the namespace syscall to execute.
 These controls test notification-history loss, not the safety of a replacement observer. A skipped
 Mac run does not verify compilation or kernel behavior. The first hosted execution remains pending.
 
-The clone3 compatibility suite measures four fixed Node.js 26.7.0 controls: timers, asynchronous
+The clone3 compatibility suite measures four fixed Node.js 26.10.0 controls: timers, asynchronous
 file access, a worker thread, and a subprocess. Each control runs without tracing, under full
 `strace` tracing, and with `clone3` calls forced to return `ENOSYS`. A successful control with no
 observed injected calls reports unexercised coverage. The test records tool versions, syscall

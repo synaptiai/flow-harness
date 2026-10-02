@@ -21,7 +21,7 @@ const verifiedGates = [
   ["npm", ["run", "test:runtime"]],
   ["node", ["scripts/smoke-compiled.mjs"]],
   ["npm", ["run", "pack:check"]],
-  ["npm", ["audit", "--omit=dev", "--audit-level=low"]],
+  ["node", ["scripts/audit-runtime-dependencies.mjs"]],
 ];
 const baseEnvironment = { ...process.env };
 delete baseEnvironment.FLOW_PRIME_PREPARED_ATTESTATION;

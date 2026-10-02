@@ -392,13 +392,13 @@ describe("public repository contracts", () => {
     ]);
     expect(steps[0]).toEqual({
       name: "Check out repository",
-      uses: "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
       with: { "persist-credentials": false },
     });
     expect(steps[1]).toEqual({
       name: "Set up Node.js",
-      uses: "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-      with: { "node-version": "26.7.0", cache: "npm" },
+      uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+      with: { "node-version": "26.10.0", cache: "npm" },
     });
     expect(steps[2]?.run).toBe(
       'test "$(uname -s)" = Linux\n' +
@@ -438,7 +438,8 @@ describe("public repository contracts", () => {
       readText(".decisions/issue-78.md"),
     ]);
 
-    expect(workflow).toContain("npm audit --omit=dev --audit-level=low");
+    expect(workflow).toContain("node scripts/audit-runtime-dependencies.mjs");
+    expect(workflow).not.toContain("npm audit --omit=dev --audit-level=low");
     expect(workflow).toContain("node scripts/audit-prime-dependencies.mjs");
     expect(containerDecision).toContain("npm audit --omit=dev --audit-level=low");
     expect(containerDecision).toContain(

@@ -46,7 +46,7 @@ describe("package contract", () => {
     );
     expect(manifest.bin).toEqual({ flow: "dist/cli/launcher.js" });
     expect(manifest.exports).toEqual({});
-    expect(manifest.engines?.node).toBe(">=26.7.0");
+    expect(manifest.engines?.node).toBe(">=26.10.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("docs");
     expect(manifest.files).toContain("compatibility");
@@ -54,8 +54,8 @@ describe("package contract", () => {
     expect(manifest.files).toContain("npm-shrinkwrap.json");
     expect(manifest.files).toContain("SECURITY.md");
     expect(manifest.files).toContain("SUPPORT.md");
-    expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.4");
-    expect(manifest.dependencies?.typebox).toBe("1.3.7");
+    expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.86.1");
+    expect(manifest.dependencies?.typebox).toBe("1.3.27");
     expect(manifest.scripts?.build).toContain("npm run clean");
     expect(manifest.scripts?.["analyze:library-api"]).toBe(
       "node scripts/analyze-library-boundary.mjs",
@@ -164,11 +164,11 @@ describe("package contract", () => {
     ]);
     const manifest = JSON.parse(manifestSource) as PackageManifest;
 
-    expect(manifest.engines?.node).toBe(">=26.7.0");
+    expect(manifest.engines?.node).toBe(">=26.10.0");
     expect(manifest.devDependencies?.["@types/node"]).toBe("26.2.0");
-    expect(workflow.match(/node-version: 26\.7\.0/g)).toHaveLength(4);
-    expect(readme).toContain("Node.js 26.7 or newer");
-    expect(contributing).toContain("Node.js 26.7 or newer");
+    expect(workflow.match(/node-version: 26\.10\.0/g)).toHaveLength(4);
+    expect(readme).toContain("Node.js 26.10.0 or newer");
+    expect(contributing).toContain("Node.js 26.10.0 or newer");
   });
 
   it("pins the offline Sigstore verifier stack without verifier-owned network clients", async () => {

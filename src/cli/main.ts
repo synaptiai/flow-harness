@@ -519,6 +519,7 @@ import type {
 import { SupervisorServiceError } from "../supervisor/service.js";
 import { executeWorkerJob } from "../supervisor/worker.js";
 import { readBoundedSecretInput } from "./bounded-secret-input.js";
+import { formatErrorCauseChain } from "./error-cause-chain.js";
 import { type GitHubIssueCliService, runGitHubIssueCli } from "./github-issue.js";
 import {
   createProductionGitHubIssueCliService,
@@ -1122,9 +1123,26 @@ async function runtimeCommand(
       );
       return prepareProductionPrimeOciRuntime(input);
     });
-  const result = await preparePrimeRuntime({ cwd, signal: overrides.signal });
+  let result: PrimeOciPreparationResult;
+  try {
+    result = await preparePrimeRuntime({ cwd, signal: overrides.signal });
+  } catch (error) {
+    if (!isPrimeOciPreparationError(error)) throw error;
+    // The stage label alone cannot distinguish network, daemon, or build failures.
+    io.stderr(`${error.code}: ${boundedCliDiagnostic(formatErrorCauseChain(error))}`);
+    return 1;
+  }
   io.stdout(JSON.stringify({ prepared: true, ...result }, null, 2));
   return 0;
+}
+
+// Recognize the error structurally so the CLI does not eagerly load the Prime image builder.
+function isPrimeOciPreparationError(error: unknown): error is Error & { readonly code: string } {
+  return (
+    error instanceof Error &&
+    error.name === "PrimeOciPreparationError" &&
+    typeof (error as { readonly code?: unknown }).code === "string"
+  );
 }
 
 async function initCommand(

@@ -61,7 +61,10 @@ describe("Prime Agent package boundary", () => {
     );
 
     expect(packageManifest.dependencies?.["extract-zip"]).toBe("file:vendor/extract-zip");
-    expect(packageManifest.overrides).toEqual({ "extract-zip": "$extract-zip" });
+    expect(packageManifest.overrides).toEqual({
+      "basic-ftp": "6.2.1",
+      "extract-zip": "$extract-zip",
+    });
     expect(replacementManifest).toEqual({
       name: "@synaptiai/flow-prime-disabled-extract-zip",
       version: "1.0.0",
@@ -85,6 +88,19 @@ describe("Prime Agent package boundary", () => {
     );
     expect(dockerfile).toContain("rm -rf /opt/flow/node/node_modules/prime-agent/dist/bundle");
     expect(dockerfile).toContain("rm -f /opt/flow/node/node_modules/.bin/prime-agent");
+  });
+
+  it("resolves basic-ftp to the release that fixes GHSA-c475-qrg2-pj4r", async () => {
+    const lock = JSON.parse(
+      await readFile(resolve(repositoryRoot, "prime-container/package-lock.json"), "utf8"),
+    ) as { readonly packages: Readonly<Record<string, { readonly version?: string }>> };
+    const copies = Object.entries(lock.packages).filter(
+      ([path]) => path === "node_modules/basic-ftp" || path.endsWith("/node_modules/basic-ftp"),
+    );
+
+    expect(copies).toEqual([
+      ["node_modules/basic-ftp", expect.objectContaining({ version: "6.2.1" })],
+    ]);
   });
 
   it("ships a default-deny seccomp policy with bounded socket authority", async () => {
@@ -194,8 +210,8 @@ describe("Prime Agent package boundary", () => {
         "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ==",
     });
     expect(inputs.locks).toEqual({
-      nodeSha256: "6ec3f6f94913271f44878408ccaddfb6b13755800acf051c06f9a40545115faa",
-      pythonSha256: "b681f2b4beb29bdef7ce4a0b7fef2cf6f24a0ab5e9974614d46bb72ea8ae9376",
+      nodeSha256: "aa51d237678469748d9d378db019f611361db1037992f052984293fd1eec858c",
+      pythonSha256: "435feb8049c725058185b58b709327a680817cd48d527e8c465b6513fbf70cfd",
     });
     expect(inputs.seccomp).toEqual({
       base: "moby/profiles seccomp/v0.2.1",
@@ -376,7 +392,7 @@ describe("Prime Agent package boundary", () => {
 
     expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
     expect(workflow).toContain(
-      "      - name: Check out repository\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6\n        with:\n          fetch-depth: 0",
+      "      - name: Check out repository\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          fetch-depth: 0",
     );
     expect(workflow).toContain("containerd.io='1.7.27-1'");
     expect(workflow).toContain("docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'");

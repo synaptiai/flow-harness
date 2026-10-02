@@ -34,7 +34,7 @@ qualification. The earlier lifecycle evidence does not qualify this extension.
 
 Prepare these requirements:
 
-- Use a supported x64 Linux or macOS host with Node.js 26.7.0 or newer.
+- Use a supported x64 Linux or macOS host with Node.js 26.10.0 or newer.
 - Install Git, GitHub CLI, and the Flow release that includes `flow issue`.
 - Use a clean, attached checkout whose `origin` identifies the issue repository.
 - Configure Git to ignore `.flow/issue-runs/`. The path must contain no tracked files. If `.flow`

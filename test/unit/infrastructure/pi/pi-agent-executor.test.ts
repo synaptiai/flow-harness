@@ -1842,12 +1842,14 @@ describe("EmbeddedPiAgentRunner", () => {
       enabled: false,
       maxRetries: 0,
       baseDelayMs: 2000,
+      maxAgentDelayMs: 60_000,
     });
     expect(sessionOptions?.settingsManager?.getProviderRetrySettings()).toMatchObject({
       maxRetries: 2,
       maxRetryDelayMs: 60_000,
     });
     expect(sessionOptions?.settingsManager?.getCompactionEnabled()).toBe(false);
+    expect(sessionOptions?.settingsManager?.getCacheWarmingMode()).toBe("off");
   });
 
   it("rejects model settings that Pi cannot apply exactly before session creation", async () => {
