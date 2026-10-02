@@ -169,10 +169,23 @@ describe("runtime audit policy", () => {
   it("keeps the committed allowances exact and short-lived", async () => {
     const committed = JSON.parse(
       await readFile(resolve(repositoryRoot, "scripts/runtime-audit-allowances.json"), "utf8"),
-    ) as { allowances: { path: string; expires: string }[] };
+    ) as { allowances: { advisory: string; path: string; expires: string }[] };
+    const latestExpiry: Readonly<Record<string, string>> = {
+      [nestedPath]: "2026-10-30",
+      "node_modules/node-forge": "2026-11-15",
+    };
+    expect(committed.allowances.map((entry) => `${entry.advisory} ${entry.path}`).sort()).toEqual(
+      [
+        `GHSA-6j4f-fj2g-mc7p ${nestedPath}`,
+        "GHSA-86w9-cpqp-85rv node_modules/node-forge",
+        `GHSA-q2hr-2g5m-vwhr ${nestedPath}`,
+        `GHSA-qhr7-859c-m2p7 ${nestedPath}`,
+      ].sort(),
+    );
     for (const entry of committed.allowances) {
-      expect(entry.path).toBe(nestedPath);
-      expect(entry.expires <= "2026-10-30").toBe(true);
+      const latest = latestExpiry[entry.path];
+      expect(latest, entry.path).toBeDefined();
+      expect(entry.expires <= (latest ?? "")).toBe(true);
     }
   });
 });
