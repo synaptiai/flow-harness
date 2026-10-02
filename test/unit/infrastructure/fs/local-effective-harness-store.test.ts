@@ -221,6 +221,7 @@ describe("local effective harness store", () => {
     await expect(raced.list()).rejects.toMatchObject({ code: "unsafe_state" });
   });
 
+  // The watchdog includes creating and validating 256 distinct artifacts on the real filesystem.
   it("rejects staging beyond the physical artifact limit before publication", async () => {
     const root = await temporaryDirectory();
     const artifact = effectiveHarnessCandidateArtifactFixture();
@@ -245,7 +246,7 @@ describe("local effective harness store", () => {
         lstat(join(directory, `${next.artifactDigest}.json`)),
       ),
     ).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  }, 30_000);
 
   it("rejects staging beyond the physical state limit before publication", async () => {
     const root = await temporaryDirectory();

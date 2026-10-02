@@ -51,6 +51,10 @@ describe("embedded Pi SDK integration", () => {
     const before = "const value = 1;\n";
     const afterEdit = "const value = 2;\n";
     const afterReplace = "export const value = 3;\n";
+    const observedProviderRetrySettings: Array<{
+      readonly maxRetries: number | undefined;
+      readonly maxRetryDelayMs: number | undefined;
+    }> = [];
     await writeFile(target, before, "utf8");
     const runtime = await ModelRuntime.create({
       allowModelNetwork: false,
@@ -74,7 +78,11 @@ describe("embedded Pi SDK integration", () => {
           maxTokens: 256,
         },
       ],
-      streamSimple: (model, context) => {
+      streamSimple: (model, context, options) => {
+        observedProviderRetrySettings.push({
+          maxRetries: options?.maxRetries,
+          maxRetryDelayMs: options?.maxRetryDelayMs,
+        });
         const stream = createAssistantMessageEventStream();
         const invocation = context.messages.filter(
           (message) => message.role === "assistant",
@@ -202,6 +210,10 @@ describe("embedded Pi SDK integration", () => {
       },
     });
     expect(await readFile(target, "utf8")).toBe(afterReplace);
+    expect(observedProviderRetrySettings).toHaveLength(5);
+    expect(observedProviderRetrySettings).toEqual(
+      Array.from({ length: 5 }, () => ({ maxRetries: 2, maxRetryDelayMs: 60_000 })),
+    );
   });
 
   it("applies the requested output-token limit to the selected Pi model", async () => {
@@ -235,7 +247,7 @@ describe("embedded Pi SDK integration", () => {
         const stream = createAssistantMessageEventStream();
         const message: AssistantMessage = {
           role: "assistant",
-          content: [{ type: "text", text: "LIMIT_OK" }],
+          content: [],
           api: model.api,
           provider: model.provider,
           model: model.id,
@@ -247,11 +259,27 @@ describe("embedded Pi SDK integration", () => {
             totalTokens: 2,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
           },
-          stopReason: "stop",
+          stopReason: "pending",
           timestamp: Date.now(),
         };
         queueMicrotask(() => {
           stream.push({ type: "start", partial: message });
+          const block = { type: "text" as const, text: "LIMIT_OK" };
+          message.content.push(block);
+          stream.push({ type: "text_start", contentIndex: 0, partial: message });
+          stream.push({
+            type: "text_delta",
+            contentIndex: 0,
+            delta: block.text,
+            partial: message,
+          });
+          stream.push({
+            type: "text_end",
+            contentIndex: 0,
+            content: block.text,
+            partial: message,
+          });
+          message.stopReason = "stop";
           stream.push({ type: "done", reason: "stop", message });
           stream.end();
         });

@@ -146,7 +146,8 @@ function assertInput(input: GuidedQuickstartInput): void {
     if (
       input.mode.kind === "coding" &&
       input.mode.provider !== "anthropic" &&
-      input.mode.provider !== "openai"
+      input.mode.provider !== "openai" &&
+      input.mode.provider !== "openrouter"
     ) {
       throw invalidInput();
     }

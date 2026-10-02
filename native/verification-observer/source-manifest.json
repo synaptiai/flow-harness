@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "purpose": "unmodified-upstream-build-foundation",
+  "upstream": {
+    "repository": "https://github.com/anthropic-experimental/sandbox-runtime",
+    "commit": "44ab607c46f20381aeaf3e22ca0e0151d4c6b29c",
+    "packageVersion": "0.0.70",
+    "license": "Apache-2.0"
+  },
+  "sources": [
+    {
+      "path": "upstream/apply-seccomp.c",
+      "upstreamPath": "vendor/seccomp-src/apply-seccomp.c",
+      "sha256": "05604f3b077a91f96ec7c8f387bac7878d8ca1241cc0eebdc6f5aabc0f66a55e"
+    },
+    {
+      "path": "upstream/seccomp-unix-block.c",
+      "upstreamPath": "vendor/seccomp-src/seccomp-unix-block.c",
+      "sha256": "6802faf04898a488d0ba1d512ef23fc65a43545c017a8d516a567063a2b315dc"
+    },
+    {
+      "path": "upstream/LICENSE",
+      "upstreamPath": "LICENSE",
+      "sha256": "1210bc93eb85dd786c33192d5bcb7153a93922fa99fbc1512af6a7199cb41080"
+    }
+  ],
+  "build": {
+    "platform": "linux/amd64",
+    "baseImage": "debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143",
+    "certificateImage": "golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651",
+    "buildkitImage": "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec",
+    "aptSnapshot": "20260823T000000Z",
+    "sourceDateEpoch": 1785885248,
+    "packages": ["binutils", "ca-certificates", "gcc", "libc6-dev", "libseccomp-dev"],
+    "generatedHeader": "unix-block-bpf.h",
+    "artifact": "upstream-apply-seccomp"
+  }
+}

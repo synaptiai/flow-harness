@@ -4,7 +4,7 @@ import {
   type AgentEffectReceipt,
 } from "../../domain/run/events.js";
 import type { NodeEffectJournal, PreparedNodeEffect } from "../../application/ports.js";
-import { MAX_POLICY_TARGET_BYTES } from "../../domain/policy/broker.js";
+import { MAX_POLICY_TARGET_BYTES } from "../../domain/policy/limits.js";
 import type { PolicyAttribution } from "../../domain/policy/types.js";
 
 export type AgentEffectIdentity =

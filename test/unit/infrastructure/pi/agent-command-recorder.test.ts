@@ -12,7 +12,10 @@ import {
 } from "../../../../src/domain/agent-command.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
-import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
+import {
+  AgentCommandAuditLimitError,
+  AgentCommandRecorder,
+} from "../../../../src/infrastructure/pi/agent-command-recorder.js";
 
 const context: NodeExecutionContext = {
   runId: "run-1",
@@ -219,13 +222,53 @@ describe("AgentCommandRecorder", () => {
 
     expect(calls).toEqual(["executed", "settled", "exhausted"]);
   });
+
+  it("uses the node policy budget as its command audit limit", async () => {
+    const commandLimit = 33;
+    let commandSequence = 0;
+    const journal: NodeAgentCommandJournal = {
+      prepare: async () => ({
+        commandId: `command-${++commandSequence}`,
+        commandSequence,
+        settle: async () => ({ artifactBudgetExhausted: false }),
+      }),
+    };
+    const executor: AgentCommandExecutor = { executeAgentCommand: async () => outcome };
+    const recorder = new AgentCommandRecorder(
+      executor,
+      journal,
+      context,
+      undefined,
+      undefined,
+      commandLimit,
+    );
+    const broker = new PolicyBroker(
+      { runId: "run-1", workflowId: "agent-exec", nodeId: "implement", attempt: 1 },
+      ["process.execute"],
+    );
+
+    for (let index = 0; index < commandLimit; index += 1) {
+      await expect(recorder.execute(request, commandDecisionFrom(broker))).resolves.toEqual(
+        outcome,
+      );
+    }
+    await expect(recorder.execute(request, commandDecisionFrom(broker))).rejects.toEqual(
+      new AgentCommandAuditLimitError(commandLimit),
+    );
+  });
 });
 
 function commandDecision() {
-  return new PolicyBroker(
-    { runId: "run-1", workflowId: "agent-exec", nodeId: "implement", attempt: 1 },
-    ["process.execute"],
-  ).authorize({
+  return commandDecisionFrom(
+    new PolicyBroker(
+      { runId: "run-1", workflowId: "agent-exec", nodeId: "implement", attempt: 1 },
+      ["process.execute"],
+    ),
+  );
+}
+
+function commandDecisionFrom(broker: PolicyBroker) {
+  return broker.authorize({
     action: "process.execute",
     target: "npm",
     boundary: "inside",

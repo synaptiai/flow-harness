@@ -89,6 +89,104 @@ describe("runWorkflow verifier nodes", () => {
     });
   });
 
+  it("fresh-retries strict-invalid model output and retains both verifier attempts", async () => {
+    const command = fakeCommandExecutor(async (node) => commandSuccess(node.id, "verified input"));
+    let calls = 0;
+    const malformed = '{"verdict":"accepted","reason":"proven","extra":null}';
+    const agent = fakeAgentExecutor(async () => {
+      calls += 1;
+      return agentSuccess(
+        calls === 1 ? malformed : verdict("accepted", "The evidence proves the criterion."),
+      );
+    });
+
+    const state = await runWorkflow(modelVerifierWorkflow(true), {
+      ...options(new MemoryRunStore(), new NodeExecutorRouter(command, agent)),
+      runId: "run-model-verifier-retry",
+    });
+
+    expect(agent.execute).toHaveBeenCalledTimes(2);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      resources: { nodeStarts: 3, modelTokens: 10, modelCostUsdMicros: 10 },
+      nodes: {
+        review: {
+          status: "succeeded",
+          attempt: 2,
+          failedAttempts: [
+            {
+              attempt: 1,
+              error: { code: "verifier_inconclusive", retryable: true },
+              evidence: { result: "invalid_output", raw: malformed },
+            },
+          ],
+          evidence: { result: "parsed", verdict: "accepted" },
+        },
+      },
+    });
+  });
+
+  it("fails closed after the declared model-verifier attempt ceiling", async () => {
+    const command = fakeCommandExecutor(async (node) => commandSuccess(node.id, "verified input"));
+    const malformed = '{"verdict":"accepted","reason":"proven","extra":null}';
+    const agent = fakeAgentExecutor(async () => agentSuccess(malformed));
+
+    const state = await runWorkflow(modelVerifierWorkflow(true), {
+      ...options(new MemoryRunStore(), new NodeExecutorRouter(command, agent)),
+      runId: "run-model-verifier-retry-exhausted",
+    });
+
+    expect(agent.execute).toHaveBeenCalledTimes(2);
+    expect(state).toMatchObject({
+      status: "failed",
+      failedNodeId: "review",
+      goal: { status: "not_accepted", criteria: { reviewed: { status: "inconclusive" } } },
+      nodes: {
+        review: {
+          status: "failed",
+          attempt: 2,
+          error: { code: "verifier_inconclusive", retryable: false },
+          failedAttempts: [{ attempt: 1, error: { retryable: true } }],
+        },
+      },
+    });
+  });
+
+  it("does not treat model-verifier output recovery as authority to repeat an open attempt", async () => {
+    const workflow = modelVerifierWorkflow(true);
+    const completeStore = new MemoryRunStore();
+    const initialAgent = fakeAgentExecutor(async () =>
+      agentSuccess(verdict("accepted", "The evidence proves the criterion.")),
+    );
+    await runWorkflow(workflow, {
+      ...options(
+        completeStore,
+        new NodeExecutorRouter(
+          fakeCommandExecutor(async (node) => commandSuccess(node.id, "verified input")),
+          initialAgent,
+        ),
+      ),
+      runId: "run-open-model-verifier",
+    });
+    const reviewStartIndex = completeStore.events.findIndex(
+      (event) => event.type === "node_started" && event.nodeId === "review",
+    );
+    if (reviewStartIndex < 0) throw new Error("fixture has no model-verifier start");
+    const openStore = new MemoryRecoverableRunStore(
+      completeStore.events.slice(0, reviewStartIndex + 1),
+    );
+    const resumedAgent = fakeAgentExecutor();
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(openStore, new NodeExecutorRouter(fakeCommandExecutor(), resumedAgent)),
+        runId: "run-open-model-verifier",
+      }),
+    ).rejects.toMatchObject({ code: "uncertain_operation" });
+    expect(resumedAgent.execute).not.toHaveBeenCalled();
+    expect(openStore.events.some((event) => event.type === "node_attempt_interrupted")).toBe(false);
+  });
+
   it("fails the run and goal on a rejected model verdict", async () => {
     const command = fakeCommandExecutor(async (node) => commandSuccess(node.id, "unproven"));
     const agent = fakeAgentExecutor(async () =>
@@ -413,7 +511,7 @@ nodes:
 `);
 }
 
-function modelVerifierWorkflow() {
+function modelVerifierWorkflow(recovery = false) {
   return compileWorkflowText(`
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -439,6 +537,7 @@ nodes:
       prompt: Decide whether the evidence proves the criterion.
       evidence: [{ nodeId: source, field: command.stdout }]
       model: { provider: test, id: deterministic }
+      ${recovery ? "recovery: { mode: fresh, maxAttempts: 2 }" : ""}
 `);
 }
 

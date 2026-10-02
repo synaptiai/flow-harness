@@ -12,11 +12,12 @@ import {
 
 export const MODEL_SESSION_PROTOCOL = "flow.model-session/v1" as const;
 export const MODEL_SESSION_VERSION = 1 as const;
-export const MODEL_SESSION_RESUME_RENDER_VERSION = 1 as const;
+export const MODEL_SESSION_RESUME_RENDER_VERSION = 3 as const;
 export const MAX_MODEL_SESSION_EVENT_BYTES = 2 * 1024 * 1024;
 export const MAX_MODEL_SESSION_RECORD_BYTES = 16 * 1024 * 1024;
 export const MAX_MODEL_SESSION_EVENTS = 1_024;
 export const MAX_MODEL_SESSION_RESUME_BYTES = 1024 * 1024;
+const MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES = 32 * 1024;
 export const MAX_ROLLING_CONTEXT_EPOCHS = 8;
 export const MAX_ROLLING_CONTEXT_SUMMARY_BYTES = 64 * 1024;
 
@@ -211,6 +212,7 @@ export interface ModelSessionToolResultEvent extends ModelSessionEventBase {
   readonly toolName: string;
   readonly text: string;
   readonly isError: boolean;
+  readonly commandAuthorityRejection?: "request_not_admitted";
   readonly referenceProjection?: ModelSessionReferenceProjection;
 }
 
@@ -237,7 +239,7 @@ export interface ModelSessionAttemptInterruptedEvent extends ModelSessionEventBa
 export interface ModelSessionResumeSurfaceEvent extends ModelSessionEventBase {
   readonly type: "resume_surface_prepared";
   readonly attempt: number;
-  readonly renderVersion: 1;
+  readonly renderVersion: 1 | 2 | 3;
   readonly sourceHead: string;
   readonly digest: string;
   readonly bytes: number;
@@ -486,6 +488,7 @@ export type ModelSessionEventInput =
       readonly toolName: string;
       readonly text: string;
       readonly isError: boolean;
+      readonly commandAuthorityRejection?: "request_not_admitted";
       readonly referenceProjection?: ModelSessionReferenceProjection;
     }
   | {
@@ -508,7 +511,7 @@ export type ModelSessionEventInput =
   | {
       readonly type: "resume_surface_prepared";
       readonly attempt: number;
-      readonly renderVersion: 1;
+      readonly renderVersion: 1 | 2 | 3;
       readonly sourceHead: string;
       readonly digest: string;
       readonly bytes: number;
@@ -631,6 +634,9 @@ export interface ModelSessionSummary {
   readonly activeAttempt: number | null;
   readonly primaryEventCount: number;
   readonly requestCount: number;
+  readonly latestAttemptRawExecResultCount: number;
+  readonly commandAuthorityRejectionCount?: number;
+  readonly latestAttemptCommandAuthorityRejectionCount?: number;
   readonly interruptionCount: number;
   readonly resumeSurfaceCount: number;
   readonly compactionCount: number;
@@ -711,7 +717,7 @@ export interface ModelSessionSummary {
 }
 
 export interface ModelSessionResumeCapsule {
-  readonly renderVersion: 1;
+  readonly renderVersion: 3;
   readonly sourceHead: string;
   readonly digest: string;
   readonly bytes: number;
@@ -1053,6 +1059,7 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
       toolName: boundedIdentitySchema,
       text: z.string(),
       isError: z.boolean(),
+      commandAuthorityRejection: z.literal("request_not_admitted").optional(),
       referenceProjection: modelSessionReferenceProjectionSchema.optional(),
     })
     .strict(),
@@ -1081,7 +1088,7 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
     .extend({
       type: z.literal("resume_surface_prepared"),
       attempt: positiveSafeIntegerSchema,
-      renderVersion: z.literal(1),
+      renderVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
       sourceHead: sha256Schema,
       digest: sha256Schema,
       bytes: positiveSafeIntegerSchema,
@@ -1326,6 +1333,16 @@ export function renderModelSessionResumeCapsule(
   if (sourceHead === undefined) {
     throw new ModelSessionReplayError("resume capsule has no source head");
   }
+  const priorSettlement = latestPriorFailedAttemptSettlement(state);
+  const projectedEvents =
+    priorSettlement === undefined
+      ? sourceEvents.map(projectResumeEvent)
+      : sourceEvents
+          .filter(
+            (event): event is ModelSessionUserMessageEvent =>
+              event.type === "user_message_committed" && event.origin === "primary_prompt",
+          )
+          .map(projectPortableEvent);
   const capsule = {
     version: MODEL_SESSION_RESUME_RENDER_VERSION,
     instruction: MODEL_SESSION_RESUME_INSTRUCTION,
@@ -1334,7 +1351,25 @@ export function renderModelSessionResumeCapsule(
       sessionId: state.sessionId,
       head: sourceHead,
     },
-    events: sourceEvents.map(projectResumeEvent),
+    ...(priorSettlement === undefined
+      ? {
+          readResultProjection: {
+            inlineLimitBytes: MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES,
+            omittedTextField: "textOmitted",
+            recovery: "Use the paired tool call to reread only the needed bounded range.",
+          },
+        }
+      : {
+          retryProjection: {
+            kind: "settled-failure",
+            attempt: priorSettlement.attempt,
+            outcome: priorSettlement.outcome,
+            omittedEventCount: sourceEvents.length - projectedEvents.length,
+            recovery:
+              "Treat the current workspace as source of truth and reread only the bounded regions needed to complete the original objective.",
+          },
+        }),
+    events: projectedEvents,
   };
   const text = canonicalJson(capsule);
   const bytes = Buffer.byteLength(text, "utf8");
@@ -1350,6 +1385,21 @@ export function renderModelSessionResumeCapsule(
     bytes,
     text,
   });
+}
+
+function latestPriorFailedAttemptSettlement(
+  state: ModelSessionState,
+): ModelSessionAttemptSettledEvent | undefined {
+  const activeAttempt = state.activeAttempt;
+  if (activeAttempt === null || activeAttempt <= 1) return undefined;
+  return [...state.events]
+    .reverse()
+    .find(
+      (event): event is ModelSessionAttemptSettledEvent =>
+        event.type === "attempt_settled" &&
+        event.attempt === activeAttempt - 1 &&
+        event.outcome !== "succeeded",
+    );
 }
 
 export function renderRollingContextResumeBootstrap(
@@ -1453,6 +1503,13 @@ export function canonicalModelSessionJson(value: unknown): string {
 }
 
 export function modelSessionSummary(state: ModelSessionState): ModelSessionSummary {
+  const authorityRejections = state.events.filter(
+    (event): event is ModelSessionToolResultEvent =>
+      event.type === "tool_result_committed" && event.commandAuthorityRejection !== undefined,
+  );
+  const latestAttemptAuthorityRejections = authorityRejections.filter(
+    (event) => event.attempt === state.lastAttempt,
+  ).length;
   const latestRequest = [...state.events]
     .reverse()
     .find(
@@ -1481,6 +1538,18 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
     activeAttempt: state.activeAttempt,
     primaryEventCount: state.primaryEvents.length,
     requestCount: state.events.filter((event) => event.type === "model_request_prepared").length,
+    latestAttemptRawExecResultCount: state.events.filter(
+      (event) =>
+        event.type === "tool_result_committed" &&
+        event.attempt === state.lastAttempt &&
+        event.toolName === "flow_exec",
+    ).length,
+    ...(authorityRejections.length === 0
+      ? {}
+      : { commandAuthorityRejectionCount: authorityRejections.length }),
+    ...(latestAttemptAuthorityRejections === 0
+      ? {}
+      : { latestAttemptCommandAuthorityRejectionCount: latestAttemptAuthorityRejections }),
     interruptionCount: state.events.filter((event) => event.type === "attempt_interrupted").length,
     resumeSurfaceCount: state.events.filter((event) => event.type === "resume_surface_prepared")
       .length,
@@ -1610,7 +1679,7 @@ export function calculatePortableHistoryIdentity(state: ModelSessionState): {
   readonly eventCount: number;
   readonly bytes: number;
 } {
-  const projected = state.primaryEvents.map(projectResumeEvent);
+  const projected = state.primaryEvents.map(projectPortableEvent);
   const canonical = canonicalJson(projected);
   return deepFreeze({
     sha256: sha256(canonical),
@@ -1673,7 +1742,7 @@ export function selectContextCompactionRange(
   ) {
     return null;
   }
-  const canonical = canonicalJson(selected.map(projectResumeEvent));
+  const canonical = canonicalJson(selected.map(projectPortableEvent));
   return deepFreeze({
     lastRequest: selectedSettlement.request,
     range: {
@@ -1715,7 +1784,7 @@ export function selectRollingContextRange(
   );
   const first = deltaEvents[0];
   if (first === undefined) return null;
-  const canonical = canonicalJson(deltaEvents.map(projectResumeEvent));
+  const canonical = canonicalJson(deltaEvents.map(projectPortableEvent));
   return deepFreeze({
     lastRequest: cumulative.lastRequest,
     cumulativeRange: cumulative.range,
@@ -2159,6 +2228,14 @@ function applyTransition(
     }
     case "tool_result_committed": {
       const active = requireActiveRequest(state, event);
+      if (
+        event.commandAuthorityRejection !== undefined &&
+        (event.toolName !== "flow_exec" || !event.isError)
+      ) {
+        throw new ModelSessionReplayError(
+          "command authority rejection requires an unsuccessful raw exec result",
+        );
+      }
       if (!active.toolCallIds.includes(event.toolCallId)) {
         throw new ModelSessionReplayError("tool result has no matching committed tool call");
       }
@@ -2285,7 +2362,7 @@ function validateCompactionRange(state: ModelSessionState, range: ContextCompact
   ) {
     throw new ModelSessionReplayError("context compaction range cannot orphan a tool pair");
   }
-  const canonical = canonicalJson(selected.map(projectResumeEvent));
+  const canonical = canonicalJson(selected.map(projectPortableEvent));
   if (range.sha256 !== sha256(canonical) || range.bytes !== Buffer.byteLength(canonical, "utf8")) {
     throw new ModelSessionReplayError("context compaction range identity does not match");
   }
@@ -2595,6 +2672,37 @@ function isResumeSourceEvent(
 function projectResumeEvent(
   event: ModelSessionPrimaryEvent | ModelSessionAttemptInterruptedEvent,
 ): Readonly<Record<string, unknown>> {
+  if (
+    event.type === "tool_result_committed" &&
+    event.toolName === "flow_read" &&
+    !event.isError &&
+    Buffer.byteLength(event.text, "utf8") > MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES
+  ) {
+    return {
+      type: event.type,
+      attempt: event.attempt,
+      turn: event.turn,
+      request: event.request,
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      textOmitted: {
+        reason: "oversized_successful_read_result",
+        sha256: sha256(event.text),
+        bytes: Buffer.byteLength(event.text, "utf8"),
+        inlineLimitBytes: MAX_MODEL_SESSION_RESUME_INLINE_READ_BYTES,
+      },
+      isError: false,
+      ...(event.referenceProjection === undefined
+        ? {}
+        : { referenceProjection: event.referenceProjection }),
+    };
+  }
+  return projectPortableEvent(event);
+}
+
+function projectPortableEvent(
+  event: ModelSessionPrimaryEvent | ModelSessionAttemptInterruptedEvent,
+): Readonly<Record<string, unknown>> {
   switch (event.type) {
     case "user_message_committed":
       return { type: event.type, attempt: event.attempt, origin: event.origin, text: event.text };
@@ -2628,6 +2736,9 @@ function projectResumeEvent(
         toolName: event.toolName,
         text: event.text,
         isError: event.isError,
+        ...(event.commandAuthorityRejection === undefined
+          ? {}
+          : { commandAuthorityRejection: event.commandAuthorityRejection }),
         ...(event.referenceProjection === undefined
           ? {}
           : { referenceProjection: event.referenceProjection }),

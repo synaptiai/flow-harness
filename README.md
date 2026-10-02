@@ -77,7 +77,9 @@ Linux and macOS support ordinary workflow execution. Agent `exec`, the container
 and Prime Agent have narrower platform requirements.
 
 Read [Project status](docs/project-status.md) for the current feature and platform matrix. Read the
-[Delivery roadmap](docs/roadmap.md) for completed gates and planned work.
+[Delivery roadmap](docs/roadmap.md) for completed gates and planned work. The
+[Flow plugin comparison](docs/flow-plugin-parity.md) separates implemented boundaries from the
+developer workflows and installed qualification that remain open.
 
 ## Quick start
 
@@ -143,6 +145,8 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Install the Flow preview](docs/guides/install-preview.md) | Published installation, invocation, exact pinning, provenance verification, removal, and release-specific limits |
 | [Getting started](docs/getting-started.md) | Installed command verification and the first credential-free run |
 | [Complete the coding quick start](docs/guides/coding-quickstart.md) | Provider setup, one bounded edit, cost interpretation, evidence, cancellation, cleanup, and recovery |
+| [Configure model providers](docs/guides/model-providers.md) | Anthropic, OpenAI, and OpenRouter setup; GLM 5.3 Flash selection; privacy, spending, and context-policy limits |
+| [Complete a GitHub issue with Flow](docs/guides/github-issue-lifecycle.md) | End-to-end implementation, independent review, deterministic verification, hosted checks, explicit merge approval, and restart-safe recovery in another repository |
 | [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
 | [Compatibility policy](docs/compatibility.md) | Supported surfaces, the packaged historical corpus, prerelease changes, migration, and rollback |
