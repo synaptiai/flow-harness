@@ -112,7 +112,7 @@ describe("preview npm stage workflow", () => {
           expect(step.uses).toMatch(/@[0-9a-f]{40}$/);
         }
         if (step.uses?.startsWith("actions/setup-node@")) {
-          expect(step.with?.["node-version"]).toBe("26.8.2");
+          expect(step.with?.["node-version"]).toBe("26.10.0");
         }
       }
     }

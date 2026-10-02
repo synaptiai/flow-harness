@@ -12,7 +12,7 @@ Read the [security policy](../../SECURITY.md) before unattended use.
 
 Install these prerequisites:
 
-- Node.js 26.8.2 or newer.
+- Node.js 26.10.0 or newer.
 - npm with global package support.
 - GitHub CLI 2.93.0 or newer for the optional release-integrity and provenance procedure.
 - An x64 Linux or macOS host for a release-qualified installation.
@@ -206,7 +206,7 @@ Use these checks before you report a problem:
   path, and confirm that directory is in `PATH`. For other npm layouts, follow the npm installation
   documentation for global executables.
 
-- If Flow rejects Node.js, run `node --version`. Version 26.8.2 is the minimum.
+- If Flow rejects Node.js, run `node --version`. Version 26.10.0 is the minimum.
 
 - If command execution fails on Ubuntu 24.04, read the
   [Ubuntu sandbox prerequisite](../getting-started.md#ubuntu-2404-sandbox-prerequisite).

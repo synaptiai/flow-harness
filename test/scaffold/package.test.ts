@@ -46,7 +46,7 @@ describe("package contract", () => {
     );
     expect(manifest.bin).toEqual({ flow: "dist/cli/launcher.js" });
     expect(manifest.exports).toEqual({});
-    expect(manifest.engines?.node).toBe(">=26.8.2");
+    expect(manifest.engines?.node).toBe(">=26.10.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("docs");
     expect(manifest.files).toContain("compatibility");
@@ -164,11 +164,11 @@ describe("package contract", () => {
     ]);
     const manifest = JSON.parse(manifestSource) as PackageManifest;
 
-    expect(manifest.engines?.node).toBe(">=26.8.2");
+    expect(manifest.engines?.node).toBe(">=26.10.0");
     expect(manifest.devDependencies?.["@types/node"]).toBe("26.2.0");
-    expect(workflow.match(/node-version: 26\.8\.2/g)).toHaveLength(3);
-    expect(readme).toContain("Node.js 26.8.2 or newer");
-    expect(contributing).toContain("Node.js 26.8.2 or newer");
+    expect(workflow.match(/node-version: 26\.10\.0/g)).toHaveLength(3);
+    expect(readme).toContain("Node.js 26.10.0 or newer");
+    expect(contributing).toContain("Node.js 26.10.0 or newer");
   });
 
   it("pins the offline Sigstore verifier stack without verifier-owned network clients", async () => {
