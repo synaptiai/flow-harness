@@ -20,8 +20,9 @@ const defaultDescriptorPath = join(projectRoot, ".flow", "proof-runtime", "attes
 const maximumOutputBytes = 16_777_216;
 const maximumFailureDiagnosticBytes = 65_536;
 const maximumAttestationBytes = 65_536;
-// Removing a BuildKit builder also deletes its state volume, which can take minutes on slow disks.
-const BUILDER_REMOVAL_TIMEOUT_MS = 600_000;
+// Removing a BuildKit builder deletes its state volume, and removing an image deletes its layers.
+// Both can take minutes on slow disks.
+const STORAGE_REMOVAL_TIMEOUT_MS = 600_000;
 const digestPattern = /^[a-f0-9]{64}$/;
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
 const buildInputBytes = await readFile(join(proofRoot, "build-inputs.json"));
@@ -153,7 +154,7 @@ async function buildImage(label, artifacts) {
     await runDocker(args, 3_600_000);
     const inspection = await inspectImage(tag);
     assertImage(inspection, undefined, artifacts);
-    await runDocker(["buildx", "rm", "--force", builder], BUILDER_REMOVAL_TIMEOUT_MS);
+    await runDocker(["buildx", "rm", "--force", builder], STORAGE_REMOVAL_TIMEOUT_MS);
     builderCreated = false;
     return { builder, builderCreated, tag, imageDigest: inspection.Id };
   } catch (error) {
@@ -165,12 +166,12 @@ async function buildImage(label, artifacts) {
 async function cleanupBuild(build) {
   const errors = [];
   if (build.tag !== undefined) {
-    await runDocker(["image", "rm", "--force", build.tag], 60_000).catch((error) =>
-      errors.push(error),
+    await runDocker(["image", "rm", "--force", build.tag], STORAGE_REMOVAL_TIMEOUT_MS).catch(
+      (error) => errors.push(error),
     );
   }
   if (build.builderCreated) {
-    await runDocker(["buildx", "rm", "--force", build.builder], BUILDER_REMOVAL_TIMEOUT_MS).catch(
+    await runDocker(["buildx", "rm", "--force", build.builder], STORAGE_REMOVAL_TIMEOUT_MS).catch(
       (error) => errors.push(error),
     );
   }
