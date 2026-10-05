@@ -101,16 +101,16 @@ describe("source dependency boundaries", () => {
     };
 
     expect(packageManifest.overrides).toEqual({
-      "adm-zip": "0.6.0",
+      "adm-zip": "0.6.1",
       nanoid: "3.3.18",
-      sharp: "0.35.3",
+      sharp: "0.35.5",
     });
     expect(packageLock.packages?.["node_modules/adm-zip"]).toEqual(
       expect.objectContaining({
-        version: "0.6.0",
+        version: "0.6.1",
         license: "MIT",
         integrity:
-          "sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==",
+          "sha512-Xwrja8nx9e5o2N1my4DsKCeKpdrnACyr1wtbPxBDgGzKzKyE9kRtBFA8mWldI+RVlD7CBZNWY/wQ2+ydwOR6kQ==",
       }),
     );
     expect(packageLock.packages?.["node_modules/nanoid"]).toEqual(
@@ -123,10 +123,10 @@ describe("source dependency boundaries", () => {
     );
     expect(packageLock.packages?.["node_modules/sharp"]).toEqual(
       expect.objectContaining({
-        version: "0.35.3",
+        version: "0.35.5",
         license: "Apache-2.0",
         integrity:
-          "sha512-ej0zVHuZGHCiABXcNxeYhpRnPNPAcvbG8RMdBAhDAxLKkCRVSpK3Iyu7qbqw3JMzoj0REeM6f3tJLtVwl0023Q==",
+          "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==",
       }),
     );
   });
