@@ -350,7 +350,9 @@ Track the native boundary separately from its host integration and behavioral qu
   toolchain, source, patch, generated-filter, and binary identities. Compare independent clean builds.
   - [x] Reproduce the unchanged upstream baseline. Two hosted clean builds at `30a9281` matched
     across all 15 retained files. See the [observer build record](../native/verification-observer/README.md).
-  - [ ] Build and compare the patched observer helper.
+  - [ ] Build and compare the patched observer helper. The
+    [observer patch](../native/verification-observer/README.md#review-the-observer-patch) and
+    its offline filter checks are in place. The first hosted two-build comparison is pending.
 - [ ] Define and test bounded private result framing, exact invocation binding, and descriptor ownership.
   - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.

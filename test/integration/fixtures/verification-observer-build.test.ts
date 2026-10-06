@@ -37,9 +37,12 @@ async function command(...args: string[]) {
 async function copySources(scope: OwnedTestScope) {
   const root = await scope.temporaryDirectory("flow-native-source-");
   await mkdir(join(root, "upstream"));
+  await mkdir(join(root, "observer"));
   await copyFile(join(foundation, "source-manifest.json"), join(root, "source-manifest.json"));
   for (const name of ["apply-seccomp.c", "seccomp-unix-block.c", "LICENSE"])
     await copyFile(join(foundation, "upstream", name), join(root, "upstream", name));
+  for (const name of ["apply-seccomp.patch", "namespace-restriction.h"])
+    await copyFile(join(foundation, "observer", name), join(root, "observer", name));
   for (const name of ["Dockerfile", "build.sh"])
     await copyFile(join(foundation, name), join(root, name));
   return root;
@@ -66,7 +69,10 @@ it(
         .update(await readFile(join(context, "source-manifest.json")))
         .digest("hex"),
     );
-    expect(result).toMatchObject({ frozenOnly: true, observerQualified: false });
+    expect(result).toMatchObject({
+      frozenOnly: true,
+      observerQualified: false,
+    });
   }),
 );
 
@@ -79,8 +85,51 @@ it(
   }),
 );
 
+it(
+  "rejects an altered observer patch even when the upstream bytes are unchanged",
+  ownedTest(async (scope) => {
+    const root = await copySources(scope);
+    await writeFile(join(root, "observer/apply-seccomp.patch"), "altered patch\n");
+    await expect(checkSources(root)).rejects.toThrow("source bytes mismatch");
+  }),
+);
+
+it(
+  "rejects unrecorded and missing observer files",
+  ownedTest(async (scope) => {
+    const extra = await copySources(scope);
+    await writeFile(join(extra, "observer/extra.h"), "unrecorded\n");
+    await expect(checkSources(extra)).rejects.toThrow("observer inventory");
+    const missing = await copySources(scope);
+    await rm(join(missing, "observer/namespace-restriction.h"));
+    await expect(checkSources(missing)).rejects.toThrow("observer inventory");
+  }),
+);
+
+it(
+  "freezes the observer sources into the checksum list the Docker build verifies",
+  ownedTest(async (scope) => {
+    const root = await copySources(scope);
+    const context = join(await scope.temporaryDirectory("flow-native-freeze-"), "context");
+    await command("--freeze-context", root, context);
+    const checksums = await readFile(join(context, "upstream.sha256"), "utf8");
+    for (const name of ["apply-seccomp.patch", "namespace-restriction.h"]) {
+      const digest = createHash("sha256")
+        .update(await readFile(join(foundation, "observer", name)))
+        .digest("hex");
+      expect(checksums).toContain(`${digest}  observer/${name}\n`);
+      expect(await readFile(join(context, "observer", name))).toEqual(
+        await readFile(join(foundation, "observer", name)),
+      );
+    }
+  }),
+);
+
 it("verifies the actual vendored upstream bytes without invoking Docker", async () => {
-  expect(await command("--check-sources")).toMatchObject({ verified: true, sourceCount: 3 });
+  expect(await command("--check-sources")).toMatchObject({
+    verified: true,
+    sourceCount: 3,
+  });
 });
 
 it(
@@ -127,6 +176,8 @@ it(
 const artifactNames = [
   "upstream-apply-seccomp",
   "upstream-apply-seccomp.o",
+  "observer-apply-seccomp",
+  "observer-apply-seccomp.o",
   "unix-block.bpf",
   "unix-block-bpf.h",
   "toolchain.txt",
@@ -230,4 +281,8 @@ it("keeps the Docker recipe on the recorded base, snapshot, platform, and epoch"
   expect(recipe).toContain('test "$(uname -m)" = x86_64');
   expect(recipe).toContain("--build-id=none");
   expect(recipe).toContain("--download-only");
+  // The observer is built from a patched copy, so the patch must apply exactly.
+  expect(recipe).toContain("--fuzz=0");
+  expect(recipe).toContain("/source/observer/apply-seccomp.patch");
+  expect(dockerfile).toContain("COPY observer ./observer");
 });

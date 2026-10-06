@@ -12,9 +12,10 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
       > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/* \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install --yes --no-install-recommends binutils ca-certificates gcc libc6-dev libseccomp-dev
+    && apt-get install --yes --no-install-recommends binutils ca-certificates gcc libc6-dev libseccomp-dev patch
 WORKDIR /source
 COPY upstream ./upstream
+COPY observer ./observer
 COPY upstream.sha256 build.sh ./
 RUN sha256sum --check upstream.sha256 && sh build.sh
 FROM scratch AS artifacts

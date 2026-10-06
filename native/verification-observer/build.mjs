@@ -37,20 +37,39 @@ const sources = [
     "1210bc93eb85dd786c33192d5bcb7153a93922fa99fbc1512af6a7199cb41080",
   ],
 ];
+const observerSources = [
+  [
+    "observer/apply-seccomp.patch",
+    "f9120b3eb12b9819e5ed0f83fb657f7f5e3a341f00c3f6c3196652dc26ad3204",
+  ],
+  [
+    "observer/namespace-restriction.h",
+    "45812357e5244822ce98209a9ed4a9a4fdfedc765beb5ad0614de68d5a86fd05",
+  ],
+];
 const baseImage =
   "debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143";
 const buildkitImage =
   "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec";
 const expectedManifest = {
   version: 1,
-  purpose: "unmodified-upstream-build-foundation",
+  purpose: "upstream-baseline-and-observer-patch-build",
   upstream: {
     repository: "https://github.com/anthropic-experimental/sandbox-runtime",
     commit,
     packageVersion: "0.0.70",
     license: "Apache-2.0",
   },
-  sources: sources.map(([path, upstreamPath, sha256]) => ({ path, upstreamPath, sha256 })),
+  sources: sources.map(([path, upstreamPath, sha256]) => ({
+    path,
+    upstreamPath,
+    sha256,
+  })),
+  observer: {
+    patchTarget: "upstream/apply-seccomp.c",
+    sources: observerSources.map(([path, sha256]) => ({ path, sha256 })),
+    artifact: "observer-apply-seccomp",
+  },
   build: {
     platform: "linux/amd64",
     baseImage,
@@ -59,7 +78,7 @@ const expectedManifest = {
     buildkitImage,
     aptSnapshot: "20260823T000000Z",
     sourceDateEpoch: 1785885248,
-    packages: ["binutils", "ca-certificates", "gcc", "libc6-dev", "libseccomp-dev"],
+    packages: ["binutils", "ca-certificates", "gcc", "libc6-dev", "libseccomp-dev", "patch"],
     generatedHeader: "unix-block-bpf.h",
     artifact: "upstream-apply-seccomp",
   },
@@ -67,6 +86,8 @@ const expectedManifest = {
 const requiredArtifacts = [
   "upstream-apply-seccomp",
   "upstream-apply-seccomp.o",
+  "observer-apply-seccomp",
+  "observer-apply-seccomp.o",
   "unix-block.bpf",
   "unix-block-bpf.h",
   "toolchain.txt",
@@ -86,12 +107,20 @@ async function sourceCheck(root) {
     JSON.stringify(names) !== JSON.stringify(["LICENSE", "apply-seccomp.c", "seccomp-unix-block.c"])
   )
     throw new Error("source integrity: upstream inventory mismatch");
+  const observerNames = (await readdir(join(canonicalRoot, "observer"))).sort();
+  if (
+    JSON.stringify(observerNames) !== JSON.stringify(observerSources.map(([path]) => path.slice(9)))
+  )
+    throw new Error("source integrity: observer inventory mismatch");
   const manifestBytes = await regularBytes(canonicalRoot, "source-manifest.json", 65_536);
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
   if (JSON.stringify(manifest) !== JSON.stringify(expectedManifest))
     throw new Error("source integrity: manifest mismatch");
   const inputs = new Map([["source-manifest.json", manifestBytes]]);
-  for (const [path, , digest] of sources) {
+  for (const [path, digest] of [
+    ...sources.map(([path, , digest]) => [path, digest]),
+    ...observerSources,
+  ]) {
     const bytes = await regularBytes(canonicalRoot, path, 131_072);
     if (sha256(bytes) !== digest) throw new Error("source integrity: source bytes mismatch");
     inputs.set(path, bytes);
@@ -111,8 +140,12 @@ async function freezeContext(root, destination) {
   }
   await mkdir(destination, { mode: 0o700 });
   await mkdir(join(destination, "upstream"), { mode: 0o700 });
+  await mkdir(join(destination, "observer"), { mode: 0o700 });
   for (const [path, bytes] of checked.inputs)
-    await writeFile(join(destination, path), bytes, { flag: "wx", mode: 0o600 });
+    await writeFile(join(destination, path), bytes, {
+      flag: "wx",
+      mode: 0o600,
+    });
   const copied = await sourceCheck(destination);
   if (copied.manifestSha256 !== checked.manifestSha256)
     throw new Error("source integrity: frozen manifest mismatch");
@@ -121,10 +154,16 @@ async function freezeContext(root, destination) {
       throw new Error("source integrity: frozen recipe mismatch");
   await writeFile(
     join(destination, "upstream.sha256"),
-    sources.map(([path, , hash]) => `${hash}  ${path}\n`).join(""),
+    [...sources.map(([path, , hash]) => [path, hash]), ...observerSources]
+      .map(([path, hash]) => `${hash}  ${path}\n`)
+      .join(""),
     { flag: "wx", mode: 0o600 },
   );
-  return { manifest: checked.manifest, sourceManifestSha256: checked.manifestSha256, recipe };
+  return {
+    manifest: checked.manifest,
+    sourceManifestSha256: checked.manifestSha256,
+    recipe,
+  };
 }
 
 async function regularBytes(root, relative, limit) {
@@ -288,7 +327,10 @@ async function build(output) {
     const artifacts = await compare(join(scratch, "first"), join(scratch, "second"));
     await mkdir(destination, { mode: 0o700 });
     for (const path of Object.keys(artifacts)) {
-      await mkdir(dirname(join(destination, path)), { recursive: true, mode: 0o700 });
+      await mkdir(dirname(join(destination, path)), {
+        recursive: true,
+        mode: 0o700,
+      });
       await copyFile(
         join(scratch, "first", path),
         join(destination, path),

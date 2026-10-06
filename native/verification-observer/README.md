@@ -1,7 +1,8 @@
 # Native observer build foundation
 
 This directory is for contributors preparing the Linux x64 observer. It contains unchanged
-upstream source and a build recipe, not a qualified observer. Flow does not load its output.
+upstream source, Flow's observer patch, and a build recipe, not a qualified observer. Flow does
+not load its output.
 The [verification repair design](../../docs/bounded-verification-repair-design.md) owns the
 observer contract and the remaining implementation and qualification gates.
 
@@ -20,7 +21,41 @@ node native/verification-observer/build.mjs --check-sources
 
 The expected result is `verified: true`. This result verifies local source identity only.
 
-## Build and compare the upstream baseline
+## Review the observer patch
+
+`observer/` holds Flow's changes. `upstream/` stays byte-identical to the pinned commit.
+
+- `namespace-restriction.h` defines a seccomp filter that stops the workload and its
+  descendants from creating or joining a namespace. An i386 system call kills the process.
+  Every x32 system call and `clone3` return `ENOSYS`. `setns` returns `EPERM`. `unshare` and
+  `clone` return `EPERM` when any namespace flag is set. Calls without namespace flags are
+  unchanged, so ordinary processes and threads keep working.
+- `apply-seccomp.patch` adds a modification notice to the helper header and one fail-closed call
+  in the worker. The call runs after the helper's own namespace and mount setup, and before the
+  workload filter and `execvp`. If the filter cannot be installed, the helper exits without
+  running the command.
+
+The build applies the patch to a copy with `--fuzz=0`, compiles the result with the upstream
+warning flags, and produces `observer-apply-seccomp`. The offline test also compiles it with
+`-Werror`. The source checker records both files by hash, so a changed
+patch or header fails before any build.
+
+The filter does not record denied calls. A denial also outranks the upstream observation
+filter, so the upstream observation channel does not report it. Policy-interference
+observation, runtime integration, and kernel qualification remain separate gates in the
+[verification repair design](../../docs/bounded-verification-repair-design.md).
+
+To check the filter logic without Docker, run:
+
+```sh
+npx vitest run test/integration/fixtures/observer-namespace-filter.test.ts --maxWorkers=1
+```
+
+The test captures the filter instead of installing it and evaluates it against synthetic
+system-call records. It also applies the patch and compiles the patched helper. It does not
+run the helper or create a namespace, so it does not prove kernel enforcement.
+
+## Build and compare the helpers
 
 You need Node.js, Docker with Buildx, a Linux x64 Docker daemon, and network access to the pinned
 container images and Debian snapshot. The launcher rejects other daemon architectures. It does
@@ -46,8 +81,9 @@ the native x86-64 application binary interface. The script compiles the unchange
 helper, statically links it, removes build IDs, fixes build paths and timestamps, and rejects
 an executable with a dynamic interpreter or shared-library dependency.
 
-The output is named `upstream-apply-seccomp`, not an observer. `toolchain.txt` records installed
-package versions, compiler and linker versions, and tool hashes. `build-evidence.json` records
+The script then applies the observer patch to a copy and builds `observer-apply-seccomp` the
+same way. The unchanged upstream output is named `upstream-apply-seccomp`. `toolchain.txt`
+records installed package versions, compiler and linker versions, and tool hashes. `build-evidence.json` records
 the frozen source-manifest and recipe hashes, the actual output hashes, and the successful
 two-build comparison. It explicitly records that observer qualification was not performed.
 
@@ -65,15 +101,15 @@ It reuses that job's native Linux x64 Docker host and prints `build-evidence.jso
 successful comparison and cleanup. A failed comparison fails the job. This step does not load,
 publish, or qualify the baseline as an observer.
 
-The first hosted execution passed in
+The first hosted execution, before the observer patch existed, passed in
 [`proof-runtime` at `30a9281`](https://github.com/synaptiai/flow-harness/actions/runs/37362795735/job/111969291228)
 on October 5, 2026. Two clean builds produced identical trees of 15 retained files, with source
 manifest SHA-256 `cfd742fbe7ed805aac70d48f00f7b61828acb81cdea5a2973913089c00682dce` and
 `upstream-apply-seccomp` SHA-256
 `9883ef93f808fec05f95cdf71cb43642ef3ef825d7d9d73cb85417f1b0376d5d`. The evidence records
 `observerQualification: "not-performed"`. This result shows reproducible native compilation of the
-unchanged upstream helper on one hosted Linux x64 runner. It does not qualify a patched helper,
-compatibility, or isolation.
+unchanged upstream helper on one hosted Linux x64 runner. It does not cover the patched helper
+or qualify compatibility or isolation. The next hosted run compares both helpers.
 
 ## Preserve redistribution materials
 
