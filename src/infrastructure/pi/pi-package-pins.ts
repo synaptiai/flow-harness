@@ -1,6 +1,6 @@
-export const PI_CODING_AGENT_VERSION = "0.86.1";
+export const PI_CODING_AGENT_VERSION = "1.0.4";
 export const PI_CODING_AGENT_INTEGRITY =
-  "sha512-vZBuNfJnruxZyemZ3O05V0S/Ylze08ahFTIQ1Mik++gVdOevPl89gt/Uv0U97BPAJaj9cj6Vf9rcIgKtUrd0BA==";
-export const PI_AI_VERSION = "0.86.1";
+  "sha512-+956nfMFHr5lDUVY/2Q4k+YzojzBuCaBXFgj0eSlXVGr7QVliVddKdc1Pz6yVg1dOlJQmb67doOVrlMsIcIdaw==";
+export const PI_AI_VERSION = "1.0.4";
 export const PI_AI_INTEGRITY =
-  "sha512-1XHhI6D/fyQdsBieHC/E/4zGKVOoGe4yDyX67VXvzoYkFsX/qE7NpZE7E1RC8e6Bz8B9oG/P+MQFXikv2/BGEg==";
+  "sha512-/Eu5R0gfor6wcmRcVyOmulUiZmsHJ0bKu5wXXnpCoSHF3y4FnW4fgnjRlLjNza8NJWXdvW5Uew90Zukx7Sh2rw==";

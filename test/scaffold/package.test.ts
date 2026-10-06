@@ -54,7 +54,7 @@ describe("package contract", () => {
     expect(manifest.files).toContain("npm-shrinkwrap.json");
     expect(manifest.files).toContain("SECURITY.md");
     expect(manifest.files).toContain("SUPPORT.md");
-    expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.86.1");
+    expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("1.0.4");
     expect(manifest.dependencies?.typebox).toBe("1.3.27");
     expect(manifest.scripts?.build).toContain("npm run clean");
     expect(manifest.scripts?.["analyze:library-api"]).toBe(

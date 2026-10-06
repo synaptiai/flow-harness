@@ -14,8 +14,8 @@ describe("OpenRouter provider catalog", () => {
       api: "openai-completions",
       baseUrl: "https://openrouter.ai/api/v1",
       reasoning: true,
-      contextWindow: 1_048_576,
-      maxTokens: 131_072,
+      contextWindow: 1_048_575,
+      maxTokens: 943_717,
       compat: {
         supportsDeveloperRole: false,
         thinkingFormat: "openrouter",
