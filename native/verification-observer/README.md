@@ -56,14 +56,24 @@ output. The launcher does not overwrite an existing output directory or report s
 cleanup completes. Docker calls have bounded deadlines and captured output; filesystem cleanup
 does not have a hard operating-system deadline.
 
-The recipe has not yet been built or compared on a Linux x64 host. Source checks, synthetic
-artifact comparisons, and a pinned recipe do not prove native compilation, reproducibility,
-compatibility, or isolation. No artifact hash is supplied in advance.
+Source checks, synthetic artifact comparisons, and a pinned recipe alone do not prove native
+compilation, reproducibility, compatibility, or isolation. No artifact hash is supplied in advance,
+and the hosted result below is a record, not a pin that later builds must match.
 
 The existing hosted `proof-runtime` CI job runs this comparison after the proof acceptance tests.
 It reuses that job's native Linux x64 Docker host and prints `build-evidence.json` only after a
 successful comparison and cleanup. A failed comparison fails the job. This step does not load,
-publish, or qualify the baseline as an observer. The first hosted execution is pending.
+publish, or qualify the baseline as an observer.
+
+The first hosted execution passed in
+[`proof-runtime` at `30a9281`](https://github.com/synaptiai/flow-harness/actions/runs/37362795735/job/111969291228)
+on October 5, 2026. Two clean builds produced identical trees of 15 retained files, with source
+manifest SHA-256 `cfd742fbe7ed805aac70d48f00f7b61828acb81cdea5a2973913089c00682dce` and
+`upstream-apply-seccomp` SHA-256
+`9883ef93f808fec05f95cdf71cb43642ef3ef825d7d9d73cb85417f1b0376d5d`. The evidence records
+`observerQualification: "not-performed"`. This result shows reproducible native compilation of the
+unchanged upstream helper on one hosted Linux x64 runner. It does not qualify a patched helper,
+compatibility, or isolation.
 
 ## Preserve redistribution materials
 
