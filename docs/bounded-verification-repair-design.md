@@ -346,13 +346,13 @@ It does not enable repairs or authorize another live model pilot, merge, or rele
 
 Track the native boundary separately from its host integration and behavioral qualification:
 
-- [ ] Preserve the pinned upstream sources and license. Build a Linux x64 artifact with recorded
+- [x] Preserve the pinned upstream sources and license. Build a Linux x64 artifact with recorded
   toolchain, source, patch, generated-filter, and binary identities. Compare independent clean builds.
   - [x] Reproduce the unchanged upstream baseline. Two hosted clean builds at `30a9281` matched
     across all 15 retained files. See the [observer build record](../native/verification-observer/README.md).
-  - [ ] Build and compare the patched observer helper. The
-    [observer patch](../native/verification-observer/README.md#review-the-observer-patch) and
-    its offline filter checks are in place. The first hosted two-build comparison is pending.
+  - [x] Build and compare the patched observer helper. Two hosted clean builds at `ca3140d`
+    matched across all 17 retained files, including `observer-apply-seccomp`. See the
+    [observer patch](../native/verification-observer/README.md#review-the-observer-patch).
 - [ ] Define and test bounded private result framing, exact invocation binding, and descriptor ownership.
   - [x] Implement the internal fixed-frame decoder and malformed-record rejection tests.
   - [ ] Qualify native writer ownership, transport completion, and exact executable identity.

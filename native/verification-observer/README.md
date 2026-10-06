@@ -108,8 +108,17 @@ manifest SHA-256 `cfd742fbe7ed805aac70d48f00f7b61828acb81cdea5a2973913089c00682d
 `upstream-apply-seccomp` SHA-256
 `9883ef93f808fec05f95cdf71cb43642ef3ef825d7d9d73cb85417f1b0376d5d`. The evidence records
 `observerQualification: "not-performed"`. This result shows reproducible native compilation of the
-unchanged upstream helper on one hosted Linux x64 runner. It does not cover the patched helper
-or qualify compatibility or isolation. The next hosted run compares both helpers.
+unchanged upstream helper on one hosted Linux x64 runner.
+
+The first hosted execution with the observer patch passed in
+[`proof-runtime` at `ca3140d`](https://github.com/synaptiai/flow-harness/actions/runs/37489685721/job/112358826477)
+on October 6, 2026. Two clean builds produced identical trees of 17 retained files, with source
+manifest SHA-256 `3ef2d2f6f4c5ecfc56a4ddd8581ed3dcf54e9e714a59498d0f6432ebaf10d78f`.
+`observer-apply-seccomp` has SHA-256
+`9039d4e1ddcea9b2dbd0ad70652db43722212c953a94de2f0cbb45582c7c32f4`. `upstream-apply-seccomp`
+kept SHA-256 `9883ef93f808fec05f95cdf71cb43642ef3ef825d7d9d73cb85417f1b0376d5d`, so the patch
+build left the baseline unchanged. These results show reproducible compilation only. They do
+not qualify compatibility, isolation, or kernel enforcement of the namespace restriction.
 
 ## Preserve redistribution materials
 
