@@ -388,12 +388,14 @@ function parseBrokerMessage(response: string, model: Model<string>): AssistantMe
       cause: parsed.error,
     });
   }
-  return Object.freeze({
+  // Pi's agent loop records the requested thinking level on the final message, so the message
+  // must stay extensible.
+  return {
     ...parsed.data,
     api: model.api,
     provider: model.provider,
     model: model.id,
-  }) as AssistantMessage;
+  } as AssistantMessage;
 }
 
 function brokerModel(evaluation: ExternalHarnessEvaluationInput): Model<string> {
