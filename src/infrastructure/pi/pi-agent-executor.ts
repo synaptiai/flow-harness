@@ -1218,7 +1218,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
   }
 }
 
-const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-0.86.1";
+const PI_MODEL_SESSION_RUNTIME_VERSION = "pi-1.0.4";
 const MAX_CAPTURED_PROVIDER_REQUEST_BYTES = 1024 * 1024;
 const ROLLING_CONTEXT_OUTPUT_TOKEN_LIMITS = Object.freeze([4_096, 2_048] as const);
 const ROLLING_CONTEXT_MINIMUM_REDUCTION_BYTES = 4_096;
