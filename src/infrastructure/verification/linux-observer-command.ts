@@ -14,8 +14,12 @@ import { normalizeAgentCommandRequest } from "../../domain/agent-command.js";
 import { MAX_AGENT_COMMAND_OUTPUT_BYTES } from "../../domain/command-envelope.js";
 import type { CommandEvidence, SandboxEvidence } from "../../domain/run/events.js";
 import { CommandNodeExecutor } from "../process/command-node-executor.js";
-import { createProductionCommandSandbox } from "../runtime/production-node-executor.js";
+import {
+  createObserverNamespaceRestrictedSandbox,
+  createProductionCommandSandbox,
+} from "../runtime/production-node-executor.js";
 import { FLOW_SANDBOX_POLICY_DIGEST } from "../sandbox/srt-command-sandbox.js";
+import { admitObserverNamespaceHelper } from "./observer-namespace-helper.js";
 
 export interface LinuxObserverCommandRequest {
   readonly command: FrozenIssueVerificationCommand;
@@ -31,6 +35,15 @@ export interface LinuxObserverCommandRequest {
     readonly attempt: number;
   };
   readonly signal?: AbortSignal;
+  /**
+   * Opt-in observer profile: run the workload under the patched helper, which denies
+   * namespace creation and joining. The helper must pass root-ownership and digest
+   * admission before launch and again after release.
+   */
+  readonly namespaceRestriction?: {
+    readonly helperPath: string;
+    readonly helperSha256: string;
+  };
 }
 
 const pinnedSandbox = Object.freeze({
@@ -60,6 +73,10 @@ export type LinuxObserverCommandObservation =
         readonly processContainment: "linux-pid-namespace";
         readonly exitStatusEncoding: "shell";
         readonly release: "succeeded";
+        readonly namespaceRestriction?: {
+          readonly helper: "observer-apply-seccomp";
+          readonly sha256: string;
+        };
       };
     }
   | {
@@ -106,6 +123,13 @@ const requestSchema = z
       })
       .strict(),
     signal: z.instanceof(AbortSignal).optional(),
+    namespaceRestriction: z
+      .object({
+        helperPath: canonicalPath,
+        helperSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -140,6 +164,9 @@ export async function executeLinuxObserverCommand(
       runtimeSupportPaths: Object.freeze([...parsed.runtimeSupportPaths]),
       identity: Object.freeze({ ...parsed.identity }),
       ...(parsed.signal === undefined ? {} : { signal: parsed.signal }),
+      ...(parsed.namespaceRestriction === undefined
+        ? {}
+        : { namespaceRestriction: Object.freeze({ ...parsed.namespaceRestriction }) }),
     });
   } catch {
     return unsupported("invalid_request");
@@ -150,6 +177,10 @@ export async function executeLinuxObserverCommand(
   if (frozen.signal?.aborted) return unsupported("cancelled");
   if (process.platform !== "linux" || process.arch !== "x64")
     return unsupported("unsupported_platform");
+  const restriction = frozen.namespaceRestriction;
+  if (restriction !== undefined && !(await namespaceHelperAdmitted(restriction)))
+    return unsupported("sandbox_unqualified");
+  if (frozen.signal?.aborted) return unsupported("cancelled");
 
   let preparations = 0;
   let admissions = 0;
@@ -158,7 +189,11 @@ export async function executeLinuxObserverCommand(
   let admittedEvidence: typeof pinnedSandbox | undefined;
   let outcome: NodeExecutionOutcome | null = null;
   try {
-    const production = createProductionCommandSandbox("native", frozen.cwd);
+    // Never fall back to the unrestricted sandbox once the observer profile was requested.
+    const production =
+      restriction === undefined
+        ? createProductionCommandSandbox("native", frozen.cwd)
+        : createObserverNamespaceRestrictedSandbox(restriction.helperPath);
     const sandbox: CommandSandbox = {
       async prepare(input) {
         preparations += 1;
@@ -221,6 +256,9 @@ export async function executeLinuxObserverCommand(
     return unsupported("command_not_completed", outcome);
   }
   if (!usableEvidence(outcome, frozen)) return unsupported("invalid_command_evidence", outcome);
+  // Root ownership prevents an unprivileged swap; recheck so a changed helper never qualifies.
+  if (restriction !== undefined && !(await namespaceHelperAdmitted(restriction)))
+    return unsupported("sandbox_unqualified", outcome);
   return Object.freeze({
     kind: "completed",
     outcome,
@@ -230,8 +268,26 @@ export async function executeLinuxObserverCommand(
       processContainment: "linux-pid-namespace",
       exitStatusEncoding: "shell",
       release: "succeeded",
+      ...(restriction === undefined
+        ? {}
+        : {
+            namespaceRestriction: Object.freeze({
+              helper: "observer-apply-seccomp" as const,
+              sha256: restriction.helperSha256,
+            }),
+          }),
     }),
   });
+}
+
+async function namespaceHelperAdmitted(
+  restriction: NonNullable<LinuxObserverCommandRequest["namespaceRestriction"]>,
+): Promise<boolean> {
+  const admission = await admitObserverNamespaceHelper({
+    path: restriction.helperPath,
+    sha256: restriction.helperSha256,
+  });
+  return admission.kind === "admitted";
 }
 
 async function admitPaths(

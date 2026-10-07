@@ -360,6 +360,11 @@ Track the native boundary separately from its host integration and behavioral qu
   Preserve failed execution, normal exit, signal, and policy-interference distinctions.
 - [ ] Apply observer-only namespace restrictions after trusted setup. Observe policy interference
   from the application and all descendants through a mandatory protected channel.
+  - [x] Let an observer command opt in to the patched helper. Admission requires a root-owned
+    helper in root-owned directories with the caller's exact digest, before launch and after
+    release. A rejected helper fails as `sandbox_unqualified` and never falls back to the
+    unrestricted sandbox. Ordinary native commands are unchanged.
+  - [ ] Observe policy interference. The helper denies namespace calls but does not record them.
 - [ ] Integrate private descriptors through the existing managed command boundary. Preserve ordinary
   command evidence and require stream completion, process settlement, and successful sandbox release.
 - [ ] Qualify namespace restrictions, application results, and fixture denial on native Linux x64.

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,8 @@ describe("Linux observer command admission", () => {
     { runtimeSupportPaths: ["relative"] },
     { identity: { runId: "test", workflowId: "test", nodeId: "test", attempt: 0 } },
     { command: { executable: process.execPath, args: [], timeoutMs: 0 } },
+    { namespaceRestriction: { helperPath: "relative", helperSha256: "a".repeat(64) } },
+    { namespaceRestriction: { helperPath: "/opt/helper", helperSha256: "A".repeat(64) } },
   ])("rejects invalid host bounds/identity/paths without launching: %j", async (change) => {
     await withRequest(async (request, marker) => {
       const result = await executeLinuxObserverCommand({
@@ -55,6 +57,30 @@ describe("Linux observer command admission", () => {
       await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
+
+  it.skipIf(process.platform !== "linux" || process.arch !== "x64")(
+    "never falls back to the unrestricted sandbox when the helper is not admitted",
+    async () => {
+      await withRequest(async (request, marker) => {
+        // A helper under the world-writable temporary directory can be replaced by any user.
+        const helperPath = join(request.cwd, "observer-apply-seccomp");
+        await writeFile(helperPath, "not a helper\n", { mode: 0o755 });
+        const result = await executeLinuxObserverCommand({
+          ...request,
+          namespaceRestriction: {
+            helperPath,
+            helperSha256: createHash("sha256").update("not a helper\n").digest("hex"),
+          },
+        });
+        expect(result).toEqual({
+          kind: "unsupported",
+          reason: "sandbox_unqualified",
+          outcome: null,
+        });
+        await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    },
+  );
 
   it.skipIf(process.platform === "linux" && process.arch === "x64")(
     "rejects this actual unsupported host without launching (no platform override)",

@@ -118,6 +118,18 @@ export function createProductionAcpAgentSandbox(commandSandbox: CommandSandbox):
   return isAcpAgentSandbox(commandSandbox) ? commandSandbox : createNativeSrtSandbox();
 }
 
+/**
+ * Native sandbox for the closed behavioral observer only. SRT runs the admitted patched
+ * helper instead of its vendored apply-seccomp, so the workload cannot create or join a
+ * namespace. Ordinary native commands keep createProductionCommandSandbox.
+ */
+export function createObserverNamespaceRestrictedSandbox(helperPath: string): CommandSandbox {
+  return new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
+    backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
+    seccompApplyPath: helperPath,
+  });
+}
+
 function createNativeSrtSandbox(): SrtCommandSandbox {
   const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
   return new SrtCommandSandbox(anthropicSandboxRuntimeManager, {

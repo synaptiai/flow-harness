@@ -17,13 +17,13 @@ describe("library API assessment", () => {
     expect(stderr).toBe("");
     expect(JSON.parse(stdout)).toEqual({
       version: "flow.library-boundary-analysis/v1",
-      productionFiles: 383,
+      productionFiles: 384,
       exportedDeclarations: {
-        total: 3_463,
+        total: 3_468,
         application: 577,
         cli: 26,
         domain: 1_633,
-        infrastructure: 1_105,
+        infrastructure: 1_110,
         supervisor: 122,
       },
       documentedCliForms: 93,

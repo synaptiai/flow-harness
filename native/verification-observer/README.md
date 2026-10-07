@@ -40,6 +40,11 @@ warning flags, and produces `observer-apply-seccomp`. The offline test also comp
 `-Werror`. The source checker records both files by hash, so a changed
 patch or header fails before any build.
 
+An observer command opts in through the `namespaceRestriction` request field of
+`executeLinuxObserverCommand`, which names the installed helper and its expected SHA-256. The
+helper and every ancestor directory must be root-owned and writable only by root. Flow does not
+ship or locate a default helper.
+
 The filter does not record denied calls. A denial also outranks the upstream observation
 filter, so the upstream observation channel does not report it. Policy-interference
 observation, runtime integration, and kernel qualification remain separate gates in the
