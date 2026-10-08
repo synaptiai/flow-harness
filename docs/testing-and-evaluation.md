@@ -527,8 +527,9 @@ The `verifier-isolation` CI job runs
 `test/runtime/verification-observer-fixture.runtime.test.ts`,
 `test/runtime/linux-observer-command.runtime.test.ts`,
 `test/runtime/observer-notification-history.runtime.test.ts`,
-`test/runtime/observer-clone3-compatibility.runtime.test.ts`, and
-`test/runtime/observer-secondary-group.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
+`test/runtime/observer-clone3-compatibility.runtime.test.ts`,
+`test/runtime/observer-secondary-group.runtime.test.ts`, and
+`test/runtime/observer-namespace-restriction.runtime.test.ts` on GitHub-hosted Ubuntu 24.04 x64.
 It checks the host and Node.js architecture before building the runtime. The job uses the
 production native sandbox with synthetic fixtures, no model credentials, and no pilot repository.
 Missing dependencies or sandbox admission failures fail the job.
@@ -567,11 +568,20 @@ It does not create groups or change host group membership. Mount identity remapp
 outside this experiment's qualification scope. The first hosted execution is pending, and a pass
 would not select a production fixture policy or qualify the observer.
 
-The separate `proof-runtime` job also compares two clean builds of the unchanged upstream native
-helper after its proof acceptance tests. In a source checkout,
+The namespace-restriction suite runs one probe through the observer command twice. With the patched
+observer helper, a nested user namespace must fail with `Operation not permitted`, while a
+subprocess and a worker thread still succeed. Without the helper, the same probe must create the
+nested namespace, which shows that the helper caused the denial. Before the tests, the CI job
+builds the helper from the checkout with `native/verification-observer/build-test-helper.sh`,
+installs it as a root-owned file, and exports `FLOW_OBSERVER_TEST_HELPER` and
+`FLOW_OBSERVER_TEST_HELPER_SHA256`. A missing helper fails the suite. This host-toolchain build is
+not the reproducible artifact, and a pass does not observe denied calls or qualify the observer.
+
+The separate `proof-runtime` job also compares two clean builds of the native helpers, unchanged
+and patched, after its proof acceptance tests. In a source checkout,
 `native/verification-observer/README.md` documents the pinned inputs and retained evidence.
 Successful comparison proves byte equality for
-those inputs, not modified-observer safety. Its first hosted build remains pending.
+those inputs, not modified-observer safety.
 
 The probes check ordinary and new-session descendant termination before command settlement,
 private-file and descriptor isolation, host-process access, and forged candidate output.
@@ -593,7 +603,19 @@ npm run test:runtime -- \
   test/runtime/linux-observer-command.runtime.test.ts \
   test/runtime/observer-notification-history.runtime.test.ts \
   test/runtime/observer-clone3-compatibility.runtime.test.ts \
-  test/runtime/observer-secondary-group.runtime.test.ts
+  test/runtime/observer-secondary-group.runtime.test.ts \
+  test/runtime/observer-namespace-restriction.runtime.test.ts
+```
+
+The namespace-restriction suite also needs the installed helper. Build it, install it as root,
+and export its path and digest before you run the suite:
+
+```sh
+digest="$(sh native/verification-observer/build-test-helper.sh "$PWD/.flow-observer-helper")"
+sudo install -D -o root -g root -m 0755 .flow-observer-helper/observer-apply-seccomp \
+  /usr/local/libexec/flow-observer/observer-apply-seccomp
+export FLOW_OBSERVER_TEST_HELPER=/usr/local/libexec/flow-observer/observer-apply-seccomp
+export FLOW_OBSERVER_TEST_HELPER_SHA256="$digest"
 ```
 
 Other hosts skip this Linux-targeted suite by default. To reproduce the known native macOS

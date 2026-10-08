@@ -59,10 +59,19 @@ jobs:
             'Acquire::https::Timeout "30";' | \
             sudo tee /etc/apt/apt.conf.d/99flow-ci-network > /dev/null
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap ca-certificates curl gcc ripgrep socat strace util-linux
+          sudo apt-get install --yes bubblewrap ca-certificates curl gcc libseccomp-dev patch ripgrep socat strace util-linux
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install the observer test helper
+        run: |
+          digest="$(sh native/verification-observer/build-test-helper.sh "$RUNNER_TEMP/flow-observer-helper")"
+          sudo install -D -o root -g root -m 0755 \
+            "$RUNNER_TEMP/flow-observer-helper/observer-apply-seccomp" \
+            /usr/local/libexec/flow-observer/observer-apply-seccomp
+          printf 'FLOW_OBSERVER_TEST_HELPER=%s\nFLOW_OBSERVER_TEST_HELPER_SHA256=%s\n' \
+            /usr/local/libexec/flow-observer/observer-apply-seccomp "$digest" >> "$GITHUB_ENV"
 
       - name: Install the exact Docker Engine
         run: |
@@ -241,11 +250,20 @@ jobs:
       - name: Install sandbox system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap gcc ripgrep socat strace util-linux
+          sudo apt-get install --yes bubblewrap gcc libseccomp-dev patch ripgrep socat strace util-linux
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
           unshare --version
           mount --version
+
+      - name: Install the observer test helper
+        run: |
+          digest="$(sh native/verification-observer/build-test-helper.sh "$RUNNER_TEMP/flow-observer-helper")"
+          sudo install -D -o root -g root -m 0755 \
+            "$RUNNER_TEMP/flow-observer-helper/observer-apply-seccomp" \
+            /usr/local/libexec/flow-observer/observer-apply-seccomp
+          printf 'FLOW_OBSERVER_TEST_HELPER=%s\nFLOW_OBSERVER_TEST_HELPER_SHA256=%s\n' \
+            /usr/local/libexec/flow-observer/observer-apply-seccomp "$digest" >> "$GITHUB_ENV"
 
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
@@ -261,6 +279,7 @@ jobs:
           test/runtime/observer-notification-history.runtime.test.ts
           test/runtime/observer-clone3-compatibility.runtime.test.ts
           test/runtime/observer-secondary-group.runtime.test.ts
+          test/runtime/observer-namespace-restriction.runtime.test.ts
 
   dependency-audit:
     runs-on: ubuntu-latest

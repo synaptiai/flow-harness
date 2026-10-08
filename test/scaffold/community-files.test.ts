@@ -364,8 +364,20 @@ describe("public repository contracts", () => {
     expect(
       quality.steps.find((step) => step.name === "Install sandbox system dependencies")?.run,
     ).toContain(
-      "sudo apt-get install --yes bubblewrap ca-certificates curl gcc ripgrep socat strace util-linux",
+      "sudo apt-get install --yes bubblewrap ca-certificates curl gcc libseccomp-dev patch ripgrep socat strace util-linux",
     );
+    const helperStep = {
+      name: "Install the observer test helper",
+      run:
+        'digest="$(sh native/verification-observer/build-test-helper.sh "$RUNNER_TEMP/flow-observer-helper")"\n' +
+        "sudo install -D -o root -g root -m 0755 \\\n" +
+        '  "$RUNNER_TEMP/flow-observer-helper/observer-apply-seccomp" \\\n' +
+        "  /usr/local/libexec/flow-observer/observer-apply-seccomp\n" +
+        "printf 'FLOW_OBSERVER_TEST_HELPER=%s\\nFLOW_OBSERVER_TEST_HELPER_SHA256=%s\\n' \\\n" +
+        '  /usr/local/libexec/flow-observer/observer-apply-seccomp "$digest" >> "$GITHUB_ENV"\n',
+    };
+    // The helper must be root-owned so observer admission can trust it.
+    expect(quality.steps).toContainEqual(helperStep);
     const job = workflow.jobs["verifier-isolation"] as
       | { readonly steps: readonly Record<string, unknown>[]; readonly [key: string]: unknown }
       | undefined;
@@ -386,6 +398,7 @@ describe("public repository contracts", () => {
       "Set up Node.js",
       "Verify hosted Linux x64",
       "Install sandbox system dependencies",
+      "Install the observer test helper",
       "Install exact dependencies",
       "Build the production runtime",
       "Verify native isolation prerequisites",
@@ -408,21 +421,23 @@ describe("public repository contracts", () => {
     );
     expect(steps[3]?.run).toBe(
       "sudo apt-get update\n" +
-        "sudo apt-get install --yes bubblewrap gcc ripgrep socat strace util-linux\n" +
+        "sudo apt-get install --yes bubblewrap gcc libseccomp-dev patch ripgrep socat strace util-linux\n" +
         "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
         "bwrap --version\n" +
         "unshare --version\n" +
         "mount --version\n",
     );
-    expect(steps[4]?.run).toBe("npm ci --ignore-scripts");
-    expect(steps[5]?.run).toBe("npm run build");
-    expect(steps[6]?.run).toBe(
+    expect(steps[4]).toEqual(helperStep);
+    expect(steps[5]?.run).toBe("npm ci --ignore-scripts");
+    expect(steps[6]?.run).toBe("npm run build");
+    expect(steps[7]?.run).toBe(
       "npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts " +
         "test/runtime/verification-observer-fixture.runtime.test.ts " +
         "test/runtime/linux-observer-command.runtime.test.ts " +
         "test/runtime/observer-notification-history.runtime.test.ts " +
         "test/runtime/observer-clone3-compatibility.runtime.test.ts " +
-        "test/runtime/observer-secondary-group.runtime.test.ts",
+        "test/runtime/observer-secondary-group.runtime.test.ts " +
+        "test/runtime/observer-namespace-restriction.runtime.test.ts",
     );
     for (const step of steps) {
       expect(step["continue-on-error"]).toBeUndefined();
