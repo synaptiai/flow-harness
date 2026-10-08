@@ -21,7 +21,11 @@ import { describe, expect, it } from "vitest";
 
 import type { CommandSandbox } from "../../src/application/command-sandbox.js";
 import { CommandNodeExecutor } from "../../src/infrastructure/process/command-node-executor.js";
-import { createProductionCommandSandbox } from "../../src/infrastructure/runtime/production-node-executor.js";
+import {
+  createObserverNamespaceRestrictedSandbox,
+  createProductionCommandSandbox,
+} from "../../src/infrastructure/runtime/production-node-executor.js";
+import { admitObserverNamespaceHelper } from "../../src/infrastructure/verification/observer-namespace-helper.js";
 
 const linuxTarget = process.platform === "linux" && process.arch === "x64";
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -162,53 +166,7 @@ describe.skipIf(!linuxTarget)("Linux x64 immutable verification fixture prerequi
     await withFixture(async (fixture) => {
       await assertHostPreconditions(fixture);
       const versions = await qualifyNamespaceControl(fixture);
-      const directAlias = join(fixture.workspace, "direct-mount");
-      const nestedAlias = join(fixture.workspace, "nested-mount");
-      await mkdir(directAlias);
-      await mkdir(nestedAlias);
-      const nestedSource = `${subprocessSource}
-        ${namespaceIdentitySource}
-        ${namespaceDiagnosticSource}
-        ${mountAttackSource(fixture.inputs, nestedAlias)}
-        const mutation = operation => { try { operation(); return true; } catch { return false; } };
-        const read = path => {
-          try { return { code: null, value: fs.readFileSync(path, "utf8") }; }
-          catch (error) { return { code: error.code || "UNKNOWN" }; }
-        };
-        // Capture before any nested mount/chmod attempt. Diagnostics do not qualify behavior.
-        const beforeMutation = {
-          deniedFile: read(${JSON.stringify(fixture.deniedFile)}),
-          deniedParent: read(${JSON.stringify(fixture.childFile)}),
-          missing: read(${JSON.stringify(fixture.missing)}),
-          readable: read(${JSON.stringify(fixture.readable)}),
-        };
-        const diagnostics = namespaceDiagnostics({
-          deniedFile: ${JSON.stringify(fixture.deniedFile)},
-          deniedParent: ${JSON.stringify(fixture.deniedParent)},
-          readable: ${JSON.stringify(fixture.readable)},
-        });
-        process.stdout.write(JSON.stringify({
-          beforeMutation,
-          diagnostics,
-          mount: attack(),
-          chmodFile: mutation(() => fs.chmodSync(${JSON.stringify(fixture.deniedFile)}, 0o600)),
-          chmodParent: mutation(() => fs.chmodSync(${JSON.stringify(fixture.deniedParent)}, 0o700)),
-          deniedFile: read(${JSON.stringify(fixture.deniedFile)}),
-          deniedParent: read(${JSON.stringify(fixture.childFile)}),
-          readable: read(${JSON.stringify(fixture.readable)}),
-        }));`;
-      const output = (await executeCandidate(
-        fixture,
-        `${subprocessSource}
-        ${mountAttackSource(fixture.inputs, directAlias)}
-        const versions = [run("/usr/bin/unshare", ["--version"]), run("/usr/bin/mount", ["--version"])];
-        const direct = attack();
-        const previousNamespaces = [fs.readlinkSync("/proc/self/ns/user"), fs.readlinkSync("/proc/self/ns/mnt")];
-        const nestedScript = "const previousNamespaces = " + JSON.stringify(previousNamespaces) + ";" + ${JSON.stringify(nestedSource)};
-        const nested = run("/usr/bin/unshare", [...${JSON.stringify(namespaceArgs)}, process.execPath, "-e", nestedScript], 4000);
-        process.stdout.write(JSON.stringify({ versions, direct, nested }));
-      `,
-      )) as { versions: SubprocessResult[]; direct: MountAttempt; nested: SubprocessResult };
+      const output = await attemptNestedBypass(fixture);
       expect(output.versions).toEqual(versions);
       assertMountDenied(output.direct);
       if (output.nested.status === 0) {
@@ -245,7 +203,113 @@ describe.skipIf(!linuxTarget)("Linux x64 immutable verification fixture prerequi
       await assertUnchangedFixtures(fixture);
     });
   }, 30_000);
+
+  // Observer profile only. The test above stays the record of the unrestricted gap.
+  it("denies the nested bypass and fixture reads under the admitted namespace restriction", async () => {
+    const helperPath = process.env.FLOW_OBSERVER_TEST_HELPER;
+    const helperSha256 = process.env.FLOW_OBSERVER_TEST_HELPER_SHA256;
+    if (helperPath === undefined || helperSha256 === undefined)
+      throw new Error(
+        "Observer-profile fixture qualification requires FLOW_OBSERVER_TEST_HELPER and FLOW_OBSERVER_TEST_HELPER_SHA256",
+      );
+    const admission = await admitObserverNamespaceHelper({
+      path: helperPath,
+      sha256: helperSha256,
+    });
+    expect(admission, JSON.stringify(admission)).toMatchObject({ kind: "admitted" });
+    await withFixture(async (fixture) => {
+      await assertHostPreconditions(fixture);
+      const versions = await qualifyNamespaceControl(fixture);
+      const restricted = () => createObserverNamespaceRestrictedSandbox(helperPath);
+      const reads = await executeCandidate(
+        fixture,
+        `${readOperationSource}
+        process.stdout.write(JSON.stringify({
+          deniedFile: read(${JSON.stringify(fixture.deniedFile)}),
+          deniedParent: read(${JSON.stringify(fixture.childFile)}),
+          missing: read(${JSON.stringify(fixture.missing)}),
+          readable: read(${JSON.stringify(fixture.readable)}),
+        }));`,
+        restricted(),
+      );
+      expect(reads).toEqual({
+        deniedFile: { code: "EACCES" },
+        deniedParent: { code: "EACCES" },
+        missing: { code: "ENOENT" },
+        readable: { code: null, value: fixture.readableBytes },
+      });
+      const output = await attemptNestedBypass(fixture, restricted());
+      expect(output.versions).toEqual(versions);
+      assertMountDenied(output.direct);
+      // The restriction must refuse the nested namespace, so no nested read can happen.
+      expect(output.nested, JSON.stringify(output.nested)).toMatchObject({ status: 1, stdout: "" });
+      expect(output.nested.stderr).toMatch(/^unshare: .*Operation not permitted\s*$/s);
+      await assertUnchangedFixtures(fixture);
+    });
+  }, 30_000);
 });
+
+interface NestedBypassAttempt {
+  readonly versions: SubprocessResult[];
+  readonly direct: MountAttempt;
+  readonly nested: SubprocessResult;
+}
+
+// The direct and nested bind/remount attack shared by the unrestricted gate and the
+// observer-profile qualification. The sandbox decides whether nesting is possible.
+async function attemptNestedBypass(
+  fixture: Fixture,
+  production: CommandSandbox = createProductionCommandSandbox("native", fixture.workspace),
+): Promise<NestedBypassAttempt> {
+  const directAlias = join(fixture.workspace, "direct-mount");
+  const nestedAlias = join(fixture.workspace, "nested-mount");
+  await mkdir(directAlias);
+  await mkdir(nestedAlias);
+  const nestedSource = `${subprocessSource}
+    ${namespaceIdentitySource}
+    ${namespaceDiagnosticSource}
+    ${mountAttackSource(fixture.inputs, nestedAlias)}
+    const mutation = operation => { try { operation(); return true; } catch { return false; } };
+    const read = path => {
+      try { return { code: null, value: fs.readFileSync(path, "utf8") }; }
+      catch (error) { return { code: error.code || "UNKNOWN" }; }
+    };
+    // Capture before any nested mount/chmod attempt. Diagnostics do not qualify behavior.
+    const beforeMutation = {
+      deniedFile: read(${JSON.stringify(fixture.deniedFile)}),
+      deniedParent: read(${JSON.stringify(fixture.childFile)}),
+      missing: read(${JSON.stringify(fixture.missing)}),
+      readable: read(${JSON.stringify(fixture.readable)}),
+    };
+    const diagnostics = namespaceDiagnostics({
+      deniedFile: ${JSON.stringify(fixture.deniedFile)},
+      deniedParent: ${JSON.stringify(fixture.deniedParent)},
+      readable: ${JSON.stringify(fixture.readable)},
+    });
+    process.stdout.write(JSON.stringify({
+      beforeMutation,
+      diagnostics,
+      mount: attack(),
+      chmodFile: mutation(() => fs.chmodSync(${JSON.stringify(fixture.deniedFile)}, 0o600)),
+      chmodParent: mutation(() => fs.chmodSync(${JSON.stringify(fixture.deniedParent)}, 0o700)),
+      deniedFile: read(${JSON.stringify(fixture.deniedFile)}),
+      deniedParent: read(${JSON.stringify(fixture.childFile)}),
+      readable: read(${JSON.stringify(fixture.readable)}),
+    }));`;
+  return (await executeCandidate(
+    fixture,
+    `${subprocessSource}
+    ${mountAttackSource(fixture.inputs, directAlias)}
+    const versions = [run("/usr/bin/unshare", ["--version"]), run("/usr/bin/mount", ["--version"])];
+    const direct = attack();
+    const previousNamespaces = [fs.readlinkSync("/proc/self/ns/user"), fs.readlinkSync("/proc/self/ns/mnt")];
+    const nestedScript = "const previousNamespaces = " + JSON.stringify(previousNamespaces) + ";" + ${JSON.stringify(nestedSource)};
+    const nested = run("/usr/bin/unshare", [...${JSON.stringify(namespaceArgs)}, process.execPath, "-e", nestedScript], 4000);
+    process.stdout.write(JSON.stringify({ versions, direct, nested }));
+  `,
+    production,
+  )) as NestedBypassAttempt;
+}
 
 interface SubprocessResult {
   readonly status: number;
@@ -620,8 +684,11 @@ async function captureFixtureTree(fixture: Fixture, baseline?: FixtureTree): Pro
   return tree;
 }
 
-async function executeCandidate(fixture: Fixture, script: string): Promise<unknown> {
-  const production = createProductionCommandSandbox("native", fixture.workspace);
+async function executeCandidate(
+  fixture: Fixture,
+  script: string,
+  production: CommandSandbox = createProductionCommandSandbox("native", fixture.workspace),
+): Promise<unknown> {
   const supportPaths = Object.freeze([fixture.inputs]);
   const sandbox: CommandSandbox = {
     prepare: (request) => production.prepare({ ...request, runtimeSupportPaths: supportPaths }),

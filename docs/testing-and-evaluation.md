@@ -586,7 +586,10 @@ those inputs, not modified-observer safety.
 The probes check ordinary and new-session descendant termination before command settlement,
 private-file and descriptor isolation, host-process access, and forged candidate output.
 The fixture suite separately checks readable, missing, and inaccessible inputs, mutation resistance,
-and unchanged fixture identities. Unsupported fixture controls fail qualification.
+and unchanged fixture identities. Unsupported fixture controls fail qualification. One fixture case
+repeats the direct and nested bypass attack under the installed observer helper. That case must
+keep mode-000 inputs unreadable and refuse the nested user namespace. The unrestricted case stays
+as the record of the known gap.
 
 Each relevant access check includes a positive control outside the sandbox. Passing these probes
 establishes prerequisites only. It does not qualify a behavioral observer, enable verification repair,
