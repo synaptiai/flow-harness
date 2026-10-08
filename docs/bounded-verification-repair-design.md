@@ -369,6 +369,12 @@ Track the native boundary separately from its host integration and behavioral qu
   command evidence and require stream completion, process settlement, and successful sandbox release.
 - [ ] Qualify namespace restrictions, application results, and fixture denial on native Linux x64.
   Test ordinary processes and threads, cancellation, forged records, and descendant cleanup.
+  - [x] Deny nested user namespaces under the admitted helper. A subprocess and a worker thread
+    still succeed, and an unrestricted control still nests. The
+    [`verifier-isolation` run at `a0addee`](https://github.com/synaptiai/flow-harness/actions/runs/37726699640/job/113146388022)
+    passed on Linux 6.17. The helper came from the host-toolchain test build, not the reproducible
+    artifact.
+  - [ ] Run the fixture-denial attack through the observer profile.
 - [ ] Compose the behavioral observer and complete the remaining verification-repair gates.
 
 Policy interference must remain unsupported even when the application catches a child failure and
