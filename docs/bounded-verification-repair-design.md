@@ -374,7 +374,10 @@ Track the native boundary separately from its host integration and behavioral qu
     [`verifier-isolation` run at `a0addee`](https://github.com/synaptiai/flow-harness/actions/runs/37726699640/job/113146388022)
     passed on Linux 6.17. The helper came from the host-toolchain test build, not the reproducible
     artifact.
-  - [ ] Run the fixture-denial attack through the observer profile.
+  - [x] Run the fixture-denial attack through the observer profile. In the
+    [`verifier-isolation` run at `9e8365f`](https://github.com/synaptiai/flow-harness/actions/runs/37841561201/job/113531925635),
+    mode-000 inputs stayed unreadable and the nested user namespace was refused. The unrestricted
+    case still fails, as the record of the gap without the helper.
 - [ ] Compose the behavioral observer and complete the remaining verification-repair gates.
 
 Policy interference must remain unsupported even when the application catches a child failure and
