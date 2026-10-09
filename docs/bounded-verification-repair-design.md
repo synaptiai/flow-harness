@@ -397,13 +397,92 @@ A child can catch the interruption and return normally. Queue exhaustion and des
 therefore cannot establish that no forbidden attempt occurred.
 
 Do not implement notification-only clean classification. Qualify a mechanism that preserves policy
-interference across cancellation, descendant termination, and thread-group exit. Tracing in the existing
-supervisor is under investigation. It is not yet a qualified replacement.
+interference across cancellation, descendant termination, and thread-group exit. The
+[tracing proposal](#proposal-record-denials-through-a-tracing-init) below is not yet approved or qualified.
 
 Treat `clone3` fallback separately. A constant `ENOSYS` response prevents namespace creation through
 its pointer-based arguments, but does not prove application compatibility. Record fallback use and
 keep the observation unsupported until the frozen adapter and runtime have a qualified fallback contract.
 Do not inspect mutable pointed-to arguments and then authorize the syscall.
+
+#### Proposal: record denials through a tracing init
+
+Status: proposed for review. Nothing in this section is implemented, approved, or qualified.
+
+The requirement is one-sided. A forbidden namespace attempt must never yield a clean behavioral
+classification. A candidate can force an unsupported result, but it must not force a false clean.
+Exact attempt counts are not required.
+
+Compare the mechanisms that can record a denial:
+
+| Mechanism | Records before the workload sees the denial | Host privilege | Decision |
+| --- | --- | --- | --- |
+| Seccomp user notification | No. Interruption can cancel a notification before delivery. | None | Rejected above. |
+| `SECCOMP_RET_LOG` or audit | No. Kernel logging is rate-limited and outside the run. | Audit access | Reject. |
+| eBPF or LSM hooks | Yes | `CAP_BPF` or root | Reject. Flow runs unprivileged. |
+| `SECCOMP_RET_TRACE` with a ptrace tracer | Yes. The thread waits in a ptrace stop. | None | Recommended. |
+
+A thread in a ptrace stop does not run until its tracer resumes it. Non-fatal signals stay queued
+during the stop. Only `SIGKILL` ends the stop without the tracer, and the thread then never returns
+to user code. See [ptrace(2)](https://man7.org/linux/man-pages/man2/ptrace.2.html). This closes the
+interruption gap that rules out user notifications.
+
+Use the helper's inner init as the tracer. It is already PID 1 of the private PID namespace, the
+reaper, non-dumpable, and outside every workload filter. Members of a PID namespace cannot send its
+init a signal that it has no handler for, including `SIGKILL`. See
+[pid_namespaces(7)](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html).
+
+The patched worker and init would follow this sequence:
+
+1. The worker calls `PTRACE_TRACEME` and stops itself before it installs any filter.
+2. Init sets `PTRACE_O_EXITKILL`, `PTRACE_O_TRACESECCOMP`, `PTRACE_O_TRACECLONE`,
+   `PTRACE_O_TRACEFORK`, `PTRACE_O_TRACEVFORK`, and `PTRACE_O_TRACEEXIT`, then resumes the worker.
+3. The namespace filter returns `SECCOMP_RET_TRACE` for `setns`, and for `unshare` or `clone` with a
+   namespace flag. It also returns `SECCOMP_RET_TRACE` for `clone3`. The architecture checks stay
+   unchanged.
+4. At each seccomp stop, init records the event before it acts. For a namespace call it sets the
+   interference flag, skips the call, and returns `EPERM`. For `clone3` it sets the fallback flag and
+   returns `ENOSYS`.
+5. Init records a thread as indeterminate when it ends without an observed `PTRACE_EVENT_EXIT` stop.
+   It also records a `SIGKILL` death that init did not send as indeterminate.
+6. At settlement, init writes one private result frame. Interference selects kind 5 over a normal
+   exit. Bit zero of the flags records `clone3` fallback. An indeterminate thread or a missing frame
+   stays unsupported.
+
+Filter precedence makes the return value matter. `SECCOMP_RET_ERRNO` outranks `SECCOMP_RET_TRACE`,
+so the namespace rules must return only `SECCOMP_RET_TRACE`. See
+[seccomp(2)](https://man7.org/linux/man-pages/man2/seccomp.2.html).
+
+The design fails closed at each boundary:
+
+- Without an attached tracer, `SECCOMP_RET_TRACE` skips the call and returns `ENOSYS`. A detached
+  tracer therefore still denies every namespace call.
+- `PTRACE_O_EXITKILL` kills every tracee if init exits. The host then receives no frame and stays
+  unsupported.
+- Automatic attachment at `clone`, `fork`, and `vfork` leaves no untraced descendant window.
+- A thread killed during a stop never observes the denial. Rule 5 still marks the run indeterminate.
+
+The design has costs:
+
+- A traced workload cannot use ptrace itself. Debuggers, `strace`, and similar tools fail, so those
+  candidates become unsupported.
+- Each `clone3`, thread or process creation, and thread exit adds a ptrace stop.
+- Legitimate `SIGKILL` use in a candidate's own tests becomes indeterminate.
+
+Qualify these kernel behaviors with counterexample probes before implementation:
+
+- `exit_group` from one thread while another thread waits in a seccomp stop.
+- `SIGKILL` delivered to a thread in a seccomp stop before init collects the stop.
+- `vfork`, and `execve` from a multithreaded process, which changes thread identity.
+- A nested `ptrace` attempt and a `PTRACE_TRACEME` attempt from the workload.
+- The same probes on the oldest supported kernel and on the hosted Linux 6.17 runner.
+
+Implement in four reviewable steps. First, add standalone C probes for the races, outside SRT.
+Second, add tracing to the observer patch. Third, add the private frame writer. Fourth, extend the
+hosted qualification suite. A failing probe stops the plan without weakening the requirement.
+
+Approving this proposal requires two decisions. Accept ptrace as the observation mechanism. Accept
+that ptrace-dependent candidates and unsupervised `SIGKILL` use stay unsupported.
 
 #### Investigate existing supplementary groups without changing the selected policy
 
