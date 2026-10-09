@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, realpath, writeFile } from "node:fs/promises";
+import { access, lstat, readFile, realpath } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -94,9 +94,10 @@ describe.skipIf(!linuxX64)("Native clone3 compatibility measurements", () => {
                 ? [
                     "-f",
                     // With -o, strace prefixes every line with its PID. Without it, the prefix starts
-                    // only when a second task appears, which can split one clone3 record.
+                    // only when a second task appears, which can split one clone3 record. The trace
+                    // stays in the owned directory; -o cannot target an inherited socket descriptor.
                     "-o",
-                    "/dev/stderr",
+                    join(directory, `${mode}.trace`),
                     "-qq",
                     "-s",
                     "32",
@@ -113,26 +114,22 @@ describe.skipIf(!linuxX64)("Native clone3 compatibility measurements", () => {
             expect(result.stdout.toString("utf8")).toBe(
               `${JSON.stringify({ control, result: "ok" })}\n`,
             );
-            if (!traced) expect(result.stderr.length).toBe(0);
-            const counts = traced ? countClone3(result.stderr.toString("utf8")) : null;
-            if (counts !== null) {
+            expect(result.stderr.length).toBe(0);
+            const trace = traced ? await readTrace(join(directory, `${mode}.trace`)) : null;
+            const counts = trace === null ? null : countClone3(trace.toString("utf8"));
+            if (trace !== null && counts !== null) {
               expect(counts.completed).toBe(counts.calls);
               expect(counts.injected).toBe(mode === "injected" ? counts.calls : 0);
               if (mode === "injected") expect(counts.enosys).toBe(counts.calls);
-              expect(
-                result.stderr.length,
-                "An empty trace does not prove tracing support",
-              ).toBeGreaterThan(0);
-              await writeFile(join(directory, `${mode}.trace`), result.stderr, {
-                flag: "wx",
-                mode: 0o600,
-              });
+              expect(trace.length, "An empty trace does not prove tracing support").toBeGreaterThan(
+                0,
+              );
             }
             measurements.push({
               mode,
               elapsedMs: Number(result.elapsedMs.toFixed(3)),
-              traceBytes: traced ? result.stderr.length : 0,
-              traceSha256: traced ? createHash("sha256").update(result.stderr).digest("hex") : null,
+              traceBytes: trace?.length ?? 0,
+              traceSha256: trace === null ? null : createHash("sha256").update(trace).digest("hex"),
               clone3: counts,
               injectionCoverage:
                 mode !== "injected"
@@ -151,6 +148,13 @@ describe.skipIf(!linuxX64)("Native clone3 compatibility measurements", () => {
     },
   );
 });
+
+async function readTrace(path: string): Promise<Buffer> {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.size > traceByteLimit)
+    throw new Error("Trace output is missing or exceeds its byte limit");
+  return readFile(path);
+}
 
 async function discover(name: string, signal: AbortSignal): Promise<string> {
   for (const directory of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
