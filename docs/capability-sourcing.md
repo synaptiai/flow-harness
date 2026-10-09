@@ -8,7 +8,9 @@ profile. Prime Agent supplies one optional OCI evaluation profile.
 
 The first runtime embeds [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
 
-Pi's experimental `AgentHarness` API is not a foundation for the first release. Pi v0.84.0 describes unfinished paths that reject with `HarnessNotImplemented`; Flow will use the established `createAgentSession()` API instead. See the [Pi v0.84.0 release](https://github.com/earendil-works/pi/releases/tag/v0.84.0).
+Flow uses Pi's established `createAgentSession()` API. Pi 0.84.4 also exposes an `AgentHarness`
+API, but adopting it would change Flow's qualified execution boundary and requires separate
+evaluation. See the [Pi v0.84.4 release](https://github.com/earendil-works/pi/releases/tag/v0.84.4).
 
 ## Native Flow capabilities
 
@@ -35,7 +37,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | --- | --- | --- |
 | Multi-provider inference | Import through Pi's model runtime | Persist only Flow model requirements and provider/model identifiers |
 | Authentication and model catalog | Reuse | Keep credentials and provider details outside workflow files |
-| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import; Pi assistant-turn and provider retries are explicitly disabled so Flow owns attempt count |
+| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import; Pi assistant-turn retries are disabled, provider transport retries are fixed at two with a 60-second server-delay cap, and Flow owns durable attempt count |
 | Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
 | Concurrent tool calls | Reference implementation only | Pi may run independent tool calls concurrently, but Flow owns graph admission, quiescent waves, durable ordering, failure, and recovery semantics |
@@ -243,11 +245,14 @@ session for each fresh attempt and archives the previous attempt only in Flow's 
 
 Prime Agent's daemon journals mutating client commands before dispatch and does not replay an
 uncertain side effect merely because its durable result is missing. Flow applies the same principle
-inside the agent node: automatic fresh recovery is legal only for read-only attempts or durable
-edits whose every effect is positively proven `not_applied`. Agent attempts with arbitrary `exec`
-are categorically ineligible because no general observation can prove a command was not applied.
-Applied, committed, open, and unknown
-states remain blocked. See [Prime Agent daemon
+inside the agent node. An interrupted attempt is eligible only when it is read-only or every
+durable edit is proven `not_applied`. An interrupted raw-`exec` attempt is ineligible because no
+general observation can prove that a command wasn't applied.
+
+A completed provider failure has a different proof boundary. Flow can continue after raw `exec`
+only when the command result is settled and process termination is confirmed. Sandbox cleanup must
+not fail, and the closed model session must contain the result. This continuation doesn't replay
+the command. Applied, committed, open, and unknown states remain blocked for interrupted attempts. See [Prime Agent daemon
 semantics](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/daemon.md)
 and [AWS idempotency guidance](https://docs.aws.amazon.com/durable-execution/patterns/best-practices/idempotency/).
 

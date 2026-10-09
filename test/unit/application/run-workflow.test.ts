@@ -14,6 +14,11 @@ import {
   resumeWorkflow,
   runWorkflow,
 } from "../../../src/application/run-workflow.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandAuthority,
+  normalizeAgentCommandRequest,
+} from "../../../src/domain/agent-command.js";
 import type { RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
@@ -43,6 +48,175 @@ describe("runWorkflow", () => {
       "node_succeeded",
       "run_succeeded",
     ]);
+  });
+
+  it("passes an exact optional write allowlist to every node execution context", async () => {
+    const observed = new Map<string, readonly string[] | undefined>();
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      observed.set(node.id, context.allowedWritePrefixes);
+      return successfulOutcome(node.id);
+    });
+
+    await runWorkflow(threeNodeWorkflow(), {
+      ...options(store, executor, "run-write-authority"),
+      allowedWritePrefixes: ["src", "test"],
+    });
+
+    expect(observed).toEqual(
+      new Map([
+        ["first", ["src", "test"]],
+        ["second", ["src", "test"]],
+        ["third", ["src", "test"]],
+      ]),
+    );
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      workspaceAuthorityDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it("persists frozen command authority and passes it to every node context", async () => {
+    const request = normalizeAgentCommandRequest({
+      executable: "npm",
+      args: ["test"],
+      timeoutMs: 120_000,
+    });
+    const authority = normalizeAgentCommandAuthority([calculateAgentCommandDigest(request)]);
+    const observed = new Map<string, unknown>();
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      observed.set(node.id, context.agentCommandAuthority);
+      return successfulOutcome(node.id);
+    });
+
+    const state = await runWorkflow(threeNodeWorkflow(), {
+      ...options(store, executor, "run-command-authority"),
+      agentCommandAuthority: authority,
+    });
+
+    expect(observed).toEqual(
+      new Map([
+        ["first", authority],
+        ["second", authority],
+        ["third", authority],
+      ]),
+    );
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      agentCommandAuthority: authority,
+    });
+    expect(state.agentCommandAuthority).toEqual(authority);
+  });
+
+  it("rejects changed frozen command authority on resume", async () => {
+    const first = normalizeAgentCommandAuthority(["a".repeat(64)]);
+    const second = normalizeAgentCommandAuthority(["b".repeat(64)]);
+    const workflow = threeNodeWorkflow();
+    const store = new MemoryRecoverableRunStore([]);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+    await runWorkflow(workflow, {
+      ...options(store, executor, "run-command-authority-resume"),
+      agentCommandAuthority: first,
+    });
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-command-authority-resume"),
+        agentCommandAuthority: second,
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+  });
+
+  it("passes an agent's frozen output-token limit only to that node", async () => {
+    const observed = new Map<string, number | undefined>();
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      observed.set(node.id, context.agentMaxOutputTokens);
+      return node.type === "agent" ? successfulAgentOutcome() : successfulOutcome(node.id);
+    });
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: bounded-provider-response }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test, id: deterministic }
+      maxOutputTokens: 24576
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: node, args: [verify] }
+`);
+
+    await runWorkflow(workflow, options(store, executor, "run-model-output-limit"));
+
+    expect(observed).toEqual(
+      new Map([
+        ["analyze", 24_576],
+        ["verify", undefined],
+      ]),
+    );
+  });
+
+  it("rejects changed write authority on resume, including omitted versus empty", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial[0] = {
+      ...initial[0],
+      workspaceAuthorityDigest: workspaceAuthorityDigest([], undefined),
+    } as RunEvent;
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-resume"),
+        allowedWritePrefixes: [],
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
+  it.each([
+    {
+      name: "a removed write restriction",
+      durable: { protectedPaths: [] as string[], allowedWritePrefixes: ["src"] as string[] },
+      resumed: { protectedPaths: [] as string[] },
+    },
+    {
+      name: "an expanded write prefix list",
+      durable: { protectedPaths: [] as string[], allowedWritePrefixes: ["src"] as string[] },
+      resumed: { protectedPaths: [] as string[], allowedWritePrefixes: ["src", "test"] },
+    },
+    {
+      name: "a changed protected path list",
+      durable: { protectedPaths: [".git"], allowedWritePrefixes: ["src"] as string[] },
+      resumed: { protectedPaths: [] as string[], allowedWritePrefixes: ["src"] },
+    },
+  ])("rejects $name on resume", async ({ durable, resumed }) => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial[0] = {
+      ...initial[0],
+      workspaceAuthorityDigest: workspaceAuthorityDigest(
+        durable.protectedPaths,
+        durable.allowedWritePrefixes,
+      ),
+    } as RunEvent;
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-resume"),
+        ...resumed,
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
   });
 
   it("records standard as the deterministic profile for an unprofiled workflow", async () => {
@@ -620,6 +794,35 @@ nodes:
     expect(store.releaseCalls).toEqual(["run-terminal"]);
   });
 
+  it("validates exact workflow identity before classifying a ledger as terminal", async () => {
+    const original = threeNodeWorkflow();
+    const changed = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ordered-workflow }
+nodes:
+  - id: first
+    type: command
+    command: { executable: node, args: [--help] }
+  - id: second
+    type: command
+    dependsOn: [first]
+    command: { executable: node, args: [--version] }
+  - id: third
+    type: command
+    dependsOn: [second]
+    command: { executable: node, args: [--help] }
+`);
+    const initial = await successfulLedger(original, "run-stale-terminal");
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(changed, resumeOptions(store, executor, "run-stale-terminal")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
   it("refuses a workflow mismatch without mutating its ledger", async () => {
     const original = threeNodeWorkflow();
     const changed = compileWorkflowText(`
@@ -915,6 +1118,22 @@ async function successfulLedger(
 
 function workflowDigest(workflow: ReturnType<typeof threeNodeWorkflow>): string {
   return createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
+}
+
+function workspaceAuthorityDigest(
+  protectedPaths: readonly string[],
+  allowedWritePrefixes: readonly string[] | undefined,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        protectedPaths: [...protectedPaths].sort(),
+        allowedWritePrefixes:
+          allowedWritePrefixes === undefined ? null : [...allowedWritePrefixes].sort(),
+      }),
+    )
+    .digest("hex");
 }
 
 function eventBase(runId: string, workflowId: string, sequence: number) {

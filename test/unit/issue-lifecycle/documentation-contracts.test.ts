@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { GitHubIssueHostAdmissionErrorCode } from "../../../src/application/github-issue-ports.js";
+import { admitIssueWorkflow } from "../../../src/application/issue-workflow-admission.js";
 import {
   deriveIssueExternalEffectId,
   type IssueLifecyclePhaseReceipt,
@@ -158,6 +159,7 @@ const appliedEffectResultFixtures = [
     mergeCommit: "c".repeat(40),
     deleteBranchRequested: true,
     branchDeleted: true,
+    proofDigest: "d".repeat(64),
   },
 ] as const;
 
@@ -194,6 +196,42 @@ describe("GitHub issue lifecycle documentation contracts", () => {
         },
       ),
     ).toMatchObject({ verdict: "blocked" });
+  });
+
+  it("admits the documented implementation and independent-review workflows", async () => {
+    const guide = await readDocument("docs/guides/github-issue-workflows.md");
+    const implementation = admitIssueWorkflow({
+      role: "implementation",
+      source: extractFence(guide, "## Create the implementation workflow", "yaml"),
+      sourceName: "documented-implementation.workflow.yaml",
+      model: { provider: "openai", id: "documented-model" },
+      context: { kind: "issue", content: "bounded frozen issue" },
+      allowedWritePrefixes: ["src", "tests", "docs"],
+    });
+    const review = admitIssueWorkflow({
+      role: "review",
+      source: extractFence(guide, "## Create the review workflow", "yaml"),
+      sourceName: "documented-review.workflow.yaml",
+      model: { provider: "openai", id: "documented-model" },
+      context: {
+        kind: "review",
+        content: JSON.stringify({ summary: "bounded exact review bundle" }),
+      },
+      resultNodeId: "review-result",
+    });
+
+    expect(implementation.criteria.map((criterion) => criterion.id)).toEqual([
+      "requested-behavior",
+      "regression-protection",
+    ]);
+    expect(implementation.allowedWritePrefixes).toEqual(["src", "tests", "docs"]);
+    expect(review.resultNodeId).toBe("review-result");
+    expect(review.allowedWritePrefixes).toEqual([]);
+    expect(
+      review.workflow.nodes
+        .filter((node) => node.type === "agent")
+        .flatMap((node) => node.agent.tools),
+    ).toEqual(["read", "ls"]);
   });
 
   it("documents every exact public admission error code without aliases", async () => {
@@ -348,7 +386,7 @@ describe("GitHub issue lifecycle documentation contracts", () => {
     expect(targets).toEqual(["verifying"]);
   });
 
-  it("labels every lifecycle document unavailable until the CLI registers the preview", async () => {
+  it("distinguishes current source from the published alpha.4 command surface", async () => {
     const documents = await Promise.all([
       readDocument("docs/guides/github-issue-lifecycle.md"),
       readDocument("docs/specs/github-issue-lifecycle.md"),
@@ -357,7 +395,8 @@ describe("GitHub issue lifecycle documentation contracts", () => {
 
     for (const document of documents) {
       expect(document).toContain("## Availability");
-      expect(document).toContain("does not register `flow issue`");
+      expect(document).toContain("Current source registers");
+      expect(document).toContain("published `0.1.0-alpha.4` package");
     }
   });
 });

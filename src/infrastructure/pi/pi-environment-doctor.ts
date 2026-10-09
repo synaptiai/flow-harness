@@ -5,6 +5,7 @@ import type {
   EnvironmentDoctorWorkflowRequirements,
 } from "../../application/environment-doctor.js";
 import type { CompiledWorkflow } from "../../domain/workflow/types.js";
+import { openRouterDynamicBaseModelId } from "./openrouter-dynamic-model.js";
 
 const MAX_MODEL_REQUIREMENTS = 1_024;
 
@@ -83,12 +84,21 @@ export async function inspectPiProviderConfiguration(
   for (const requirement of requirements) {
     signal.throwIfAborted();
     if (
-      runtime.getModel(requirement.provider, requirement.model) === undefined ||
+      !hasAvailableModel(runtime, requirement) ||
       !runtime.hasConfiguredAuth(requirement.provider)
     ) {
       throw new Error("selected provider configuration is unavailable");
     }
   }
+}
+
+function hasAvailableModel(
+  runtime: EnvironmentDoctorModelRuntime,
+  requirement: EnvironmentDoctorModelRequirement,
+): boolean {
+  if (runtime.getModel(requirement.provider, requirement.model) !== undefined) return true;
+  const baseModel = openRouterDynamicBaseModelId(requirement.provider, requirement.model);
+  return baseModel !== undefined && runtime.getModel(requirement.provider, baseModel) !== undefined;
 }
 
 async function createOfflineModelRuntime(input: {

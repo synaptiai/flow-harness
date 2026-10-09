@@ -173,7 +173,7 @@ Execute one bounded executable and literal argument vector in Flow's production 
 - Workflow selector: `exec`
 - Execution mode: `sequential`
 - Policy actions: `process.execute`
-- Public limits: `agent-commands-per-attempt`, `exec-argument-bytes`, `exec-arguments`, `exec-arguments-total-bytes`, `exec-artifact-bytes-per-stream`, `exec-executable-bytes`, `exec-output-bytes-per-stream`, `exec-timeout-milliseconds`, `policy-decisions-per-attempt`, `policy-target-bytes`
+- Public limits: `agent-commands-per-attempt`, `exec-argument-bytes`, `exec-arguments`, `exec-arguments-total-bytes`, `exec-artifact-bytes-per-stream`, `exec-executable-bytes`, `exec-frozen-catalog-bytes`, `exec-output-bytes-per-stream`, `exec-timeout-milliseconds`, `issue-command-refusals-per-session`, `policy-decisions-per-attempt`, `policy-target-bytes`
 
 Input schema:
 
@@ -416,7 +416,7 @@ Schema `default` annotations alone don't insert a value.
 
 | Identifier | Limit | Default | Scope |
 | --- | ---: | ---: | --- |
-| `agent-commands-per-attempt` | 32 items | — | Maximum flow_exec and command-tool-package executions started in one agent attempt. |
+| `agent-commands-per-attempt` | 128 items | 64 items | Maximum configurable flow_exec and command-tool-package executions started in one agent attempt. The effective limit equals the node policy-decision limit because every command consumes one policy decision. |
 | `agent-effects-per-attempt` | 32 items | — | Maximum combined flow_edit, flow_replace, flow_create, and flow_mkdir effect reservations in one agent attempt. |
 | `artifact-maximum-bytes` | 16777216 bytes | — | Maximum retained artifact size. |
 | `artifact-read-window-bytes` | 32768 bytes | 32768 bytes | Maximum bytes returned by one artifact read. |
@@ -435,11 +435,13 @@ Schema `default` annotations alone don't insert a value.
 | `exec-arguments-total-bytes` | 32768 bytes | — | Maximum combined UTF-8 bytes in one command argument vector. |
 | `exec-artifact-bytes-per-stream` | 1048576 bytes | — | Maximum retained command artifact bytes for each output stream. |
 | `exec-executable-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one executable value. |
+| `exec-frozen-catalog-bytes` | 65536 bytes | — | Maximum serialized UTF-8 bytes in a complete controller-frozen command catalog, including JSON escapes. Oversized catalogs fail admission without truncation. |
 | `exec-output-bytes-per-stream` | 32768 bytes | — | Maximum UTF-8 bytes returned inline for each command output stream. |
 | `exec-timeout-milliseconds` | 600000 milliseconds | 120000 milliseconds | Maximum command deadline. |
+| `issue-command-refusals-per-session` | 3 items | 3 items | Default cumulative frozen-command refusals per durable implementation model session in new GitHub issue runs. After the issued tool batch settles, the next model request is denied. This policy is not an empirical optimum or a generic command-execution budget. |
 | `ls-entries` | 5000 entries | 500 entries | Maximum requested directory entries. |
 | `ls-output-bytes` | 51200 bytes | — | Maximum UTF-8 bytes returned by one directory listing. |
-| `policy-decisions-per-attempt` | 64 items | — | Maximum authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none. |
+| `policy-decisions-per-attempt` | 128 items | 64 items | Maximum configurable authorization decisions shared by all policy-backed tools in one agent attempt. One workspace flow_read call records one decision; skill:// reads record none. |
 | `policy-target-bytes` | 1024 bytes | — | Maximum UTF-8 bytes in one policy authorization target. |
 | `proof-qualification-input-bytes` | 1048576 bytes | — | Maximum UTF-8 bytes in one Lean proof qualification input document. |
 | `proof-specification-bytes` | 65536 bytes | — | Maximum UTF-8 bytes in one private Lean proof source specification. |

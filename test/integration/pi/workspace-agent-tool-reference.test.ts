@@ -137,8 +137,18 @@ describe("production workspace-agent tool reference", () => {
     const catalog = createProductionPublicCapabilityCatalog();
     const limits = Object.fromEntries(catalog.limits.map((limit) => [limit.id, limit]));
 
-    expect(limits["agent-commands-per-attempt"]).toMatchObject({ value: 32, unit: "items" });
+    expect(limits["agent-commands-per-attempt"]).toMatchObject({
+      value: 128,
+      default: 64,
+      unit: "items",
+    });
     expect(limits["agent-effects-per-attempt"]).toMatchObject({ value: 32, unit: "items" });
+    expect(limits["exec-frozen-catalog-bytes"]).toMatchObject({ value: 65_536, unit: "bytes" });
+    expect(limits["issue-command-refusals-per-session"]).toMatchObject({
+      value: 3,
+      default: 3,
+      unit: "items",
+    });
     expect(limits["exec-artifact-bytes-per-stream"]).toMatchObject({
       value: 1_048_576,
       unit: "bytes",
@@ -159,7 +169,11 @@ describe("production workspace-agent tool reference", () => {
       value: 1_048_576,
       unit: "bytes",
     });
-    expect(limits["policy-decisions-per-attempt"]).toMatchObject({ value: 64, unit: "items" });
+    expect(limits["policy-decisions-per-attempt"]).toMatchObject({
+      value: 128,
+      default: 64,
+      unit: "items",
+    });
     expect(limits["policy-target-bytes"]).toMatchObject({ value: 1_024, unit: "bytes" });
 
     const tools = Object.fromEntries(catalog.tools.map((tool) => [tool.selector, tool]));
@@ -267,8 +281,10 @@ describe("production workspace-agent tool reference", () => {
           "exec-arguments-total-bytes",
           "exec-artifact-bytes-per-stream",
           "exec-executable-bytes",
+          "exec-frozen-catalog-bytes",
           "exec-output-bytes-per-stream",
           "exec-timeout-milliseconds",
+          "issue-command-refusals-per-session",
           "policy-decisions-per-attempt",
           "policy-target-bytes",
         ],

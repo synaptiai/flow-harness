@@ -1,9 +1,199 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  agentCommandAuthoritySchema,
   calculateAgentCommandDigest,
+  MAX_AGENT_COMMAND_CATALOG_BYTES,
+  normalizeAgentCommandAuthority,
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
+import { createFrozenVerificationAgentCommandAuthority } from "../../../src/application/frozen-issue-command.js";
+
+describe("discoverable frozen command authority", () => {
+  const first = normalizeAgentCommandRequest({
+    executable: "python3",
+    args: ["-m", "pytest"],
+    timeoutMs: 300_000,
+  });
+  const second = normalizeAgentCommandRequest({
+    executable: "ruff",
+    args: ["check", "."],
+    timeoutMs: 60_000,
+  });
+  const commands = [first, second].sort((left, right) =>
+    calculateAgentCommandDigest(left).localeCompare(calculateAgentCommandDigest(right)),
+  );
+  const digests = commands.map(calculateAgentCommandDigest);
+
+  it("retains an unchanged legacy authority without a catalog", () => {
+    const authority = normalizeAgentCommandAuthority([...digests].reverse());
+    expect(JSON.stringify(authority)).toBe(
+      JSON.stringify({ version: 1, kind: "frozen-verification", requestDigests: digests }),
+    );
+    expect(agentCommandAuthoritySchema.parse(authority)).toEqual(authority);
+  });
+
+  it("derives a complete canonical immutable catalog from frozen verification commands", () => {
+    const args = ["-m", "pytest"];
+    const authority = createFrozenVerificationAgentCommandAuthority([
+      { ...first, args },
+      second,
+      first,
+    ]);
+    expect(authority).toEqual({
+      version: 1,
+      kind: "frozen-verification",
+      requestDigests: digests,
+      requests: commands,
+    });
+    args.push("--help");
+    const parsed = agentCommandAuthoritySchema.parse(authority);
+    expect(parsed).toEqual(authority);
+    expect(Object.isFrozen(authority.requests)).toBe(true);
+    for (const request of authority.requests ?? []) {
+      expect(Object.isFrozen(request)).toBe(true);
+      expect(Object.isFrozen(request.args)).toBe(true);
+    }
+  });
+
+  it("rejects duplicate input catalog entries instead of silently discarding them", () => {
+    expect(() => normalizeAgentCommandAuthority(digests, [...commands, first])).toThrow(/catalog/i);
+  });
+
+  it.each([
+    ["missing command", [commands[0]]],
+    [
+      "extra command",
+      [...commands, normalizeAgentCommandRequest({ executable: "node", args: [] })],
+    ],
+    ["duplicate command", [commands[0], commands[0]]],
+    ["noncanonical order", [...commands].reverse()],
+    [
+      "changed timeout",
+      commands.map((command) => ({ ...command, timeoutMs: command.timeoutMs + 1 })),
+    ],
+    ["extra command field", commands.map((command) => ({ ...command, shell: true }))],
+  ])("rejects a catalog with %s", (_label, requests) => {
+    expect(() =>
+      agentCommandAuthoritySchema.parse({
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: digests,
+        requests,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects catalogs above the serialized byte ceiling before execution", () => {
+    const commands = [0, 1, 2].map((index) =>
+      normalizeAgentCommandRequest({
+        executable: "node",
+        args: [String(index), ...Array(4).fill("x".repeat(8_000))],
+      }),
+    );
+    expect(() => createFrozenVerificationAgentCommandAuthority(commands)).toThrow(
+      /catalog.*65536.*bytes/i,
+    );
+  });
+
+  it("accepts the exact serialized catalog byte boundary and rejects one byte more", () => {
+    const commands = [0, 1].map((index) =>
+      normalizeAgentCommandRequest({
+        executable: `node${index}`,
+        args: Array(4).fill("x".repeat(8_192)),
+      }),
+    );
+    const overflow =
+      Buffer.byteLength(JSON.stringify(commands), "utf8") - MAX_AGENT_COMMAND_CATALOG_BYTES;
+    const second = commands[1];
+    if (second === undefined || overflow <= 0) throw new Error("boundary setup invalid");
+    commands[1] = normalizeAgentCommandRequest({
+      ...second,
+      args: second.args.map((argument, index) =>
+        index === 3 ? argument.slice(overflow) : argument,
+      ),
+    });
+    const exact = createFrozenVerificationAgentCommandAuthority(commands);
+    expect(Buffer.byteLength(JSON.stringify(exact.requests), "utf8")).toBe(
+      MAX_AGENT_COMMAND_CATALOG_BYTES,
+    );
+    const last = commands[1];
+    commands[1] = normalizeAgentCommandRequest({
+      ...last,
+      args: last.args.map((argument, index) => (index === 3 ? `${argument}x` : argument)),
+    });
+    expect(() => createFrozenVerificationAgentCommandAuthority(commands)).toThrow(
+      /catalog.*65536.*bytes/i,
+    );
+  });
+
+  it("bounds JSON escape expansion rather than only raw argument bytes", () => {
+    const command = normalizeAgentCommandRequest({
+      executable: "node",
+      args: Array(4).fill("\u0001".repeat(8_192)),
+    });
+    expect(command.args.reduce((bytes, argument) => bytes + Buffer.byteLength(argument), 0)).toBe(
+      32_768,
+    );
+    expect(() => createFrozenVerificationAgentCommandAuthority([command])).toThrow(
+      /catalog.*65536.*bytes/i,
+    );
+  });
+
+  it("rejects tool-package provenance in a public frozen command catalog", () => {
+    const command = normalizeAgentCommandRequest({
+      executable: "node",
+      args: [],
+      source: {
+        kind: "tool-package",
+        name: "test-tool",
+        version: "1.0.0",
+        digest: "a".repeat(64),
+        toolName: "test_command",
+        input: {},
+        inputDigest: "b".repeat(64),
+      },
+    });
+    expect(() =>
+      normalizeAgentCommandAuthority([calculateAgentCommandDigest(command)], [command]),
+    ).toThrow();
+  });
+
+  it("binds an optional explicit refusal limit only to a discoverable authority", () => {
+    expect(
+      agentCommandAuthoritySchema.parse({
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: digests,
+        requests: commands,
+        rejectionLimit: 3,
+      }),
+    ).toMatchObject({ rejectionLimit: 3 });
+    expect(() =>
+      agentCommandAuthoritySchema.parse({
+        version: 1,
+        kind: "frozen-verification",
+        requestDigests: digests,
+        rejectionLimit: 3,
+      }),
+    ).toThrow(/catalog/i);
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid refusal limit %s",
+    (rejectionLimit) => {
+      expect(() =>
+        agentCommandAuthoritySchema.parse({
+          version: 1,
+          kind: "frozen-verification",
+          requestDigests: digests,
+          requests: commands,
+          rejectionLimit,
+        }),
+      ).toThrow();
+    },
+  );
+});
 
 describe("agent command contract", () => {
   it("normalizes, freezes, and digest-binds an argv-only request", () => {

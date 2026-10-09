@@ -65,6 +65,40 @@ describe("local Git repository admission", () => {
     });
   });
 
+  it("admits only one exact constructor-bound local remote in tests", async () => {
+    const localRemote = await temporaryDirectory("flow-git-admission-remote-");
+    const repository = await createRepository(localRemote);
+    const gitExecutable = await resolveGit();
+    const expected = { host: "github.com" as const, owner: "example", name: "project" };
+
+    await expect(
+      new LocalGitRepositoryAdmission({
+        gitExecutable,
+        testOnlyLocalRemotePath: localRemote,
+      }).inspect(repository, expected),
+    ).resolves.toMatchObject({
+      origin: {
+        host: "github.com",
+        owner: "example",
+        name: "project",
+        canonicalUrl: "https://github.com/example/project",
+      },
+    });
+    await expect(
+      new LocalGitRepositoryAdmission({
+        gitExecutable,
+        testOnlyLocalRemotePath: join(localRemote, "different.git"),
+      }).inspect(repository, expected),
+    ).rejects.toMatchObject({ code: "repository_origin_unsupported" });
+    expect(
+      () =>
+        new LocalGitRepositoryAdmission({
+          gitExecutable,
+          testOnlyLocalRemotePath: "relative.git",
+        }),
+    ).toThrow("absolute normalized path");
+  });
+
   it("rejects a dirty checkout with a stable content-free error", async () => {
     const repository = await createRepository("git@github.com:example/project.git");
     const secretPath = join(repository, "github_pat_secret.txt");
@@ -115,6 +149,36 @@ describe("local Git repository admission", () => {
         undefined,
       ),
     ).rejects.toMatchObject({ code: "repository_identity_mismatch" });
+  });
+
+  it.each([
+    ["duplicate origin URL", "remote.origin.url", "https://github.com/other/project.git"],
+    ["push URL", "remote.origin.pushurl", "https://github.com/other/project.git"],
+    ["receive-pack override", "remote.origin.receivepack", "/tmp/not-a-receive-pack"],
+    ["mirror mode", "remote.origin.mirror", "true"],
+    ["URL fetch rewrite", "url.https://github.com/other/.insteadOf", "https://github.com/"],
+    ["URL push rewrite", "url.https://github.com/other/.pushInsteadOf", "https://github.com/"],
+  ])("rejects a repository-local %s during admission", async (_label, key, value) => {
+    const repository = await createRepository("https://github.com/example/project.git");
+    await execFile((await resolveGit(repository)).path, [
+      "-C",
+      repository,
+      "config",
+      "--add",
+      key,
+      value,
+    ]);
+    const admission = new LocalGitRepositoryAdmission({
+      gitExecutable: await resolveGit(repository),
+    });
+
+    await expect(
+      admission.inspect(repository, {
+        host: "github.com",
+        owner: "example",
+        name: "project",
+      }),
+    ).rejects.toMatchObject({ code: "repository_origin_unsupported" });
   });
 
   it("rejects a repository that could add Flow runtime evidence to the candidate diff", async () => {
@@ -294,7 +358,7 @@ else if (args.includes("--abbrev-ref")) {
   if (existsSync(${JSON.stringify(marker)})) process.stdout.write("changed-branch\\n");
   else { writeFileSync(${JSON.stringify(marker)}, "seen"); process.stdout.write("main\\n"); }
 } else if (args.includes("--verify")) process.stdout.write("${"a".repeat(40)}\\n");
-else if (args.includes("get-url")) process.stdout.write("https://github.com/example/project\\n");
+else if (args.includes("config")) process.stdout.write("remote.origin.url\\nhttps://github.com/example/project\\0");
 else if (args.includes("status") || args.includes("ls-files")) process.stdout.write("");
 else if (args.includes("check-ignore")) process.exit(0);
 else process.exit(1);

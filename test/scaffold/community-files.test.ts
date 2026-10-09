@@ -325,6 +325,7 @@ describe("public repository contracts", () => {
       "dependency-audit",
       "proof-runtime",
       "quality",
+      "verifier-isolation",
     ]);
   });
 
@@ -348,7 +349,102 @@ describe("public repository contracts", () => {
     expect(commands).not.toContain("uname --system");
     expect(commands).toContain("npm run proof:prepare");
     expect(commands).toContain("FLOW_PROOF_RUNTIME_TEST=1 npm run proof:image:verify");
+    expect(commands).toContain(
+      'node native/verification-observer/build.mjs --build "$RUNNER_TEMP/flow-native-baseline"',
+    );
+    expect(commands).toContain(
+      'node -e \'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))\' "$RUNNER_TEMP/flow-native-baseline/build-evidence.json"',
+    );
     expect(commands).toContain("docker system df");
+  });
+
+  it("runs model-free verifier isolation prerequisites on hosted Linux x64", async () => {
+    const workflow = parse(await readText(".github/workflows/ci.yml")) as WorkflowDefinition;
+    const quality = workflow.jobs.quality as { readonly steps: readonly Record<string, unknown>[] };
+    expect(
+      quality.steps.find((step) => step.name === "Install sandbox system dependencies")?.run,
+    ).toContain(
+      "sudo apt-get install --yes bubblewrap ca-certificates curl gcc libseccomp-dev patch ripgrep socat strace util-linux",
+    );
+    const helperStep = {
+      name: "Install the observer test helper",
+      run:
+        'digest="$(sh native/verification-observer/build-test-helper.sh "$RUNNER_TEMP/flow-observer-helper")"\n' +
+        "sudo install -D -o root -g root -m 0755 \\\n" +
+        '  "$RUNNER_TEMP/flow-observer-helper/observer-apply-seccomp" \\\n' +
+        "  /usr/local/libexec/flow-observer/observer-apply-seccomp\n" +
+        "printf 'FLOW_OBSERVER_TEST_HELPER=%s\\nFLOW_OBSERVER_TEST_HELPER_SHA256=%s\\n' \\\n" +
+        '  /usr/local/libexec/flow-observer/observer-apply-seccomp "$digest" >> "$GITHUB_ENV"\n',
+    };
+    // The helper must be root-owned so observer admission can trust it.
+    expect(quality.steps).toContainEqual(helperStep);
+    const job = workflow.jobs["verifier-isolation"] as
+      | { readonly steps: readonly Record<string, unknown>[]; readonly [key: string]: unknown }
+      | undefined;
+
+    expect(job).toBeDefined();
+    expect(job?.["runs-on"]).toBe("ubuntu-24.04");
+    expect(job?.["timeout-minutes"]).toBe(15);
+    expect(job?.permissions).toEqual({ contents: "read" });
+    expect(job?.["continue-on-error"]).toBeUndefined();
+    expect(job?.if).toBeUndefined();
+    expect(job?.environment).toBeUndefined();
+    expect(job?.env).toBeUndefined();
+    expect(job?.services).toBeUndefined();
+    expect(job?.container).toBeUndefined();
+    const steps = job?.steps ?? [];
+    expect(steps.map((step) => step.name)).toEqual([
+      "Check out repository",
+      "Set up Node.js",
+      "Verify hosted Linux x64",
+      "Install sandbox system dependencies",
+      "Install the observer test helper",
+      "Install exact dependencies",
+      "Build the production runtime",
+      "Verify native isolation prerequisites",
+    ]);
+    expect(steps[0]).toEqual({
+      name: "Check out repository",
+      uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      with: { "persist-credentials": false },
+    });
+    expect(steps[1]).toEqual({
+      name: "Set up Node.js",
+      uses: "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+      with: { "node-version": "26.10.0", cache: "npm" },
+    });
+    expect(steps[2]?.run).toBe(
+      'test "$(uname -s)" = Linux\n' +
+        'test "$(uname -m)" = x86_64\n' +
+        'node -e \'if (process.platform !== "linux" || process.arch !== "x64") process.exit(1)\'\n' +
+        "uname -r\nnode --version\n",
+    );
+    expect(steps[3]?.run).toBe(
+      "sudo apt-get update\n" +
+        "sudo apt-get install --yes bubblewrap gcc libseccomp-dev patch ripgrep socat strace util-linux\n" +
+        "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
+        "bwrap --version\n" +
+        "unshare --version\n" +
+        "mount --version\n",
+    );
+    expect(steps[4]).toEqual(helperStep);
+    expect(steps[5]?.run).toBe("npm ci --ignore-scripts");
+    expect(steps[6]?.run).toBe("npm run build");
+    expect(steps[7]?.run).toBe(
+      "npm run test:runtime -- test/runtime/verification-observer-isolation.runtime.test.ts " +
+        "test/runtime/verification-observer-fixture.runtime.test.ts " +
+        "test/runtime/linux-observer-command.runtime.test.ts " +
+        "test/runtime/observer-notification-history.runtime.test.ts " +
+        "test/runtime/observer-clone3-compatibility.runtime.test.ts " +
+        "test/runtime/observer-secondary-group.runtime.test.ts " +
+        "test/runtime/observer-namespace-restriction.runtime.test.ts",
+    );
+    for (const step of steps) {
+      expect(step["continue-on-error"]).toBeUndefined();
+      expect(step.if).toBeUndefined();
+      expect(step.env).toBeUndefined();
+    }
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|passWithNoTests|docker|proof:|OPENROUTER/i);
   });
 
   it("audits the repository and Prime runtime dependency locks", async () => {

@@ -7,7 +7,11 @@ import {
 } from "../domain/adaptation/phase-routing-candidate.js";
 import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
 import { renderSupplementalMemoryRelationshipBlock } from "../domain/adaptation/supplemental-memory-relationships.js";
-import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
+import {
+  AGENT_COMMAND_PROTOCOL,
+  type AgentCommandAuthority,
+  type AgentCommandRequest,
+} from "../domain/agent-command.js";
 import {
   agentCommandApprovalRequestId,
   calculateAgentCommandApprovalRequestDigest,
@@ -59,7 +63,9 @@ import {
   type ControlGraph,
   calculateChildRunId,
   calculateOptimizationPromotionId,
+  calculateRecoveryBackoffDelayMs,
   canScheduleFailedAttemptRetry,
+  calculateWorkspaceAuthorityDigest,
   DURABLE_EFFECT_PROTOCOL,
   type ExecutionWorkspaceProvenance,
   type FilesystemEffectDescriptor,
@@ -148,6 +154,8 @@ export interface RunWorkflowOptions {
   readonly cwd: string;
   readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
+  readonly allowedWritePrefixes?: readonly string[];
+  readonly agentCommandAuthority?: AgentCommandAuthority;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly store: RunEventStore;
   readonly executor: NodeExecutor;
@@ -160,6 +168,7 @@ export interface RunWorkflowOptions {
   readonly artifactStore?: ArtifactStore;
   readonly workProfile?: WorkProfile;
   readonly modelSessionStore?: ModelSessionStore;
+  readonly recoveryDelay?: (milliseconds: number, signal: AbortSignal | undefined) => Promise<void>;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -170,6 +179,7 @@ export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" 
 
 const effectiveHarnessChildPath = Symbol("effective-harness-child-path");
 const delegationObjective = Symbol("delegation-objective");
+const workspaceAuthorityDigestRequired = Symbol("workspace-authority-digest-required");
 type InternalRunWorkflowOptions = RunWorkflowOptions & {
   readonly [effectiveHarnessChildPath]?: readonly string[];
   readonly [delegationObjective]?: string;
@@ -177,6 +187,7 @@ type InternalRunWorkflowOptions = RunWorkflowOptions & {
 type InternalResumeWorkflowOptions = ResumeWorkflowOptions & {
   readonly [effectiveHarnessChildPath]?: readonly string[];
   readonly [delegationObjective]?: string;
+  readonly [workspaceAuthorityDigestRequired]?: boolean;
 };
 
 export async function runWorkflow(
@@ -201,6 +212,7 @@ async function runWorkflowInternal(
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
+  const workspaceAuthorityDigest = calculateWorkspaceAuthorityDigest(options);
   const workProfile = options.workProfile ?? workflow.workProfile ?? "standard";
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
@@ -209,7 +221,7 @@ async function runWorkflowInternal(
     const verifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
     const toolPackageRequirements = workflowToolPackageRequirements(workflow);
     const workflowPackageRequirements = collectWorkflowPackageReferences(workflow);
-    const recoveryRequirements = agentRecoveryRequirements(workflow);
+    const recoveryRequirements = nodeRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
       ...eventBase(workflow, runId, 1, now),
@@ -217,6 +229,10 @@ async function runWorkflowInternal(
       nodeIds: workflow.nodes.map((node) => node.id),
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
+      workspaceAuthorityDigest,
+      ...(options.agentCommandAuthority === undefined
+        ? {}
+        : { agentCommandAuthority: options.agentCommandAuthority }),
       workProfile,
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       executionCwd,
@@ -285,6 +301,16 @@ async function resumeWorkflowWithRelocation(
   return await releaseAfter(options.store, options.runId, async () => {
     assertNotAborted(options.signal);
     let state = reduceRunEvents(events);
+    const workspaceAuthorityDigest = calculateWorkspaceAuthorityDigest(options);
+    if (
+      state.workspaceAuthorityDigest !== undefined &&
+      state.workspaceAuthorityDigest !== workspaceAuthorityDigest
+    ) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" workspace write authority does not match durable history`,
+      );
+    }
     let persistedCapabilitySnapshot: CapabilitySnapshot | undefined;
     try {
       persistedCapabilitySnapshot = bindWorkflowCapabilities(
@@ -320,12 +346,13 @@ async function resumeWorkflowWithRelocation(
         `run "${options.runId}" work profile does not match durable history`,
       );
     }
-    const effectiveOptions: ResumeWorkflowOptions = {
+    const effectiveOptions: InternalResumeWorkflowOptions = {
       ...options,
       workProfile: state.workProfile,
       ...(persistedCapabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: persistedCapabilitySnapshot }),
+      [workspaceAuthorityDigestRequired]: state.workspaceAuthorityDigest !== undefined,
     };
     const executionCwd = resolve(options.cwd);
     const now = options.now ?? (() => new Date());
@@ -431,16 +458,47 @@ async function continueWorkflow(
     if (attempt === undefined) {
       throw new Error(`Failed node "${nodeId}" has no committed attempt`);
     }
+    const event = base(nextSequence());
+    const backoff = state.recoveryRequirements[nodeId]?.backoff;
     await record({
-      ...base(nextSequence()),
+      ...event,
       type: "node_retry_scheduled",
       nodeId,
       attempt,
       reason: "retryable_failure",
       disposition: "fresh_retry",
       resourceAccounting: "complete",
+      ...(backoff === undefined
+        ? {}
+        : {
+            notBefore: new Date(
+              Date.parse(event.at) +
+                calculateRecoveryBackoffDelayMs(runId, nodeId, attempt, backoff),
+            ).toISOString(),
+          }),
     });
     return true;
+  }
+
+  async function waitForPendingRetryBackoff(): Promise<boolean> {
+    const pendingRetry = Object.values(state.nodes)
+      .filter(
+        (node): node is typeof node & { readonly retryNotBefore: string } =>
+          node.status === "pending" && node.retryNotBefore !== null,
+      )
+      .sort((left, right) => left.retryNotBefore.localeCompare(right.retryNotBefore))[0];
+    if (pendingRetry === undefined) return true;
+
+    while (true) {
+      const remainingMs = Date.parse(pendingRetry.retryNotBefore) - now().getTime();
+      if (remainingMs <= 0) return true;
+      try {
+        await (options.recoveryDelay ?? abortableRecoveryDelay)(remainingMs, options.signal);
+      } catch (error) {
+        if (isAborted(options.signal)) return false;
+        throw error;
+      }
+    }
   }
 
   const failedEntries = Object.entries(state.nodes).filter(([, node]) => node.status === "failed");
@@ -465,6 +523,9 @@ async function continueWorkflow(
   }
 
   workflowLoop: while (!workflowIsTerminal(state)) {
+    if (!(await waitForPendingRetryBackoff())) {
+      return await cancelRun();
+    }
     if ((state.budget?.exhausted.length ?? 0) > 0) {
       return await exhaustRun();
     }
@@ -780,6 +841,12 @@ async function continueWorkflow(
                             ? {}
                             : { projectRoot: options.projectRoot }),
                           protectedPaths: options.protectedPaths,
+                          ...(options.allowedWritePrefixes === undefined
+                            ? {}
+                            : { allowedWritePrefixes: options.allowedWritePrefixes }),
+                          ...(options.agentCommandAuthority === undefined
+                            ? {}
+                            : { agentCommandAuthority: options.agentCommandAuthority }),
                           ...(signal === undefined ? {} : { signal }),
                         },
                         options,
@@ -836,6 +903,12 @@ async function continueWorkflow(
                       ? {}
                       : { projectRoot: options.projectRoot }),
                     protectedPaths: options.protectedPaths,
+                    ...(options.allowedWritePrefixes === undefined
+                      ? {}
+                      : { allowedWritePrefixes: options.allowedWritePrefixes }),
+                    ...(options.agentCommandAuthority === undefined
+                      ? {}
+                      : { agentCommandAuthority: options.agentCommandAuthority }),
                     ...(options.capabilitySnapshot === undefined
                       ? {}
                       : { capabilitySnapshot: options.capabilitySnapshot }),
@@ -865,6 +938,10 @@ async function continueWorkflow(
                     executionNode.agent.contextCompaction === undefined
                       ? {}
                       : { contextCompaction: executionNode.agent.contextCompaction }),
+                    ...(executionNode.type !== "agent" ||
+                    executionNode.agent.maxOutputTokens === undefined
+                      ? {}
+                      : { agentMaxOutputTokens: executionNode.agent.maxOutputTokens }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,
@@ -1897,13 +1974,6 @@ function validateRecoveryCompatibility(
   state: RunState,
   events: readonly RunEvent[],
 ): void {
-  if (state.status !== "running" && state.status !== "waiting_for_approval") {
-    throw new RunRecoveryError(
-      "terminal_run",
-      `run "${runId}" is already terminal with status "${state.status}"`,
-    );
-  }
-
   const validRelocation =
     state.executionWorkspace !== null &&
     workspaceRelocation?.fromCwd === state.executionCwd &&
@@ -2019,7 +2089,7 @@ function validateRecoveryCompatibility(
     );
   }
 
-  const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
+  const expectedRecoveryRequirements = nodeRecoveryRequirements(workflow);
   const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
     ([nodeId, requirement]) => ({ nodeId, ...requirement }),
   );
@@ -2077,6 +2147,12 @@ function validateRecoveryCompatibility(
   }
 
   validateRecoveredHistory(workflow, runId, events);
+  if (state.status !== "running" && state.status !== "waiting_for_approval") {
+    throw new RunRecoveryError(
+      "terminal_run",
+      `run "${runId}" is already terminal with status "${state.status}"`,
+    );
+  }
 }
 
 async function reconcileOpenEffects(
@@ -2266,6 +2342,9 @@ async function disposeProofSafeInterruptedAttempt(
         "workflow_mismatch",
         `run "${options.runId}" has no compiled node "${nodeId}"`,
       );
+    }
+    if (compiledNode.type !== "agent") {
+      continue;
     }
     let modelSession: ReturnType<typeof modelSessionSummary> | undefined;
     if (node.modelSession !== null && isModelBackedNode(compiledNode)) {
@@ -2500,7 +2579,12 @@ async function validateRecoveredChildTrees(
   state: RunState,
 ): Promise<void> {
   try {
-    await validateRecoveredChildTree(workflow, options.store, state);
+    await validateRecoveredChildTree(
+      workflow,
+      options.store,
+      state,
+      calculateWorkspaceAuthorityDigest(options),
+    );
   } catch (error) {
     throw new RunRecoveryError(
       "child_recovery_ineligible",
@@ -2513,6 +2597,7 @@ async function validateRecoveredChildTree(
   workflow: CompiledWorkflow,
   store: RecoverableRunEventStore,
   state: RunState,
+  expectedWorkspaceAuthorityDigest: string,
 ): Promise<void> {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
@@ -2523,7 +2608,15 @@ async function validateRecoveredChildTree(
       if (link === null) {
         throw new Error(`settled child node "${nodeId}" has no durable child link`);
       }
-      await validateRecoveredChildEvidence(node, link, evidence, state, nodeState.attempt, store);
+      await validateRecoveredChildEvidence(
+        node,
+        link,
+        evidence,
+        state,
+        nodeState.attempt,
+        store,
+        expectedWorkspaceAuthorityDigest,
+      );
     }
     for (const delegation of nodeState.delegations) {
       const delegatedEvidence = delegation.settlement?.evidence;
@@ -2546,6 +2639,7 @@ async function validateRecoveredChildTree(
         state,
         nodeState.attempt,
         store,
+        expectedWorkspaceAuthorityDigest,
       );
     }
   }
@@ -2558,6 +2652,7 @@ async function validateRecoveredChildEvidence(
   parentState: RunState,
   attempt: number,
   store: RecoverableRunEventStore,
+  expectedWorkspaceAuthorityDigest: string,
 ): Promise<void> {
   const childState = reduceRunEvents(await store.read(evidence.childRunId));
   validateRecoveredChildIdentity(
@@ -2567,6 +2662,8 @@ async function validateRecoveredChildEvidence(
     attempt,
     parentState.workProfile,
     childState,
+    expectedWorkspaceAuthorityDigest,
+    parentState.workspaceAuthorityDigest !== undefined,
   );
   if (!runStateIsTerminal(childState)) {
     throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
@@ -2575,7 +2672,12 @@ async function validateRecoveredChildEvidence(
   if (!sameChildEvidenceProjection(evidence, expected)) {
     throw new Error(`settled child evidence for "${node.id}" diverges from its child ledger`);
   }
-  await validateRecoveredChildTree(node.child.workflow, store, childState);
+  await validateRecoveredChildTree(
+    node.child.workflow,
+    store,
+    childState,
+    expectedWorkspaceAuthorityDigest,
+  );
 }
 
 function rejectOpenAttempt(runId: string, state: RunState): void {
@@ -2884,23 +2986,36 @@ function workflowToolPackageRequirements(
   );
 }
 
-function agentRecoveryRequirements(
-  workflow: CompiledWorkflow,
-): readonly AgentRecoveryRequirement[] {
+function nodeRecoveryRequirements(workflow: CompiledWorkflow): readonly AgentRecoveryRequirement[] {
   return Object.freeze(
     workflow.nodes.flatMap((node) => {
-      if (node.type !== "agent" || node.agent.recovery === undefined) {
+      const recovery = nodeRecovery(node);
+      if (recovery === undefined) {
         return [];
       }
       const requirement: AgentRecoveryRequirement = Object.freeze({
         nodeId: node.id,
-        mode: node.agent.recovery.mode,
-        maxAttempts: node.agent.recovery.maxAttempts,
+        mode: recovery.mode,
+        maxAttempts: recovery.maxAttempts,
         effectProtocol: supportsDurableEffects(node) ? DURABLE_EFFECT_PROTOCOL : "none",
+        ...(recovery.backoff === undefined
+          ? {}
+          : { backoff: Object.freeze({ ...recovery.backoff }) }),
       });
       return [requirement];
     }),
   );
+}
+
+function nodeRecovery(node: CompiledNode): CompiledAgentNode["agent"]["recovery"] {
+  if (node.type === "agent") return node.agent.recovery;
+  if (
+    node.type === "verifier" &&
+    (node.verifier.kind === "model" || node.verifier.kind === "packaged-model")
+  ) {
+    return node.verifier.recovery;
+  }
+  return undefined;
 }
 
 function workflowControlGraph(workflow: CompiledWorkflow): ControlGraph | undefined {
@@ -3004,7 +3119,9 @@ function sameRecoveryRequirements(
         requirement.nodeId === right[index]?.nodeId &&
         requirement.mode === right[index]?.mode &&
         requirement.maxAttempts === right[index]?.maxAttempts &&
-        requirement.effectProtocol === right[index]?.effectProtocol,
+        requirement.effectProtocol === right[index]?.effectProtocol &&
+        requirement.backoff?.initialDelayMs === right[index]?.backoff?.initialDelayMs &&
+        requirement.backoff?.maxDelayMs === right[index]?.backoff?.maxDelayMs,
     )
   );
 }
@@ -4443,6 +4560,12 @@ async function executeChildNode(
     cwd: workspace.cwd,
     ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
     protectedPaths: context.protectedPaths,
+    ...(context.allowedWritePrefixes === undefined
+      ? {}
+      : { allowedWritePrefixes: context.allowedWritePrefixes }),
+    ...(context.agentCommandAuthority === undefined
+      ? {}
+      : { agentCommandAuthority: context.agentCommandAuthority }),
     store,
     executor: options.executor,
     ...(options.workspaceIsolator === undefined
@@ -4497,6 +4620,12 @@ async function recoverChildNode(
         cwd: resolve(options.cwd),
         ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
         protectedPaths: options.protectedPaths,
+        ...(options.allowedWritePrefixes === undefined
+          ? {}
+          : { allowedWritePrefixes: options.allowedWritePrefixes }),
+        ...(options.agentCommandAuthority === undefined
+          ? {}
+          : { agentCommandAuthority: options.agentCommandAuthority }),
         ...(childCapabilitySnapshot === undefined
           ? {}
           : { capabilitySnapshot: childCapabilitySnapshot }),
@@ -4517,6 +4646,8 @@ async function recoverChildNode(
     attempt,
     options.workProfile ?? "standard",
     childState,
+    calculateWorkspaceAuthorityDigest(options),
+    options[workspaceAuthorityDigestRequired] ?? false,
   );
   if (!runStateIsTerminal(childState)) {
     const workspace = await options.workspaceIsolator.reopen({
@@ -4539,6 +4670,12 @@ async function recoverChildNode(
         cwd: workspace.cwd,
         ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
         protectedPaths: options.protectedPaths,
+        ...(options.allowedWritePrefixes === undefined
+          ? {}
+          : { allowedWritePrefixes: options.allowedWritePrefixes }),
+        ...(options.agentCommandAuthority === undefined
+          ? {}
+          : { agentCommandAuthority: options.agentCommandAuthority }),
         store,
         executor: options.executor,
         workspaceIsolator: options.workspaceIsolator,
@@ -4556,6 +4693,7 @@ async function recoverChildNode(
           ? {}
           : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
         [effectiveHarnessChildPath]: [...(options[effectiveHarnessChildPath] ?? []), node.id],
+        [workspaceAuthorityDigestRequired]: options[workspaceAuthorityDigestRequired] ?? false,
         ...(childDelegationObjective === undefined
           ? {}
           : { [delegationObjective]: childDelegationObjective }),
@@ -4653,6 +4791,8 @@ function validateRecoveredChildIdentity(
   attempt: number,
   expectedWorkProfile: WorkProfile,
   state: RunState,
+  expectedWorkspaceAuthorityDigest: string,
+  requireWorkspaceAuthorityDigest: boolean,
 ): void {
   const provenance = state.executionWorkspace;
   if (
@@ -4660,6 +4800,9 @@ function validateRecoveredChildIdentity(
     state.workflowId !== link.workflowId ||
     state.workflowDigest !== link.workflowDigest ||
     state.workProfile !== expectedWorkProfile ||
+    (state.workspaceAuthorityDigest === undefined
+      ? requireWorkspaceAuthorityDigest
+      : state.workspaceAuthorityDigest !== expectedWorkspaceAuthorityDigest) ||
     !sameRunBudget(state.budget?.limits, node.child.workflow.budget) ||
     provenance === null ||
     provenance.parentRunId !== parentRunId ||
@@ -4887,6 +5030,31 @@ async function abortableApprovalDelay(
     const timeout = setTimeout(finish, milliseconds);
     const onAbort = () =>
       finish(signal?.reason ?? new Error("agent command approval wait was cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    function finish(error?: unknown): void {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      if (error === undefined) {
+        resolveDelay();
+      } else {
+        reject(error);
+      }
+    }
+  });
+}
+
+async function abortableRecoveryDelay(
+  milliseconds: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (isAborted(signal)) {
+    throw signal?.reason ?? new Error("workflow retry backoff was cancelled");
+  }
+  await new Promise<void>((resolveDelay, reject) => {
+    const timeout = setTimeout(finish, milliseconds);
+    const onAbort = () =>
+      finish(signal?.reason ?? new Error("workflow retry backoff was cancelled"));
     signal?.addEventListener("abort", onAbort, { once: true });
 
     function finish(error?: unknown): void {

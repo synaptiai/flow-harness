@@ -105,11 +105,20 @@ export const ACP_AGENT_SANDBOX_POLICY_DIGEST = createHash("sha256")
 
 interface ManagerRuntimeState {
   activeCommands: number;
+  cleanupRecovery: CleanupRecovery | undefined;
   completeSession: (() => void) | undefined;
   operationTail: Promise<void>;
   sessionCompletion: Promise<void> | undefined;
   sessionKey: string | undefined;
-  poisonedReason?: string;
+  poisonedReason: string | undefined;
+}
+
+interface CleanupRecovery {
+  readonly outcome: Promise<
+    | Readonly<{ readonly status: "succeeded" }>
+    | Readonly<{ readonly status: "failed"; readonly error: unknown }>
+  >;
+  readonly timeoutReason: string;
 }
 
 const MANAGER_RUNTIME_STATES = new WeakMap<SrtSandboxManager, ManagerRuntimeState>();
@@ -237,6 +246,7 @@ export class SrtCommandSandbox implements CommandSandbox, AcpAgentSandbox {
       throw new Error(`command sandbox is not supported on ${this.#platform}`);
     }
     const runtimeState = managerRuntimeState(this.#manager);
+    await awaitCleanupRecovery(runtimeState, request.signal);
     if (runtimeState.poisonedReason !== undefined) {
       throw new Error(
         `command sandbox is unavailable after cleanup failure: ${runtimeState.poisonedReason}`,
@@ -384,6 +394,7 @@ export class SrtCommandSandbox implements CommandSandbox, AcpAgentSandbox {
     }
     assertAcpAgentAuthorityInput(request, this.#environment);
     const runtimeState = managerRuntimeState(this.#manager);
+    await awaitCleanupRecovery(runtimeState, request.signal);
     if (runtimeState.poisonedReason !== undefined) {
       throw new Error(
         `ACP agent sandbox is unavailable after cleanup failure: ${runtimeState.poisonedReason}`,
@@ -558,11 +569,11 @@ export class SrtCommandSandbox implements CommandSandbox, AcpAgentSandbox {
             await this.#manager.initialize(config);
           } catch (error) {
             const cleanupErrors: unknown[] = [];
-            try {
-              await withTimeout(this.#manager.reset(), this.#cleanupTimeoutMs);
-            } catch (cleanupError) {
-              cleanupErrors.push(cleanupError);
+            const reset = await settleManagerReset(this.#manager, this.#cleanupTimeoutMs);
+            if (reset.status === "failed") {
+              cleanupErrors.push(reset.error);
               runtimeState.poisonedReason = cleanupErrors.map(errorMessage).join("; ");
+              runtimeState.cleanupRecovery = reset.recovery;
             }
             if (cleanupErrors.length > 0) {
               throw combinedError(error, cleanupErrors);
@@ -611,17 +622,17 @@ export class SrtCommandSandbox implements CommandSandbox, AcpAgentSandbox {
         }
         if (runtimeState.activeCommands === 0 && runtimeState.sessionKey !== undefined) {
           const completeSession = runtimeState.completeSession;
-          try {
-            await withTimeout(this.#manager.reset(), this.#cleanupTimeoutMs);
-          } catch (error) {
-            errors.push(error);
-          } finally {
-            runtimeState.sessionKey = undefined;
-            runtimeState.sessionCompletion = undefined;
-            runtimeState.completeSession = undefined;
+          const reset = await settleManagerReset(this.#manager, this.#cleanupTimeoutMs);
+          if (reset.status === "failed") {
+            errors.push(reset.error);
           }
+          runtimeState.sessionKey = undefined;
+          runtimeState.sessionCompletion = undefined;
+          runtimeState.completeSession = undefined;
           if (errors.length > 0) {
             runtimeState.poisonedReason = errors.map(errorMessage).join("; ");
+            runtimeState.cleanupRecovery =
+              errors.length === 1 && reset.status === "failed" ? reset.recovery : undefined;
           }
           completeSession?.();
         }
@@ -635,6 +646,9 @@ export class SrtCommandSandbox implements CommandSandbox, AcpAgentSandbox {
       }
       if (errors.length > 0) {
         runtimeState.poisonedReason = errors.map(errorMessage).join("; ");
+        if (errors.length > 1) {
+          runtimeState.cleanupRecovery = undefined;
+        }
       }
     });
     if (throwOnFailure && errors.length > 0) {
@@ -649,14 +663,44 @@ function managerRuntimeState(manager: SrtSandboxManager): ManagerRuntimeState {
   if (state === undefined) {
     state = {
       activeCommands: 0,
+      cleanupRecovery: undefined,
       completeSession: undefined,
       operationTail: Promise.resolve(),
+      poisonedReason: undefined,
       sessionCompletion: undefined,
       sessionKey: undefined,
     };
     MANAGER_RUNTIME_STATES.set(manager, state);
   }
   return state;
+}
+
+async function awaitCleanupRecovery(
+  state: ManagerRuntimeState,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const recovery = state.cleanupRecovery;
+  if (recovery === undefined) {
+    return;
+  }
+  await waitForSessionCompletion(
+    recovery.outcome.then(() => undefined),
+    signal,
+  );
+  const outcome = await recovery.outcome;
+  await withManagerLock(state, async () => {
+    if (state.cleanupRecovery !== recovery) {
+      return;
+    }
+    state.cleanupRecovery = undefined;
+    if (outcome.status === "succeeded") {
+      if (state.poisonedReason === recovery.timeoutReason) {
+        state.poisonedReason = undefined;
+      }
+      return;
+    }
+    state.poisonedReason = errorMessage(outcome.error);
+  });
 }
 
 async function withManagerLock<T>(
@@ -1319,11 +1363,45 @@ async function hasTrustedAncestors(path: string): Promise<boolean> {
   }
 }
 
+class SandboxCleanupTimeoutError extends Error {}
+
+type ResetSettlement =
+  | Readonly<{ readonly status: "succeeded" }>
+  | Readonly<{
+      readonly status: "failed";
+      readonly error: unknown;
+      readonly recovery: CleanupRecovery | undefined;
+    }>;
+
+async function settleManagerReset(
+  manager: SrtSandboxManager,
+  timeoutMs: number,
+): Promise<ResetSettlement> {
+  const reset = manager.reset();
+  const outcome: CleanupRecovery["outcome"] = reset.then(
+    () => Object.freeze({ status: "succeeded" as const }),
+    (error: unknown) => Object.freeze({ status: "failed" as const, error }),
+  );
+  try {
+    await withTimeout(reset, timeoutMs);
+    return Object.freeze({ status: "succeeded" as const });
+  } catch (error) {
+    return Object.freeze({
+      status: "failed" as const,
+      error,
+      recovery:
+        error instanceof SandboxCleanupTimeoutError
+          ? Object.freeze({ outcome, timeoutReason: error.message })
+          : undefined,
+    });
+  }
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`sandbox cleanup exceeded ${timeoutMs}ms`)),
+      () => reject(new SandboxCleanupTimeoutError(`sandbox cleanup exceeded ${timeoutMs}ms`)),
       timeoutMs,
     );
     timer.unref();

@@ -792,6 +792,8 @@ node, may appear inside a bounded loop body, and declares one strict driver:
       - { nodeId: plan, field: agent.text }
       - { nodeId: verify-tests, field: verifier.reason }
     model: { provider: anthropic, id: claude-sonnet-4-5, thinking: medium }
+    recovery: { mode: fresh, maxAttempts: 2 }
+    maxOutputTokens: 8192
     timeoutMs: 120000
 ```
 
@@ -809,18 +811,43 @@ at 16384 bytes and must be exactly one JSON object with only `verdict` and `reas
 extra prose, Markdown fences, unknown fields, invalid verdicts, or an empty/oversized reason become
 `inconclusive`.
 
+An inline or packaged model verifier accepts the same optional `maxOutputTokens` field as an agent.
+The value limits each provider response but doesn't replace the verifier's strict 16 KiB raw-byte
+and JSON-shape checks. Use a smaller verifier cap when the required verdict is short. The `8192`
+value in the example is illustrative.
+
+An inline or packaged model verifier can also declare `recovery: { mode: fresh, maxAttempts: N }`,
+where `N` is from 2 through 16. An optional `backoff` has the same bounds and deterministic jitter
+as agent recovery. This policy applies only when a completed, nontruncated model response violates
+the strict verdict JSON contract and attempts remain. It doesn't retry a valid `rejected` or
+`inconclusive` verdict. It also doesn't retry missing, oversized, truncated, or identity-mismatched
+source evidence.
+
+Model provenance mismatches and unexpected tool activity are nonretryable. A
+response that exceeds the retained raw-byte limit is nonretryable. An open verifier attempt after
+process interruption is also nonretryable.
+
+Flow archives each failed verifier attempt and its raw output, usage, duration, source provenance,
+and model-session summary before it schedules a fresh attempt. The next request uses the original
+frozen verifier input plus bounded retry metadata. It doesn't include the malformed response as
+conversation history. The attempt ceiling includes the initial request. Configure the run-wide
+node, token, cost, time, and artifact budgets independently. Omit `recovery` when one model request
+is the intended contract.
+
 Verifier evidence records the driver, verdict, bounded reason and hash, duration, ordered source
 node/attempt/field/hash observations, and command or model provenance. Model evidence also retains
 bounded raw output, its complete hash/truncation state, and available Flow-owned usage. Only
-`accepted` may produce `node_succeeded`; `rejected` and `inconclusive` fail the node and current run,
-so no dependent is released. Cancellation overrides a late accepted result. Replay validates the
+`accepted` may produce `node_succeeded`. The `rejected` and `inconclusive` verdicts fail the node, so no dependent
+is released. An eligible strict-output failure may enter a declared fresh attempt before the run
+becomes terminal. Cancellation overrides a late accepted result. Replay validates the
 declaration, provenance, source identities, hashes, strict raw response, verdict/outcome pairing,
 failure classification, and resources without consulting a provider.
 
 The separate zero-tool session and delimiters reduce accidental instruction following; they do not
 make a probabilistic verifier prompt-injection-proof or equivalent to hidden deterministic tests.
 Command-verifier approval, remediation edges, fallback, and automatic retry of an interrupted
-verifier are not part of this contract.
+verifier are not part of this contract. The completed strict-output retry doesn't authorize any of
+those behaviors.
 
 ### Lean proof verifier
 
@@ -1200,6 +1227,7 @@ New command evidence records `anthropic-sandbox-runtime`, its exact installed ve
       provider: anthropic
       id: claude-sonnet-4-5
       thinking: medium
+    maxOutputTokens: 24576
     tools:
       - read
       - ls
@@ -1226,6 +1254,96 @@ Every tool operation passes through an attempt-scoped Flow policy broker. The br
 filesystem targets and derives authority from the semantic operation. It permits only actions that
 the compiled node declares. `flow_ls` sorts and bounds one directory listing behind one logical
 `filesystem.list` authorization. It doesn't spend policy-decision capacity per returned entry.
+
+### Configure the policy-decision limit
+
+Every agent attempt has one shared policy-decision limit. Omit `policyDecisionLimit` to use 64
+decisions. Set it to an integer from 1 through 128 when one identified node has a demonstrated need
+for a different bound:
+
+```yaml
+agent:
+  policyDecisionLimit: 96
+```
+
+The count includes every allowed or denied operation made through a policy-backed tool. One
+`flow_read` or `flow_ls` call records one decision. Reading an admitted `skill://` resource doesn't
+record a policy decision. The model receives the effective limit in its system instructions so it
+can reserve capacity for final verification.
+
+The same value also limits `flow_exec` and command-tool-package executions in that attempt. Every
+command requires one `process.execute` policy decision. A smaller independent command ceiling would
+contradict the declared policy budget and could prevent an agent from recording final verification
+evidence. The command recorder and durable replay both derive their effective limit from the
+persisted node value. Other policy-backed operations consume decisions without consuming command
+capacity, so the number of commands can never exceed the policy-decision limit.
+
+The compiler binds an explicit value into the workflow digest. A non-default value also requires a
+persisted control graph, which records the override. Live execution stops at that value, and replay
+rejects terminal evidence that contains more decisions. Audit exhaustion aborts the model session
+and produces `pi_agent_policy_audit_exhausted`. A later provider result cannot replace that failure.
+
+The values 64, 96, and 128 are Flow-specific operational bounds, not cross-framework standards.
+Use the 64-decision default until durable run evidence shows that one coherent node needs more
+capacity. Prefer splitting a node when its evidence shows repeated broad reads, repeated rewrites,
+or unrelated responsibilities. Authorize an override independently of other bounds. Keep the node
+timeout, model-token budget, reported-cost budget, 32-effect limit, event-log byte limit, and path
+restrictions unchanged.
+Change those bounds only when separate evidence supports the change.
+
+Treat 128 as a hard ceiling. It provides defense in depth. Don't treat it as a target.
+
+### Configure the provider-response limit
+
+Use `maxOutputTokens` to limit the output of each provider request made by one agent node:
+
+```yaml
+agent:
+  maxOutputTokens: 24576
+```
+
+The value is optional and must be a positive safe integer. Flow binds an explicit value into the
+workflow digest and durable control graph. Pi applies the smaller of this value and the selected
+model's pinned output limit. Flow doesn't impose a second arbitrary model-independent ceiling. If
+you omit the field, Pi uses the model's pinned limit, which can be much larger than the response
+that one workflow node needs.
+
+This limit is distinct from the run-wide `budget.maxModelTokens` value. `maxOutputTokens` bounds
+one provider response. `maxModelTokens` accounts for reported input, output, cache-read, and
+cache-write tokens across settled model work in the run. The 64 KiB agent-output limit bounds the
+retained UTF-8 report, and `timeoutMs` bounds elapsed node execution. Configure and evaluate each
+control independently.
+
+There is no universal output-token value for coding agents. Start with the smallest value that
+allows one coherent node to finish, and calibrate it from preserved run evidence. Split unrelated
+work into dependency-ordered nodes before increasing the cap. The `24576` value above is an
+illustrative long-running coding limit, not a default or cross-provider recommendation.
+
+If a provider settles a request because it reached this limit, Flow records
+`pi_agent_incomplete`. A node with configured fresh recovery can continue in another attempt only
+when the durable model session, usage, and effect receipts satisfy every recovery check. A timeout,
+cancellation, lost response, unknown effect, missing usage required by the run budget, exhausted
+budget, or exhausted recovery count remains ineligible. The cap therefore improves the chance of
+a settled recovery boundary. It does not make an uncertain request safe to repeat.
+
+The new attempt uses only committed portable history. Flow doesn't retain provider-private
+reasoning or a partial stream. An output-limited message that contains no portable text, tool call,
+tool result, or effect can therefore consume an attempt without advancing the resumable state.
+Bound `recovery.maxAttempts` and the aggregate workflow budget independently of this per-response
+limit.
+
+The separate 64 KiB report limit remains fixed. When an agent exceeds it, Flow records
+`pi_agent_output_limit`. Flow retains only the bounded diagnostic text and complete stream hash.
+Flow never accepts the truncated report as node evidence.
+
+A configured fresh recovery can start another attempt only when a durable model session exists.
+Every normal recovery proof must also succeed. A committed-edit attempt must have only settled
+edits. A completed raw-`exec` attempt must have only settled commands. It also requires complete
+process evidence, no unconfirmed termination, and no sandbox-cleanup failure. Neither form can have
+a delegation record.
+
+Recovery doesn't enlarge the report limit. It doesn't continue the overflowing provider stream.
+It also doesn't automatically execute a previous command again.
 
 `flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
 Every request contains one canonical portable project path. Definition, reference, and hover
@@ -1363,12 +1481,19 @@ Flow disables Pi's built-in tools. Flow therefore doesn't inherit Pi's fuzzy edi
 or optional executable downloads. The node session also disables Pi extensions, skills, prompt
 templates, themes, context files, and project discovery.
 
-Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agent output has a 64
-KiB limit. The ledger retains the bounded text, complete stream hash, truncation status, policy
-decisions, and effect receipts. It classifies output overflow as `pi_agent_output_limit`.
+Flow owns `timeoutMs`. It defaults to five minutes and has a 24-hour limit. Agent report bytes have
+a 64 KiB limit independent of `maxOutputTokens`. The ledger retains the bounded text, complete
+stream hash, truncation status, policy decisions, and effect receipts. It classifies byte overflow
+as `pi_agent_output_limit` and a provider `length` stop as `pi_agent_incomplete`.
 
-Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason can make the node
-succeed. Reaching the policy-audit limit aborts the session and produces
+Either result can be marked retryable when a durable model session exists. The scheduler still
+requires an explicit recovery policy. It also requires remaining budgets and attempts, and a proven
+side-effect boundary.
+
+Cancellation aborts the active Pi session. Only Pi's terminal `stop` reason with a nonempty agent
+report can make the node succeed. A whitespace-only report produces `pi_agent_empty_output` and
+retains the attempt's exact side-effect status. Reaching the policy-audit limit aborts the session
+and produces
 `pi_agent_policy_audit_exhausted`. A later normal provider stop can't replace that failure.
 
 Flow permits a bounded cleanup grace after timeout, audit exhaustion, or operator cancellation. It
@@ -1382,6 +1507,13 @@ execution.
 integer from 2 through 16. No default object is inserted: omission means an interrupted open attempt
 is never retried automatically.
 
+`recovery.backoff` is optional. Its positive `initialDelayMs` value has a 300,000-millisecond limit.
+Its `maxDelayMs` value must be at least the initial delay and has a 900,000-millisecond limit.
+
+Flow uses bounded exponential equal jitter before each new attempt. It persists the resulting
+`notBefore` deadline in `node_retry_scheduled`. A restart waits for the remaining time, and replay
+rejects a start before that deadline. Omission preserves immediate retry behavior.
+
 Fresh recovery is evaluated only when `resume` finds a durable `node_started` without a node
 outcome. Flow starts a new in-memory Pi session with the current instructions, tools, authority,
 and workspace. It supplies completed provider-neutral history as one new untrusted-data user turn.
@@ -1394,14 +1526,33 @@ writable state blocks. The retry also requires an attempt below `maxAttempts` an
 fresh recovery because interrupted consumption is incomplete. See [Recovery and interruption
 safety](recovery.md) for the event ordering and full refusal table.
 
-An agent selecting `exec` cannot declare `recovery`; the compiler rejects the combination because
-arbitrary process execution is never classified as read-only and has no general reconciliation
-proof. A prepared command blocks terminal settlement until its outcome is durable, and an open
-command-capable attempt is never replayed automatically.
+An agent selecting raw `exec` can declare `recovery`, but this policy applies only to an eligible
+completed provider failure. It doesn't make arbitrary process execution read-only or make an open
+command-capable attempt replayable. A prepared command blocks terminal settlement until its outcome
+is durable.
 
-Flow disables both Pi assistant-turn retries and provider retries in the embedded session. This
-keeps retry ownership at the Flow attempt layer. Normal model/tool turns inside one live session
-remain possible and stay bounded by the node timeout.
+The next attempt requires a closed matching model session. Command settlements must be complete,
+process termination must be confirmed, and sandbox cleanup must not have failed. The latest-attempt
+`flow_exec` result count must equal the command-ledger count. The provider failure must be supported
+and retryable. Required accounting must be complete, and budget must remain. The attempt cannot
+have a delegation or an unknown edit.
+
+The next attempt continues from the portable history after the recorded command result. The
+compiler still rejects recovery with `toolPackages`. Flow doesn't yet define their broader
+continuation contract.
+
+Flow disables Pi assistant-turn retries in the embedded session. Each provider request can make at
+most two transport retries before it returns an error to Flow. The pinned Pi transport retries only
+network failures and retryable HTTP responses. It honors `Retry-After` and applies exponential
+backoff with jitter. It rejects a server-requested delay longer than 60 seconds.
+
+These retries finish before a response stream produces a tool call. They don't repeat a Flow
+workspace effect.
+
+Flow still owns agent-attempt recovery. If the bounded transport retries fail, the adapter returns
+one typed provider failure to the current attempt. A later Flow attempt is allowed only by the
+persisted recovery policy, side-effect proof, remaining budget, and `maxAttempts`. Normal
+model/tool turns inside one live session remain possible and stay bounded by the node timeout.
 
 ### Rolling context policy
 
@@ -1701,6 +1852,30 @@ signatures, raw diagnostics, and native provider objects. An incomplete or uncer
 no invented result. The effect and agent-command protocols remain authoritative for external
 operations.
 
+A `tool_result_committed` event can include
+`commandAuthorityRejection: "request_not_admitted"` only for an unsuccessful `flow_exec` result.
+The host derives this classification from the matching committed arguments, the installed tool
+validator, and frozen command authority. Model text and tool-error prose do not establish it.
+Argument conversion must match the installed runtime: a raw argument that appears invalid can
+still become an admitted invocation before execution. A permitted command's execution failure
+must not be classified as proven non-execution.
+
+An optional complete `requests` catalog on frozen agent-command authority contains only version,
+executable, ordered arguments, and timeout. Its entries must match the sorted `requestDigests`
+exactly once and fit within 65,536 serialized UTF-8 bytes. An optional positive safe-integer
+`rejectionLimit` requires that catalog. Both fields participate in the existing authority identity.
+Historical digest-only authorities and unclassified results remain valid without synthesized
+fields. Do not enrich an active historical run during recovery.
+
+With a refusal limit, the runtime counts classified results across all attempts before each new
+model request, including before context-summary generation. At or above the limit it returns
+`pi_command_authority_rejections_exhausted`, not a retryable provider outage. The already-issued
+batch settles first. Successful work, compaction, and recovery do not reset the count. Public
+summaries expose positive cumulative and latest-attempt refusal counts without private inputs.
+
+Command recovery subtracts only those proven pre-execution refusals from raw exec result counts.
+All recorded commands still require their ordinary settlement and termination proof.
+
 An eligible fresh recovery appends `attempt_interrupted` to the private record before
 `node_attempt_interrupted` enters the run ledger. The next attempt creates a new in-memory Pi
 session. Flow renders committed primary history and interruption boundaries as one deterministic
@@ -1708,13 +1883,36 @@ canonical JSON user turn with a fixed untrusted-data instruction. `resume_surfac
 only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
 never primary history.
 
-A completed side-effect-free provider execution failure can use the same declared fresh policy.
-Flow first appends `node_failed` with complete terminal evidence and resource accounting. It then
-appends `node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete`
-dispositions. Replay archives the terminal attempt under `failedAttempts` before returning the
-node to `pending`. The retry is illegal without an attempt remaining, with an exhausted budget,
-or after any effect, command, or delegation record. It is also illegal without complete evidence
-for a declared model-token, model-cost, or execution-time limit.
+A completed strict-invalid model-verifier response uses the same append-only record and fresh
+attempt boundary, but it doesn't create `node_attempt_interrupted`. The prior attempt is already
+settled and fully accounted. The retry capsule retains the original verifier input and bounded
+settlement metadata while omitting the malformed model response.
+
+Resume renderer version 2 deterministically projects a successful `flow_read` result when its text
+is larger than 32,768 UTF-8 bytes. The rendered event replaces `text` with `textOmitted`, which
+contains fixed `oversized_successful_read_result` reason, SHA-256 digest, exact byte count, and
+inline boundary. The paired call keeps the path and range needed for a bounded reread. Exactly
+32,768 bytes remains inline.
+
+Failed reads and other tool results remain inline. The complete primary event remains unchanged in
+the private record. Replay continues to accept a stored version 1 resume event. Newly rendered
+capsules use version 2.
+
+A completed provider execution failure can use the same declared fresh policy. Flow first appends
+`node_failed` with complete terminal evidence and resource accounting. It then appends
+`node_retry_scheduled` with fixed `retryable_failure`, `fresh_retry`, and `complete` dispositions.
+Replay archives the terminal attempt under `failedAttempts` before returning the node to `pending`.
+When the policy declares backoff, the retry event carries the deterministic `notBefore` deadline.
+The scheduler enforces that deadline before it starts the next attempt.
+
+A side-effect-free failure requires empty effect, command, and delegation history. A failure after
+workspace edits also requires `flow.effects/v1` and only committed effect settlements. It requires
+a closed model-session record that matches the failed attempt. The record must have no
+model-session mismatch. Command and delegation history must be empty. Other committed, open,
+unknown, or uncertain operations remain ineligible.
+
+Every path requires an attempt remaining and available budget. Evidence must be complete for each
+declared model-token, model-cost, or execution-time limit.
 
 The dedicated compaction evaluator can derive a smaller provider surface without changing primary
 history. `references` mode projects only validated same-run command artifact references. It keeps
@@ -1851,13 +2049,19 @@ interruption timestamps, effect protocol, and immutable effects before returning
 pending. The next `node_started` must use the prior attempt plus one. At most `A` starts and `A-1`
 interruption dispositions exist for `maxAttempts: A`.
 
-`node_retry_scheduled` can follow one completed opted-in agent failure only when the failure is
-retryable and side-effect-free. The attempt must contain no effects, commands, or delegations. The
-attempt cap must have capacity, and each declared resource limit must remain accountable and
-unexhausted. The prior `node_failed` event has already charged terminal evidence. The reducer
-archives that evidence and error under `failedAttempts`, returns the node to pending, and preserves
-the next-attempt invariant. Replay rejects a generic `run_failed` event when this retry disposition
-is required and still eligible.
+`node_retry_scheduled` can follow one completed opted-in provider failure only when the shared
+proof gate accepts it. The ordinary path is side-effect-free and contains no effects, commands, or
+delegations.
+
+The committed-edit continuation path requires the durable effect protocol and only committed
+workspace-edit settlements. It also requires a closed model-session record for the same failed
+attempt. Command and delegation history must be empty. The attempt cap must have capacity. Each
+declared resource limit must remain accountable and unexhausted. The prior `node_failed` event has
+already charged terminal evidence.
+
+The reducer archives the evidence, error, edit receipts, and model session under `failedAttempts`.
+It returns the node to pending and preserves the next-attempt invariant. Replay rejects a generic
+`run_failed` event when this retry disposition is required and still eligible.
 
 Agent-command approval history retains every exact request, decision or cancellation, expiry, and
 single command consumption on its running node. `node_agent_command_prepared` carries the approval
@@ -1865,18 +2069,25 @@ reference when the compiled node requires it. Replay rejects missing or extra re
 commands, digests, working directories, attempts, lifetimes, early or expired grants, reuse, and
 terminal outcomes with pending or unconsumed authority.
 
-Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local
-sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action,
-canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write
-decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect
-receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values,
-and committed or uncertain outcome. Terminal events are illegal while an effect lacks an executor
-settlement; a recovery observation alone does not terminalize an attempt. Every prepared effect,
-including a not-applied effect, must match a distinct allowed write decision. Receipts exactly
-project committed and unknown executor settlements; not-applied settlements and recovery
-observations produce no receipt. Recovery reconciliation records applied, not-applied, or unknown
-target state with a bounded reason and includes the observed digest/mode only for a stable regular
-file. Exact and divergent observations are cross-checked against the prepared descriptor.
+Agent evidence retains at most the node's configured policy-decision limit. The default is 64, and
+the hard maximum is 128. Each decision has a contiguous attempt-local sequence.
+
+It records exact run, workflow, node, and attempt attribution. It also records derived authority,
+semantic action, and a canonical target of at most 1024 UTF-8 bytes. The record includes the allow
+or deny reason and the SHA-256 request digest. Write decisions also retain the exact operation
+digest.
+
+Agent evidence retains at most 32 edit effect receipts. Each receipt records the same attribution,
+canonical target, operation digest, and before and after SHA-256 values. It also records a committed
+or uncertain outcome. Terminal events are illegal while an effect lacks an executor settlement. A
+recovery observation alone doesn't terminalize an attempt. Every prepared effect must match a
+distinct allowed write decision, including a not-applied effect.
+
+Receipts exactly project committed and unknown executor settlements. Not-applied settlements and
+recovery observations produce no receipt. Recovery reconciliation records applied, not-applied, or
+unknown target state with a bounded reason. It includes the observed digest and mode only for a
+stable regular file. Exact and divergent observations are cross-checked against the prepared
+descriptor.
 
 Replay verifies concurrency capacity and dependency readiness, declaration-ordered concurrent
 outcomes and failure selection, condition source kind, attempt, field, hash, truncation, selected case, exact branch
@@ -2649,7 +2860,20 @@ or package, change active runs, or delete artifacts.
 
 ## Current limitations
 
-- No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates, and pure evidence-bound graph nodes; command-verifier approval remains unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
+- No arbitrary cycles, nested or unbounded loops, nested optimization, or dynamic fan-out.
+- No general multi-condition joins, child patch promotion, terminal-failure retry, or fallback
+  semantics.
+- Bounded loop bodies and static ready DAG nodes can execute concurrently. Iterations are sequential
+  and share one workspace. Flow doesn't infer that iterations are conflict-free.
+- Ordinary child workflows isolate workspaces and histories and discard their changes. Only
+  compiler-generated bounded optimization candidates can use the typed promotion saga.
+- Conditions and loop stops use exact equality over complete durable fields. Supported fields come
+  from commands, agents, accepted verifiers, or typed results.
+- Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates,
+  and pure evidence-bound graph nodes. Command-verifier approval remains unavailable.
+- Recovery is limited to proof-safe fresh agent attempts and completed strict-invalid model-verifier
+  responses with explicit bounded policy. Interrupted verifier attempts are never retried
+  automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

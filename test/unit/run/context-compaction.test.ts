@@ -10,6 +10,7 @@ import {
 import {
   CONTEXT_SUMMARY_UNTRUSTED_INSTRUCTION,
   MAX_CONTEXT_SUMMARY_BYTES,
+  MIN_REFERENCE_TOOL_RESULT_BYTES,
   projectReferenceFirstToolResult,
   type ReferenceProjectionIdentity,
   renderContextSummarySurface,
@@ -372,6 +373,23 @@ function commandOutcome(
     },
   };
 }
+
+it("projects frozen verification command evidence that used process-group containment", async () => {
+  const fullStdout = "x".repeat(16_384);
+  const stdoutArtifact = artifact("stdout", fullStdout);
+  const projected = await projectReferenceFirstToolResult({
+    text: `status: succeeded\nstdout:\n${"x".repeat(MIN_REFERENCE_TOOL_RESULT_BYTES)}`,
+    details: commandOutcome(stdoutArtifact, {
+      processContainment: "process-group",
+      selectionAuthority: "frozen-verification",
+    }),
+    identity,
+    minimumOriginalBytes: 1,
+    inspectArtifact: async (reference) => inspection(reference, stdoutArtifact),
+  });
+
+  expect(projected.status).toBe("projected");
+});
 
 function inspection(reference: string, artifactReference: ArtifactReference): ArtifactInspection {
   expect(reference).toBe(artifactReference.reference);

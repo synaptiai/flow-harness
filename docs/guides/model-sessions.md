@@ -11,6 +11,12 @@ The current source also adds an explicit production rolling-context policy for e
 nodes. The published `0.1.0-alpha.4` package doesn't include that policy. Reference-first
 three-mode comparison remains a separate evaluation path.
 
+Command-authority refusal classifications, refusal counts, and the refusal-stop codes described in
+this guide are also current-source additions. Published `0.1.0-alpha.4` does not include them.
+The ordinary workflow commands and paths in this guide do not inspect a parent GitHub issue run.
+For issue-owned nested sessions, use the
+[issue lifecycle diagnosis procedure](../operations/github-issue-lifecycle.md#diagnose-command-refusals).
+
 ## Understand the two durable records
 
 Flow keeps workflow authority separate from model context.
@@ -42,7 +48,7 @@ The append-only record contains only closed `flow.model-session/v1` events:
 | `model_request_prepared` | Binds the exact request identity before provider input/output (I/O). |
 | `model_message_committed` | Stores one completed assistant message and bounded usage. |
 | `tool_call_committed` | Stores one observed tool name, identifier, and canonical arguments. |
-| `tool_result_committed` | Stores one completed tool result or tool error. |
+| `tool_result_committed` | Stores one completed tool result or tool error, with an optional host-proven command-admission refusal classification. |
 | `model_request_settled` | Closes one prepared request as completed, failed, or output-limited. |
 | `attempt_settled` | Closes one attempt with its terminal adapter outcome. |
 | `attempt_interrupted` | Marks a process-interrupted attempt before workflow retry disposition. |
@@ -105,7 +111,9 @@ recovery policy and verifies effects, commands, approvals, attempts, and resourc
    ```
 
 2. Confirm that the affected agent node declared `recovery: { mode: fresh, ... }` and that public
-   state doesn't report an uncertain or committed effect or command.
+   state doesn't report an uncertain or committed effect or any command. This procedure applies to
+   an interrupted attempt. A completed provider failure uses the separate terminal-recovery proof
+   described in [Recovery and interruption safety](../recovery.md#recovery-boundaries).
 
 3. Resume with the exact workflow and execution directory that started the run:
 
@@ -116,6 +124,12 @@ recovery policy and verifies effects, commands, approvals, attempts, and resourc
 4. Inspect the run again. A successful fresh recovery increments the attempt, interruption, and
    resume-surface counts. The node still needs new terminal evidence and any downstream verifier.
 
+This interruption procedure applies to eligible agent nodes. An open model-verifier attempt remains
+uncertain and isn't repeated. A model verifier can separately declare bounded recovery for a fully
+settled, nontruncated response that violates the strict verdict JSON contract. Flow schedules that
+fresh attempt within the same run, archives the prior evidence, and omits the malformed response
+from the retry conversation.
+
 Before the new attempt starts, Flow claims and replays the private record. It appends
 `attempt_interrupted` before the authoritative `node_attempt_interrupted` event. It then creates a
 new in-memory Pi session and sends one deterministic canonical JSON history capsule as a new user
@@ -125,6 +139,17 @@ budget, scheduling, approval, side-effect, or completion authority.
 Flow derives the capsule only from committed primary events and interruption boundaries. It stores
 only the derived surface's digest, byte count, source head, and render version, so later attempts
 don't embed earlier generated capsules recursively.
+
+Resume renderer version 2 keeps the complete primary record but projects an oversized successful
+`flow_read` result out of the retry capsule. A read result of at most 32,768 UTF-8 bytes remains
+inline. A larger result becomes a `textOmitted` reference that records its SHA-256 digest, exact
+byte count, reason, and inline boundary. The paired tool-call event still identifies the original
+path and range. The recovering agent can reread only the range that it needs.
+
+Flow doesn't project failed reads or results from other tools through this rule. An error can be
+the only explanation of an unsafe or unavailable source, and a mutating tool has separate effect
+evidence. Projection never removes or changes the original `tool_result_committed` event in the
+private record.
 
 ## Inspect a completed provider-failure retry
 
@@ -147,6 +172,13 @@ failed attempt and `attempt_started` for the next attempt. It doesn't invent an
 If the run stops after `node_failed` but before `node_retry_scheduled`, resume it with the exact
 workflow and execution directory. Flow replays the charged failure and records the retry
 disposition once. Don't restart the complete workflow or delete the failed evidence.
+
+An agent that returns a terminal `stop` without a nonempty report fails with
+`pi_agent_empty_output`. An attempt with no effect, command, or delegation can use the same
+declared fresh-recovery policy. An attempt with a committed or uncertain side effect remains
+non-retryable because repeating it could duplicate or overwrite work. A command or delegation
+record also blocks the retry. This rule prevents an empty provider completion from becoming false
+`node_succeeded` evidence.
 
 ## Understand request identity and capacity
 
@@ -191,11 +223,21 @@ The independent storage bounds are:
 | One session record | 16 MiB |
 | Events in one session record | 1,024 |
 | One rendered resume surface | 1 MiB and the selected-model limit |
+| One successful read result kept inline in a version 2 resume surface | 32 KiB |
 
 These limits serve different purposes. The byte limits bound memory and private storage. The event
 count bounds a large sequence of small events.
 
 ## Handle failures
+
+When present, `commandAuthorityRejectionCount` reports cumulative proven pre-execution command
+refusals. `latestAttemptCommandAuthorityRejectionCount` reports the current or most recent attempt's
+share. Zero counts are omitted for compatibility. These content-free counts are not failed-test
+counts.
+
+Raw exec result counts still include refusals. Recovery excludes only proven non-execution
+when matching results to command settlements. Unclassified historical errors remain conservative.
+The parent `flow issue inspect` projection does not expose these nested-session counts.
 
 | Condition | What Flow does | What you do |
 | --- | --- | --- |
@@ -204,8 +246,10 @@ count bounds a large sequence of small events.
 | Committed event or hash chain is invalid | Fails closed. | Restore the exact record from a trusted backup or keep the run for audit. Don't hand-edit history. |
 | Request surface no longer matches | Reports stable mismatch categories without private values. | Compare reviewed configuration and runtime changes. Start a new run when exact recovery isn't valid. |
 | Provider stream was interrupted | Stores no partial model message and never continues the stream. | Use fresh recovery only when the workflow proof gate allows it. |
-| Provider execution failed with no recorded side effect and complete bounded-resource evidence | Records the failed attempt, charges its resources, and starts the next declared fresh attempt when every recovery gate passes. | Inspect `failedAttempts`, `node_retry_scheduled`, and total resources. Repeated failures stop at the attempt or resource ceiling. |
+| Provider execution failed with complete bounded-resource evidence | Records and charges the failed attempt. It can start the next declared attempt when the attempt was side-effect-free, when only durable workspace edits committed, or when raw `exec` commands settled with complete process evidence, confirmed termination, and no sandbox-cleanup failure. A side-effecting continuation requires the exact closed session. | Inspect `failedAttempts`, `node_retry_scheduled`, edit and command settlements, cleanup and termination status, the model-session head, and total resources. Repeated failures stop at the attempt or resource ceiling. |
 | Tool call has no completed result | Never invents a result. Effect or command settlement decides whether retry is safe. | Inspect the authoritative effect and command state before any new run. |
+| `pi_command_authority_rejections_exhausted` | Finishes recording the issued tool batch, then stops before another model request or context summary. The refusal count survives recovery and does not reset after useful work. | Inspect the frozen public commands and exact catalog inputs. Preserve the failed run. Correct the task guidance or contract in a reviewed new run; do not raise budgets or edit history to bypass the stop. |
+| `pi_command_authority_journal_unavailable` | Refuses a bounded command-authority session without its required durable record. | Preserve evidence and repair the host composition. Ordinary issue execution creates this record; do not disable the guard to bypass the failure. |
 | Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. If the current source and selected embedded Pi adapter meet your requirements, you can enable the explicit rolling policy in a new reviewed workflow. Don't raise limits by editing durable state. |
 
 ## Security and compatibility limits

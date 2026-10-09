@@ -520,6 +520,11 @@ import { SupervisorServiceError } from "../supervisor/service.js";
 import { executeWorkerJob } from "../supervisor/worker.js";
 import { readBoundedSecretInput } from "./bounded-secret-input.js";
 import { formatErrorCauseChain } from "./error-cause-chain.js";
+import { type GitHubIssueCliService, runGitHubIssueCli } from "./github-issue.js";
+import {
+  createProductionGitHubIssueCliService,
+  type ProductionGitHubIssueCliServiceOptions,
+} from "./production-github-issue-service.js";
 import { projectPublicRunOutput } from "./public-output.js";
 
 const HELP = `Flow — Provider-neutral coding-agent harness
@@ -530,6 +535,7 @@ Usage:
   flow doctor [<workflow.yaml|workflow:name@version|activation:workflow-id>] [--profile prime-agent]
   flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]
   flow compatibility check
+  flow issue <validate|doctor|run|inspect|events|resume|cancel|merge> ...
   flow goal init <workspace.yaml>
   flow goal show
   flow goal history [--after <revision>] [--limit <count>]
@@ -666,6 +672,9 @@ export interface CliDependencies {
   readonly cwd: string;
   readonly executor: NodeExecutor;
   readonly createNodeExecutor: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
+  readonly createGitHubIssueCliService: (
+    options: ProductionGitHubIssueCliServiceOptions,
+  ) => GitHubIssueCliService;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly createModelSessionStore: (rootDirectory: string) => ModelSessionStore;
@@ -775,6 +784,8 @@ export async function main(
         return await quickstartCommand(args.slice(1), io, dependencyOverrides);
       case "compatibility":
         return await compatibilityCommand(args.slice(1), io, dependencyOverrides);
+      case "issue":
+        return await issueCommand(args.slice(1), io, dependencyOverrides);
       case "goal":
         return await goalWorkspaceCommand(args.slice(1), io, dependencyOverrides);
       case "skills":
@@ -1030,6 +1041,30 @@ export async function main(
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
+}
+
+async function issueCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  return await runGitHubIssueCli(args, io, {
+    execute: async (request) => {
+      const dependencies = configDependenciesFrom(overrides);
+      const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+      const projectRoot = resolve(config.projectRoot ?? dependencies.cwd);
+      const createService =
+        overrides.createGitHubIssueCliService ?? createProductionGitHubIssueCliService;
+      return await createService({
+        projectRoot,
+        sandboxProfile: config.sandbox.profile,
+        ...(config.policyPackages === undefined
+          ? {}
+          : { capabilitySnapshot: config.policyPackages.snapshot }),
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      }).execute(request);
+    },
+  });
 }
 
 async function compatibilityCommand(
@@ -7490,6 +7525,8 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
       overrides.createNodeExecutor ??
       ((profile, projectRoot) =>
         overrides.executor ?? createProductionNodeExecutor(profile, projectRoot)),
+    createGitHubIssueCliService:
+      overrides.createGitHubIssueCliService ?? createProductionGitHubIssueCliService,
     effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
     createWorkspaceIsolator: overrides.createWorkspaceIsolator ?? createProductionWorkspaceIsolator,
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),

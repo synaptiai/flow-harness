@@ -16,6 +16,7 @@ const properHeadingWords = new Set([
   "Linux",
   "Node.js",
   "OMP",
+  "OpenRouter",
   "Pi",
   "Prime",
   "SafeVerify",

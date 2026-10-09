@@ -8,6 +8,11 @@ The [delivery roadmap](roadmap.md) owns gate order and release commitments. This
 future-capability research and release-shaping alternatives. A row in this document is not a
 commitment, compatibility promise, or claim that Flow supports the capability.
 
+The [usable-checkpoint execution plan](usable-checkpoint-plan.md) assigns owners, dispositions,
+evidence gates, and reconsideration triggers to qualification and operator-burden priorities.
+It promotes NV-01 and NV-03 for decision work without marking their research complete. It also
+tracks repository onboarding, guided plan preparation, and plugin-default parity explicitly.
+
 ## Interpret research maturity
 
 Use these terms consistently when comparing candidates:
@@ -66,8 +71,11 @@ non-goals, and status notes.
 
 - **Outcome:** Decide whether a new capability improves verified user outcomes under fixed controls.
 - **Maturity:** Partial. Flow has paired evaluators, native comparison adapters, private holdouts,
-  complete denominators, and two digital-twin field series.
-- **Missing research:** The evidence covers two issues in one repository and doesn't establish
+  complete denominators, and three merged digital-twin field series. The third series completed one
+  approval-bound GitHub issue lifecycle after 52 full runs. A fourth issue's first installed-package
+  attempt failed before acceptance or independent review. The
+  [issue 106 report](field-reports/digital-twin-issue-106-installed.md) preserves that result.
+- **Missing research:** The evidence covers four attempted issues in one repository and doesn't establish
   cross-repository, cross-language, cross-provider, crash-recovery, or unattended-repair behavior.
   The task taxonomy, minimum sample sizes, equivalence rules, leakage controls, and claim thresholds
   aren't frozen for a broader benchmark.
@@ -90,7 +98,13 @@ non-goals, and status notes.
   overflow recovery.
 - **Missing research:** Flow has not measured model-free pruning or cache-aware summary economics.
   It also lacks provider-specific overflow classification and post-request retry measurements. The
-  correct pressure and retained-tail policy remains workload-specific.
+  correct pressure and retained-tail policy remains workload-specific. The issue 6 lifecycle
+  series adds measured long-response latency, large cache-inclusive histories, retry
+  amplification, and zero production compaction events under OpenRouter. It does not identify
+  whether a provider request was generating, stalled, disconnected, or awaiting an upstream route.
+  The issue 106 attempt also recorded zero compaction events and repeated rejected command requests.
+  That failure motivates command discovery and bounded stopping. It does not establish that
+  compaction would improve verified task completion.
 - **Authority change:** Low. A projection can change model-visible context but must never change
   primary events, workflow evidence, tools, policy, route, or output allowance.
 - **Prerequisites:** NV-01 and exact provider-adapter conformance tests.
@@ -101,17 +115,36 @@ non-goals, and status notes.
 
 ### NV-03: Bounded verifier-directed recovery
 
+Refined Approach B is approved for implementation of same-host blocked-review repair. The
+[design contract](bounded-review-repair-design.md) records source-level hazards, frozen
+selection and settlement rules, adversarial tests, remaining decisions, and staged evidence
+gates. Source implementation passed local verification. Hosted qualification remains open. Live repair effectiveness
+remains unproven. This narrower slice does not
+complete general deterministic-verifier recovery or cross-host candidate transfer.
+
+The fifth installed attempt motivates a separate [verification repair proposal](bounded-verification-repair-design.md).
+It remains unapproved. The proposal requires trusted behavioral classification, verifier isolation,
+bounded disclosure, and shared review-and-verification repair accounting. These are research and
+implementation gates, not capabilities established by the current error codes or command sandbox.
+
 - **Outcome:** Let Flow choose a safe repair class after deterministic rejection. Remove the need
   for an operator to author every next step.
 - **Maturity:** Partial. The second digital-twin series proves that bounded repair workflows can
-  recover an accepted change. An operator still selected and authored every repair. The series
-  doesn't prove autonomous selection.
-- **Missing research:** Flow lacks a closed failure taxonomy and deterministic selection
-  controller. It also lacks a progress measure, cross-cycle settlement contract, and adversarial
-  holdouts. Comparison with operator-authored repair remains open. Flow needs separate tests for
-  oscillation, ineffective repair, and attempts to reinterpret a frozen contract.
+  recover an accepted change. The third series proves that deterministic holdout and review
+  feedback can drive repeated controller-contract corrections through a final merge. An operator
+  still selected and authored every correction. Neither series proves autonomous selection.
+- **Missing research:** A general failure taxonomy, semantic progress measure, and comparative
+  adversarial task corpus remain open. The blocked-review implementation adds exact-tree
+  no-progress detection, bounded deterministic selection, and cross-cycle settlement. Those
+  mechanisms do not prove that a changed tree improves correctness. Compare live outcomes with
+  operator-authored repair on fresh tasks, retaining oscillation and ineffective-repair evidence.
+- **Recovery deferral:** A reservation without a child ledger remains unresolved. Research an
+  authenticated never-started-dispatch abandonment protocol that proves non-execution without
+  fabricating zero usage or permitting duplicate work. Keep this separate from ordinary cancellation.
 - **Authority change:** Medium. The controller selects execution that can mutate a workspace, even
   when every candidate workflow is predeclared.
+- **Related correction:** UC-08 covers stopping repeated ineffective command requests without selecting a
+  repair workflow. Completing that correction does not complete this research group.
 - **Prerequisites:** NV-01, stable effect reconciliation, frozen external holdouts, and a complete
   aggregate budget across every full and repair attempt.
 - **Research exit:** Build a deterministic controller that selects only predeclared repair classes
@@ -284,8 +317,11 @@ non-goals, and status notes.
 
 ## Respect the dependency order
 
-The dependency graph prevents high-authority features from entering a release before their
-measurement, process, and isolation foundations.
+The graph distinguishes required capability dependencies from useful evidence relationships.
+Solid arrows represent prerequisites named in the research entries. Dashed arrows mean one group's
+evidence can inform another group's design. They do not require completing that entire group first.
+The written entries also contain gates that are not capability groups, such as consumer demand,
+exact provider conformance, and a hosted product decision.
 
 ```mermaid
 flowchart TD
@@ -309,18 +345,24 @@ flowchart TD
     benchmark --> isolation
     benchmark --> compatibility
     benchmark --> packages
-    context --> repair
+    context -. informs .-> repair
     repair --> delegation
-    compatibility --> protocol
+    compatibility -. informs .-> protocol
     protocol --> remote
     isolation --> remote
     isolation --> extensions
     isolation --> distributed
-    remote --> distributed
-    packages --> extensions
+    distributed --> remote
+    packages -. informs .-> extensions
 ```
 
-The graph is a minimum ordering constraint, not a promise to implement every descendant.
+NV-07 requires NV-10's remote ownership and quota boundary. NV-10 requires a remote identity model,
+not a completed NV-07 interactive client. Design those shared contracts before consequential remote
+operation. NV-05's remote variants also require NV-07, NV-08, and NV-10. Local evaluation
+does not inherit those remote prerequisites.
+
+The graph is not a promise to implement every descendant. In particular, local command-discovery
+corrections do not depend on completing context research, remote operation, or stable-release work.
 
 ## Compare possible next-version shapes
 
@@ -378,9 +420,10 @@ A2A, AG-UI, and A2UI as separate candidate boundaries instead of one combined pr
 
 ## Use the recommended release sequence
 
-Prefer **Approach A** for the next version, with NV-02 and NV-03 as explicitly evaluation-only
-research. This sequence strengthens the working product, creates the missing benchmark base, and
-tests the most distinctive long-horizon ideas without prematurely granting new runtime authority.
+**Selected:** The approved next version uses **Approach A**, with NV-02 and NV-03 as explicitly
+evaluation-only research. This sequence strengthens the working product, creates the missing
+benchmark base, and tests the most distinctive long-horizon ideas without prematurely granting new
+runtime authority.
 
 Choose Approach B only if long-horizon autonomous repair is the version's primary product claim.
 Its evaluation budget must also be funded. Choose Approach C only after three independent consumer
