@@ -93,6 +93,10 @@ describe.skipIf(!linuxX64)("Native clone3 compatibility measurements", () => {
               traced
                 ? [
                     "-f",
+                    // With -o, strace prefixes every line with its PID. Without it, the prefix starts
+                    // only when a second task appears, which can split one clone3 record.
+                    "-o",
+                    "/dev/stderr",
                     "-qq",
                     "-s",
                     "32",
