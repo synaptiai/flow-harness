@@ -64,6 +64,7 @@ describe("Prime Agent package boundary", () => {
     expect(packageManifest.overrides).toEqual({
       "basic-ftp": "6.2.1",
       "extract-zip": "$extract-zip",
+      "ip-address": "10.7.4",
     });
     expect(replacementManifest).toEqual({
       name: "@synaptiai/flow-prime-disabled-extract-zip",
@@ -210,7 +211,7 @@ describe("Prime Agent package boundary", () => {
         "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ==",
     });
     expect(inputs.locks).toEqual({
-      nodeSha256: "aa51d237678469748d9d378db019f611361db1037992f052984293fd1eec858c",
+      nodeSha256: "ec112fd2df270298f94c36f0530dc81ad1d59532979956595a224f6878a9d8b4",
       pythonSha256: "435feb8049c725058185b58b709327a680817cd48d527e8c465b6513fbf70cfd",
     });
     expect(inputs.seccomp).toEqual({
@@ -239,7 +240,7 @@ describe("Prime Agent package boundary", () => {
       /^# syntax=docker\/dockerfile:1\.17\.1@sha256:38387523653efa0039f8e1c89bb74a30504e76ee9f565e25c9a09841f9427b05$/m,
     );
     expect(dockerfile).toContain(
-      "ARG NODE_IMAGE=node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90",
+      "ARG NODE_IMAGE=node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d",
     );
     expect(dockerfile).toContain(
       "ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 NODE_ENV=production PRIME_AGENT_KERNEL_FORKSERVER=0",
@@ -247,7 +248,7 @@ describe("Prime Agent package boundary", () => {
     for (const environment of [
       "PRIME_AGENT_KERNEL_FORKSERVER=0",
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "NODE_VERSION=22.19.0",
+      "NODE_VERSION=22.23.4",
       "YARN_VERSION=1.22.22",
       "LANG=C.UTF-8",
       "LC_ALL=C.UTF-8",

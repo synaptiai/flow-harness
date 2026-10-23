@@ -1191,7 +1191,7 @@ describe("LocalDockerContainerCommandEngine", () => {
   it("submits every admitted image environment entry before Docker merges image configuration", async () => {
     const imageEnvironment = [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "NODE_VERSION=22.19.0",
+      "NODE_VERSION=22.23.4",
       "YARN_VERSION=1.22.22",
       "LANG=C.UTF-8",
       "LC_ALL=C.UTF-8",
@@ -1246,7 +1246,7 @@ describe("LocalDockerContainerCommandEngine", () => {
     expect(configuration?.Env).toEqual([
       "PRIME_AGENT_KERNEL_FORKSERVER=0",
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      "NODE_VERSION=22.19.0",
+      "NODE_VERSION=22.23.4",
       "YARN_VERSION=1.22.22",
       "LANG=C.UTF-8",
       "LC_ALL=C.UTF-8",
