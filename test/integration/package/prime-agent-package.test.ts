@@ -212,7 +212,7 @@ describe("Prime Agent package boundary", () => {
     });
     expect(inputs.locks).toEqual({
       nodeSha256: "ec112fd2df270298f94c36f0530dc81ad1d59532979956595a224f6878a9d8b4",
-      pythonSha256: "435feb8049c725058185b58b709327a680817cd48d527e8c465b6513fbf70cfd",
+      pythonSha256: "17c7c632fcc57eb09715bdd27cec845375068c6b66dfd5fb1b91cbcf9bd40825",
     });
     expect(inputs.seccomp).toEqual({
       base: "moby/profiles seccomp/v0.2.1",
