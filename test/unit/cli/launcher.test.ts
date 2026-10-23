@@ -4,9 +4,9 @@ import { runFlowLauncher } from "../../../src/cli/launcher.js";
 
 describe("Flow package launcher", () => {
   it.each([
-    ["linux", "26.10.0"],
-    ["darwin", "26.10.0"],
-    ["linux", "26.10.1"],
+    ["linux", "26.12.1"],
+    ["darwin", "26.12.1"],
+    ["linux", "26.12.2"],
     ["darwin", "27.0.0"],
   ])("loads the CLI on supported %s Node.js %s hosts", async (platform, nodeVersion) => {
     const runDirectCli = vi.fn(async () => undefined);
@@ -29,11 +29,13 @@ describe("Flow package launcher", () => {
   });
 
   it.each([
+    ["linux", "26.12.0"],
+    ["linux", "26.10.0"],
     ["linux", "26.9.99"],
     ["linux", "26.8.2"],
     ["linux", "26.7.0"],
     ["darwin", "25.99.99"],
-    ["linux", "26.10.0-private"],
+    ["linux", "26.12.1-private"],
     ["linux", "PRIVATE_VERSION"],
   ])("rejects unsupported Node.js on %s without loading the CLI", async (platform, nodeVersion) => {
     const loadCli = vi.fn();
@@ -43,7 +45,7 @@ describe("Flow package launcher", () => {
     await runFlowLauncher([], { platform, nodeVersion, loadCli, stderr, setExitCode });
 
     expect(loadCli).not.toHaveBeenCalled();
-    expect(stderr).toHaveBeenCalledWith("Flow requires Node.js 26.10.0 or newer.");
+    expect(stderr).toHaveBeenCalledWith("Flow requires Node.js 26.12.1 or newer.");
     expect(stderr.mock.calls.flat().join(" ")).not.toContain(nodeVersion);
     expect(setExitCode).toHaveBeenCalledWith(1);
   });
@@ -57,7 +59,7 @@ describe("Flow package launcher", () => {
 
       await runFlowLauncher([], {
         platform,
-        nodeVersion: "26.10.0",
+        nodeVersion: "26.12.1",
         loadCli,
         stderr,
         setExitCode,
@@ -82,14 +84,14 @@ describe("Flow package launcher", () => {
       label: "workflow on an unsupported platform",
       args: ["doctor", "PRIVATE_WORKFLOW_PATH"],
       platform: "freebsd",
-      nodeVersion: "26.10.0",
+      nodeVersion: "26.12.1",
       target: "workflow",
     },
     {
       label: "Prime on an unsupported platform",
       args: ["doctor", "--profile=prime-agent"],
       platform: "freebsd",
-      nodeVersion: "26.10.0",
+      nodeVersion: "26.12.1",
       target: "prime-agent",
     },
   ])("returns a fixed host report for $label without loading the CLI", async (fixture) => {

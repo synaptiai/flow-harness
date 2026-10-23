@@ -86,7 +86,7 @@ completes one credential-free workflow through the production command sandbox.
 
 ### Prerequisites
 
-- Node.js 26.10.0 or newer
+- Node.js 26.12.1 or newer
 - npm with global package support
 - x64 Linux or macOS
 

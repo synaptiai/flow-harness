@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": "22.19.0"
+    "node": "22.23.4"
   },
   "dependencies": {
     "extract-zip": "file:vendor/extract-zip",
@@ -13,6 +13,7 @@
   },
   "overrides": {
     "basic-ftp": "6.2.1",
-    "extract-zip": "$extract-zip"
+    "extract-zip": "$extract-zip",
+    "ip-address": "10.7.4"
   }
 }

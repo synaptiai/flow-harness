@@ -104,7 +104,25 @@ describe("source dependency boundaries", () => {
       "adm-zip": "0.6.1",
       nanoid: "3.3.18",
       sharp: "0.35.5",
+      "source-map-js": "1.2.2",
+      vite: "8.3.5",
     });
+    expect(packageLock.packages?.["node_modules/source-map-js"]).toEqual(
+      expect.objectContaining({
+        version: "1.2.2",
+        license: "BSD-3-Clause",
+        integrity:
+          "sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==",
+      }),
+    );
+    expect(packageLock.packages?.["node_modules/vite"]).toEqual(
+      expect.objectContaining({
+        version: "8.3.5",
+        license: "MIT",
+        integrity:
+          "sha512-z1YpjieJ9g0ebTmQpLBv/oq9E3F9EIlOe+7LahW8SrE3LTiG3udBRUXQOlYXP9b+IC2q2phHeVxj9xGlw34OEQ==",
+      }),
+    );
     expect(packageLock.packages?.["node_modules/adm-zip"]).toEqual(
       expect.objectContaining({
         version: "0.6.1",
